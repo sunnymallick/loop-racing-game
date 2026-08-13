@@ -124,6 +124,7 @@ class Game {
 
   startRace({ opponents = 7 } = {}) {
     const def = getCity(this.cityId).def;
+    const prevRace = this.race;
     this.race = new Race({
       track: this.city.track, cityDef: def,
       playerSpec: getVehicle(this.carId).spec, opponents,
@@ -134,6 +135,10 @@ class Game {
     this.body.reset(p, Math.atan2(s.tan.x, s.tan.z));
     this.nitro.reset();
 
+    // RACE piece: the opponents' nitrous plumes live under their cars (same reason the player's
+    // does), so detach them before disposeObject() walks the subtree and frees the nitrous piece's
+    // shared, module-cached geometry out from under everything.
+    prevRace?.detachCars?.();
     for (const c of this.aiCars) { this.engine.scene.remove(c); disposeObject(c); }
     this.aiCars = [];
     for (const d of this.race.drivers) {
@@ -144,6 +149,8 @@ class Game {
       this._applyEnv(c);
       this.aiCars.push(c);
     }
+    // the director drives the opponents' plumes, smoke and rubber off these
+    this.race.attachCars(this.aiCars, { effects: this.effects });
     this.effects.clear();
     this.state = 'racing';
     this.time = 0;
@@ -223,7 +230,14 @@ class Game {
       const inward = s.right.clone().multiplyScalar(-Math.sign(lateral));
       const halfW = onBranch ? onBranch.branch.halfWidth : t.halfWidth;
       const wallPoint = s.pos.clone().addScaledVector(s.right, Math.sign(lateral) * halfW * wallAt);
-      this.body.pos.x = wallPoint.x; this.body.pos.z = wallPoint.z;
+      // RACE piece: push the car back across the road by the overshoot, rather than rebuilding its
+      // position from the sample's cross-section. The old form discarded the along-track component,
+      // so a car held against a barrier was re-snapped onto the *same* cross-section every frame:
+      // it sat at exactly |lateral| = 1.52 reading 150 mph and travelling nowhere, and `nearest()`
+      // kept returning the same sample, so it never got out. (A full-race probe with the player on
+      // autopilot ended with the player on lap 0 after four minutes, pinned to one barrier.)
+      const over = (absLat - wallAt) * halfW;
+      this.body.pos.addScaledVector(inward, over);
       const strength = this.body.impact(inward, 0.28, 0.62);
       // FX contact point. This is NOT "one metre outboard of the car" — that put the burst a metre
       // *behind* the barrier, hanging in open air, which is why the crash read as a decal pasted
@@ -234,12 +248,13 @@ class Game {
       if (strength > 0.03) {
         if (strength > 0.22) this.effects.crash(hit, inward, strength, { vel: this.body.vel, paint: this.carColor });
         else this.effects.sparkBurst(hit, inward, strength * 0.7, { vel: this.body.vel });
-        this.audio.impact(strength);
+        this.audio.impact(strength, { surface: 'concrete', pan: Math.sign(lateral) * 0.6 });
       } else if (Math.abs(this.body.speed) > 6) {
         // Scraping along a wall is the common case and must still throw sparks — otherwise a
         // player pinned to the barrier at 120 mph gets no feedback at all.
         this.effects.wallScrape(hit, inward, this.body.vel, clamp((Math.abs(this.body.speed) - 6) / 26, 0, 1));
-        this.audio.squeal(0.5, 0.6);
+        // (audio piece) metal on barrier is a SCRAPE, not a tyre squeal
+        this.audio.scrape(0.35 + 0.65 * clamp((Math.abs(this.body.speed) - 6) / 26, 0, 1));
       }
     }
 
@@ -281,6 +296,8 @@ class Game {
       for (let i = 0; i < this.race.drivers.length; i++) {
         applyPose(this.aiCars[i], this.race.drivers[i].body, scaled);
       }
+      // opponents' nitrous plumes / tyre smoke / rubber (RACE piece owns what they do)
+      this.race.updateVisuals(scaled, this.engine.camera);
       if (this.race.state === 'finished' && this.state !== 'finished') {
         this.state = 'finished';
         this.hud.message(this.race.playerPos === 1 ? 'WINNER!' : `FINISHED ${this.race.playerPos}${['st', 'nd', 'rd'][this.race.playerPos - 1] || 'th'}`, 4, '#ffd24a');
@@ -295,7 +312,15 @@ class Game {
         gearShift: this.body.gearShiftT > 0, volume: 1,
       }, scaled);
       // `slide` not `drift`: a tyre squeals when it scrubs, and that includes a standing burnout.
-      this.audio.squeal(clamp((this.body.slide ?? this.body.drift) * 1.3, 0, 1) * smoothstep(4, 14, Math.abs(this.body.speed)), this.body.slip);
+      // (audio piece) the surface and road speed go in too: tarmac howls, dirt washes, kerbs
+      // rumble, and the ambience bed / music scheduler ride on the same state.
+      const spd = Math.abs(this.body.speed);
+      this.audio.squeal(
+        clamp((this.body.slide ?? this.body.drift) * 1.3, 0, 1) * smoothstep(4, 14, spd),
+        this.body.slip,
+        { surface: this.body.surface, speed: spd },
+      );
+      this.audio.tick(scaled, { speed: spd, surface: this.body.surface, boost: this.nitro?.ramp ?? 0 });
     }
 
     // the body goes in so the FX piece can trail damage smoke off the corner that took a hit
@@ -588,7 +613,7 @@ window.__GAME = {
     return {
       ...game.body.telemetry(),
       nitro: { charge: +game.nitro.charge.toFixed(3), tanks: game.nitro.tanks, ramp: +game.nitro.ramp.toFixed(3), active: game.nitro.active },
-      race: game.race ? { pos: game.race.playerPos, lap: game.race.playerLap, u: +game.race.playerU.toFixed(4), state: game.race.state, time: +game.race.time.toFixed(2) } : null,
+      race: game.race ? game.race.telemetry() : null,
       fx: {
         shake: +game.effects.shake.toFixed(3),
         shakePeak: +(game.effects.shakePeak || 0).toFixed(3),
@@ -604,6 +629,15 @@ window.__GAME = {
    * screenshot captures. These are the standard captures listed in ART_DIRECTION.md §8.
    */
   async scenario(name, opts = {}) {
+    // MENU piece: scenario('menu') leaves the game in the menu state, where Game.update() short
+    // circuits to Menu.update() — so every scenario run AFTER it silently drove nothing and
+    // captured the garage instead of the race (`--shots menu,chase` produced two menu frames).
+    // Any non-menu scenario re-enters racing first.
+    if (name !== 'menu' && game.state === 'menu') {
+      game.menu.close();
+      game.startRace();
+      game.race.state = 'racing'; game.race.countdown = 0;
+    }
     const trace = [];
     const run = (n, input) => {
       for (let i = 0; i < n; i++) {
