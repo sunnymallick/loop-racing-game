@@ -1,0 +1,124 @@
+# ARCHITECTURE.md — how to work in this codebase
+
+Read this plus your piece's section of `ART_DIRECTION.md`. You should not need to read the whole
+tree.
+
+## Running it
+
+```bash
+npm run dev                      # http://localhost:5180 — real GPU, for feeling the game
+node tools/shot.mjs --city la --car muscle --shots chase,drift,nitrous --out shots/mine
+node tools/shot.mjs --all --out shots/sweep        # 4 cities x 4 cars
+node tools/functest.mjs          # control/crash/menu/leak checks; exit 1 on failure
+node tools/functest.mjs --quick  # one city, all cars — fast iteration
+```
+
+`tools/shot.mjs` boots its own Vite server on a random free port and its own headless Chromium, so
+many agents can run it concurrently. Screenshots are deterministic: fixed seed, fixed timestep,
+scripted input.
+
+Scenarios available to `--shots`: `chase`, `drift`, `nitrous`, `nitrous-long`, `crash`, `landmark`,
+`still`, `menu`. Add `--u 0.42` to place the car at a specific point on the lap, `--telemetry` to
+dump the trace as JSON.
+
+**Look at the PNGs you produce.** A change you cannot see in a screenshot did not happen.
+
+## Hard constraints (violating any is a project-level failure)
+
+- Every mesh, texture, sound and font is generated in code at load time. No `.glb/.png/.mp3/.ttf`,
+  no CDN, no data-URI that is really a baked asset. Three.js is the only third-party code.
+- Textures: `CanvasTexture`/`DataTexture` from our own generators in `src/core/textures.js`.
+- Audio: Web Audio oscillators + noise buffers we fill ourselves.
+- Fonts: our own vector glyph tables in `src/core/font.js`. **Never** set `ctx.font` to a system
+  family like Arial/Impact — that counts as an imported asset.
+- Keep it running at ≥50 fps at 1600×900 on a real GPU, and don't leak on city/car swaps.
+
+## Module map
+
+```
+src/core/
+  engine.js      renderer + post-processing chain + camera            [LIGHTING piece]
+  post.js        GradeShader (tonemap/grade/vignette/CA), SpeedShader [LIGHTING piece]
+  textures.js    procedural texture toolkit — asphalt, concrete, brick, facade, sprites, sky
+  font.js        vector glyph font + seven-segment face               [HUD piece]
+  audio.js       Web Audio synthesis: engines, nitrous, impacts, UI   [AUDIO piece]
+  input.js       keyboard/gamepad/scripted input (harness drives this)
+  rng.js         seeded RNG + value noise + fbm. ALWAYS use this, never Math.random()
+
+src/vehicles/
+  kit.js         materials, loftBody(), wheels, lights, rounded boxes [VEHICLE-ART piece]
+  assemble.js    blueprint → car scene graph                          [VEHICLE-ART piece]
+  tuner|muscle|suv|supercar.js   identity + geometry blueprint        [VEHICLE-ART piece]
+  handling.js    per-class physics table                              [HANDLING piece]
+  physics.js     the driving model                                    [HANDLING piece]
+  nitrous.js     NITRO table + Nitrous state machine + NitrousJet FX  [NITROUS piece]
+  audio_tuning.js per-class engine voicing                            [AUDIO piece]
+  index.js       merges the four sources into one spec — do not edit lightly
+
+src/cities/
+  track.js       spline, road ribbon, curbs, branches, road textures  [CITY-KIT piece]
+  kit.js         buildings, skyline, lamps, palms, barriers, gates,
+                 ramps, boost pads, billboards, buildCity()           [CITY-KIT piece]
+  losangeles.js  lasvegas.js  miami.js  newyork.js                    [one CITY piece each]
+
+src/fx/
+  particles.js   pooled rotating-sprite particle system + skid ribbons [FX piece]
+  effects.js     FX director: smoke, sparks, nitro trail, crash, shake [FX piece]
+
+src/ui/
+  hud.js         race HUD                                             [HUD piece]
+  menu.js        garage / car select                                  [MENU piece]
+
+src/race/race.js AI opponents + race director                         [RACE piece]
+src/main.js      game shell, camera, collisions, window.__GAME harness API
+```
+
+## File ownership — the rule that keeps parallel work safe
+
+**Edit only the files listed for your piece.** If you need a change in someone else's file, say so
+in your report instead of making it. The one exception: `src/main.js` wiring changes that your piece
+genuinely requires are allowed, but keep them minimal and surgical.
+
+Per-class tuning lives in four *separate* tables so four builders never collide:
+
+| What | Where | Owner |
+|---|---|---|
+| identity, colours, geometry blueprint | `tuner.js` / `muscle.js` / `suv.js` / `supercar.js` | vehicle-art |
+| mass, grip, top speed, drift feel | `handling.js` | handling |
+| nitrous thrust/ramp/duration/colour | `nitrous.js` → `NITRO` | nitrous |
+| cylinders, redline, engine character | `audio_tuning.js` | audio |
+
+`vehicles/index.js` merges them into one spec at runtime. **Never move these numbers back into the
+car files.**
+
+## Key contracts
+
+**A built car** (`assemble.js`) returns a `THREE.Group` whose `userData` is read by physics, camera,
+FX and race code:
+
+```js
+{ spec, blueprint, wheels:[FL,FR,RL,RR], steerWheels:[FL,FR], body, 
+  lights:{head,tail,brake,reverse}, exhausts:[Object3D], dims, paintMaterial }
+```
+
+**A built city** (`cities/kit.js buildCity`) returns:
+
+```js
+{ group, track, fog, sun, envMap, look, name, spawn:{pos,yaw,u}, boostPads, update(t,camera) }
+```
+
+**Track**: `track.at(u)` → `{pos,tan,right}`; `track.point(u,lateral)`; `track.nearest(worldPos)` →
+`{u,lateral,dist}` where `|lateral| > 1` is off the road; `track.spaced(spacing,{side,offset})` is a
+generator for evenly placing props; `track.curvature(u)` is signed.
+
+**Harness API** (`window.__GAME`): `load({city,car,color})`, `step(n,input)`, `scenario(name,opts)`,
+`telemetry()`, `render()`, `setSize(w,h)`, `renderAudio(kind,seconds,carId)`.
+
+## Conventions
+
+- +Z is forward, +X right, +Y up. Vehicle origin is the centre of the wheelbase on the ground.
+- Colour maps get `THREE.SRGBColorSpace`; normal/roughness/metalness maps get `NoColorSpace`.
+- Seed every generator from `RNG` so screenshots stay reproducible between runs.
+- Emissive materials + `UnrealBloomPass` is how anything glows. Bloom threshold is ~0.6–0.75, so an
+  emissive needs `emissiveIntensity` above ~1.5 to actually bloom.
+- Dispose GPU resources when you replace something — `disposeObject()` in `core/engine.js`.
