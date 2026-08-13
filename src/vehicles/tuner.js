@@ -1,8 +1,12 @@
 import { assembleCar } from './assemble.js';
 
 /**
- * KATANA GT-R — compact Japanese tuner. Silvia / Civic Type-R DNA: short overhangs,
- * low nose, big rear wing, aggressive body kit, small light wheels.
+ * KATANA GT-R — compact Japanese tuner. Silvia / Civic Type-R DNA: short overhangs, a stubby
+ * bonnet, a cab-forward greenhouse with heavy tumblehome, a chopped hatch tail, a wide body kit
+ * with flared arches and canards, and a huge pedestal GT wing.
+ *
+ * Silhouette test (§2.3): shortest car in the game, tallest cabin relative to its length, wing
+ * standing proud above the roofline.
  *
  * Handling: nimble, high grip, quick to rotate and quick to catch. Nitrous = short sharp bursts.
  */
@@ -11,61 +15,124 @@ export const spec = {
   name: 'KATANA',
   full: 'KATANA GT-R SPEC-V',
   klass: 'TUNER',
-  colors: ['#e8342b', '#1fb6d8', '#f5f2ea', '#7d2ce0', '#1b1d22', '#d8f218'],
+  colors: ['#18b6e8', '#e8342b', '#f5f2ea', '#7d2ce0', '#1b1d22', '#d8f218'],
   stats: { speed: 0.72, accel: 0.84, traction: 0.88, weight: 0.42 },
   // physics → handling.js · nitrous → nitrous.js NITRO · engine voicing → audio_tuning.js
   // (merged in by vehicles/index.js — do not add them back here)
 };
 
+const V = (z) => (z + 2.22) / 4.44;
+
 export const blueprint = {
   id: 'tuner', spec, colors: spec.colors,
-  dims: { length: 4.44, width: 1.80, height: 1.34, wheelbase: 2.62, track: 1.52, rideHeight: 0.11 },
-  paint: { metalness: 0.70, roughness: 0.20, clearcoat: 1.0, flake: 0.48 },
-  livery: { style: 'racing', stripe: '#101216' },
-  sections: [
-    { z: -2.22, w: 0.74, yBot: 0.28, ySill: 0.44, yBelt: 0.86, yRoof: 0.92, roofW: 0.66 },
-    { z: -2.00, w: 0.86, yBot: 0.23, ySill: 0.42, yBelt: 0.90, yRoof: 0.96, roofW: 0.78 },
-    { z: -1.62, w: 0.90, yBot: 0.19, ySill: 0.40, yBelt: 0.93, yRoof: 0.99, roofW: 0.82, flare: 1.03 },
-    { z: -1.20, w: 0.90, yBot: 0.17, ySill: 0.39, yBelt: 0.95, yRoof: 1.01, roofW: 0.82, flare: 1.02 },
-    { z: -0.70, w: 0.88, yBot: 0.17, ySill: 0.38, yBelt: 0.96, yRoof: 1.02, roofW: 0.81 },
-    { z: -0.10, w: 0.875, yBot: 0.17, ySill: 0.37, yBelt: 0.96, yRoof: 1.02, roofW: 0.80 },
-    { z: 0.55, w: 0.88, yBot: 0.18, ySill: 0.38, yBelt: 0.95, yRoof: 1.01, roofW: 0.81 },
-    { z: 1.10, w: 0.89, yBot: 0.19, ySill: 0.39, yBelt: 0.92, yRoof: 0.97, roofW: 0.82 },
-    { z: 1.58, w: 0.90, yBot: 0.20, ySill: 0.40, yBelt: 0.88, yRoof: 0.93, roofW: 0.82, flare: 1.03 },
-    { z: 1.96, w: 0.86, yBot: 0.22, ySill: 0.40, yBelt: 0.84, yRoof: 0.89, roofW: 0.78 },
-    { z: 2.22, w: 0.72, yBot: 0.26, ySill: 0.42, yBelt: 0.80, yRoof: 0.85, roofW: 0.64 },
+  // track is set so the outer sidewall sits ~5 mm inboard of the real flank at the arch station
+  // (the tub reaches 0.958 / 0.969 half-width at z = ±1.31) — a tucked-in tyre caps §6.1 at 60.
+  // staggered: 1.64 front / 1.70 rear, so the rear tyres stand ~9 cm outboard of the hatch tail and
+  // break the silhouette from behind (§6.1 round-2: no wheel was readable in any harness frame)
+  dims: { length: 4.44, width: 2.10, height: 1.36, wheelbase: 2.62, track: 1.660, trackRear: 1.744, rideHeight: 0.13 },
+  paint: { metalness: 0.26, roughness: 0.29, clearcoat: 1.0, clearcoatRoughness: 0.092, flake: 0.50, envIntensity: 0.74 },
+  livery: {
+    style: 'rally', stripe: '#f4f6f8', accent: '#15171c',
+    panels: {
+      doors: [V(0.80), V(-0.86)],
+      hood: [V(0.90), V(1.98)],
+      boot: [V(-2.10), V(-1.52)],
+      arches: [V(1.31), V(-1.31)],
+      fuelCap: [0.31, V(-1.72)],
+    },
+  },
+  glass: { tint: '#080f16', opacity: 0.72 },
+
+  body: [
+    { z: -2.22, w: 0.745, y0: 0.375, floor: 0.55, rocker: 0.95, ySill: 0.54, yBelt: 0.85, belt: 0.96, yDeck: 0.845, deck: 0.92, crown: 0.005 },
+    { z: -2.14, w: 0.845, y0: 0.325, floor: 0.58, rocker: 0.94, ySill: 0.48, yBelt: 0.89, belt: 0.95, yDeck: 0.885, deck: 0.90, crown: 0.008 },
+    { z: -1.94, w: 0.884, y0: 0.275, rocker: 0.91, ySill: 0.43, yBelt: 0.92, belt: 0.945, yDeck: 0.915, deck: 0.88, crown: 0.012, flare: 1.02 },
+    { z: -1.58, w: 0.905, y0: 0.245, rocker: 0.90, ySill: 0.415, yBelt: 0.935, belt: 0.94, yDeck: 0.925, deck: 0.86, crown: 0.012, flare: 1.04 },
+    { z: -1.52, w: 0.906, y0: 0.245, rocker: 0.90, ySill: 0.415, yBelt: 0.935, belt: 0.94, yDeck: 0.925, deck: 0.86, crown: 0.012, flare: 1.045 },
+    { z: -1.46, w: 0.908, y0: 0.240, rocker: 0.895, ySill: 0.41, yBelt: 0.94, belt: 0.94, yDeck: 0.735, deck: 0.85, crown: 0.008, flare: 1.05 },
+    { z: -1.31, w: 0.914, y0: 0.235, rocker: 0.89, ySill: 0.405, yBelt: 0.945, belt: 0.938, yDeck: 0.735, deck: 0.85, crown: 0.008, flare: 1.062 },
+    { z: -1.05, w: 0.902, y0: 0.235, rocker: 0.885, ySill: 0.40, yBelt: 0.948, belt: 0.936, yDeck: 0.730, deck: 0.85, crown: 0.008, flare: 1.028 },
+    { z: -0.50, w: 0.888, y0: 0.230, rocker: 0.875, ySill: 0.395, yBelt: 0.950, belt: 0.935, yDeck: 0.720, deck: 0.85, crown: 0.008 },
+    { z: 0.20, w: 0.888, y0: 0.230, rocker: 0.875, ySill: 0.395, yBelt: 0.950, belt: 0.935, yDeck: 0.720, deck: 0.85, crown: 0.008 },
+    { z: 0.80, w: 0.892, y0: 0.235, rocker: 0.878, ySill: 0.40, yBelt: 0.948, belt: 0.936, yDeck: 0.730, deck: 0.85, crown: 0.008 },
+    { z: 0.88, w: 0.893, y0: 0.235, rocker: 0.878, ySill: 0.40, yBelt: 0.948, belt: 0.938, yDeck: 0.925, deck: 0.86, crown: 0.012 },
+    { z: 1.16, w: 0.898, y0: 0.237, rocker: 0.882, ySill: 0.405, yBelt: 0.945, belt: 0.938, yDeck: 0.920, deck: 0.86, crown: 0.014, flare: 1.026 },
+    { z: 1.31, w: 0.905, y0: 0.240, rocker: 0.885, ySill: 0.41, yBelt: 0.942, belt: 0.938, yDeck: 0.915, deck: 0.86, crown: 0.014, flare: 1.058 },
+    { z: 1.62, w: 0.900, y0: 0.250, rocker: 0.89, ySill: 0.42, yBelt: 0.935, belt: 0.94, yDeck: 0.905, deck: 0.86, crown: 0.014, flare: 1.032 },
+    { z: 1.92, w: 0.886, y0: 0.270, rocker: 0.90, ySill: 0.44, yBelt: 0.915, belt: 0.945, yDeck: 0.885, deck: 0.87, crown: 0.012 },
+    { z: 2.12, w: 0.855, y0: 0.305, rocker: 0.92, ySill: 0.47, yBelt: 0.885, belt: 0.955, yDeck: 0.865, deck: 0.90, crown: 0.008 },
+    { z: 2.22, w: 0.740, y0: 0.365, floor: 0.55, rocker: 0.95, ySill: 0.52, yBelt: 0.855, belt: 0.965, yDeck: 0.845, deck: 0.92, crown: 0.004 },
   ],
-  greenhouse: {
-    roofY: 1.34, beltY: 1.02, roofHalfWidth: 0.66, roofLength: 1.28, roofZ: -0.26,
-    seatZ: -0.14, interiorColor: 0x22242c, blackPillars: true,
-    pillars: [
-      { bot: [0.74, 1.00], top: [0.30, 1.34], x: 0.65, w: 0.08, d: 0.10 },
-      { bot: [-1.10, 0.99], top: [-0.82, 1.34], x: 0.65, w: 0.10, d: 0.13 },
+
+  cabin: {
+    stations: [
+      { z: 0.88, hw: 0.800, rw: 0.755, yBelt: 0.948, yRoof: 0.968 },
+      { z: 0.74, hw: 0.806, rw: 0.730, yBelt: 0.949, yRoof: 1.045 },
+      { z: 0.42, hw: 0.816, rw: 0.685, yBelt: 0.950, yRoof: 1.220 },
+      { z: 0.16, hw: 0.822, rw: 0.660, yBelt: 0.950, yRoof: 1.325 },
+      { z: -0.30, hw: 0.828, rw: 0.652, yBelt: 0.950, yRoof: 1.348 },
+      { z: -0.72, hw: 0.826, rw: 0.658, yBelt: 0.949, yRoof: 1.336 },
+      { z: -0.96, hw: 0.822, rw: 0.672, yBelt: 0.948, yRoof: 1.300 },
+      { z: -1.22, hw: 0.828, rw: 0.712, yBelt: 0.944, yRoof: 1.185 },
+      { z: -1.40, hw: 0.826, rw: 0.780, yBelt: 0.940, yRoof: 1.030 },
+      { z: -1.46, hw: 0.818, rw: 0.808, yBelt: 0.940, yRoof: 0.955 },
     ],
-    windshield: { w: 1.30, h: 0.68, y: 1.20, z: 0.54, rx: -0.66 },
-    backlight: { w: 1.26, h: 0.72, y: 1.18, z: -0.76, rx: 0.62 },
-    sideWindows: [{ x: 0.68, y: 1.19, z: -0.14, w: 1.18, h: 0.28 }],
+    roof: { z0: -1.18, z1: 0.14, a: 5, offset: 0.014 },
+    pillars: [
+      { z0: 0.18, z1: 0.88, a: 2, b: 5, mat: 'dark', steps: 5 },
+      { z0: -0.44, z1: -0.30, a: 2, b: 5, mat: 'dark', steps: 2 },
+      { z0: -1.14, z1: -1.46, a: 2, b: 5, mat: 'paint', steps: 5 },
+    ],
+    beltZ0: -1.18, beltZ1: 0.20, beltMat: 'dark',
+    interior: { seat: 0x1e2027, trim: 0x101217, accent: 0x18b6e8, floorY: 0.735, headY: 1.185, dashY: 0.935, wheelY: 0.975, shelfY: 0.95, seatZ: -0.20, dashZ: 0.80, dashW: 1.34, seatX: 0.33, shelfZ: 0.60, rollBar: true, rhd: true, clusterColor: '#ff4d3d' },
   },
+
   wheels: {
-    style: 'mesh', rimColor: '#b8bec8', caliperColor: '#e0b21c',
-    front: { radius: 0.325, width: 0.24, spokes: 6, tireProfile: 0.28 },
-    rear: { radius: 0.325, width: 0.27, spokes: 6, tireProfile: 0.28 },
+    // bronze 10-spoke mesh on low-profile street rubber — the JDM tuner signature
+    style: 'mesh', rimColor: '#b47a2c', caliperColor: '#e0b21c', lipColor: '#cfd4dc', tire: 'street',
+    capColor: '#18b6e8',
+    // 0.165 profile left a 58 mm sidewall: from ten metres the tyre vanished and the car appeared
+    // to be riding on bare bronze discs. 0.24 is a real 35-series performance sidewall.
+    front: { radius: 0.350, width: 0.275, spokes: 5, tireProfile: 0.240 },
+    rear: { radius: 0.360, width: 0.315, spokes: 5, tireProfile: 0.235 },
   },
-  archThickness: 0.04, blackArches: true,
+  // bolt-on over-fenders: satin black, standing 45 mm proud of the flank
+  archThickness: 0.046, archGap: 1.045, archFlare: 0.048, archSpan: 1.06, blackArches: true,
+
   lights: {
-    head: [{ x: 0.62, y: 0.76, z: 2.16, w: 0.42, h: 0.13, color: '#dfe9ff', intensity: 2.8 }],
-    tail: [{ x: 0.60, y: 0.82, z: -2.24, w: 0.40, h: 0.12, color: '#ff2a18', intensity: 2.6 }],
+    head: [{ x: 0.60, y: 0.755, z: 2.175, w: 0.44, h: 0.115, shape: 'strip', color: '#dfe9ff', intensity: 3.2 }],
+    tail: [
+      { x: 0.62, y: 0.815, z: -2.19, w: 0.40, h: 0.11, shape: 'strip', color: '#ff2a18', intensity: 2.6 },
+      { x: 0.34, y: 0.815, z: -2.20, w: 0.22, h: 0.075, shape: 'strip', color: '#ff2a18', intensity: 2.4, glow: 0.4 },
+    ],
+    reverse: [{ x: 0.16, y: 0.66, z: -2.21, w: 0.14, h: 0.07, color: '#fff2d8', intensity: 1.4, glow: 0.25 }],
   },
-  grille: { w: 1.02, h: 0.22, y: 0.62, z: 2.20, slats: 5 },
-  mirrors: { x: 0.80, y: 1.04, z: 0.44, painted: false },
-  exhaust: [{ x: 0, y: 0.30, z: -2.26, r: 0.085, mirror: false }],
-  trim: [
-    { w: 1.70, h: 0.10, d: 0.30, y: 0.28, z: 2.22, mat: 'dark', rx: 0.1 },  // splitter
-    { w: 1.64, h: 0.16, d: 0.26, y: 0.30, z: -2.26, mat: 'dark' },          // diffuser
-    { x: 0.92, w: 0.10, h: 0.11, d: 2.1, y: 0.36, z: 0, mat: 'dark', mirror: true }, // side skirt
+
+  grilles: [
+    { w: 1.02, h: 0.22, d: 0.14, y: 0.575, z: 2.185, slats: 5, mesh: true, frame: 'dark' },
+    { x: 0.58, w: 0.30, h: 0.13, d: 0.10, y: 0.395, z: 2.18, slats: 3, mesh: true, frame: 'dark', mirror: true },
   ],
-  wing: { type: 'pedestal', w: 1.52, chord: 0.30, x: 0.58, y: 1.28, z: -2.02, h: 0.30, painted: false },
-  extras: [{ type: 'scoop', w: 0.42, d: 0.36, y: 1.00, z: 1.30, painted: true }],
+  vents: [
+    { x: 0.40, y: 0.925, z: 1.40, w: 0.28, h: 0.16, fins: 3, angle: 0.6, rx: -1.5708 },
+    { x: 0.905, y: 0.62, z: 1.02, w: 0.24, h: 0.15, fins: 3, angle: 0.4, ry: 1.5708 },
+  ],
+  mirrors: { x: 0.82, y: 0.985, z: 0.60, painted: false },
+  handles: [{ x: 0.90, y: 0.875, z: -0.18 }],
+
+  trim: [
+    { w: 1.72, h: 0.09, d: 0.34, y: 0.268, z: 2.14, mat: 'carbon', rx: 0.09, r: 0.03 },     // front splitter
+    { x: 0.72, w: 0.30, h: 0.02, d: 0.22, y: 0.34, z: 2.02, mat: 'carbon', rz: 0.34, mirror: true, r: 0.008 }, // canards
+    { x: 0.912, w: 0.10, h: 0.11, d: 2.02, y: 0.360, z: -0.06, mat: 'carbon', mirror: true, r: 0.028 },  // side skirt
+    { w: 1.62, h: 0.10, d: 0.14, y: 0.60, z: 2.20, mat: 'dark', r: 0.03 },
+    { w: 1.50, h: 0.09, d: 0.14, y: 0.645, z: -2.215, mat: 'dark', r: 0.03 },
+    { w: 0.42, h: 0.19, d: 0.03, y: 0.735, z: -2.228, mat: 'dark', r: 0.014 },     // plate recess
+    { w: 0.36, h: 0.145, d: 0.03, y: 0.735, z: -2.238, mat: 'chrome', r: 0.010 },
+  ],
+  wing: { type: 'pedestal', w: 1.46, chord: 0.30, x: 0.52, y: 1.37, z: -2.00, h: 0.40, mat: 'carbon', postMat: 'chrome', aoa: -0.20 },
+  // narrow and lifted: the rear tyres are the widest thing back here, not the bodykit
+  diffuser: { w: 1.06, h: 0.22, d: 0.30, y: 0.345, z: -2.135, strakes: 4, rx: 0.30, mat: 'carbon' },
+  exhaust: [{ x: 0.0, y: 0.355, z: -2.24, r: 0.098, len: 0.24, mirror: false }],
+  extras: [{ type: 'scoop', w: 0.44, h: 0.10, d: 0.40, y: 0.955, z: 1.14, painted: true }],
 };
 
 export function build(opts) { return assembleCar(blueprint, opts); }

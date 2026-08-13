@@ -15,7 +15,11 @@ export async function boot({ headless = true, width = 1600, height = 900 } = {})
   const server = await createServer({
     root: ROOT,
     logLevel: 'error',
-    server: { port, strictPort: false, host: '127.0.0.1' },
+    // HMR and file watching OFF. Several builder agents save files into this tree while a capture
+    // or a functest is running; an HMR reload mid-run destroys the page's execution context, which
+    // is exactly the intermittent "Execution context was destroyed" / "window.__GAME is undefined"
+    // failure that has been killing ~1 in 3 sequential runs. Headless runs never want HMR.
+    server: { port, strictPort: false, host: '127.0.0.1', hmr: false, watch: null },
     optimizeDeps: { include: ['three'] },
   });
   await server.listen();
