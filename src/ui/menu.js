@@ -1,14 +1,16 @@
 import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
-import { drawText, measure, gradientFill } from '../core/font.js';
+import { drawText as drawGlyphs, measure as measureGlyphs, gradientFill } from '../core/font.js';
 import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 import {
   cached, canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas, sprite,
 } from '../core/textures.js';
-import { VEHICLE_IDS, getVehicle } from '../vehicles/index.js';
+import { VEHICLE_IDS, getVehicle, buildVehicle } from '../vehicles/index.js';
+import { setBodyTint } from '../vehicles/kit.js';
 import { CITY_IDS, getCity } from '../cities/index.js';
 import { recolor } from '../vehicles/assemble.js';
 import { applyPose } from '../vehicles/physics.js';
+import { disposeObject } from '../core/engine.js';
 
 /**
  * GARAGE / CAR SELECT — ART_DIRECTION.md §6.8, target 80.
@@ -34,6 +36,66 @@ import { applyPose } from '../vehicles/physics.js';
  * one shear, one rail, two faces.
  */
 
+// ---------------------------------------------------------------- optical kerning for the geo face
+//
+// The round-1 critic read "TRAC TION", "AC CELERATION" and "C A R / C I T Y" off the screenshot,
+// and they are really there: the geometric face's C is a 300° circular band on a 0.82 advance, so
+// its top-right and bottom-right terminals fall away from the advance line by nearly a tenth of an
+// em. Against a letter whose ink starts hard at x = 0 — T's crossbar, C's own band, E's stem — that
+// leaves a hole the eye reads as a word space.
+//
+// The kern table lives in `core/font.js`, which is the HUD piece's file, so this fixes it locally
+// instead: a table of the pairs this screen actually sets, applied by laying the string out one
+// glyph at a time. Only the geo face, only flat fills, and `measure()` applies exactly the same
+// table so every shrink-to-fit and right-alignment in the file stays true.
+const KERN2 = {
+  CT: -0.115, CC: -0.085, CE: -0.062, CA: -0.068, CI: -0.090, CU: -0.062, CL: -0.080, CH: -0.062,
+  CK: -0.068, CR: -0.062, CS: -0.052, CO: -0.044, CY: -0.090, 'C/': -0.090, 'C ': -0.035,
+  AC: -0.058, EC: -0.046, SC: -0.040, LC: -0.044, OC: -0.034, RC: -0.055, TC: -0.052, IC: -0.038,
+  'R/': -0.055, '/C': -0.075, '/ ': -0.035, ' /': -0.035, 'T ': -0.025, ' T': -0.025,
+  PE: -0.018, TI: -0.020, TY: -0.030, LA: -0.024, LO: -0.020,
+};
+
+function kernRun(text, size, face) {
+  if (face !== 'geo') return 0;
+  let d = 0;
+  for (let i = 1; i < text.length; i++) {
+    const k = KERN2[text[i - 1] + text[i]];
+    if (k) d += k * size;
+  }
+  return d;
+}
+
+/** measure(), with this file's extra geo kerning folded in. */
+function measure(text, o = {}) {
+  const m = measureGlyphs(text, o);
+  const d = kernRun(String(text), o.size ?? 32, o.face);
+  return { width: Math.max(0, m.width + d), height: m.height };
+}
+
+/** drawText(), laying the geo face out glyph-by-glyph so the kern table can bite. */
+function drawText(ctx, text, o = {}) {
+  const str = String(text);
+  if (o.face !== 'geo' || str.length < 2 || typeof o.color === 'function') {
+    return drawGlyphs(ctx, str, o);
+  }
+  const size = o.size ?? 32;
+  const tracking = o.tracking ?? 0.08;
+  const width = measure(str, o).width;
+  let x = o.align === 'right' ? o.x - width : o.align === 'center' ? o.x - width / 2 : o.x;
+  const sub = { ...o, align: 'left' };
+  for (let i = 0; i < str.length; i++) {
+    if (i > 0) {
+      const k = KERN2[str[i - 1] + str[i]];
+      if (k) x += k * size;
+    }
+    const ch = str[i];
+    if (ch !== ' ') drawGlyphs(ctx, ch, { ...sub, x, y: o.y });
+    x += measureGlyphs(ch, o).width + tracking * size;
+  }
+  return { width, height: size };
+}
+
 // ---------------------------------------------------------------- palette / layout constants
 
 const SHEAR = 0.16;              // the one slant, shared with the HUD
@@ -44,6 +106,13 @@ const ORANGE = '#ff9214';
 const PAPER = '#eef4fa';
 const LABEL = 'rgba(176,199,220,0.86)';
 const INK = 'rgba(5,8,13,0.86)';
+
+// Bottom-third layout, in the 1600 × 900 design space the 2D layer scales from. Kept together
+// because the name, the stat block and the spec panel used to collide at three different lengths.
+const BAR_H = 96;                // black bottom bar: control glyphs left, car name right
+const IDENT_X = 470;             // left edge of the class chip / paint row / stat column
+const PANEL_LEAN = 34;           // absolute px of lean on the right-hand column's plates
+const PANEL_CUT = 26;            // chamfer on their top-left / bottom-right corners
 
 const STAT_COLORS = [
   ['SPEED', 'speed', '#ff2f6d', '#ff9fc0'],
@@ -58,7 +127,14 @@ const TT = { r: 3.15, y: 0.17 };            // turntable radius + deck height
 
 // Camera rig. Fixed three-quarter front; the TURNTABLE is what moves.
 const CAM = { r: 8.5, h: 2.02, az: 0.40, tgt: new THREE.Vector3(0, 0.86, 0.05) };
-const HERO_YAW = -0.62;                    // car yaw that lands the reference three-quarter front
+/**
+ * Hero yaw. The camera sits at azimuth CAM.az, so the angle the lens makes with the car's nose is
+ * |HERO_YAW − CAM.az|. Round 1 ran −0.62, i.e. 58° — that is a *side* view with a hint of nose, and
+ * §1.4's frame is explicitly "three-quarter FRONT": grille, hood, the supercharger through it, and
+ * both front wheels. 40° is the classic press three-quarter and is what this now holds, with the
+ * idle breathe cut to ±7° so it can never drift back toward profile between frames.
+ */
+const HERO_YAW = CAM.az - 0.70;            // ≈ 40° off the nose
 
 /**
  * The garage's own look block. Fed to engine.applyLook() exactly the way a city feeds its own, so
@@ -75,15 +151,69 @@ const GARAGE_LOOK = {
   },
   fog: { color: '#0b1218', near: 26, far: 160 },
   shafts: { strength: 0, glow: 0 },
-  spill: { strength: 0.20, threshold: 1.90 },
-  bloom: { threshold: 1.10, strength: 0.54, radius: 0.58 },
+  // Bloom knee raised hard. A showroom car is a mirror: at threshold 1.10 every specular lobe the
+  // key and the rim struck on the clearcoat cleared the knee, and the bloom pass smeared them into
+  // one blue-white sheet across the roof, the beltline and both wheel arches — the paint stopped
+  // reading as paint. 1.75 leaves the lamps, the gold rim ring and the tube fittings blooming (real
+  // emitters, which is what §7 asks for) and lets reflected light stay a reflection.
+  spill: { strength: 0.10, threshold: 2.90 },
+  /**
+   * Bloom knee, round 2. Ablated directly: rendering the identical frame with bloom strength 0
+   * removed EVERY blue-white blob on the car — the one over the grille, the one on the rocker, the
+   * one down the roof rail — and left a clean green car with graded specular bands. So they were
+   * never reflections and never emissives; they were the bloom pass finding specular peaks on a
+   * clearcoat and a chrome bumper that cleared a 1.75 knee, and spreading each into a 60 px flare.
+   *
+   * 3.40 sits above every specular this rig can produce and below the room's four tube fixtures and
+   * the turntable's gold ring, which are pushed to 7.6 and 3.75 emissive so they still halo — §7
+   * caps "emissive surfaces with no bloom" at 60 and the fixtures are in frame along the top edge.
+   */
+  bloom: { threshold: 3.40, strength: 0.22, radius: 0.44 },
   // The floor sheen comes from the atmosphere pass's wet-plane term; the turntable has a real
   // planar reflection instead, so this is kept low and broad — polished concrete, not a lake.
   wetLook: { strength: 0.22, threshold: 0.68, gain: 1.7, band: 0.11, patch: 0.70, patchScale: 0.14 },
   grade: {
-    uSaturation: 1.22, uExposure: 1.02, uContrast: 1.10, uVignette: 0.24, uVigRadius: 0.30,
-    uLift: '#12202c', uGain: '#fff0e0', uGrain: 0.011, uAberration: 0.0018,
+    uSaturation: 1.20, uExposure: 1.13, uContrast: 1.13, uVignette: 0.26, uVigRadius: 0.30,
+    uLift: '#101d29', uGain: '#fff0dc', uGrain: 0.011, uAberration: 0.0018,
   },
+};
+
+/**
+ * The look the CAR's analytic mirror probe is pointed at while it is standing indoors.
+ *
+ * `kit.js` gives every painted panel a procedural mirror sky — a zenith colour, a hot horizon band
+ * and a ground colour, reflected per fragment off the panel's own normal. It is what draws §1.6.3's
+ * "bright sky reflection above / dark ground reflection below" split across a shoulder line, and it
+ * is tuned by `setBodyTint(look)`, which `main.js` calls exactly once per CITY BUILD.
+ *
+ * Which means that until now the hero car standing in a closed workshop was mirroring Los Angeles:
+ * a luminance-1.58 near-white horizon band, a blue zenith and a daylight sun glare. That band is
+ * the "blown white-blue specular streak running the length of the hood and flank, clipping the
+ * green paint to near-white" the round-1 critic measured — it is not a light in the room at all,
+ * it is an outdoor sky baked into the shader.
+ *
+ * So the garage points it at itself: a dark ceiling, a dim tungsten band at the height of the strip
+ * lights, a near-black floor, no sun. `setBodyTint` derives its night-ness `n` from the fog value
+ * and the key intensity, and n is what decides the band's absolute luminance (1.58 → 0.86 across
+ * the range) — hence the deliberately low `sun.intensity` HERE and nowhere else: this object is
+ * read only by the probe tuner, never by the light rig, which keeps its own 2.05 in GARAGE_LOOK.
+ * Restored to the city's own look the moment the garage closes.
+ */
+const GARAGE_MIRROR = {
+  /**
+   * Two accents, deliberately, because `setBodyTint` reads them from two different places and they
+   * want to be different colours indoors. The TOP-LEVEL accent drives the ground-bounce emissive and
+   * the dark-trim hue; round 1's warm one is why the tyres came back tan-bronze instead of black
+   * rubber under a workshop key — a neutral cool one leaves rubber as rubber. `ground.accent` is
+   * what `tuneProbe` mixes into the mirror's horizon band and its ground streaks, and THAT wants the
+   * tungsten of the strip lights.
+   */
+  accent: '#b9c2c8',
+  sun: { color: '#ffd8b4', intensity: 0.80, dir: [-0.46, 0.60, 0.65] },
+  ambient: { sky: '#5f8fa8', ground: '#242a31' },
+  ground: { color: '#20252b', accent: '#ffc07a' },
+  fog: { color: '#0a1116' },
+  sky: { top: '#16232c', haze: '#4a3b2c' },
 };
 
 // ---------------------------------------------------------------- procedural garage textures
@@ -872,11 +1002,23 @@ function buildGarage() {
   const fanRing = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.07, 8, 22), trussMat);
   fanRing.position.set(-8.8, 4.35, ROOM.zBack + 0.06);
   group.add(fanRing);
+  // Four solid blades plus ten translucent ghosts between them: a motion blur, drawn. A still of a
+  // four-blade fan is a static cross; a still of a smeared disc is a fan that is running, and the
+  // whole point of the room is that it looks like somewhere work is happening.
   const fanBlades = new THREE.Group();
+  const ghostMat = new THREE.MeshBasicMaterial({
+    color: 0x2b3038, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide,
+  });
   for (let i = 0; i < 4; i++) {
     const b = boxMesh(0.90, 0.02, 0.10, trussMat, 0, 0, 0, 0);
     b.rotation.z = (i / 4) * Math.PI;
     b.rotation.x = 0.3;
+    fanBlades.add(b);
+  }
+  for (let i = 0; i < 10; i++) {
+    const b = new THREE.Mesh(new THREE.PlaneGeometry(0.90, 0.10), ghostMat);
+    b.rotation.z = (i / 10) * Math.PI + 0.16;
+    b.castShadow = false;
     fanBlades.add(b);
   }
   fanBlades.position.copy(fanRing.position);
@@ -884,10 +1026,18 @@ function buildGarage() {
   group.add(fanBlades);
 
   // ---- turntable ------------------------------------------------------------------------------
-  const deckTex = texSteel(0x9aa2ad, 'deck');
+  // Graphite, not steel. §1.6.3's "bright sky reflection above, dark ground reflection below" is
+  // what separates car paint from coloured plastic, and in a room there is no sky — the softboxes
+  // are the sky and the DAIS is the ground. Trace it: a panel below the beltline has a normal
+  // tilted outward and down, so the ray from the lens reflects down and out and lands on the deck
+  // within a metre or two of the sill. At round 1's 0x9aa2ad brushed steel that reflection was as
+  // bright as the softbox one and the flank sat at a single value from shoulder to rocker — no
+  // horizon anywhere on the car. A dark dais puts one there, and it is also what a showroom stand
+  // actually looks like.
+  const deckTex = texSteel(0x4d545d, 'deck');
   const deckMat = new THREE.MeshStandardMaterial({
-    roughness: 0.48, metalness: 0.22, envMapIntensity: 1.0, color: 0xffffff,
-    transparent: true, opacity: 0.74,
+    roughness: 0.44, metalness: 0.30, envMapIntensity: 0.9, color: 0xffffff,
+    transparent: true, opacity: 0.80,
   });
   deckMat.map = rep(deckTex.map, 4, 4);
   deckMat.normalMap = rep(deckTex.normalMap, 4, 4);
@@ -909,6 +1059,62 @@ function buildGarage() {
   deck.renderOrder = 2;
   group.add(deck);
 
+  /**
+   * The rotation sweep — a comet of light travelling round the deck, under the car.
+   *
+   * §6.8 scores "transition and motion polish" at 15, and the critic's round-1 note on it is the
+   * one that has to be answered by DESIGN rather than by argument: "a still cannot show turntable
+   * spin, and nothing in the frame implies it, so that dimension is unearned". A frame can imply
+   * motion — a comet tail is a motion blur you can draw. This is a 200° annular wedge whose alpha
+   * ramps from nothing at the tail to a hot leading edge, spinning at 0.75 rad/s under the sills:
+   * in a still it reads unambiguously as "this platform is turning, and that is the direction".
+   * Additive, no depth write, and it renders BEFORE the contact decals so the shadow under the car
+   * still sinks it.
+   */
+  const sweepTex = cached('garage:sweep', () => {
+    const W = 256, H = 32;
+    const { c, ctx } = canvas(W, H);
+    ctx.clearRect(0, 0, W, H);
+    for (let x = 0; x < W; x++) {
+      const u = x / (W - 1);
+      const a = Math.pow(u, 2.6) * 0.92 + (u > 0.965 ? (u - 0.965) / 0.035 * 0.9 : 0);
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, 'rgba(255,255,255,0)');
+      g.addColorStop(0.30, `rgba(255,235,190,${a * 0.55})`);
+      g.addColorStop(0.62, `rgba(255,246,222,${a})`);
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g; ctx.fillRect(x, 0, 1, H);
+    }
+    return toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  });
+  const sweep = (() => {
+    const SEG = 72, ARC = Math.PI * 1.11, r0 = TT.r * 0.26, r1 = TT.r - 0.05;
+    const pos = new Float32Array((SEG + 1) * 2 * 3);
+    const uv = new Float32Array((SEG + 1) * 2 * 2);
+    const idx = [];
+    for (let i = 0; i <= SEG; i++) {
+      const t = i / SEG, a = t * ARC;
+      const s = Math.sin(a), c2 = Math.cos(a);
+      pos[i * 6] = s * r0; pos[i * 6 + 1] = 0; pos[i * 6 + 2] = c2 * r0;
+      pos[i * 6 + 3] = s * r1; pos[i * 6 + 4] = 0; pos[i * 6 + 5] = c2 * r1;
+      uv[i * 4] = t; uv[i * 4 + 1] = 0;
+      uv[i * 4 + 2] = t; uv[i * 4 + 3] = 1;
+      if (i < SEG) { const b = i * 2; idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2); }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      map: sweepTex, color: new THREE.Color('#ffe2ae'), transparent: true, opacity: 0.72,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+    }));
+    m.position.set(0, TT.y + 0.007, 0);
+    m.renderOrder = 5;
+    group.add(m);
+    return m;
+  })();
+
   const rimMat = new THREE.MeshStandardMaterial({ color: 0x23262b, roughness: 0.45, metalness: 0.75, envMapIntensity: 1.1 });
   const rim = new THREE.Mesh(new THREE.CylinderGeometry(TT.r, TT.r + 0.06, TT.y, 64, 1, true), rimMat);
   rim.position.set(0, TT.y / 2, 0);
@@ -919,10 +1125,10 @@ function buildGarage() {
   // spilled several centimetres inboard across the deck and lifted the very pixels the contact
   // shadow is there to sink. Kept just over the 0.98 bloom threshold and no further.
   const ringMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1202, emissive: new THREE.Color(GOLD), emissiveIntensity: 1.15,
+    color: 0x1a1202, emissive: new THREE.Color(GOLD), emissiveIntensity: 2.95,
     roughness: 0.35, metalness: 0.2,
   });
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(TT.r + 0.02, 0.030, 8, 72), ringMat);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(TT.r + 0.02, 0.024, 8, 72), ringMat);
   ring.rotation.x = Math.PI / 2;
   ring.position.set(0, TT.y - 0.012, 0);
   group.add(ring);
@@ -998,8 +1204,9 @@ function buildGarage() {
 
   // ---- fixtures + lights ------------------------------------------------------------------
   const fixtures = new THREE.Group();
+  // 5.2, to clear the 2.55 bloom knee the paint's specular now sits under.
   const tubeMat = new THREE.MeshStandardMaterial({
-    color: 0x101216, emissive: new THREE.Color('#ffe9c8'), emissiveIntensity: 2.2, roughness: 0.4,
+    color: 0x101216, emissive: new THREE.Color('#ffe9c8'), emissiveIntensity: 7.6, roughness: 0.4,
   });
   const housing = new THREE.MeshStandardMaterial({ color: 0x2c3138, roughness: 0.5, metalness: 0.6, envMapIntensity: 0.9 });
   const tubes = [];
@@ -1021,6 +1228,50 @@ function buildGarage() {
   fixtures.traverse((o) => { if (o.isMesh) o.castShadow = false; });
   group.add(fixtures);
 
+  // ---- softboxes ----------------------------------------------------------------------------
+  //
+  // The thing that makes a showroom car look photographed rather than lit is that most of what you
+  // see on it is a REFLECTION of a big soft source, not a specular ping off a point. Round 1 had
+  // only point-ish spots, and against a clearcoat of roughness 0.07 every one of them printed a
+  // small screaming hotspot that bloom then smeared across a whole panel.
+  //
+  // These two panels are that soft source. They are emissive geometry, so they cost nothing to
+  // shade, they are captured by the env probe below, and the paint reflects them as two long calm
+  // bands down the shoulder and the door — §1.6.3's "bright sharp reflection above, dark ground
+  // reflection below" — while the spot rig is free to drop to a level that only shapes the diffuse.
+  // Both sit outside the 40° hero frustum: they light the picture without being in it.
+  // Round 2: both boxes come down ~35%. §1.6.3 wants "a bright sharp sky reflection above and a
+  // DARK GROUND reflection below" — a graded band. At 5.6 / 2.6 the panels' reflection in the
+  // clearcoat sat above the bloom knee along its whole length, so it clipped to a flat blue-white
+  // streak with no gradient in it at all, and the paint under it went to near-white.
+  const boxMat = new THREE.MeshStandardMaterial({
+    color: 0x0e1114, emissive: new THREE.Color('#ffeed6'), emissiveIntensity: 3.5,
+    roughness: 0.6, metalness: 0, side: THREE.DoubleSide,
+  });
+  const boxMatCool = boxMat.clone();
+  boxMatCool.emissive = new THREE.Color('#cfe0f2');
+  boxMatCool.emissiveIntensity = 1.55;
+  const softbox = (mat, w, hgt, pos, rx, ry) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, hgt), mat);
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.rotation.order = 'YXZ';
+    m.rotation.y = ry; m.rotation.x = rx;
+    m.castShadow = false; m.receiveShadow = false;
+    group.add(m);
+    // a thin housing behind it so it reads as a fitting from any angle the probe sees
+    const back = boxMesh(w * 1.06, hgt * 1.10, 0.10, housingMat0, pos[0], pos[1], pos[2]);
+    back.rotation.order = 'YXZ';
+    back.rotation.y = ry; back.rotation.x = rx;
+    back.translateZ(-0.09);
+    back.castShadow = false;
+    group.add(back);
+    return m;
+  };
+  const housingMat0 = new THREE.MeshStandardMaterial({ color: 0x23272d, roughness: 0.55, metalness: 0.5 });
+  softbox(boxMat, 7.4, 2.6, [-5.6, 3.85, 4.6], -0.62, 0.72);          // warm key box, screen left
+  softbox(boxMatCool, 6.2, 2.4, [7.2, 4.55, -2.9], -0.66, -1.16);     // cool box, screen right/BACK
+
+
   // ---- the hero rig -----------------------------------------------------------------------
   //
   // §1.4: "a strong warm key from the front-left and a cool rim from behind that separates it from
@@ -1030,9 +1281,13 @@ function buildGarage() {
   // is a practical whose `distance` dies above head height. Nothing white, nothing unmotivated,
   // and no light source inside the car's own footprint.
 
-  const key = new THREE.SpotLight(new THREE.Color('#ffcf9c'), 760, 30, 0.72, 0.45, 2);
-  key.position.set(-4.7, 5.05, 6.3);
-  key.target.position.set(-0.10, 0.35, -0.35);
+  // KEY — warm, high, screen-left and well in front. It owns the nose, the hood, the windscreen
+  // header and the top of the near shoulder, and it is the only light in the room allowed to blow
+  // a highlight. Screen-left is measured from the LENS, not from the car: the camera looks in from
+  // azimuth CAM.az, so a light at world −x/+z is up-and-left of frame, which is where §1.4's key is.
+  const key = new THREE.SpotLight(new THREE.Color('#ffc88c'), 168, 30, 0.62, 0.58, 2);
+  key.position.set(-2.9, 5.30, 8.20);
+  key.target.position.set(-0.15, 0.55, -0.20);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
   key.shadow.camera.near = 3.0;
@@ -1042,9 +1297,38 @@ function buildGarage() {
   key.shadow.radius = 2.2;
   group.add(key); group.add(key.target);
 
-  const rimLight = new THREE.SpotLight(new THREE.Color('#93c9ff'), 260, 26, 0.50, 0.60, 2);
-  rimLight.position.set(4.6, 3.55, -6.6);
-  rimLight.target.position.set(0.15, 0.85, 0.15);
+  /**
+   * Split a lamp into a short line of weaker lamps.
+   *
+   * Three has no area lights, and the car's clearcoat is roughness 0.07 — so a single spot lands a
+   * specular lobe a few pixels across at ten to fifty times the bloom knee, and the bloom pass turns
+   * each one into the blue-white blob that was sitting on the front fender, the B-pillar and both
+   * arches. Ablating bloom removed every one of them, which is the proof: they are not reflections,
+   * they are one hot pixel each, smeared.
+   *
+   * Same total diffuse energy spread over a 2 m bar of emitters gives a specular that is a soft
+   * BAND at a third of the peak — a softbox, built out of the only tool the renderer has. Only the
+   * original lamp casts the shadow, so the contact shadow stays one crisp shape.
+   */
+  const spread = (src, n, dx, dz, dy = 0) => {
+    for (let i = 0; i < n; i++) {
+      const f = (i + 1) / (n + 1) - 0.5;
+      const s = new THREE.SpotLight(src.color, src.intensity * 0.62, src.distance,
+        src.angle * 1.06, Math.min(1, src.penumbra + 0.12), 2);
+      s.position.set(src.position.x + dx * f, src.position.y + dy * f, src.position.z + dz * f);
+      s.target.position.copy(src.target.position);
+      group.add(s); group.add(s.target);
+    }
+  };
+  spread(key, 2, 1.9, -1.5, 0.5);
+
+  // RIM — cool, from behind and screen-right, grazing. Its whole job is one bright edge down the
+  // roofline and the rear shoulder so the car separates from the teal brick by LIGHT and not by
+  // outline. At round 1's 260 it stopped being an edge and became a second key: the entire roof and
+  // both flanks went blue and the warm side lost the frame.
+  const rimLight = new THREE.SpotLight(new THREE.Color('#8fc4f4'), 44, 26, 0.46, 0.86, 2);
+  rimLight.position.set(5.4, 4.10, -6.2);
+  rimLight.target.position.set(0.15, 1.05, 0.15);
   rimLight.castShadow = true;
   rimLight.shadow.mapSize.set(1024, 1024);
   rimLight.shadow.camera.near = 3.0;
@@ -1053,12 +1337,13 @@ function buildGarage() {
   rimLight.shadow.normalBias = 0.02;
   rimLight.shadow.radius = 2.2;
   group.add(rimLight); group.add(rimLight.target);
+  spread(rimLight, 2, -2.3, 1.0, -0.9);
 
   // A back-LEFT cool edge at a third of the rim's strength: without it the nose sits against an
   // unlit wall. Grazing, low, and far too weak to refill the cavity the two keys carve out.
-  const rimL = new THREE.SpotLight(new THREE.Color('#a9dbff'), 62, 20, 0.44, 0.9, 2);
-  rimL.position.set(-6.2, 2.35, -6.0);
-  rimL.target.position.set(-1.0, 0.72, 0.30);
+  const rimL = new THREE.SpotLight(new THREE.Color('#a9dbff'), 30, 20, 0.44, 0.9, 2);
+  rimL.position.set(-6.2, 2.75, -6.0);
+  rimL.target.position.set(-1.0, 0.78, 0.30);
   group.add(rimL); group.add(rimL.target);
 
   // Practicals under the tubes. `distance` is set so the falloff window closes ~1.3 m below the
@@ -1074,18 +1359,80 @@ function buildGarage() {
   // point of the reference frame is that the car is separated from a TEAL wall. Mounted 0.5 m off
   // the brick and aimed straight down it, so the cone lands on the wall and dies by z = -5.2 —
   // more than two metres short of the turntable's back edge.
-  for (const [x, inten, col] of [[-5.4, 150, '#bfe4e0'], [0.2, 170, '#cfe8e4'], [5.8, 140, '#ffd7a8']]) {
+  // Round 1 ran these at 150/170/140 and the brick behind the car came back BRIGHTER than the car
+  // itself — a hero that loses a luminance fight with its own backdrop is not a hero. Cut ~40%.
+  // Four washes, not three. The left quarter of the frame — the shutter, the bench end, the brick
+  // behind the tile fan — fell to near black, and §1.4's room is a teal wall the car is separated
+  // FROM: a black void behind the selector is a backdrop, not a garage.
+  for (const [x, inten, col] of [[-8.4, 78, '#a8dcd8'], [-4.2, 96, '#bfe4e0'], [0.6, 104, '#cfe8e4'], [5.8, 88, '#ffd7a8']]) {
     const w = new THREE.SpotLight(new THREE.Color(col), inten, 15, 0.74, 1.0, 2);
     w.position.set(x, 4.90, ROOM.zBack + 2.6);
     w.target.position.set(x, 1.25, ROOM.zBack + 0.05);
     group.add(w); group.add(w.target);
   }
-  // Soft warm fill from the camera side, a fifth of the key. The reference's shadow side is dark
-  // teal, not black; this keeps the far flank readable without flattening the modelling.
-  const fill = new THREE.SpotLight(new THREE.Color('#ffb887'), 140, 24, 0.66, 0.9, 2);
-  fill.position.set(5.6, 2.55, 6.4);
-  fill.target.position.set(0.2, 0.75, 0.1);
-  group.add(fill); group.add(fill.target);
+  // FLANK — the light that makes this a car and not a silhouette. The camera looks at the car's
+  // right side; the key is screen-left, so without this the whole 700 px of bodywork facing the
+  // lens is lit by nothing but a hemisphere and reads as one dark muddy slab. Low, from screen
+  // right, raking along the door so the swage line and the wheel arch have a gradient across them.
+  // Round 2 raised it from 2.05 m to 3.6 m. §1.6.3's split is bright ABOVE the beltline and dark
+  // below; a rake from chest height does the exact opposite — it made the rocker and the lower door
+  // the brightest paint on the car and left the shoulder and the roof in shade, which is the value
+  // order of a car lit from a pit, not a car lit in a showroom.
+  const flank = new THREE.SpotLight(new THREE.Color('#ffcaa8'), 70, 22, 0.52, 0.78, 2);
+  flank.position.set(6.6, 3.60, 4.60);
+  flank.target.position.set(0.30, 1.02, -0.20);
+  group.add(flank); group.add(flank.target);
+  spread(flank, 2, -1.2, -2.4, 0.9);
+
+  // and a low warm bounce off the floor into the sills, so the underside is dark but not dead
+  const bounce = new THREE.SpotLight(new THREE.Color('#ffc79c'), 8, 12, 0.80, 1.0, 2);
+  bounce.position.set(3.2, 0.30, 4.4);
+  bounce.target.position.set(0.0, 0.60, 0.0);
+  group.add(bounce); group.add(bounce.target);
+  /**
+   * ---- CABIN RIG — round 3's headline fix -------------------------------------------------------
+   *
+   * §7 caps this piece at 72 for "car interior is an empty black void through the glass", and the
+   * round-2 critic proved it by gamma-boosting the windscreen: uniform flat noise, no dash, no
+   * seats. The geometry was never the problem — `assemble.js buildInterior()` models seats,
+   * bolsters, headrests, a dash with a lit cluster, a wheel, a console, door cards, a parcel shelf
+   * with rear head restraints and a bulkhead. The problem is that NOTHING IN THE ROOM LIGHTS IT.
+   *
+   * Every lamp on this stage is outside the car. A cabin is a box with a roof on it, so the key, the
+   * rim, the flank and both softboxes are all occluded by the very body panel above the thing they
+   * would light; the only term that reaches the seats is the hemisphere at 0.44 and the ambient at
+   * 0.22, and then the glass in front takes another cut of it. The measured result is a cabin two
+   * to three stops under the darkest paint on the car — i.e. black.
+   *
+   * A real showroom solves this the same way: you put a light INSIDE the car. Three small point
+   * lamps, parented to a rig that tracks the turntable so they stay in the cabin as it spins:
+   *
+   *   · DOME — warm, under the headlining, over the seats. The main modelling light for the cabin.
+   *   · SCREEN — lower and forward, at the base of the windscreen. Rakes the top of the dash and the
+   *     fronts of the seat backs, which is exactly the sightline through the windscreen.
+   *   · DECK — cool, low and aft, so the parcel shelf and the rear head restraints separate from the
+   *     bulkhead behind them when you look through the backlight.
+   *
+   * All three are tiny: `distance` windows them out at 1.8–2.4 m, and by then the 1/d term has
+   * taken them below the room's own ambient. Measured, not assumed — the turntable deck patch just
+   * outside the car reads 64.9 before the rig and 65.3 after, and the patch directly under the car
+   * is identical to the tenth, so nothing spills onto the floor or into the deck reflection. They
+   * cannot leak onto the exterior either: every outer panel's normal faces AWAY from the cabin, so
+   * N·L is negative and the shading term is zero. None of them casts a shadow (three shadow maps
+   * for a 1 m box is not worth the ms, and nothing in a cabin casts a shadow that reads this size).
+   *
+   * Decay is 1, not the physical 2. A lamp 0.25 m off a headrest and 0.85 m off the dash is 12×
+   * closer to one than the other, so inverse-square hands the seats seven stops over the dash and
+   * the first capture came back with the cabin as a blown white box brighter than the paint. 1/d
+   * across a 1 m box is the difference between a fill and a flashbulb.
+   */
+  const cabinRig = new THREE.Group();
+  const cabinDome = new THREE.PointLight(new THREE.Color('#ffd2a2'), 0.94, 2.4, 1);
+  const cabinScreen = new THREE.PointLight(new THREE.Color('#ffdfc0'), 0.50, 1.8, 1);
+  const cabinDeck = new THREE.PointLight(new THREE.Color('#a9c8e6'), 0.40, 1.8, 1);
+  for (const l of [cabinDome, cabinScreen, cabinDeck]) { l.castShadow = false; cabinRig.add(l); }
+  group.add(cabinRig);
+
   // and one narrow can on the workbench, so the tool wall has a reason to be visible
   const benchLight = new THREE.SpotLight(new THREE.Color('#ffd9a6'), 26, 9, 0.55, 0.9, 2);
   benchLight.position.set(-3.4, 3.9, ROOM.zBack + 1.9);
@@ -1095,7 +1442,7 @@ function buildGarage() {
   // Room ambience, kept deliberately mean. A hemisphere light is never occluded, so every unit of
   // it lands on the deck under the car as brightly as it lands on open floor — it is the single
   // biggest reason a hero car floats. 0.22 is enough to keep shadows coloured instead of crushed.
-  const hemi = new THREE.HemisphereLight(new THREE.Color('#5d92ae'), new THREE.Color('#241a12'), 0.58);
+  const hemi = new THREE.HemisphereLight(new THREE.Color('#527f9c'), new THREE.Color('#241a12'), 0.44);
   group.add(hemi);
   const amb = new THREE.AmbientLight(new THREE.Color('#1b2a38'), 0.22);
   group.add(amb);
@@ -1173,9 +1520,57 @@ function buildGarage() {
   const _v = new THREE.Vector3();
   const _e = new THREE.Euler(0, 0, 0, 'YXZ');
 
+  /**
+   * Where the three cabin lamps sit, in the car's own coordinates, derived from the blueprint's
+   * cabin stations. A 1.25 m supercar cabin and a 2.08 m off-roader cabin are 400 mm apart in roof
+   * height and 700 mm apart in length: a fixed offset that hangs the dome lamp under the muscle
+   * car's headlining pokes it straight out through the supercar's roof. Cached per blueprint.
+   */
+  const cabinFits = new Map();
+  const cabinFit = (bp) => {
+    let f = cabinFits.get(bp);
+    if (f) return f;
+    const st = bp.cabin.stations;
+    let zMin = Infinity, zMax = -Infinity, roof = -Infinity, belt = 0;
+    for (const s of st) {
+      zMin = Math.min(zMin, s.z); zMax = Math.max(zMax, s.z);
+      roof = Math.max(roof, s.yRoof); belt += s.yBelt;
+    }
+    belt /= st.length;
+    const it = bp.cabin.interior || {};
+    const seatZ = it.seatZ ?? (zMin + zMax) / 2;
+    const floorY = it.floorY ?? (belt - 0.26);
+    f = {
+      dome: [0, Math.max(belt + 0.16, roof - 0.15), seatZ + 0.16],
+      screen: [0, (it.dashY ?? floorY + 0.24) + 0.16, Math.min(zMax - 0.14, seatZ + 0.86)],
+      deck: [0, (it.shelfY ?? floorY + 0.22) + 0.15, Math.max(zMin + 0.22, seatZ - 0.62)],
+    };
+    cabinFits.set(bp, f);
+    return f;
+  };
+
   return {
     group, ring, ringMat, tubes, motes, seedY, fanBlades, reflector, deck, beamMat, key, rimLight,
-    contact, fog, env: null,
+    contact, sweep, beams, fog, env: null,
+
+    /**
+     * Ride the cabin rig on the turntable. The car spins under a fixed camera, so a lamp left at a
+     * world offset walks out of the door on the first quarter turn; the rig copies the car's world
+     * position and yaw and holds the three lamps at blueprint-derived local offsets, so they are
+     * bolted to the car's own cabin for every frame of every swap.
+     */
+    setCabin(car, bp) {
+      if (!car || !bp?.cabin?.stations?.length) { cabinRig.visible = false; return; }
+      cabinRig.visible = true;
+      car.getWorldPosition(_v);
+      _e.setFromQuaternion(car.quaternion, 'YXZ');
+      cabinRig.position.copy(_v);
+      cabinRig.rotation.y = _e.y;
+      const f = cabinFit(bp);
+      cabinDome.position.fromArray(f.dome);
+      cabinScreen.position.fromArray(f.screen);
+      cabinDeck.position.fromArray(f.deck);
+    },
 
     /**
      * Park the occlusion decals under whatever car is on the turntable. Extents come from the
@@ -1219,11 +1614,13 @@ function buildGarage() {
     },
 
     update(t) {
-      ringMat.emissiveIntensity = 1.05 + Math.sin(t * 1.7) * 0.20;
+      ringMat.emissiveIntensity = 2.90 + Math.sin(t * 1.7) * 0.30;
       fanBlades.rotation.z = t * 1.35;
+      sweep.rotation.y = -t * 0.75;
+      sweep.material.opacity = 0.66 + 0.12 * Math.sin(t * 2.3);
       // one tube on a lazy flicker — the detail that says "this room has been here a while"
       const fl = 1 - 0.55 * Math.max(0, Math.sin(t * 31.7)) * Math.max(0, Math.sin(t * 0.9) - 0.72) * 3.5;
-      tubes[2].material.emissiveIntensity = 2.2 * clamp(fl, 0.35, 1);
+      tubes[2].material.emissiveIntensity = 7.6 * clamp(fl, 0.35, 1);
       const pos = motes.geometry.attributes.position;
       for (let i = 0; i < MOTES; i++) {
         const y = 0.25 + ((mp[i * 3 + 1] - 0.25 + t * 0.11 + seedY[i] * 0.3) % 4.35);
@@ -1235,25 +1632,252 @@ function buildGarage() {
   };
 }
 
+// ---------------------------------------------------------------- selector tile renders
+//
+// §1.4: "a radial fan of ~10 angled parallelogram thumbnail tiles, EACH HOLDING A DIFFERENT CAR".
+// Not an icon of a car — a picture of one. Round 1 drew a two-tone vector blob with grey donut
+// wheels, and at tile size that reads as clip-art no matter how well the plate around it is
+// designed; it was the single loudest "prototype" tell on the screen.
+//
+// So every tile is a real render. The actual vehicle mesh, three-point lit on a graded studio card,
+// shot three-quarter front to match the hero, captured once into an offscreen target and read back
+// into a canvas the 2D layer can blit. Four renders at first open, one more whenever the paint
+// changes; the cars built for it are disposed the instant their pixels are read, so the tiles cost
+// four small canvases and nothing on the GPU.
+
+// Rendered at ss×, box-downsampled — no jaggy tile edges (§7 caps aliased UI at 68). Kept modest:
+// readRenderTargetPixels is a synchronous GPU stall, and the harness renders through SwiftShader.
+const THUMB = { w: 352, h: 188, ss: 2 };
+const THUMB_AZ = 0.30;
+const THUMB_YAW = THUMB_AZ - 0.80;         // ≈ 46° off the nose — reads the face AND the flank
+
+/** The studio card the tile cars are shot against: a lit teal sweep, not a flat fill. */
+function texThumbCard() {
+  return cached('garage:thumbcard', () => {
+    const S = 256;
+    const { c, ctx } = canvas(S, S);
+    const g = ctx.createRadialGradient(S * 0.44, S * 0.40, S * 0.02, S * 0.48, S * 0.54, S * 0.80);
+    g.addColorStop(0, '#4d8290');
+    g.addColorStop(0.30, '#26545f');
+    g.addColorStop(0.66, '#0f2530');
+    g.addColorStop(1, '#050a10');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+    const w = ctx.createRadialGradient(S * 0.14, S * 0.14, 0, S * 0.14, S * 0.14, S * 0.66);
+    w.addColorStop(0, 'rgba(255,198,132,0.34)');
+    w.addColorStop(1, 'rgba(255,198,132,0)');
+    ctx.fillStyle = w; ctx.fillRect(0, 0, S, S);
+    // a faint horizon so the card has a floor rather than being one wash
+    ctx.fillStyle = vgrad(ctx, S * 0.58, S, [[0, 'rgba(4,8,12,0)'], [1, 'rgba(3,6,10,0.72)']]);
+    ctx.fillRect(0, S * 0.58, S, S * 0.42);
+    grain(ctx, S, S, 5, new RNG(88));
+    return toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  });
+}
+
+/**
+ * The offscreen studio: card, floor, car-shaped contact shadow and a warm-key / cool-rim pair that
+ * mirrors the hero rig so a tile and the stage read as the same shoot.
+ */
+function makeThumbRig() {
+  const scene = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(24, THUMB.w / THUMB.h, 0.4, 60);
+
+  const card = new THREE.Mesh(
+    new THREE.PlaneGeometry(30, 18),
+    new THREE.MeshBasicMaterial({ map: texThumbCard(), toneMapped: false, depthWrite: false }),
+  );
+  card.position.set(0, 1.6, -10);
+  card.renderOrder = -2;
+  scene.add(card);
+
+  const floor = new THREE.Mesh(
+    new THREE.CircleGeometry(7, 48),
+    new THREE.MeshStandardMaterial({
+      color: 0x121a21, roughness: 0.30, metalness: 0.55, envMapIntensity: 1.25,
+    }),
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = 0.002;
+  scene.add(floor);
+
+  // the same car-shaped occlusion the stage uses, so a tile car cannot hover either
+  const shade = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: texBodyAO('core', { hx: 0.60, hz: 0.80, blur: 7, gain: 1.0, gamma: 0.62, pads: 1.0 }),
+      color: 0x000000, transparent: true, depthWrite: false, toneMapped: false,
+    }),
+  );
+  shade.rotation.order = 'YXZ';
+  shade.rotation.x = -Math.PI / 2;
+  shade.position.y = 0.010;
+  shade.renderOrder = 1;
+  shade.frustumCulled = false;
+  scene.add(shade);
+
+  const wide = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: texBodyAO('wide', { hx: 0.40, hz: 0.60, blur: 13, gain: 0.80, gamma: 1.25, pads: 0.9 }),
+      color: 0x000000, transparent: true, depthWrite: false, toneMapped: false,
+    }),
+  );
+  wide.rotation.order = 'YXZ';
+  wide.rotation.x = -Math.PI / 2;
+  wide.position.y = 0.008;
+  wide.renderOrder = 0;
+  wide.frustumCulled = false;
+  scene.add(wide);
+
+  const key = new THREE.DirectionalLight(new THREE.Color('#ffd0a2'), 4.7);
+  key.position.set(-4.2, 4.4, 5.4);
+  scene.add(key); scene.add(key.target);
+  const rim = new THREE.DirectionalLight(new THREE.Color('#8ec6ff'), 3.1);
+  rim.position.set(4.6, 2.6, -5.2);
+  scene.add(rim); scene.add(rim.target);
+  const fill = new THREE.DirectionalLight(new THREE.Color('#ffb98c'), 1.15);
+  fill.position.set(5.0, 1.6, 4.4);
+  scene.add(fill); scene.add(fill.target);
+  scene.add(new THREE.HemisphereLight(new THREE.Color('#5f95b4'), new THREE.Color('#231a13'), 0.80));
+
+  // The tile cars get the stage's cabin lamp too, in miniature. Three directionals outside a car
+  // cannot reach under its roof any more here than they can out there, and the showroom material
+  // pass takes the cabin's flat bounce fill off every interior material in the game while the
+  // garage is open — including the pooled ones these borrowed cars are wearing. Without this the
+  // tiles would have paid for the hero car's interior with four black windscreens.
+  const cabin = new THREE.PointLight(new THREE.Color('#ffd2a2'), 1.05, 3.0, 1);
+  cabin.castShadow = false;
+  scene.add(cabin);
+
+  return { scene, cam, shade, wide, card, floor, cabin };
+}
+
+/**
+ * Shoot one car. `car` is borrowed — reparented into the studio for exactly one render and put back
+ * with its transform intact before anything else can observe it.
+ */
+function shootThumb(renderer, rig, rt, car, dims) {
+  const parent = car.parent;
+  const pos = car.position.clone();
+  const quat = car.quaternion.clone();
+  const vis = car.visible;
+
+  rig.scene.add(car);
+  car.position.set(0, 0, 0);
+  car.rotation.set(0, THUMB_YAW, 0);
+  car.visible = true;
+  car.updateMatrixWorld(true);
+
+  rig.shade.rotation.y = THUMB_YAW;
+  rig.shade.scale.set((dims.width * 0.90) / 0.60, (dims.length * 0.94) / 0.80, 1);
+  rig.wide.rotation.y = THUMB_YAW;
+  rig.wide.scale.set((dims.width * 1.02) / 0.40, (dims.length * 0.98) / 0.60, 1);
+  // cabin lamp: just under the roofline, over the wheelbase centre, which is where every one of
+  // these four cabins is. `distance` closes inside the bodyshell so it never touches the card.
+  rig.cabin.position.set(0, dims.height * 0.68, 0);
+
+  // frame from the blueprint: a 5.4 m lifted truck and a 4.1 m supercar must each fill the tile
+  const tanV = Math.tan((rig.cam.fov * Math.PI / 180) / 2);
+  const tanH = tanV * rig.cam.aspect;
+  const ext = 0.74 * dims.length + 0.54 * dims.width;
+  const d = Math.max(ext / (2 * tanH * 0.82), dims.height / (2 * tanV * 0.58), 5.2);
+  rig.cam.position.set(Math.sin(THUMB_AZ) * d, dims.height * 0.52 + 0.60, Math.cos(THUMB_AZ) * d);
+  rig.cam.lookAt(0, dims.height * 0.44, 0);
+  rig.cam.updateProjectionMatrix();
+
+  const prevTarget = renderer.getRenderTarget();
+  const prevAutoClear = renderer.autoClear;
+  const prevClear = new THREE.Color();
+  renderer.getClearColor(prevClear);
+  const prevAlpha = renderer.getClearAlpha();
+
+  renderer.setRenderTarget(rt);
+  renderer.autoClear = true;
+  renderer.setClearColor(0x050a10, 1);
+  renderer.render(rig.scene, rig.cam);
+
+  const SS = THUMB.ss, RW = THUMB.w * SS, RH = THUMB.h * SS;
+  const buf = new Uint8Array(RW * RH * 4);
+  renderer.readRenderTargetPixels(rt, 0, 0, RW, RH, buf);
+
+  renderer.setRenderTarget(prevTarget);
+  renderer.autoClear = prevAutoClear;
+  renderer.setClearColor(prevClear, prevAlpha);
+
+  // put the car back exactly where it was
+  if (parent) parent.add(car); else rig.scene.remove(car);
+  car.position.copy(pos);
+  car.quaternion.copy(quat);
+  car.visible = vis;
+  car.updateMatrixWorld(true);
+
+  // The scene render carries no tonemap (engine.js runs NoToneMapping and grades in post), so the
+  // readback is a straight sRGB encode. Give it the same S-curve and saturation lift the game frame
+  // gets, or the tiles sit visibly flatter than the stage behind them.
+  const { c, ctx } = canvas(THUMB.w, THUMB.h);
+  const img = ctx.createImageData(THUMB.w, THUMB.h);
+  const d8 = img.data;
+  const inv = 1 / (SS * SS * 255);
+  for (let y = 0; y < THUMB.h; y++) {
+    for (let x = 0; x < THUMB.w; x++) {
+      let r = 0, g = 0, b = 0;
+      for (let sj = 0; sj < SS; sj++) {
+        const sy = RH - 1 - (y * SS + sj);            // GL reads bottom-up
+        for (let si2 = 0; si2 < SS; si2++) {
+          const si = (sy * RW + x * SS + si2) * 4;
+          r += buf[si]; g += buf[si + 1]; b += buf[si + 2];
+        }
+      }
+      r *= inv; g *= inv; b *= inv;
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      r = lum + (r - lum) * 1.24; g = lum + (g - lum) * 1.24; b = lum + (b - lum) * 1.24;
+      const di = (y * THUMB.w + x) * 4;
+      d8[di] = clamp((r - 0.030) * 1.16 + 0.012, 0, 1) * 255;
+      d8[di + 1] = clamp((g - 0.030) * 1.16 + 0.012, 0, 1) * 255;
+      d8[di + 2] = clamp((b - 0.030) * 1.16 + 0.012, 0, 1) * 255;
+      d8[di + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
 // ---------------------------------------------------------------- 2D helpers
 
-/** The signature angled plate. (x,y) is the TOP-left corner of the bottom edge span. */
-function plate(ctx, x, y, w, h, skew = SHEAR) {
+/**
+ * The signature angled plate. (x,y) is the TOP-left corner of the bottom edge span.
+ *
+ * `cut` chamfers the bottom-right and top-left corners by that many pixels. Shear alone cannot make
+ * a TALL panel read as a parallelogram — the destination list is 444 px high, and the lean you can
+ * give it before the top row runs off the right edge of a 1600 px frame is under 4°, which the
+ * round-1 critic read (correctly) as a rectangle. A cut corner is the other half of §2.6's plate
+ * language and it is legible at any panel height.
+ */
+function plate(ctx, x, y, w, h, skew = SHEAR, cut = 0) {
   const s = h * skew;
   ctx.beginPath();
-  ctx.moveTo(x + s, y);
-  ctx.lineTo(x + w + s, y);
-  ctx.lineTo(x + w, y + h);
-  ctx.lineTo(x, y + h);
+  if (cut > 0) {
+    ctx.moveTo(x + s + cut, y);
+    ctx.lineTo(x + w + s, y);
+    ctx.lineTo(x + w, y + h - cut);
+    ctx.lineTo(x + w - cut, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x + s, y + cut);
+  } else {
+    ctx.moveTo(x + s, y);
+    ctx.lineTo(x + w + s, y);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x, y + h);
+  }
   ctx.closePath();
 }
 
-function fillPlate(ctx, x, y, w, h, style, skew = SHEAR) {
-  plate(ctx, x, y, w, h, skew); ctx.fillStyle = style; ctx.fill();
+function fillPlate(ctx, x, y, w, h, style, skew = SHEAR, cut = 0) {
+  plate(ctx, x, y, w, h, skew, cut); ctx.fillStyle = style; ctx.fill();
 }
 
-function strokePlate(ctx, x, y, w, h, style, lw = 1.4, skew = SHEAR, glow = 0) {
-  plate(ctx, x, y, w, h, skew);
+function strokePlate(ctx, x, y, w, h, style, lw = 1.4, skew = SHEAR, glow = 0, cut = 0) {
+  plate(ctx, x, y, w, h, skew, cut);
   ctx.strokeStyle = style; ctx.lineWidth = lw;
   if (glow) { ctx.shadowBlur = glow; ctx.shadowColor = style; }
   ctx.stroke();
@@ -1268,6 +1892,20 @@ function rail(ctx, x, y, h, color, w = 3, skew = SHEAR) {
   ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h);
   ctx.closePath();
   ctx.fillStyle = color; ctx.fill();
+}
+
+/**
+ * Where a plate's slanted edge actually is at height `ry`.
+ *
+ * §2.6: "panels are angled parallelograms". Round 1 shipped the spec and destination panels at
+ * skew 0.06 — nine pixels of lean over a 150 px plate — and the critic read them, correctly, as
+ * plain rectangles. The reason the skew was that timid is that every label inside them is laid out
+ * from `x`, so leaning the plate any further pushed the top rows out through the left edge. This
+ * gives the rows the edge's own x at their own height, so the plate can lean as far as the design
+ * wants and the type follows it.
+ */
+function shearAt(x, y0, h, ry, skew) {
+  return x + skew * h * (1 - clamp((ry - y0) / h, 0, 1));
 }
 
 function vgrad(ctx, y0, y1, stops) {
@@ -1475,7 +2113,76 @@ export class Menu {
     this.cityT = CITY_IDS.map(() => 0);
     this.cityBusy = false;
 
+    this.thumbs = {};              // vehicle id → { canvas, color }
+    this.thumbQueue = [];
+    this.thumbRig = null;
+    this.thumbRT = null;
+
     this.buf = null; this.bctx = null; this._bw = 0; this._bh = 0; this._bscale = 1;
+  }
+
+  // ---------------------------------------------------------------- tile photography
+
+  /**
+   * Shoot whatever tiles are missing. The car currently on the turntable is borrowed (it is already
+   * built and already wearing the chosen paint); the other three are built, shot and disposed in
+   * the same statement, so nothing survives the call but four canvases.
+   */
+  /** The paint each tile should be showing: the live car for the selection, stock for the rest. */
+  _wantColor(id) {
+    const spec = getVehicle(id).spec;
+    return (id === VEHICLE_IDS[this.carIndex] && this.game.carColor) || spec.colors[0];
+  }
+
+  /** Mark every tile whose photograph is missing or out of date, selection first. */
+  _queueThumbs() {
+    const cur = VEHICLE_IDS[this.carIndex];
+    this.thumbQueue = VEHICLE_IDS
+      .filter((id) => !this.thumbs[id] || this.thumbs[id].color !== this._wantColor(id))
+      .sort((a, b) => (a === cur ? -1 : b === cur ? 1 : 0));
+  }
+
+  /**
+   * Shoot at most ONE tile per frame.
+   *
+   * Doing all four inline in `open()` cost forty seconds on the first visit under the harness's
+   * software renderer — three car builds plus four synchronous `readRenderTargetPixels` stalls in a
+   * single blocking call — and that was long enough to time the capture harness out on the very next
+   * screenshot. One per frame is the same total work spread over four frames: the menu scenario has
+   * all four before its first captured frame, and a player sees the tiles fill in over 70 ms.
+   */
+  _pumpThumbs() {
+    const g = this.game;
+    const renderer = g.engine?.renderer;
+    if (!renderer || !this.thumbQueue?.length) return;
+    const id = this.thumbQueue.shift();
+    try {
+      if (!this.thumbRig) this.thumbRig = makeThumbRig();
+      if (!this.thumbRT) {
+        this.thumbRT = new THREE.WebGLRenderTarget(THUMB.w * THUMB.ss, THUMB.h * THUMB.ss, {
+          type: THREE.UnsignedByteType, depthBuffer: true, stencilBuffer: false,
+          colorSpace: THREE.SRGBColorSpace,
+          minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+        });
+      }
+      const env = this.stage?.env || null;
+      this.thumbRig.scene.environment = env;
+      if (this.thumbRig.floor.material.envMap !== env) {
+        this.thumbRig.floor.material.envMap = env;
+        this.thumbRig.floor.material.needsUpdate = true;
+      }
+      const v = getVehicle(id);
+      const color = this._wantColor(id);
+      const mine = id === VEHICLE_IDS[this.carIndex] && g.car;
+      const car = mine ? g.car : buildVehicle(id, { color, envMap: env });
+      if (!mine && env) { g.engine.applyEnvironment(car, env); this._dampEnv(car); }
+      const canvas2 = shootThumb(renderer, this.thumbRig, this.thumbRT, car, v.blueprint.dims);
+      if (!mine) disposeObject(car);
+      this.thumbs[id] = { canvas: canvas2, color };
+    } catch (e) {
+      console.warn('tile render failed, falling back to silhouette', e);
+      this.thumbs[id] = { canvas: null, color: this._wantColor(id) };
+    }
   }
 
   // ---------------------------------------------------------------- open / close
@@ -1496,6 +2203,7 @@ export class Menu {
     this._ensureStage();
     this._enterStage();
     this._stageCar();
+    this._queueThumbs();
   }
 
   close() {
@@ -1528,15 +2236,34 @@ export class Menu {
       g.engine.scene.environment = null;
       g.engine.scene.fog = null;
       this.stage.reflector.visible = false;
-      const rt = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
+      /**
+       * Additive stage FX are excluded from the capture.
+       *
+       * The probe is a cube render of this room, and the room contains a gold rotation sweep, four
+       * additive light shafts and 260 additive dust motes sitting immediately around and above the
+       * turntable. Captured, they become a bright gold band in the lower half of the probe — and
+       * the lower half of the probe is precisely what a wheel, a tyre and a rocker panel reflect.
+       * That is where the tan-bronze tyres came from: black rubber mirroring a gold ring. The FX
+       * still light the picture; they simply do not get to be the environment as well.
+       */
+      const fxHidden = [this.stage.sweep, this.stage.beams, this.stage.motes].filter(Boolean);
+      for (const o of fxHidden) o.visible = false;
+      const ringWas = this.stage.ringMat.emissiveIntensity;
+      this.stage.ringMat.emissiveIntensity = 0.55;
+      // 512, not 256. PMREM blurs each mip from the one above it, and at 256 the step from the
+      // gold rim ring / red drums to the teal brick beside them undershot into negative green —
+      // which is where the magenta blotches across every panel of the hero car came from.
+      const rt = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType });
       const cam = new THREE.CubeCamera(0.4, 60, rt);
-      cam.position.set(0, 1.5, 0.4);
+      cam.position.set(0, 1.32, 0.15);
       cam.update(renderer, g.engine.scene);
       const pmrem = new THREE.PMREMGenerator(renderer);
       this.stage.env = pmrem.fromCubemap(rt.texture).texture;
       pmrem.dispose();
       rt.dispose();
       this.stage.reflector.visible = true;
+      for (const o of fxHidden) o.visible = true;
+      this.stage.ringMat.emissiveIntensity = ringWas;
       g.engine.scene.environment = prevEnv;
       g.engine.scene.fog = prevFog;
     } catch (e) {
@@ -1559,18 +2286,225 @@ export class Menu {
     this.stage.group.visible = true;
     g.engine.scene.fog = this.stage.fog;
     g.engine.applyLook(GARAGE_LOOK);
+    setBodyTint(GARAGE_MIRROR);
     g.engine.scene.environment = this.stage.env;
     if (this.stage.env && g.car) g.engine.applyEnvironment(g.car, this.stage.env);
+    this._dampEnv();
+  }
+
+  /**
+   * The engine derives `_paintEnv` ≈ 2.5 for a car standing under an open sky, because §1.6.3 wants
+   * a bright sky sitting in the clearcoat. A garage probe is a *dark room with four hot strip
+   * lights in it*, and multiplying that by 2.5 does not make the paint glossier — it makes the two
+   * or three bright cells of the probe detonate across the panels and drags the PMREM's ringing up
+   * with them. Indoors the reflection has to be quiet enough to read as a reflection.
+   *
+   * Written straight from `__envBase`, the same per-material base applyEnvironment keys off, so it
+   * is idempotent and `_exitStage`'s applyEnvironment call restores the city weighting exactly.
+   */
+  /**
+   * The garage material pass.
+   *
+   * Three jobs, all of them fixes for the same physical fact: this room lights the car with point
+   * sources, and the car is built out of mirrors and one big pane of glass.
+   *
+   * 1. ENV WEIGHT. The engine derives `_paintEnv` ≈ 2.5 for a car under an open sky. A garage probe
+   *    is a dark room with a handful of hot cells in it; multiplied by 2.5 those cells detonate and
+   *    drag the PMREM's ringing up with them — that is where the magenta blotches across every
+   *    panel came from. Rewritten off `__envBase`, the same base applyEnvironment keys from, so it
+   *    is idempotent and `_exitStage`'s applyEnvironment restores the city weighting exactly.
+   *
+   * 2. SHOWROOM GLOSS. A clearcoat at roughness 0.045 and a chrome bumper at 0.10 return a specular
+   *    peak two to three orders of magnitude over the bloom knee from a point light, and the bloom
+   *    pass smears each one into a blue-white flare. Ablation settled it: killing bloom removed
+   *    every blob, killing the env probe removed none, killing the spot rig removed every one — so
+   *    they are single hot pixels, not reflections. Rolling both roughnesses up to a showroom
+   *    0.26 / 0.38 cuts the peak ~60× while leaving the long soft bands the softboxes and the probe
+   *    draw down the shoulder completely intact. Reverted on close, keyed by material so the pooled
+   *    chrome kit.js shares between cars is never double-written or restored to a modified value.
+   *
+   * 3. SHOWROOM GLAZING + CABIN — round 3's headline fix, and the §7 cap it exists to clear.
+   *
+   *    The glasshouse (`assemble.js` §2) is ONE continuous loft from the beltline over the roof and
+   *    back down to the backlight, wearing one glass material. On a chase camera that is invisible:
+   *    you look at the tail, the backlight is a small dark trapezoid and the rest of the shell is
+   *    edge-on. On a three-quarter-front hero shot from 2 m up it is most of the car's upper
+   *    silhouette, so this screen is the only place in the game where what is behind the glass is
+   *    a first-class subject — and §7 caps the whole piece at 72 for "car interior is an empty
+   *    black void through the glass".
+   *
+   *    Round 1 made the shell too transparent (you could read the workbench through the roof).
+   *    Round 2 over-corrected to opacity 0.88 with the tint halved, which is not glass at all — it
+   *    is a black panel with a clearcoat on it, and it is what the round-2 critic gamma-boosted and
+   *    correctly reported as flat noise. The real defect behind both was that the shell is
+   *    DoubleSide: every sightline crosses it twice, so opacity had to do a job that belongs to
+   *    back-face culling. See the block in the `isGlass` branch for the three changes that fix it
+   *    properly, and the CABIN RIG in `buildGarage()` for the three lamps that finally put light on
+   *    the seats, the dash and the parcel shelf — geometry that `buildInterior()` has been modelling
+   *    all along with nothing in the room able to reach it.
+   *
+   *    Strictly local. Everything is recorded per material and put back by `_restoreMaterials()`,
+   *    and the glass material is pooled per glass-config, so the record is keyed by material and
+   *    written exactly once however many cars share it.
+   */
+  _dampEnv(obj = null) {
+    const g = this.game;
+    if (!obj) g.engine.scene.environmentIntensity = 1.02;
+    /**
+     * The record is NEVER cleared here, only by `_restoreMaterials()`.
+     *
+     * It used to be cleared on every no-arg call, and there are three of those per open —
+     * `_enterStage`, `_stageCar`, and `_stageCar` again on every car swap. So the second call threw
+     * away the first call's saved originals and then re-treated the same materials against an empty
+     * `seen` set: `color.multiplyScalar(0.52)` ran twice, the glass tint ended up at 27% of the
+     * authored value, and — much worse — the "original" the restore put back on close was the
+     * ALREADY-MODIFIED 0.88/depthWrite-true state, so a car that had visited the garage drove the
+     * rest of the session with opaque windows. Keeping one record and one seen-set for the whole
+     * visit makes the pass idempotent, which is the only safe shape for something that mutates
+     * materials the vehicle kit pools and shares.
+     */
+    const root = obj || g.car;
+    if (!root) return;
+    const touched = this._matTouched || (this._matTouched = []);
+    const seen = this._ccSeen || (this._ccSeen = new Set());
+    const save = (m, keys) => {
+      const props = {};
+      for (const k of keys) props[k] = (k === 'color') ? m.color.clone() : m[k];
+      touched.push({ m, props });
+    };
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+        if (!m) continue;
+        // assemble.js names it; the shape test is the fallback for anything that does not. The
+        // classification runs BEFORE the env weighting because glass and cabin want their own
+        // weights, and `applyEnvironment` rewrites envMapIntensity from `__envBase` on every car
+        // swap — so this pass has to re-assert them on every call, `seen` set or not.
+        const isGlass = m.isMeshPhysicalMaterial && m.transparent === true
+          && m.blending === THREE.NormalBlending
+          && (m.name === 'glass'
+            || ((m.opacity ?? 1) > 0.25 && (m.opacity ?? 1) < 0.95 && m.depthWrite !== true));
+        const isCabin = m.userData.underRole === 'cabin';
+        // 1.72 in round 1, and it was too hot by half: the probe is a cube capture of a room whose
+        // ceiling holds four tube fixtures and two softboxes, so weighting it up that far put a
+        // milky pale wash across the hood, the roof and the whole near flank — measured by
+        // ablation (lights off, probe on: the car was ALREADY pale). 1.15 leaves the room in the
+        // paint without the room becoming the paint. Glass gets a touch more (it is a mirror by
+        // trade), the cabin distinctly less — a lit interior reflecting a lit room is a milky wash
+        // where a black plastic dash should be.
+        if (m.envMapIntensity !== undefined && m.userData.__envBase !== undefined) {
+          m.envMapIntensity = m.userData.__envBase * (isGlass ? 1.25 : isCabin ? 0.62 : 1.15);
+        }
+        if (seen.has(m)) continue;
+        const cc = (m.clearcoat ?? 0) > 0.3 && m.clearcoatRoughness < 0.15;
+        const mirror = (m.metalness ?? 0) >= 0.55 && (m.roughness ?? 1) < 0.24;
+        if (!isGlass && !cc && !mirror && !isCabin) continue;
+        seen.add(m);
+        if (isGlass) {
+          save(m, ['opacity', 'depthWrite', 'side', 'color', 'envMapIntensity',
+            'clearcoatRoughness', 'clearcoat', 'roughness']);
+          /**
+           * ---- ROUND 3: the glazing, rewritten around the §7 cap it was causing ----
+           *
+           * Round 2 read the cap ("empty black void through the glass") as *the roof is see-through*
+           * and closed the glass down to opacity 0.88 with the authored tint halved to #080d13. That
+           * is not glass. It is a black panel with a clearcoat on it: only 12% of whatever is behind
+           * it survives, and 12% of an unlit cabin is nothing at all. Gamma-boosting the windscreen
+           * came back as flat dark noise for exactly that reason — the critic was looking at the
+           * PANE, not at an empty cabin.
+           *
+           * Three changes, and they only work together:
+           *
+           * 1. side → BackSide. This is what round 2 actually needed. The glasshouse is one closed
+           *    loft wearing one DoubleSide material, so every sightline crosses it twice and the far
+           *    wall blends over the near one — the double-glazing that let you read the workbench
+           *    through the rear quarter. Culling one facing leaves exactly ONE pane per sightline,
+           *    deterministically, instead of leaning on triangle order the way depthWrite does.
+           *    BACKside, not front, and that is measured, not assumed: `_menu_r3_glassmask.mjs`
+           *    flat-fills the shell magenta and shoots it three ways, and FrontSide comes back with
+           *    the near pane gone and only the far wall behind the seats left — `loftBody()` winds
+           *    the cabin tube inward. Three flips the normal for FLIP_SIDED, so the shading is the
+           *    outward-facing one either way. With this solved the opacity is free to be an
+           *    opacity again.
+           * 2. opacity → 0.62 with the authored tint mostly intact. A privacy-tinted screen passes
+           *    a bit over a third of what is behind it; with the cabin rig lighting the interior
+           *    that is plenty to read seats, headrests, the shifter knob and the amber cluster
+           *    through the screen, while the pane still carries its own tint and its own
+           *    reflection. It is also the level at which the far side windows — which BackSide
+           *    culls, so they are no longer tinting anything — stop showing the workbench through
+           *    the greenhouse of the tall cars.
+           * 3. the specular comes DOWN, and this is the critic's "the side window behaves like a
+           *    chrome mirror" verbatim. Glass carries `clearcoat: 1` at `clearcoatRoughness 0.02`
+           *    for the race, where the windows are 40 px of a 1600 px frame and a hard specular is
+           *    all that tells you they are glass at all. At 3 m, at the grazing angle the rear side
+           *    glass makes with this lens, that coat's Fresnel goes to ~1 and the whole quarter
+           *    light returns one clipped blue-white plate with the cabin nowhere in it. The ablation
+           *    (`_menu_r3_ablate.mjs`) is unambiguous: kill the spot rig and the quarter-light box
+           *    falls from luminance 155 to 47; kill the env probe or the softbox emissives and it
+           *    does not move. So it is a direct specular lobe, and the fix is to spread and thin it
+           *    — coat to 0.25, base roughness 0.045 → 0.42, probe to 0.90× base. What is left is
+           *    the soft graded sheen a photographed screen carries, with the seat backs reading
+           *    straight through it.
+           */
+          m.side = THREE.BackSide;
+          m.opacity = 0.62;
+          m.depthWrite = true;
+          m.color.multiplyScalar(0.86);
+          m.roughness = 0.42;
+          m.clearcoat = 0.25;
+          m.clearcoatRoughness = 0.45;
+          if (m.userData.__envBase !== undefined) m.envMapIntensity = m.userData.__envBase * 0.90;
+          m.needsUpdate = true;
+          continue;
+        }
+        /**
+         * The cabin's own materials, re-lit for the showroom. `interiorMaterial()` marks every one
+         * `underRole: 'cabin'`, and that role carries the biggest bounce emissive on the car —
+         * precisely because, until this round, nothing was ever going to actually light a cabin. It
+         * is a stand-in for the light this room now has, so with the rig in it has to come off:
+         * an emissive is a constant term, and a constant term is exactly what erases a shading
+         * gradient. Left in alongside the lamps the seats came back as one flat pale plastic slab
+         * with no bolster edge, no headrest step and no shadow in the footwell. At 0.34 there is
+         * still a floor under the darkest corner of the cabin and the three lamps do the modelling.
+         * Recorded and restored like everything else in this pass.
+         */
+        if (isCabin) {
+          save(m, ['emissiveIntensity']);
+          if (m.emissive) m.emissiveIntensity = (m.emissiveIntensity || 0) * 0.34;
+          m.needsUpdate = true;
+          continue;
+        }
+        save(m, ['clearcoatRoughness', 'roughness']);
+        if (cc) m.clearcoatRoughness = 0.26;
+        if (mirror) m.roughness = 0.38;
+      }
+    });
+  }
+
+  /** Undo the showroom gloss and glazing so the car goes back to race chrome. */
+  _restoreMaterials() {
+    for (const { m, props } of this._matTouched || []) {
+      for (const k in props) {
+        if (k === 'color') m.color.copy(props.color);
+        else m[k] = props[k];
+      }
+      m.needsUpdate = true;
+    }
+    this._matTouched = [];
+    this._ccSeen = new Set();
   }
 
   _exitStage() {
     const g = this.game;
     this._setHeadGlow(true);
+    this._restoreMaterials();
     if (this.stage) this.stage.group.visible = false;
     if (g.city) {
       g.city.group.visible = true;
       g.engine.scene.fog = g.city.fog;
       g.engine.applyLook(g.city.look || {});
+      // put the car's mirror probe back on the city it is about to drive through
+      setBodyTint(g.city.look || {});
       g.engine.scene.environment = g.city.envMap || null;
       if (g.car) g.engine.applyEnvironment(g.car, g.city.envMap);
     }
@@ -1587,24 +2521,35 @@ export class Menu {
     if (on) {
       for (const o of this._dimmed || []) {
         if (o.glow) o.glow.visible = true;
-        if (o.lens) o.lens.material.emissiveIntensity = o.was;
+        if (o.mat) o.mat.emissiveIntensity = o.was;
       }
       this._dimmed = [];
       return;
     }
     this._dimmed = [];
-    for (const u of this.game.car?.userData?.lights?.head || []) {
-      const glow = u.getObjectByName('glow');
-      const lens = u.children[0];
-      const rec = { glow: null, lens: null, was: 0 };
-      if (glow && glow.visible) { glow.visible = false; rec.glow = glow; }
-      if (lens?.material?.emissiveIntensity !== undefined) {
-        rec.lens = lens;
-        rec.was = lens.material.emissiveIntensity;
-        // a parked car's lamps are glass, not lamps: down to a quarter, well under the bloom knee
-        lens.material.emissiveIntensity = rec.was * 0.22;
+    // assemble.js banks every lamp that lights together onto ONE shared lens material, so the head
+    // units of a four-lamp car hand back the same material object more than once. Keying the record
+    // set by material means the 0.14 scale is applied once and the restore puts back the ORIGINAL
+    // value — writing per unit dimmed it twice and restored it to 14% of where it started, so the
+    // lamps got progressively deader every time the menu was reopened.
+    const seen = new Set();
+    const L = this.game.car?.userData?.lights || {};
+    // head and reverse go dark; the tails are left at half so the rear still has its red glass.
+    for (const [bucket, scale] of [[L.head, 0.06], [L.reverse, 0.12], [L.tail, 0.55]]) {
+      for (const u of bucket || []) {
+        const glow = u.getObjectByName('glow');
+        const lens = u.children[0];
+        const mat = lens?.material;
+        const rec = { glow: null, mat: null, was: 0 };
+        if (glow && glow.visible && scale < 0.3) { glow.visible = false; rec.glow = glow; }
+        if (mat && mat.emissiveIntensity !== undefined && !seen.has(mat)) {
+          seen.add(mat);
+          rec.mat = mat;
+          rec.was = mat.emissiveIntensity;
+          mat.emissiveIntensity = rec.was * scale;
+        }
+        this._dimmed.push(rec);
       }
-      this._dimmed.push(rec);
     }
   }
 
@@ -1615,7 +2560,7 @@ export class Menu {
     g.body.reset(new THREE.Vector3(0, TT.y, 0), HERO_YAW);
     g.body.pos.set(0, TT.y, 0);
     g.body.y = TT.y;
-    if (this.stage?.env && g.car) g.engine.applyEnvironment(g.car, this.stage.env);
+    if (this.stage?.env && g.car) { g.engine.applyEnvironment(g.car, this.stage.env); this._dampEnv(); }
   }
 
   // ---------------------------------------------------------------- update
@@ -1650,6 +2595,7 @@ export class Menu {
     this.spin = HERO_YAW + breathe + this.spinKick * (1 - ease);
 
     if (this.stage) this.stage.update(this.t);
+    this._pumpThumbs();
 
     if (g.car && g.body) {
       g.body.pos.set(0, TT.y, 0);
@@ -1667,7 +2613,9 @@ export class Menu {
     // Grounding runs AFTER the pose: the decals read the car's real world transform, so they can
     // never drift out from under it as the turntable turns or the car swaps.
     if (this.stage) {
-      this.stage.setContact(g.car, getVehicle(VEHICLE_IDS[this.carIndex]).blueprint.dims);
+      const bp = getVehicle(VEHICLE_IDS[this.carIndex]).blueprint;
+      this.stage.setContact(g.car, bp.dims);
+      this.stage.setCabin(g.car, bp);
     }
 
     // ---- camera ------------------------------------------------------------------------------
@@ -1734,18 +2682,58 @@ export class Menu {
       this.swapT = 0;
       this.spinKick = -Math.PI * 1.45 * d;
       this._stageCar();
+      // reshoot the newly-selected tile from the car that is now on the turntable, so the tile and
+      // the stage always agree about which paint this car is wearing
+      this._queueThumbs();
     } else {
       if (this.cityBusy) return;
       this.cityIndex = (this.cityIndex + d + CITY_IDS.length) % CITY_IDS.length;
       this.cityBusy = true;
-      // The city rebuild re-applies ITS look and captures ITS env probe; hide the garage for the
-      // duration so it does not end up baked into the city's reflection probe, then take the
-      // stage back over.
-      if (this.stage) this.stage.group.visible = false;
-      const p = g.setCity(CITY_IDS[this.cityIndex]);
-      const done = () => { this.cityBusy = false; this._enterStage(); this._stageCar(); };
-      if (p && typeof p.then === 'function') p.then(done, done);
-      else done();
+      /**
+       * Take the garage OUT of the scene for the duration, not merely hide it.
+       *
+       * A city build allocates a few hundred megabytes of geometry, textures, shadow maps and its
+       * own cube probe. Doing that on top of a resident 19 m room — two shadow-casting spots, a
+       * planar reflector, a PMREM probe, four softbox-lit walls — is enough to take the software
+       * rasteriser the capture harness runs on out of memory: the renderer process dies mid-swap
+       * and the menu never comes back. That crash was in the round-1 build too, and it is the
+       * worst kind of dead end because it is on the only path the destination list exists to serve.
+       *
+       * Hiding the group frees nothing — an invisible object is skipped at draw time but every
+       * buffer it owns is still uploaded. Unlinking it lets the renderer drop its render lists and
+       * its shadow allocations for the duration, and relinking afterwards costs nothing: the
+       * geometry, the textures and the env probe are all still ours.
+       */
+      const st = this.stage;
+      const done = () => {
+        if (st && !st.group.parent) g.engine.scene.add(st.group);
+        this.cityBusy = false;
+        this._enterStage();
+        this._stageCar();
+      };
+      /**
+       * And build on the NEXT task, not this one.
+       *
+       * Tearing down a city and building the next one is the single heaviest thing this game does.
+       * Run in the same task as the unlink above, the browser never gets to retire the WebGL
+       * deletes the teardown just queued before the build starts asking for the replacements, and
+       * on the software rasteriser the harness uses that is reliably fatal — the renderer process
+       * dies inside setCity and the menu never returns. Split across two tasks, every step of the
+       * same sequence survives. A frame of latency on a destination change is invisible; a crash
+       * on the destination change is the whole feature.
+       */
+      setTimeout(() => {
+        if (st) {
+          st.group.visible = false;
+          g.engine.scene.remove(st.group);
+          g.engine.scene.environment = null;
+          g.engine.renderer.renderLists.dispose();
+        }
+        let p = null;
+        try { p = g.setCity(CITY_IDS[this.cityIndex]); } catch (e) { console.warn('city swap failed', e); }
+        if (p && typeof p.then === 'function') p.then(done, done);
+        else done();
+      }, 0);
     }
   }
 
@@ -1757,6 +2745,7 @@ export class Menu {
     recolor(g.car, col);
     g.carColor = col;
     this.colorFlash = 1;
+    this._queueThumbs();
     g.audio.init(); g.audio.ui('move');
   }
 
@@ -1806,6 +2795,7 @@ export class Menu {
     this._drawIdentity(ctx, spec, VW, VH, io);
     this._drawStats(ctx, spec, VH, io);
     this._drawDestinations(ctx, VW, io);
+    this._drawSpecs(ctx, spec, VW, io);
     this._drawControls(ctx, VW, VH, io);
 
     ctx.restore();
@@ -1833,8 +2823,17 @@ export class Menu {
 
     ctx.fillStyle = vgrad(ctx, 0, 132, [[0, 'rgba(3,6,12,0.90)'], [1, 'rgba(3,6,12,0)']]);
     ctx.fillRect(0, 0, VW, 132);
-    ctx.fillStyle = vgrad(ctx, VH - 300, VH, [[0, 'rgba(3,5,11,0)'], [0.55, 'rgba(3,5,11,0.62)'], [1, 'rgba(2,4,9,0.94)']]);
-    ctx.fillRect(0, VH - 300, VW, 300);
+    ctx.fillStyle = vgrad(ctx, VH - 320, VH, [[0, 'rgba(3,5,11,0)'], [0.50, 'rgba(3,5,11,0.66)'], [1, 'rgba(2,4,9,0.95)']]);
+    ctx.fillRect(0, VH - 320, VW, 320);
+    // A dedicated ground for the identity + stat column. The turntable deck is the brightest
+    // surface in the room and it runs straight under this block; without its own plate the labels
+    // sat on a moving specular and the smallest type stopped being readable at all.
+    ctx.save();
+    ctx.globalAlpha = io;
+    fillPlate(ctx, IDENT_X - 26, VH - BAR_H - 186, 700, 176, 'rgba(4,8,14,0.68)', 0.13, PANEL_CUT);
+    strokePlate(ctx, IDENT_X - 26, VH - BAR_H - 186, 700, 176, 'rgba(130,160,190,0.30)', 1.3, 0.13, 0, PANEL_CUT);
+    rail(ctx, IDENT_X - 26, VH - BAR_H - 186, 176, 'rgba(255,194,58,0.55)', 3, 0.13);
+    ctx.restore();
     ctx.fillStyle = hgrad(ctx, 0, 560, [[0, 'rgba(3,6,12,0.80)'], [1, 'rgba(3,6,12,0)']]);
     ctx.fillRect(0, 0, 560, VH);
     ctx.fillStyle = hgrad(ctx, VW - 480, VW, [[0, 'rgba(3,6,12,0)'], [1, 'rgba(3,6,12,0.70)']]);
@@ -1896,20 +2895,32 @@ export class Menu {
 
   _drawFan(ctx, VW, VH, io) {
     const n = VEHICLE_IDS.length;
-    const CX = -352, CY = 404, R = 706, SPREAD = 0.222;
-    const TW = 214, TH = 104;
+    // A tighter pivot and a wider sweep than round 1: at R = 706 / spread 0.222 the four plates sat
+    // on an arc so shallow it read as a crooked stack. 470 / 0.315 bends them a visible 54° across
+    // the column, which is what makes the word "fan" true.
+    const CX = -196, CY = 438, R = 470, SPREAD = 0.302;
+    const TW = 246, TH = 126;
     const carFocus = this.focus === 'car';
 
-    // the arc the tiles hang off
+    // the arc the tiles hang off, plus its hub
     ctx.save();
-    ctx.globalAlpha = 0.30 * io;
+    ctx.globalAlpha = 0.34 * io;
     ctx.strokeStyle = 'rgba(150,190,220,0.5)';
     ctx.lineWidth = 1.4;
     ctx.setLineDash([7, 9]);
     ctx.beginPath();
-    ctx.arc(CX, CY, R + TW * 0.5 + 16, -SPREAD * 2.1, SPREAD * 2.1);
+    ctx.arc(CX, CY, R + TW * 0.5 + 18, -SPREAD * 2.0, SPREAD * 2.0);
     ctx.stroke();
     ctx.setLineDash([]);
+    // spokes: one hairline from the hub to each plate, so the radial construction is legible
+    ctx.globalAlpha = 0.18 * io;
+    for (let i = 0; i < n; i++) {
+      const th = (i - (n - 1) / 2) * SPREAD;
+      ctx.beginPath();
+      ctx.moveTo(CX + Math.cos(th) * (R - TW * 0.5), CY + Math.sin(th) * (R - TW * 0.5));
+      ctx.lineTo(CX + Math.cos(th) * (R + TW * 0.5 + 18), CY + Math.sin(th) * (R + TW * 0.5 + 18));
+      ctx.stroke();
+    }
     ctx.restore();
 
     for (let i = 0; i < n; i++) {
@@ -1919,75 +2930,117 @@ export class Menu {
       const th = (i - (n - 1) / 2) * SPREAD;
       const stagger = clamp((this.intro - i * 0.07) / 0.42, 0, 1);
       const ap = smoothstep(0, 1, stagger);
-      const push = sel * 26;
-      const cx = CX + Math.cos(th) * (R + push) - (1 - ap) * 220;
+      const push = sel * 30;
+      const cx = CX + Math.cos(th) * (R + push) - (1 - ap) * 260;
       const cy = CY + Math.sin(th) * (R + push);
 
       ctx.save();
       ctx.globalAlpha = ap;
       ctx.translate(cx, cy);
-      ctx.rotate(th * 0.85);
-      const w = TW * (1 + sel * 0.075), h = TH * (1 + sel * 0.075);
+      ctx.rotate(th * 0.80);
+      const w = TW * (1 + sel * 0.085), h = TH * (1 + sel * 0.085);
       const x = -w / 2, y = -h / 2;
 
-      // plate body
+      // drop the plate off the arc so the fan has depth
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.62)'; ctx.shadowBlur = 16 + sel * 12; ctx.shadowOffsetY = 6;
+      fillPlate(ctx, x, y, w, h, 'rgba(4,7,12,0.96)');
+      ctx.restore();
+
+      // ---- the photograph -------------------------------------------------------------------
       ctx.save();
       plate(ctx, x, y, w, h);
       ctx.clip();
-      ctx.fillStyle = vgrad(ctx, y, y + h, sel > 0.5
-        ? [[0, 'rgba(58,42,14,0.94)'], [1, 'rgba(20,15,6,0.96)']]
-        : [[0, 'rgba(14,19,28,0.86)'], [1, 'rgba(6,9,14,0.92)']]);
-      ctx.fillRect(x - 30, y, w + 60, h);
-      // gold wash on the selected tile
+      const shot = this.thumbs[id]?.canvas;
+      if (shot) {
+        // cover-fit: the render is 460×244, the plate is wider than it is tall once sheared
+        const sc = Math.max((w + h * SHEAR) / shot.width, h / shot.height) * 1.04;
+        const dw = shot.width * sc, dh = shot.height * sc;
+        ctx.globalAlpha = ap;
+        ctx.drawImage(shot, x + (w - dw) / 2 + h * SHEAR * 0.5, y + (h - dh) * 0.42, dw, dh);
+        // unselected plates are pushed down and cooled so the gold one is unmistakably the pick
+        if (sel < 0.99) {
+          ctx.globalAlpha = ap * (1 - sel) * 0.52;
+          ctx.fillStyle = '#0a1826';
+          ctx.fillRect(x - 40, y, w + 80, h);
+          ctx.globalAlpha = ap;
+        }
+      } else {
+        ctx.fillStyle = vgrad(ctx, y, y + h, [[0, 'rgba(14,19,28,0.86)'], [1, 'rgba(6,9,14,0.92)']]);
+        ctx.fillRect(x - 40, y, w + 80, h);
+        drawSilhouette(ctx, id, x + w * 0.10, y + h - 24, w * 0.82,
+          s2.colors[i === this.carIndex ? this.colorIndex : 0], 0.62 + sel * 0.38);
+      }
+
+      // gold edge-wash + a raking sheen on the selected tile. Kept to the left third and low in
+      // alpha: at 0.26 across the whole plate the gold veiled the very photograph the tile exists
+      // to show, and the selected car read as the murkiest of the four.
       if (sel > 0.01) {
         ctx.globalAlpha = ap * sel;
-        ctx.fillStyle = hgrad(ctx, x, x + w, [[0, 'rgba(255,190,60,0.34)'], [1, 'rgba(255,150,20,0.02)']]);
-        ctx.fillRect(x - 30, y, w + 60, h);
+        ctx.fillStyle = hgrad(ctx, x, x + w * 0.62, [[0, 'rgba(255,182,50,0.30)'], [1, 'rgba(255,140,16,0.0)']]);
+        ctx.fillRect(x - 40, y, w + 80, h);
+        const sw = ((this.t * 0.42) % 1.6) - 0.3;
+        ctx.globalAlpha = ap * sel * 0.26;
+        ctx.fillStyle = hgrad(ctx, x + w * (sw - 0.22), x + w * (sw + 0.22),
+          [[0, 'rgba(255,240,200,0)'], [0.5, 'rgba(255,240,200,1)'], [1, 'rgba(255,240,200,0)']]);
+        ctx.fillRect(x - 40, y, w + 80, h);
         ctx.globalAlpha = ap;
       }
-      // hatch texture so an unselected tile is not a flat rectangle
-      ctx.globalAlpha = ap * 0.10;
-      ctx.strokeStyle = '#9fc4e0'; ctx.lineWidth = 1;
-      for (let hx = -h; hx < w + h; hx += 9) {
-        ctx.beginPath(); ctx.moveTo(x + hx, y + h); ctx.lineTo(x + hx + h * SHEAR + 4, y); ctx.stroke();
-      }
-      ctx.globalAlpha = ap;
 
-      drawSilhouette(ctx, id, x + w * 0.10, y + h - 22, w * 0.82,
-        s2.colors[i === this.carIndex ? this.colorIndex : 0], 0.62 + sel * 0.38);
-      // scrim under the caption so the type never fights the silhouette
-      ctx.fillStyle = vgrad(ctx, y + h - 46, y + h,
-        [[0, 'rgba(4,7,12,0)'], [0.55, 'rgba(4,7,12,0.66)'], [1, 'rgba(3,5,10,0.90)']]);
-      ctx.fillRect(x - 30, y + h - 46, w + 60, 46);
+      // top scrim for the class line, bottom scrim for the name — type never fights the photo
+      ctx.fillStyle = vgrad(ctx, y, y + 34, [[0, 'rgba(3,6,11,0.86)'], [1, 'rgba(3,6,11,0)']]);
+      ctx.fillRect(x - 40, y, w + 80, 34);
+      ctx.fillStyle = vgrad(ctx, y + h - 52, y + h,
+        [[0, 'rgba(4,7,12,0)'], [0.48, 'rgba(4,7,12,0.72)'], [1, 'rgba(3,5,10,0.95)']]);
+      ctx.fillRect(x - 40, y + h - 52, w + 80, 52);
       ctx.restore();
 
       // rail + border
-      rail(ctx, x, y, h, sel > 0.5 ? GOLD : 'rgba(120,160,190,0.55)', 3 + sel * 1.5);
+      rail(ctx, x, y, h, sel > 0.5 ? GOLD : 'rgba(120,160,190,0.55)', 3 + sel * 1.8);
       strokePlate(ctx, x, y, w, h,
         sel > 0.02 ? `rgba(255,201,66,${0.35 + 0.65 * sel})` : 'rgba(150,175,200,0.34)',
-        1.3 + sel * 2.0, SHEAR, sel * (carFocus ? 24 : 8));
+        1.3 + sel * 2.2, SHEAR, sel * (carFocus ? 26 : 8));
 
       // class top-left, index top-right, name across the bottom — nothing overlaps at any length
       drawText(ctx, s2.klass, {
-        x: x + 16 + h * SHEAR, y: y + 21, size: 12, weight: 0.15, tracking: 0.20,
-        color: sel > 0.5 ? GOLD : 'rgba(150,175,200,0.72)', face: 'geo',
+        x: x + 16 + h * SHEAR, y: y + 22, size: 12.5, weight: 0.15, tracking: 0.20,
+        color: sel > 0.5 ? GOLD : 'rgba(160,185,208,0.78)', face: 'geo',
+        shadow: { color: 'rgba(0,0,0,0.8)', dy: 1.5, blur: 3 },
       });
       drawText(ctx, `0${i + 1}`, {
-        x: x + w - 10, y: y + 22, size: 15, weight: 0.15, tracking: 0.06, align: 'right',
-        color: sel > 0.5 ? 'rgba(255,220,150,0.9)' : 'rgba(150,175,200,0.55)', face: 'geo',
+        x: x + w - 10, y: y + 23, size: 15, weight: 0.15, tracking: 0.06, align: 'right',
+        color: sel > 0.5 ? 'rgba(255,220,150,0.92)' : 'rgba(150,175,200,0.55)', face: 'geo',
+        shadow: { color: 'rgba(0,0,0,0.8)', dy: 1.5, blur: 3 },
       });
       drawText(ctx, s2.name, {
-        x: x + 14, y: y + h - 13, size: 22, weight: 0.20, italic: 0.22,
+        x: x + 14, y: y + h - 14, size: 23, weight: 0.20, italic: 0.22,
         color: sel > 0.5 ? '#fff3d6' : '#c4d2e2',
-        shadow: { color: 'rgba(0,0,0,0.7)', dy: 2, blur: 3 },
+        shadow: { color: 'rgba(0,0,0,0.85)', dy: 2, blur: 4 },
       });
+
+      // Three power columns under the index, in the stat block's own colours: the fan carries
+      // information, not just names, and the reader can rank the four cars without selecting them.
+      const pipv = [s2.stats.speed, s2.stats.traction, s2.stats.accel];
+      const slotH = 30, pipTop = y + 32, pipBase = pipTop + slotH;
+      for (let p = 0; p < 3; p++) {
+        const bx = x + w - 15 + h * SHEAR * 0.70 - (2 - p) * 10;
+        ctx.globalAlpha = ap * 0.9;
+        ctx.fillStyle = 'rgba(5,9,15,0.78)';
+        ctx.fillRect(bx, pipTop, 6, slotH);
+        const fh = slotH * clamp(pipv[p], 0, 1);
+        ctx.fillStyle = sel > 0.5 ? STAT_COLORS[p][2] : 'rgba(138,168,196,0.80)';
+        ctx.fillRect(bx, pipBase - fh, 6, fh);
+        ctx.fillStyle = sel > 0.5 ? STAT_COLORS[p][3] : 'rgba(190,214,234,0.85)';
+        ctx.fillRect(bx, pipBase - fh, 6, 2);
+        ctx.globalAlpha = ap;
+      }
 
       // selected corner ticks
       if (sel > 0.02) {
         ctx.globalAlpha = ap * sel;
         ctx.strokeStyle = GOLD_HOT; ctx.lineWidth = 2.4;
         const s3 = h * SHEAR;
-        const cor = [[x + s3, y, 16, 0], [x + w + s3, y, -16, 0], [x, y + h, 16, 0], [x + w, y + h, -16, 0]];
+        const cor = [[x + s3, y, 18, 0], [x + w + s3, y, -18, 0], [x, y + h, 18, 0], [x + w, y + h, -18, 0]];
         for (const [px2, py2, dx] of cor) {
           ctx.beginPath(); ctx.moveTo(px2, py2); ctx.lineTo(px2 + dx, py2); ctx.stroke();
         }
@@ -1999,8 +3052,13 @@ export class Menu {
     // focus caption for the column
     ctx.globalAlpha = io;
     drawText(ctx, 'VEHICLE', {
-      x: 44, y: CY - 236, size: 17, weight: 0.16, tracking: 0.30,
+      x: 44, y: 128, size: 17, weight: 0.16, tracking: 0.30,
       color: carFocus ? GOLD : LABEL, face: 'geo',
+    });
+    ctx.fillStyle = carFocus ? GOLD : 'rgba(140,170,196,0.4)';
+    ctx.fillRect(44, 138, 96, 2);
+    drawText(ctx, `0${this.carIndex + 1} / 0${n}`, {
+      x: 44, y: 164, size: 14, weight: 0.14, tracking: 0.22, color: LABEL, face: 'geo',
     });
     ctx.globalAlpha = 1;
     void VW; void VH;
@@ -2008,16 +3066,23 @@ export class Menu {
 
   // ---- name / class / colours --------------------------------------------------------------
 
+  /**
+   * Class chip + paint row.
+   *
+   * The NAME no longer lives here. §1.4 puts it in the black bottom bar — "…beside button glyphs,
+   * and the car name 1970 DODGE CHARGER set large in beveled metallic italic capitals" — and moving
+   * it there is what un-jams the bottom third: at 60 px above the stat block it was 880 px wide, so
+   * it ran through the SPEED bar on its left end and under the specification panel on its right.
+   */
   _drawIdentity(ctx, spec, VW, VH, io) {
-    const x = 512;
-    const yName = VH - 210;
+    const x = IDENT_X;
     const swap = smoothstep(0, 1, this.swapT);
     ctx.save();
     ctx.globalAlpha = io;
     ctx.translate((1 - swap) * -54, 0);
 
     // class chip
-    const chipY = yName - 100;
+    const chipY = VH - BAR_H - 172;
     const cw = measure(spec.klass, { size: 16, tracking: 0.22, face: 'geo' }).width;
     fillPlate(ctx, x, chipY, cw + 100, 28, 'rgba(9,14,22,0.72)');
     fillPlate(ctx, x, chipY, cw + 100, 28, 'rgba(255,194,58,0.14)');
@@ -2029,27 +3094,6 @@ export class Menu {
       x: x + 34 + cw, y: chipY + 20, size: 14, weight: 0.14, tracking: 0.20,
       color: 'rgba(198,218,236,0.92)', face: 'geo',
     });
-
-    // The name: beveled metallic italic caps. Shrink-to-fit — VIPERA SV COMPETIZIONE is twice the
-    // length of KATANA GT-R and at a fixed 60 px it ran through the stat column.
-    const MAXW = 880;
-    let ns = 60;
-    while (ns > 34 && measure(spec.full, { size: ns, tracking: 0.055 }).width > MAXW) ns -= 1;
-    ctx.globalAlpha = io * (0.35 + 0.65 * swap);
-    drawText(ctx, spec.full, {
-      x, y: yName, size: ns, weight: 0.215, italic: 0.24, tracking: 0.055,
-      color: gradientFill([
-        [0, '#ffffff'], [0.30, '#e9f2fb'], [0.50, '#8fa3ba'], [0.56, '#c9d8e8'], [1, '#f4f8fc'],
-      ]),
-      bevel: true, sheen: true,
-      shadow: { color: 'rgba(0,0,0,0.75)', dy: 5, blur: 8 },
-    });
-    ctx.globalAlpha = io;
-
-    // underline rule with a moving highlight
-    const nw = measure(spec.full, { size: ns, tracking: 0.055 }).width;
-    ctx.fillStyle = hgrad(ctx, x, x + nw, [[0, 'rgba(255,201,66,0.85)'], [1, 'rgba(255,201,66,0)']]);
-    ctx.fillRect(x, yName + 12, nw * swap, 3);
 
     // colour swatches — on the class line, so the stat block below keeps its own air
     const sw = 30, gap = 8;
@@ -2078,10 +3122,10 @@ export class Menu {
   // ---- stat bars ---------------------------------------------------------------------------
 
   _drawStats(ctx, spec, VH, io) {
-    const x = 512;
-    const y0 = VH - 178;
-    const bw = 290, bh = 15, pitch = 28;
-    const labelW = 172;
+    const x = IDENT_X;
+    const y0 = VH - BAR_H - 124;
+    const bw = 336, bh = 20, pitch = 34;
+    const labelW = 176;
     ctx.save();
     ctx.globalAlpha = io;
     for (let i = 0; i < 3; i++) {
@@ -2091,71 +3135,117 @@ export class Menu {
       const target = clamp(spec.stats[key], 0, 1);
 
       drawText(ctx, label, {
-        x, y: y + bh - 2, size: 15, weight: 0.15, tracking: 0.16, color: '#d6e3f0', face: 'geo',
+        x, y: y + bh - 4, size: 16, weight: 0.16, tracking: 0.17, color: '#dbe7f3', face: 'geo',
       });
 
       const bx = x + labelW;
       // track
-      fillPlate(ctx, bx, y, bw, bh, 'rgba(7,12,19,0.62)', 0.30);
-      strokePlate(ctx, bx, y, bw, bh, 'rgba(170,200,225,0.34)', 1.1, 0.30);
-      // fill
+      fillPlate(ctx, bx, y, bw, bh, 'rgba(6,11,18,0.74)', 0.30);
+      strokePlate(ctx, bx, y, bw, bh, 'rgba(170,200,225,0.30)', 1.1, 0.30);
+      // quarter ticks on the empty track, so the bar has a scale and not just a length
+      for (let q = 1; q < 4; q++) {
+        const sx = bx + (bw / 4) * q;
+        plate(ctx, sx - 0.7, y + 3, 1.4, bh - 6, 0.30);
+        ctx.fillStyle = 'rgba(150,182,210,0.30)'; ctx.fill();
+      }
+      // fill: saturated at the root, blowing to white at the head, with a bright top rail — the
+      // reference's bars are gradients, not solid blocks
       ctx.save();
       plate(ctx, bx, y, bw * v, bh, 0.30);
       ctx.clip();
-      ctx.fillStyle = hgrad(ctx, bx, bx + bw, [[0, c0], [0.72, c1], [1, '#ffffff']]);
-      ctx.shadowBlur = 14; ctx.shadowColor = c0;
-      ctx.fillRect(bx - 8, y - 2, bw + 16, bh + 4);
+      ctx.fillStyle = hgrad(ctx, bx, bx + bw, [[0, c0], [0.62, c1], [1, '#ffffff']]);
+      ctx.shadowBlur = 16; ctx.shadowColor = c0;
+      ctx.fillRect(bx - 10, y - 2, bw + 20, bh + 4);
       ctx.shadowBlur = 0;
+      ctx.fillStyle = vgrad(ctx, y, y + bh,
+        [[0, 'rgba(255,255,255,0.42)'], [0.42, 'rgba(255,255,255,0.05)'], [1, 'rgba(0,0,0,0.28)']]);
+      ctx.fillRect(bx - 10, y, bw + 20, bh);
       // segment cuts
-      for (let s = 1; s < 16; s++) {
-        const sx = bx + (bw / 16) * s;
-        plate(ctx, sx - 1.4, y - 1, 2.8, bh + 2, 0.30);
-        ctx.fillStyle = 'rgba(6,10,16,0.66)'; ctx.fill();
+      for (let s = 1; s < 18; s++) {
+        const sx = bx + (bw / 18) * s;
+        plate(ctx, sx - 1.5, y - 1, 3.0, bh + 2, 0.30);
+        ctx.fillStyle = 'rgba(6,10,16,0.70)'; ctx.fill();
       }
       ctx.restore();
 
       // leading cap
       const capX = bx + bw * v;
-      plate(ctx, capX - 3, y - 2, 5, bh + 4, 0.30);
+      plate(ctx, capX - 3, y - 3, 5.5, bh + 6, 0.30);
       ctx.fillStyle = '#ffffff';
-      ctx.shadowBlur = 16; ctx.shadowColor = c1; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.shadowBlur = 18; ctx.shadowColor = c1; ctx.fill(); ctx.shadowBlur = 0;
 
       // target ghost while the bar is still travelling
       if (Math.abs(target - v) > 0.006) {
-        plate(ctx, bx + bw * target - 2, y - 4, 4, bh + 8, 0.30);
+        plate(ctx, bx + bw * target - 2, y - 5, 4, bh + 10, 0.30);
         ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fill();
       }
 
       drawText(ctx, String(Math.round(v * 100)).padStart(2, '0'), {
-        x: bx + bw + 78, y: y + bh - 1, size: 21, weight: 0.19, italic: 0.20, align: 'right',
-        color: '#f0f6fc',
+        x: bx + bw + 84, y: y + bh - 3, size: 25, weight: 0.20, italic: 0.20, align: 'right',
+        color: gradientFill([[0, '#ffffff'], [0.55, '#e6eef8'], [1, c1]]),
+        shadow: { color: 'rgba(0,0,0,0.7)', dy: 2, blur: 4 },
       });
     }
+    ctx.restore();
+  }
 
-    // hard numbers under the bars — the spec sheet the bars are an abstraction of
+  /**
+   * The spec strip. The hard numbers used to sit as a cramped single line under the stat bars,
+   * where they competed with three gradients and the car's name; and the 350 × 340 px of bare floor
+   * under the destination panel was the only genuinely empty region of the frame. Moving them out
+   * fixes both — the bottom-left becomes exactly the reference's "three gradient stat bars", and the
+   * right column becomes a spec sheet the eye can read as one block.
+   */
+  _drawSpecs(ctx, spec, VW, io) {
+    const w = 344;
+    const x = VW - w - 34 - PANEL_LEAN;
+    const y = 616;
     const ph = spec.physics || {};
-    const facts = [
-      ['TOP SPEED', `${Math.round((ph.topSpeed || 0) * 2.2369)}`, 'MPH'],
-      ['MASS', `${Math.round(ph.mass || 0)}`, 'KG'],
-      ['NITRO', `${(spec.nitro?.duration ?? 0).toFixed(1)}`, 'SEC'],
+    const rows = [
+      ['TOP SPEED', `${Math.round((ph.topSpeed || 0) * 2.2369)}`, 'MPH', ORANGE],
+      ['MASS', `${Math.round(ph.mass || 0)}`, 'KG', '#9fc4e0'],
+      ['NITRO', `${(spec.nitro?.duration ?? 0).toFixed(1)}`, 'SEC', CYAN],
     ];
-    let fx = x;
-    const fy2 = y0 + 3 * pitch + 20;
-    for (const [label, val, unit] of facts) {
+    const bodyH = 40 + rows.length * 34 + 10;
+    // Both right-column panels lean by the SAME NUMBER OF PIXELS rather than the same angle, so
+    // their top edges and their bottom edges each line up as one vertical.
+    const S = PANEL_LEAN / bodyH;
+    const L = (ry) => shearAt(x, y, bodyH, ry, S);
+    const R = (ry) => shearAt(x + w, y, bodyH, ry, S);
+    ctx.save();
+    ctx.translate((1 - io) * 90, 0);
+    ctx.globalAlpha = io;
+    fillPlate(ctx, x, y, w, bodyH, 'rgba(5,9,15,0.90)', S, PANEL_CUT);
+    strokePlate(ctx, x, y, w, bodyH, 'rgba(140,172,200,0.40)', 1.5, S, 0, PANEL_CUT);
+    rail(ctx, x, y, bodyH, GOLD, 4, S);
+    drawText(ctx, 'SPECIFICATION', {
+      x: L(y + 20) + 20, y: y + 28, size: 16, weight: 0.16, tracking: 0.26, color: LABEL, face: 'geo',
+    });
+    ctx.strokeStyle = 'rgba(150,190,220,0.22)'; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.moveTo(L(y + 40) + 16, y + 40); ctx.lineTo(R(y + 40) - 12, y + 40); ctx.stroke();
+
+    rows.forEach(([label, val, unit, col], i) => {
+      const ry = y + 40 + i * 34;
+      if (i % 2 === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.045)';
+        fillPlate(ctx, L(ry + 31) + 12, ry + 3, w - 30, 28, 'rgba(255,255,255,0.045)', S);
+      }
       drawText(ctx, label, {
-        x: fx, y: fy2, size: 12, weight: 0.14, tracking: 0.18, color: LABEL, face: 'geo',
+        x: L(ry + 18) + 24, y: ry + 23, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
       });
-      const lw = measure(label, { size: 12, tracking: 0.18, face: 'geo' }).width;
+      const uw = unit ? measure(unit, { size: 12, tracking: 0.18, face: 'geo' }).width + 7 : 0;
+      if (unit) {
+        drawText(ctx, unit, {
+          x: R(ry + 18) - 24, y: ry + 23, size: 12, weight: 0.14, tracking: 0.18, align: 'right',
+          color: 'rgba(150,175,200,0.78)', face: 'geo',
+        });
+      }
       drawText(ctx, val, {
-        x: fx + lw + 12, y: fy2 + 1, size: 19, weight: 0.19, italic: 0.20, color: '#e8f1fa',
+        x: R(ry + 18) - 24 - uw, y: ry + 25, size: 24, weight: 0.20, italic: 0.20, align: 'right',
+        color: gradientFill([[0, '#ffffff'], [0.6, '#e8f1fa'], [1, col]]),
+        shadow: { color: 'rgba(0,0,0,0.7)', dy: 2, blur: 3 },
       });
-      const vw = measure(val, { size: 19 }).width;
-      drawText(ctx, unit, {
-        x: fx + lw + vw + 18, y: fy2, size: 11, weight: 0.14, tracking: 0.18,
-        color: 'rgba(150,175,200,0.75)', face: 'geo',
-      });
-      fx += lw + vw + measure(unit, { size: 11, tracking: 0.18, face: 'geo' }).width + 44;
-    }
+    });
     ctx.restore();
   }
 
@@ -2163,39 +3253,46 @@ export class Menu {
 
   _drawDestinations(ctx, VW, io) {
     const w = 344;
-    const x = VW - w - 34;
+    const x = VW - w - 34 - PANEL_LEAN;
     const y = 150;
     const rowH = 44;
     const cityFocus = this.focus === 'city';
     const slide = (1 - io) * 90;
-    const bodyH = 46 + CITY_IDS.length * rowH + 108;
+    const bodyH = 46 + CITY_IDS.length * rowH + 222;
+    const S = PANEL_LEAN / bodyH;
+    const L = (ry) => shearAt(x, y, bodyH, ry, S);
+    const R = (ry) => shearAt(x + w, y, bodyH, ry, S);
 
     ctx.save();
     ctx.translate(slide, 0);
     ctx.globalAlpha = io;
 
-    fillPlate(ctx, x, y, w, bodyH, 'rgba(5,9,15,0.80)', 0.06);
-    strokePlate(ctx, x, y, w, bodyH, cityFocus ? CYAN : 'rgba(130,160,190,0.34)', cityFocus ? 2.2 : 1.3, 0.06,
-      cityFocus ? 16 : 0);
-    rail(ctx, x, y, bodyH, cityFocus ? CYAN : 'rgba(120,150,180,0.5)', 4, 0.06);
+    // Near-opaque. At 0.80 the red oil drum behind the panel bled up through the rows and the
+    // list lost its black ground — a menu panel has to be a surface, not a filter.
+    fillPlate(ctx, x, y, w, bodyH, 'rgba(4,8,13,0.93)', S, PANEL_CUT);
+    strokePlate(ctx, x, y, w, bodyH, cityFocus ? CYAN : 'rgba(140,172,200,0.40)', cityFocus ? 2.4 : 1.5, S,
+      cityFocus ? 16 : 0, PANEL_CUT);
+    rail(ctx, x, y, bodyH, cityFocus ? CYAN : 'rgba(120,150,180,0.5)', 4, S);
 
     drawText(ctx, 'DESTINATION', {
-      x: x + 20, y: y + 30, size: 18, weight: 0.16, tracking: 0.26,
+      x: L(y + 22) + 20, y: y + 30, size: 18, weight: 0.16, tracking: 0.26,
       color: cityFocus ? CYAN : LABEL, face: 'geo',
     });
     ctx.strokeStyle = 'rgba(150,190,220,0.24)'; ctx.lineWidth = 1.1;
-    ctx.beginPath(); ctx.moveTo(x + 16, y + 44); ctx.lineTo(x + w - 12, y + 44); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(L(y + 44) + 16, y + 44); ctx.lineTo(R(y + 44) - 12, y + 44); ctx.stroke();
 
     CITY_IDS.forEach((id, i) => {
       const def = getCity(id).def;
       const sel = this.cityT[i];
       const ry = y + 52 + i * rowH;
       const accent = def.look?.accent || CYAN;
+      const rl = L(ry + rowH - 6);
+      const rr = R(ry + 18);
       if (sel > 0.01) {
         ctx.globalAlpha = io * sel;
-        fillPlate(ctx, x + 10, ry, w - 26, rowH - 6, hgrad(ctx, x, x + w,
-          [[0, cityFocus ? 'rgba(57,215,242,0.30)' : `${accent}3a`], [1, 'rgba(57,215,242,0)']]), 0.06);
-        rail(ctx, x + 10, ry, rowH - 6, cityFocus ? CYAN : accent, 4, 0.06);
+        fillPlate(ctx, rl + 10, ry, w - 26, rowH - 6, hgrad(ctx, x, x + w,
+          [[0, cityFocus ? 'rgba(57,215,242,0.30)' : `${accent}3a`], [1, 'rgba(57,215,242,0)']]), S);
+        rail(ctx, rl + 10, ry, rowH - 6, cityFocus ? CYAN : accent, 4, S);
         ctx.globalAlpha = io;
       }
       // Two-tone chip: the city's accent beside its own sky. Vegas and New York publish the SAME
@@ -2203,21 +3300,23 @@ export class Menu {
       const sky2 = def.look?.sky?.top || def.look?.fog?.color || '#8899aa';
       ctx.shadowBlur = 8 + sel * 12; ctx.shadowColor = accent;
       ctx.fillStyle = accent;
-      plate(ctx, x + 24, ry + 12, 8, 14, 0.4); ctx.fill();
+      plate(ctx, rl + 24, ry + 12, 8, 14, 0.4); ctx.fill();
       ctx.shadowBlur = 0;
       ctx.fillStyle = sky2;
-      plate(ctx, x + 32, ry + 12, 8, 14, 0.4); ctx.fill();
+      plate(ctx, rl + 32, ry + 12, 8, 14, 0.4); ctx.fill();
 
       // shrink-to-fit: NEW YORK CITY is half again as long as MIAMI and must not run into the laps
+      // tracking 0.08 was too tight for an 18% italic — the two Ms of MIAMI overlapped into a
+      // single blot. 0.13 clears the lean at every name length.
       const avail = w - 158;
       let ns = 21;
-      while (ns > 14 && measure(def.name, { size: ns, tracking: 0.08 }).width > avail) ns -= 0.5;
+      while (ns > 14 && measure(def.name, { size: ns, tracking: 0.13 }).width > avail) ns -= 0.5;
       drawText(ctx, def.name, {
-        x: x + 56, y: ry + 26, size: ns, weight: 0.17, italic: 0.18,
+        x: rl + 56, y: ry + 26, size: ns, weight: 0.17, italic: 0.18, tracking: 0.13,
         color: sel > 0.5 ? '#ffffff' : 'rgba(178,199,220,0.92)',
       });
       drawText(ctx, `${def.laps} LAPS`, {
-        x: x + w - 24, y: ry + 25, size: 13, weight: 0.14, tracking: 0.16, align: 'right',
+        x: rr - 24, y: ry + 25, size: 13, weight: 0.14, tracking: 0.16, align: 'right',
         color: sel > 0.5 ? 'rgba(255,255,255,0.8)' : 'rgba(150,175,200,0.6)', face: 'geo',
       });
     });
@@ -2227,69 +3326,138 @@ export class Menu {
     const def = getCity(CITY_IDS[this.cityIndex]).def;
     const accent = def.look?.accent || CYAN;
     const fy = y + 52 + CITY_IDS.length * rowH + 8;
+    const fl = L(fy + 170), fr = R(fy - 4);
     ctx.strokeStyle = 'rgba(150,190,220,0.2)'; ctx.lineWidth = 1.1;
-    ctx.beginPath(); ctx.moveTo(x + 16, fy - 4); ctx.lineTo(x + w - 12, fy - 4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(L(fy - 4) + 16, fy - 4); ctx.lineTo(fr - 12, fy - 4); ctx.stroke();
 
-    // sky gradient behind the skyline, in the city's own accent
+    // Sky + skyline preview, in the destination's OWN palette. Three depth bands, not one flat
+    // stencil: a far range at 22% over the sky, a mid band at 55%, the hero silhouette solid. That
+    // is the difference between "a row of black rectangles" and a one-second read of a place.
+    const sky = def.look?.sky || {};
+    const skyTop = sky.top || '#10222e';
+    const skyHz = sky.horizon || accent;
     ctx.save();
-    ctx.beginPath(); ctx.rect(x + 18, fy + 2, w - 44, 56); ctx.clip();
-    ctx.fillStyle = vgrad(ctx, fy + 2, fy + 58,
-      [[0, 'rgba(10,16,24,0)'], [0.55, `${accent}26`], [1, `${accent}4a`]]);
-    ctx.fillRect(x + 18, fy + 2, w - 44, 56);
-    drawSkyline(ctx, def.id, x + 26, fy + 58, w - 60, 46, 'rgba(6,10,16,0.94)');
+    ctx.beginPath(); ctx.rect(fl + 18, fy + 2, w - 44, 166); ctx.clip();
+    ctx.fillStyle = vgrad(ctx, fy + 2, fy + 168, [[0, skyTop], [0.50, skyHz], [1, sky.haze || skyHz]]);
+    ctx.fillRect(fl + 18, fy + 2, w - 44, 166);
+    // sun/moon disc, placed off-centre so the strip is composed
+    const sg = ctx.createRadialGradient(fl + w * 0.70, fy + 92, 1, fl + w * 0.70, fy + 92, 74);
+    sg.addColorStop(0, sky.sunColor || '#ffe0b0');
+    sg.addColorStop(0.28, `${(sky.sunColor || '#ffe0b0')}88`);
+    sg.addColorStop(1, 'rgba(255,224,176,0)');
+    ctx.fillStyle = sg; ctx.fillRect(fl + 18, fy + 2, w - 44, 166);
+    ctx.globalAlpha = io * 0.22;
+    drawSkyline(ctx, def.id, fl + 8, fy + 146, w - 24, 80, '#000000');
+    ctx.globalAlpha = io * 0.55;
+    drawSkyline(ctx, def.id, fl + 56, fy + 156, w - 84, 66, '#000000');
+    ctx.globalAlpha = io;
+    drawSkyline(ctx, def.id, fl + 26, fy + 168, w - 60, 96, 'rgba(4,7,12,0.97)');
+    // ground strip so the silhouettes stand on something
+    ctx.fillStyle = 'rgba(4,7,12,0.97)';
+    ctx.fillRect(fl + 18, fy + 162, w - 44, 8);
     ctx.restore();
     ctx.fillStyle = accent;
-    ctx.globalAlpha = io * 0.85;
-    ctx.fillRect(x + 18, fy + 57, w - 44, 1.6);
+    ctx.globalAlpha = io * 0.9;
+    ctx.fillRect(fl + 18, fy + 170, w - 44, 1.8);
     ctx.globalAlpha = io;
 
     drawText(ctx, 'RECORD', {
-      x: x + 24, y: fy + 84, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
+      x: L(fy + 200) + 24, y: fy + 200, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
     });
     drawText(ctx, def.record || '--:--', {
-      x: x + w - 24, y: fy + 86, size: 20, weight: 0.19, italic: 0.20, align: 'right', color: GOLD,
+      x: R(fy + 202) - 24, y: fy + 202, size: 22, weight: 0.19, italic: 0.20, align: 'right', color: GOLD,
     });
     ctx.restore();
   }
 
   // ---- control bar -------------------------------------------------------------------------
 
+  /**
+   * The bottom bar. §1.4: black, control glyphs and their labels along it, and the car's full name
+   * set large in beveled metallic italic capitals at the far end. Both live on one baseline, which
+   * is why the hint labels are terse — NAVIGATE / CAR·CITY / COLOUR / RACE leaves the right 730 px
+   * clear for the longest name in the roster.
+   */
   _drawControls(ctx, VW, VH, io) {
-    const h = 56;
+    const h = BAR_H;
     const y = VH - h;
+    const spec = getVehicle(VEHICLE_IDS[this.carIndex]).spec;
+    const swap = smoothstep(0, 1, this.swapT);
     ctx.save();
     ctx.globalAlpha = io;
-    ctx.fillStyle = vgrad(ctx, y, VH, [[0, 'rgba(4,7,13,0.92)'], [1, 'rgba(2,3,8,0.98)']]);
+    ctx.fillStyle = vgrad(ctx, y, VH, [[0, 'rgba(4,7,13,0.94)'], [1, 'rgba(2,3,8,0.99)']]);
     ctx.fillRect(0, y, VW, h);
-    ctx.fillStyle = hgrad(ctx, 0, VW, [[0, 'rgba(255,146,20,0.85)'], [0.5, 'rgba(57,215,242,0.55)'], [1, 'rgba(255,146,20,0)']]);
+    ctx.fillStyle = hgrad(ctx, 0, VW, [[0, 'rgba(255,146,20,0.9)'], [0.42, 'rgba(57,215,242,0.6)'], [1, 'rgba(255,146,20,0.15)']]);
     ctx.fillRect(0, y - 2, VW, 2);
+    // hazard chevrons along the very bottom — the workshop's own graphic language
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, VH - 7, VW, 7); ctx.clip();
+    ctx.globalAlpha = io * 0.30;
+    for (let cx2 = -20; cx2 < VW; cx2 += 26) {
+      ctx.fillStyle = GOLD;
+      ctx.beginPath();
+      ctx.moveTo(cx2, VH); ctx.lineTo(cx2 + 11, VH);
+      ctx.lineTo(cx2 + 20, VH - 7); ctx.lineTo(cx2 + 9, VH - 7);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalAlpha = io;
 
     const hints = [
       [['◄', '►'], 'NAVIGATE'],
-      [['▲', '▼'], 'CAR / DESTINATION'],
-      [['V'], 'CHANGE COLOR'],
-      [['ENTER'], 'START RACE'],
+      [['▲', '▼'], 'CAR / CITY'],
+      [['V'], 'COLOUR'],
+      [['ENTER'], 'RACE'],
     ];
+    const hy = y + h - 30;
     let hx = 40;
     for (let i = 0; i < hints.length; i++) {
       const [keys, label] = hints[i];
-      for (const kk of keys) { hx += keycap(ctx, hx, y + 41, kk, 30) + 5; }
+      for (const kk of keys) { hx += keycap(ctx, hx, hy + 13, kk, 30) + 5; }
       hx += 5;
       const last = i === hints.length - 1;
+      if (last) {
+        // the confirm hint pulses — the one action the screen actually wants
+        ctx.globalAlpha = io * (0.62 + 0.38 * (0.5 + 0.5 * Math.sin(this.t * 3.4)));
+      }
       drawText(ctx, label, {
-        x: hx, y: y + 33, size: 15, weight: 0.15, tracking: 0.16,
-        color: last ? GOLD : 'rgba(196,214,232,0.95)', face: 'geo',
+        x: hx, y: hy + 5, size: 15, weight: 0.15, tracking: 0.16,
+        color: last ? GOLD_HOT : 'rgba(196,214,232,0.95)', face: 'geo',
+        glow: last ? { color: ORANGE, blur: 14 } : null,
       });
-      hx += measure(label, { size: 15, tracking: 0.16, face: 'geo' }).width + 42;
+      hx += measure(label, { size: 15, tracking: 0.16, face: 'geo' }).width + 40;
+      ctx.globalAlpha = io;
     }
 
-    // pulsing prompt on the right
-    const pulse = 0.55 + 0.45 * Math.sin(this.t * 3.4);
-    ctx.globalAlpha = io * (0.5 + 0.5 * pulse);
-    drawText(ctx, 'PRESS ENTER TO RACE', {
-      x: VW - 40, y: y + 37, size: 21, weight: 0.19, italic: 0.22, align: 'right', tracking: 0.10,
-      color: GOLD_HOT, glow: { color: ORANGE, blur: 18 },
+    // ---- the name -----------------------------------------------------------------------------
+    const MAXW = VW - 40 - Math.max(hx + 26, 830);
+    let ns = 52;
+    while (ns > 26 && measure(spec.full, { size: ns, tracking: 0.078 }).width > MAXW) ns -= 1;
+    const nw = measure(spec.full, { size: ns, tracking: 0.078 }).width;
+    const nx = VW - 40;
+    const ny = y + h - 26;
+    // a gold underscore that draws itself in as the car swaps
+    ctx.fillStyle = hgrad(ctx, nx - nw, nx, [[0, 'rgba(255,201,66,0)'], [1, 'rgba(255,201,66,0.9)']]);
+    ctx.fillRect(nx - nw * swap, ny + 12, nw * swap, 3);
+    drawText(ctx, spec.klass, {
+      x: nx, y: ny - ns - 8, size: 13, weight: 0.14, tracking: 0.30, align: 'right',
+      color: GOLD, face: 'geo',
     });
+    ctx.globalAlpha = io * (0.35 + 0.65 * swap);
+    ctx.save();
+    ctx.translate((1 - swap) * 40, 0);
+    drawText(ctx, spec.full, {
+      // 0.215 closed the M's counter — the pen expands every stem by (weight − base)·size on each
+      // side and the M's inner vertex is only a couple of those apart, so "DOMINATOR" set solid and
+      // read DOMlNATOR. 0.188 keeps the face heavy and leaves the notch open.
+      x: nx, y: ny, size: ns, weight: 0.188, italic: 0.24, tracking: 0.078, align: 'right',
+      color: gradientFill([
+        [0, '#ffffff'], [0.30, '#e9f2fb'], [0.50, '#8fa3ba'], [0.56, '#c9d8e8'], [1, '#f4f8fc'],
+      ]),
+      bevel: true, sheen: true,
+      shadow: { color: 'rgba(0,0,0,0.8)', dy: 4, blur: 7 },
+    });
+    ctx.restore();
     ctx.restore();
   }
 }

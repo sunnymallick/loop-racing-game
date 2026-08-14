@@ -321,7 +321,28 @@ export class VehicleBody {
     const lockLeft = 1 - smoothstep(0.80, 1.0, Math.abs(this.steerAngle) / Math.max(0.02, steerLimit));
     const commitRaw = clamp(hb * 0.9 + into * 0.75 + counter * 0.95 * lockLeft + throttle * 0.30, 0, 1);
     this.commit = lerp(this.commit, commitRaw, 1 - Math.exp(-7 * dt));
-    const allow = p.slipMax * DEG2RAD * lerp(0.30, 1.0, this.commit);
+    //
+    // THE FLOOR IS A DEAD BAND, AND THE DEAD BAND IS WHERE A FAILED RECOVERY PARKS. Below `allow`
+    // the stability control is silent — and `esc` is the ONLY term in this model that can shrink a
+    // big slip angle, because once both axles are past their peak the yaw moment collapses to
+    // a·μf − b·μr, a ratio of the two friction budgets, and that is self-sustaining for every class
+    // (measured with the wheel straight at 45 m/s and 0.6 throttle, ESC muted: +6.5 tuner, +4.4
+    // muscle, +0.6 suv, +10.3 supercar rad/s² of residual yaw at 20° of slip). So whatever angle
+    // `allow` sits at is a floor on what the car can wind itself back to: the slide comes down
+    // through the ramp, crosses under `allow`, the ESC lets go, and the tyres keep what is left.
+    // At 0.30 a driver with their hands straight and nothing but part throttle (commit → 0.18) was
+    // handed 0.426·slipMax of permanently tolerated angle — 15.3° on the muscle car, 11.1° on the
+    // supercar, both well past the angle at which the HUD starts calling it a DRIFT — and the two
+    // classes parked a couple of degrees above exactly that line and stayed there.
+    //
+    // 0.24 is a TRIM, not the fix. The band still exists (0.377·slipMax at part throttle) and it has
+    // to: the whole point of `allow` is that a car below it is being driven, not rescued. What makes
+    // the band survivable is the lead below, which restores the ESC's authority on the way DOWN so
+    // the slide is still being wound in when it crosses the line, instead of stalling on it. The
+    // trim just buys margin — muscle free-space recovery 5.9° → 0.5° after 1.5 s — and it is kept
+    // small on purpose: the drift captures move by about a degree, because this number must never
+    // become the thing that ends a slide.
+    const allow = p.slipMax * DEG2RAD * lerp(0.24, 1.0, this.commit);
     this.slipAllow = allow;
     this.slipTarget = -dir * allow;
 
@@ -370,15 +391,26 @@ export class VehicleBody {
     // before it closes. Real ESC brakes a wheel for exactly this reason.)
     //   · past the angle the driver has asked for, grip is handed back and the slide winds down
     //   · while the angle is still OPENING, grip comes back early — that is what catches a flick
-    //   · while it is collapsing, the rears are kept lit, which is what HOLDS a long slide
     // It never names an angle, so the trace shows a slide that settles where the entry and the
     // driver's hands put it, not one that converges onto a table value.
+    //
+    // ONE-SIDED, for the same reason the counter-steer assist below is. `slipLead` is a SIGNED
+    // prediction, so it only reads as "where the angle will be" while the angle is opening. While it
+    // is COLLAPSING the lead points back toward zero, |slipLead| < |β|, and the controller sees less
+    // angle than the car actually has — i.e. the ESC withdraws exactly the grip that is closing the
+    // slide, in proportion to how fast it is closing. That is a derivative term wired backwards, and
+    // it does not merely slow recovery: it creates a fixed point. Recovery stalls at the angle where
+    // the discounted `esc` output exactly cancels the class's saturated-drift moment, which for the
+    // muscle car and the supercar sits above the ramp's own dead band, so the car parks there and
+    // never comes back. Lead the angle up, never down: max() takes the prediction when it is
+    // anticipating an opening slide and the real angle when it is not.
     const slipLead = slip0 + (this.aLat / Math.max(9, absV) - this.yawRate) * p.escLead;
+    const escArg = Math.max(Math.abs(slip0), Math.abs(slipLead));
     // A ~13° ramp, not a comparator: rear grip has to come back as a CURVE you can drive against
     // (lean on the throttle and the tail stays out, ease off and it comes back). The round-2
     // 1.00 ↔ 0.26 strobe was not this band, it was `allow` chattering underneath it — fixed above
     // with real hysteresis on the slide direction and a filter on driver commitment.
-    const esc = smoothstep(allow, allow + 0.23, Math.abs(slipLead));
+    const esc = smoothstep(allow, allow + 0.23, escArg);
     // Backstop. Deliberately close behind the class limit: a car that is 12° past what its own
     // ESC allows is already a spin, and §6.2 caps the whole piece at 45 if it can spin at all.
     const guard = smoothstep(p.slipMax + 8, p.slipMax + 22, slipDeg0);
@@ -508,12 +540,36 @@ export class VehicleBody {
 
     // Wall contact steers the car ALONG the barrier instead of into it: the difference between a
     // clumsy corner costing two seconds and a race that ends pinned to a wall.
+    //
+    // The authority RISES with how sideways the car is against the wall, and that is not a fudge —
+    // it is the barrier doing what a barrier does. `impact()` takes the velocity component into the
+    // wall away in one frame (a hit at 40° of incidence has the car travelling along the barrier
+    // immediately) but left the HEADING pointing into it, unwound at a flat 6/s. The gap between
+    // the two IS slip angle: the model manufactured ~40° of it out of a graze and then took a third
+    // of a second to give it back, during which the car re-hit the wall and made some more. Measured
+    // on the LA drift exit: the supercar grazed the outside barrier and was still 24° sideways half
+    // a second and two impacts later, pinballing down the wall — §6.2 scores exactly that as
+    // "recovery and controllability after a hit", and §6.6 as "it never breaks the race".
+    // A car pressed against a barrier physically cannot hold a big angle to it: the wall is in the
+    // way of the corner that would have to swing out. So a light scrape at a couple of degrees is
+    // left alone (the driver keeps the car, which is what makes a barrier rub survivable rather
+    // than a scripted rescue), and a car slammed in 40° out is put straight along the wall in a few
+    // frames instead of grinding down it sideways.
+    //
+    // Gated on driver COMMITMENT, exactly like the ESC's `allow` above, and for the same reason: a
+    // drift that runs wide and kisses the barrier while the driver is still holding lock is a drift,
+    // not an accident, and snapping it straight is the "model that can no longer slide" failure —
+    // ungated, this cost the supercar's LA slide 10° of peak angle (34° → 24°). With the gate the
+    // extra authority only exists for a driver who has let go of the car.
     if (this.wallT > 0) {
       const tang = new THREE.Vector3().crossVectors(UP, this.wallN).normalize();
       if (tang.dot(this.vel) < 0 && this.vel.lengthSq() > 1) tang.negate();
       else if (this.vel.lengthSq() <= 1 && tang.dot(fwd) < 0) tang.negate();
       const err = Math.atan2(fwd.x * tang.z - fwd.z * tang.x, fwd.x * tang.x + fwd.z * tang.z);
-      this.yaw -= err * (1 - Math.exp(-6 * dt));
+      const askew = Math.abs(Math.atan2(vLat, Math.max(4.0, Math.abs(vLong))));
+      const asked = smoothstep(0.34, 0.62, this.commit);            // hands on the wheel, or a handbrake
+      const pin = 6 + 30 * smoothstep(0.14, 0.45, askew) * (1 - asked);
+      this.yaw -= err * (1 - Math.exp(-pin * dt));
       this.yawRate = lerp(this.yawRate, 0, 1 - Math.exp(-5 * dt));
     }
 

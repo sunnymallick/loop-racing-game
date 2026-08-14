@@ -30,7 +30,11 @@ export const blueprint = {
   // staggered: 1.64 front / 1.70 rear, so the rear tyres stand ~9 cm outboard of the hatch tail and
   // break the silhouette from behind (§6.1 round-2: no wheel was readable in any harness frame)
   dims: { length: 4.44, width: 2.10, height: 1.36, wheelbase: 2.62, track: 1.660, trackRear: 1.744, rideHeight: 0.13 },
-  paint: { metalness: 0.26, roughness: 0.29, clearcoat: 1.0, clearcoatRoughness: 0.092, flake: 0.50, envIntensity: 0.74 },
+  // envIntensity 0.70 (0.88 after the lighting piece's 1.25x) on a 0.15-metalness body put almost
+  // no city into the paint, so the car sat in the frame as a flat coloured shape and went to a grey
+  // silhouette in NYC. §1.6.3 wants "a sky reflection above and a dark ground reflection below" —
+  // that is the env probe, and it needs metalness to carry it and a tight clearcoat over it.
+  paint: { metalness: 0.46, roughness: 0.25, clearcoat: 0.92, clearcoatRoughness: 0.062, flake: 0.50, envIntensity: 1.20 },
   livery: {
     style: 'rally', stripe: '#f4f6f8', accent: '#15171c',
     panels: {
@@ -41,7 +45,9 @@ export const blueprint = {
       fuelCap: [0.31, V(-1.72)],
     },
   },
-  glass: { tint: '#080f16', opacity: 0.72 },
+  // see muscle.js — 0.72 opacity made the cabin a §7 black void; 0.60 keeps the tint and the env
+  // reflection but lets the roll cage, the door cards and the shelf read through the hatch glass
+  glass: { tint: '#0d141c', opacity: 0.60 },
 
   body: [
     { z: -2.22, w: 0.745, y0: 0.375, floor: 0.55, rocker: 0.95, ySill: 0.54, yBelt: 0.85, belt: 0.96, yDeck: 0.845, deck: 0.92, crown: 0.005 },
@@ -84,7 +90,9 @@ export const blueprint = {
       { z0: -1.14, z1: -1.46, a: 2, b: 5, mat: 'paint', steps: 5 },
     ],
     beltZ0: -1.18, beltZ1: 0.20, beltMat: 'dark',
-    interior: { seat: 0x1e2027, trim: 0x101217, accent: 0x18b6e8, floorY: 0.735, headY: 1.185, dashY: 0.935, wheelY: 0.975, shelfY: 0.95, seatZ: -0.20, dashZ: 0.80, dashW: 1.34, seatX: 0.33, shelfZ: 0.60, rollBar: true, rhd: true, clusterColor: '#ff4d3d' },
+    // stripped-out JDM cabin: grey buckets, black cage, the car's own cyan on the harnesses and
+    // door pulls. Authored light enough to survive being read through 60%-opaque hatch glass.
+    interior: { seat: 0x4e535e, trim: 0x35393f, accent: 0x18b6e8, floorY: 0.735, headY: 1.185, dashY: 0.935, wheelY: 0.975, shelfY: 0.945, seatZ: -0.20, dashZ: 0.80, dashW: 1.34, seatX: 0.33, shelfZ: 0.92, shelfD: 0.44, rollBar: true, rhd: true, clusterColor: '#ff4d3d' },
   },
 
   wheels: {
@@ -96,14 +104,21 @@ export const blueprint = {
     front: { radius: 0.350, width: 0.275, spokes: 5, tireProfile: 0.240 },
     rear: { radius: 0.360, width: 0.315, spokes: 5, tireProfile: 0.235 },
   },
-  // bolt-on over-fenders: satin black, standing 45 mm proud of the flank
+  // bolt-on over-fenders: satin black, standing 45 mm proud of the flank, riveted on all round —
+  // the arc of fasteners is the widebody signature and it stops the flare reading as a cutout
   archThickness: 0.046, archGap: 1.045, archFlare: 0.048, archSpan: 1.06, blackArches: true,
+  archBolts: 9,
 
   lights: {
     head: [{ x: 0.60, y: 0.755, z: 2.175, w: 0.44, h: 0.115, shape: 'strip', color: '#dfe9ff', intensity: 3.2 }],
+    // segs breaks each strip into three lit elements. At intensity 2.6 with no divider the two
+    // strips fused into a single orange lozenge per side that swallowed the whole rear quarter —
+    // the lamp stopped being a lamp and became the tail of the car.
     tail: [
-      { x: 0.62, y: 0.815, z: -2.19, w: 0.40, h: 0.11, shape: 'strip', color: '#ff2a18', intensity: 2.6 },
-      { x: 0.34, y: 0.815, z: -2.20, w: 0.22, h: 0.075, shape: 'strip', color: '#ff2a18', intensity: 2.4, glow: 0.4 },
+      { x: 0.62, y: 0.815, z: -2.19, w: 0.40, h: 0.11, shape: 'strip', color: '#ff2a18', intensity: 1.9, segs: 3 },
+      { x: 0.34, y: 0.815, z: -2.20, w: 0.22, h: 0.075, shape: 'strip', color: '#ff2a18', intensity: 1.8, glow: 0.3 },
+      // high-mount stop lamp at the base of the hatch glass; shares the first bank's materials
+      { x: 0, y: 0.955, z: -1.52, w: 0.40, h: 0.045, shape: 'strip', color: '#ff2a18', intensity: 1.9, segs: 3, mirror: false, bezel: false },
     ],
     reverse: [{ x: 0.16, y: 0.66, z: -2.21, w: 0.14, h: 0.07, color: '#fff2d8', intensity: 1.4, glow: 0.25 }],
   },
@@ -123,10 +138,17 @@ export const blueprint = {
     { w: 1.72, h: 0.09, d: 0.34, y: 0.268, z: 2.14, mat: 'carbon', rx: 0.09, r: 0.03 },     // front splitter
     { x: 0.72, w: 0.30, h: 0.02, d: 0.22, y: 0.34, z: 2.02, mat: 'carbon', rz: 0.34, mirror: true, r: 0.008 }, // canards
     { x: 0.912, w: 0.10, h: 0.11, d: 2.02, y: 0.360, z: -0.06, mat: 'carbon', mirror: true, r: 0.028 },  // side skirt
+    // A polished blade along the BOTTOM edge of the skirt. The lower body of a car needs one bright
+    // line under it or it has no bottom edge at all and dissolves into its own contact shadow — the
+    // exact failure the round-3 critic described as "a painted shell over a black silhouette".
+    { x: 0.930, w: 0.036, h: 0.028, d: 1.94, y: 0.302, z: -0.06, mat: 'chrome', mirror: true, r: 0.010 },
     { w: 1.62, h: 0.10, d: 0.14, y: 0.60, z: 2.20, mat: 'dark', r: 0.03 },
     { w: 1.50, h: 0.09, d: 0.14, y: 0.645, z: -2.215, mat: 'dark', r: 0.03 },
     { w: 0.42, h: 0.19, d: 0.03, y: 0.735, z: -2.228, mat: 'dark', r: 0.014 },     // plate recess
     { w: 0.36, h: 0.145, d: 0.03, y: 0.735, z: -2.238, mat: 'chrome', r: 0.010 },
+    // rear valance: a satin bar across the bottom of the bumper, above the diffuser, so the tail
+    // has three tonal steps (paint / bar / diffuser) instead of one black mass
+    { w: 1.34, h: 0.055, d: 0.10, y: 0.470, z: -2.196, mat: 'chrome', r: 0.018 },
   ],
   wing: { type: 'pedestal', w: 1.46, chord: 0.30, x: 0.52, y: 1.37, z: -2.00, h: 0.40, mat: 'carbon', postMat: 'chrome', aoa: -0.20 },
   // narrow and lifted: the rear tyres are the widest thing back here, not the bodykit

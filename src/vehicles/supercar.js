@@ -17,7 +17,7 @@ export const spec = {
   name: 'VIPERA',
   full: 'VIPERA SV COMPETIZIONE',
   klass: 'SUPERCAR',
-  colors: ['#c11324', '#f2c400', '#0e2f8c', '#e8e9ec', '#12161b', '#00b489'],
+  colors: ['#e01a2c', '#f7cd14', '#1a44b8', '#eef0f4', '#1b2028', '#00cfa0'],
   stats: { speed: 1.0, accel: 0.96, traction: 0.92, weight: 0.5 },
   // physics → handling.js · nitrous → nitrous.js NITRO · engine voicing → audio_tuning.js
   // (merged in by vehicles/index.js — do not add them back here)
@@ -33,7 +33,8 @@ export const blueprint = {
   // the tail panel on each side — from a straight-on chase view the wheels break the silhouette
   // instead of hiding behind a full-width diffuser (§6.1 round-2 gap).
   dims: { length: 4.62, width: 2.32, height: 1.25, wheelbase: 2.68, track: 1.820, trackRear: 1.906, rideHeight: 0.11 },
-  paint: { metalness: 0.26, roughness: 0.30, clearcoat: 1.0, clearcoatRoughness: 0.095, flake: 0.58, envIntensity: 0.76 },
+  // the glossiest car in the game: show-car clearcoat over metallic red
+  paint: { metalness: 0.55, roughness: 0.22, clearcoat: 1.0, clearcoatRoughness: 0.042, flake: 0.58, envIntensity: 1.28 },
   livery: {
     style: 'gt', stripe: '#eef1f5', accent: '#14171c',
     panels: {
@@ -43,26 +44,38 @@ export const blueprint = {
       arches: [V(1.34), V(-1.34)],
     },
   },
-  glass: { tint: '#070d13', opacity: 0.74 },
+  // see muscle.js — 0.74 made the cabin a §7 black void behind the wraparound screen
+  glass: { tint: '#0c131a', opacity: 0.62 },
 
+  /**
+   * ROUND-4 SURFACING PASS ON THE WINGS.
+   *
+   * Round-2 note, verbatim: "a pale untextured shelf polygon at the top of the supercar's fenders
+   * that reads as stray geometry". It was not stray — it was the top of the wing — but it was
+   * authored with 10-12 mm of crown across an 850 mm half-panel, i.e. dead flat, so it presented
+   * one horizontal plane straight at the sky, took one constant value off the reflection, and read
+   * as a bright rectangle sitting on the car rather than as part of it. Every wing station (front
+   * and rear) now carries 30-44 mm of crown over a narrower flat, so the panel rolls from the arch
+   * up to the bonnet/engine-deck line and the sky reflection SWEEPS across it instead of filling it.
+   */
   body: [
     { z: -2.31, w: 0.790, y0: 0.25, floor: 0.58, rocker: 0.95, ySill: 0.36, yBelt: 0.82, belt: 0.96, yDeck: 0.855, deck: 0.93, crown: 0.004 },
     { z: -2.24, w: 0.882, y0: 0.22, floor: 0.62, rocker: 0.94, ySill: 0.33, yBelt: 0.86, belt: 0.955, yDeck: 0.895, deck: 0.90, crown: 0.006 },
-    { z: -2.05, w: 0.930, y0: 0.19, rocker: 0.925, ySill: 0.31, yBelt: 0.90, belt: 0.95, yDeck: 0.945, deck: 0.88, crown: 0.008, flare: 1.01 },
-    { z: -1.70, w: 0.990, y0: 0.17, rocker: 0.915, ySill: 0.295, yBelt: 0.938, belt: 0.945, yDeck: 0.985, deck: 0.86, crown: 0.010, flare: 1.052 },
-    { z: -1.34, w: 1.000, y0: 0.16, rocker: 0.905, ySill: 0.29, yBelt: 0.948, belt: 0.945, yDeck: 1.000, deck: 0.86, crown: 0.010, flare: 1.085 },
-    { z: -1.00, w: 0.994, y0: 0.158, rocker: 0.90, ySill: 0.285, yBelt: 0.938, belt: 0.945, yDeck: 0.985, deck: 0.85, crown: 0.010, flare: 1.032 },
-    { z: -0.86, w: 0.994, y0: 0.158, rocker: 0.900, ySill: 0.285, yBelt: 0.930, belt: 0.945, yDeck: 0.965, deck: 0.845, crown: 0.010 },
+    { z: -2.05, w: 0.930, y0: 0.19, rocker: 0.925, ySill: 0.31, yBelt: 0.90, belt: 0.95, yDeck: 0.945, deck: 0.84, crown: 0.026, flare: 1.01 },
+    { z: -1.70, w: 0.990, y0: 0.17, rocker: 0.915, ySill: 0.295, yBelt: 0.938, belt: 0.945, yDeck: 0.968, deck: 0.80, crown: 0.040, flare: 1.052 },
+    { z: -1.34, w: 1.000, y0: 0.16, rocker: 0.905, ySill: 0.29, yBelt: 0.948, belt: 0.945, yDeck: 0.980, deck: 0.79, crown: 0.044, flare: 1.085 },
+    { z: -1.00, w: 0.994, y0: 0.158, rocker: 0.90, ySill: 0.285, yBelt: 0.938, belt: 0.945, yDeck: 0.968, deck: 0.79, crown: 0.042, flare: 1.032 },
+    { z: -0.86, w: 0.994, y0: 0.158, rocker: 0.900, ySill: 0.285, yBelt: 0.930, belt: 0.945, yDeck: 0.950, deck: 0.80, crown: 0.036 },
     { z: -0.80, w: 0.992, y0: 0.158, rocker: 0.899, ySill: 0.284, yBelt: 0.926, belt: 0.945, yDeck: 0.672, deck: 0.83, crown: 0.006 },
     { z: -0.52, w: 0.985, y0: 0.156, rocker: 0.895, ySill: 0.282, yBelt: 0.916, belt: 0.945, yDeck: 0.660, deck: 0.83, crown: 0.006 },
     { z: -0.20, w: 0.980, y0: 0.154, rocker: 0.89, ySill: 0.278, yBelt: 0.900, belt: 0.945, yDeck: 0.640, deck: 0.83, crown: 0.006 },
     { z: 0.42, w: 0.976, y0: 0.152, rocker: 0.885, ySill: 0.275, yBelt: 0.876, belt: 0.945, yDeck: 0.640, deck: 0.83, crown: 0.006 },
     { z: 0.86, w: 0.978, y0: 0.152, rocker: 0.885, ySill: 0.276, yBelt: 0.848, belt: 0.945, yDeck: 0.660, deck: 0.84, crown: 0.006 },
     { z: 0.94, w: 0.979, y0: 0.152, rocker: 0.885, ySill: 0.276, yBelt: 0.845, belt: 0.945, yDeck: 0.828, deck: 0.86, crown: 0.010 },
-    { z: 1.10, w: 0.983, y0: 0.152, rocker: 0.888, ySill: 0.274, yBelt: 0.822, belt: 0.945, yDeck: 0.805, deck: 0.86, crown: 0.012, flare: 1.026 },
-    { z: 1.34, w: 0.990, y0: 0.154, rocker: 0.892, ySill: 0.272, yBelt: 0.784, belt: 0.945, yDeck: 0.765, deck: 0.86, crown: 0.012, flare: 1.055 },
-    { z: 1.62, w: 0.985, y0: 0.156, rocker: 0.895, ySill: 0.270, yBelt: 0.742, belt: 0.945, yDeck: 0.726, deck: 0.86, crown: 0.012, flare: 1.048 },
-    { z: 1.94, w: 0.966, y0: 0.160, rocker: 0.905, ySill: 0.272, yBelt: 0.692, belt: 0.95, yDeck: 0.678, deck: 0.87, crown: 0.010, flare: 1.012 },
+    { z: 1.10, w: 0.983, y0: 0.152, rocker: 0.888, ySill: 0.274, yBelt: 0.822, belt: 0.945, yDeck: 0.790, deck: 0.80, crown: 0.038, flare: 1.026 },
+    { z: 1.34, w: 0.990, y0: 0.154, rocker: 0.892, ySill: 0.272, yBelt: 0.784, belt: 0.945, yDeck: 0.748, deck: 0.79, crown: 0.042, flare: 1.055 },
+    { z: 1.62, w: 0.985, y0: 0.156, rocker: 0.895, ySill: 0.270, yBelt: 0.742, belt: 0.945, yDeck: 0.710, deck: 0.80, crown: 0.040, flare: 1.048 },
+    { z: 1.94, w: 0.966, y0: 0.160, rocker: 0.905, ySill: 0.272, yBelt: 0.692, belt: 0.95, yDeck: 0.666, deck: 0.83, crown: 0.030, flare: 1.012 },
     { z: 2.16, w: 0.930, y0: 0.170, rocker: 0.92, ySill: 0.282, yBelt: 0.648, belt: 0.955, yDeck: 0.636, deck: 0.89, crown: 0.008 },
     { z: 2.28, w: 0.870, y0: 0.185, floor: 0.60, rocker: 0.94, ySill: 0.295, yBelt: 0.612, belt: 0.96, yDeck: 0.602, deck: 0.91, crown: 0.005 },
     { z: 2.31, w: 0.775, y0: 0.205, floor: 0.55, rocker: 0.95, ySill: 0.315, yBelt: 0.588, belt: 0.965, yDeck: 0.580, deck: 0.92, crown: 0.004 },
@@ -85,7 +98,9 @@ export const blueprint = {
       { z0: -0.40, z1: -0.80, a: 2, b: 5, mat: 'paint', steps: 5 },   // buttress root
     ],
     beltZ0: -0.44, beltZ1: 0.34, beltMat: 'dark',
-    interior: { seat: 0x1b1e25, trim: 0x0f1116, accent: 0xc11324, floorY: 0.655, headY: 1.095, dashY: 0.875, wheelY: 0.915, shelfY: 0.90, seatZ: 0.04, dashZ: 0.70, dashW: 1.30, seatX: 0.34, shelfZ: 0.50, rollBar: true, clusterColor: '#ffd166' },
+    // Two seats and an engine bulkhead — no rear shelf humps on a mid-engine car (rearHeads:false),
+    // the roll hoops do that job. Alcantara grey with the car's own red on the bolsters.
+    interior: { seat: 0x4a4f5a, trim: 0x33373f, accent: 0xc9202f, floorY: 0.655, headY: 1.095, dashY: 0.875, wheelY: 0.915, shelfY: 0.895, seatZ: 0.04, dashZ: 0.70, dashW: 1.30, seatX: 0.34, shelfZ: 0.60, shelfD: 0.28, rearHeads: false, rollBar: true, clusterColor: '#ffd166' },
   },
 
   wheels: {
@@ -104,8 +119,10 @@ export const blueprint = {
     ],
     // the twin round lamp rings of f&f3 — clear of the carbon blade above them so they read whole
     tail: [
-      { x: 0.40, y: 0.870, z: -2.360, w: 0.22, h: 0.22, shape: 'round', color: '#ff2410', intensity: 2.6 },
-      { x: 0.71, y: 0.870, z: -2.360, w: 0.22, h: 0.22, shape: 'round', color: '#ff2410', intensity: 2.6 },
+      { x: 0.40, y: 0.870, z: -2.360, w: 0.22, h: 0.22, shape: 'round', color: '#ff2410', intensity: 2.3 },
+      { x: 0.71, y: 0.870, z: -2.360, w: 0.22, h: 0.22, shape: 'round', color: '#ff2410', intensity: 2.3 },
+      // high-mount stop lamp in the carbon tail blade; shares the round lamps' bank
+      { x: 0, y: 0.995, z: -2.398, w: 0.30, h: 0.042, shape: 'strip', color: '#ff2410', intensity: 2.3, mirror: false, bezel: false },
     ],
     reverse: [{ x: 0.0, y: 0.585, z: -2.365, w: 0.16, h: 0.08, color: '#fff2d8', intensity: 1.6, glow: 0.3, mirror: false }],
   },
@@ -127,6 +144,12 @@ export const blueprint = {
     { w: 1.74, h: 0.08, d: 0.40, y: 0.170, z: 2.20, mat: 'carbon', rx: 0.07, r: 0.03 },      // front splitter
     { x: 0.815, w: 0.26, h: 0.02, d: 0.22, y: 0.285, z: 2.03, mat: 'carbon', rz: 0.14, mirror: true, r: 0.008 },  // dive planes
     { x: 0.985, w: 0.10, h: 0.12, d: 1.90, y: 0.275, z: -0.10, mat: 'carbon', mirror: true, r: 0.03 },  // side sill
+    // a painted blade capping the sill, and a polished one under it: the carbon between them then
+    // reads as a channel with a top and a bottom edge instead of a black stripe down the car
+    { x: 0.978, w: 0.055, h: 0.030, d: 1.86, y: 0.344, z: -0.10, mat: 'paint', mirror: true, r: 0.011 },
+    { x: 0.992, w: 0.040, h: 0.026, d: 1.80, y: 0.216, z: -0.10, mat: 'chrome', mirror: true, r: 0.010 },
+    // rear valance blade above the diffuser
+    { w: 1.28, h: 0.048, d: 0.09, y: 0.478, z: -2.318, mat: 'chrome', r: 0.016 },
     { w: 1.30, h: 0.075, d: 0.10, y: 0.585, z: 2.268, mat: 'dark', r: 0.028 },   // nose blade under the lamps
     { w: 1.46, h: 0.075, d: 0.10, y: 0.995, z: -2.345, mat: 'carbon', r: 0.025 },   // tail blade, above the lamps
     { w: 0.46, h: 0.15, d: 0.04, y: 0.615, z: -2.352, mat: 'dark', r: 0.02 },       // number-plate recess

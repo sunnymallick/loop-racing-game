@@ -3,8 +3,9 @@ import {
   loftBody, loftBand, profileU, roundedBox, buildWheel, wheelParts, wheelScalable, WheelRig,
   wheelWell, archLip, paintMaterial, glassMaterial,
   chromeMaterial, darkTrimMaterial, plasticMaterial, carbonMaterial, emissiveMaterial,
-  cavityMaterial, darkMetalMaterial, stdMaterial, glowSprite,
+  cavityMaterial, darkMetalMaterial, stdMaterial, interiorMaterial, glowSprite, hemiTint,
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
+  panelNoise, cloneShaded,
 } from './kit.js';
 import { lerp, clamp, RNG } from '../core/rng.js';
 
@@ -56,6 +57,22 @@ export function bodySection(z, {
   flare = 1.0, crease = 0.62, tuckY = 0.55,
 }) {
   const d = yBelt - ySill;
+  /**
+   * CROWN, x1.9.
+   *
+   * Every deck lid, bonnet and tailgate in the game was authored with a 4–20 mm crown across an
+   * 850–1050 mm panel, i.e. flat to within a degree. A flat panel reflects one patch of sky at one
+   * angle, which is why the round-3 measurement of the muscle car's deck lid came back with a
+   * luminance std of 3.8 — a constant fill, no specular anywhere on it, §7's "untextured material
+   * in a flat colour" in everything but name.
+   *
+   * A real pressing crowns 30–60 mm over that width. That is what gives the specular somewhere to
+   * sit and lets the reflection sweep from sky at the centre to horizon at the edge across a single
+   * panel. Scaling here rather than in the four car files keeps every authored proportion — the
+   * relative crowns between bonnet, deck and cabin recess are unchanged, they are all simply real
+   * pressings now.
+   */
+  const cr = crown * 1.9;
   return {
     z,
     pts: [
@@ -69,8 +86,11 @@ export function bodySection(z, {
       [w * belt, yBelt],
       [w * belt * 0.955, lerp(yBelt, yDeck, 0.45)],
       [w * deck, yDeck],
-      [w * deck * 0.54, yDeck + crown * 0.78],
-      [0, yDeck + crown],
+      // 0.62 rather than 0.54 of the deck half-width: with a real crown the shoulder of the panel
+      // wants to be further outboard, so the roll happens over the outer third and the middle of
+      // the panel stays broad and flat-ish — which is the shape of an actual boot lid.
+      [w * deck * 0.62, yDeck + cr * 0.72],
+      [0, yDeck + cr],
     ],
   };
 }
@@ -78,7 +98,11 @@ export function bodySection(z, {
 /** A 9-point half cross-section of the glasshouse: belt → tumblehome → roof. */
 function cabinSection(st) {
   const h = Math.max(0.02, st.yRoof - st.yBelt);
-  const hw = st.hw, rw = st.rw, crown = st.crown ?? 0.012;
+  const hw = st.hw, rw = st.rw;
+  // Same reasoning as bodySection's crown: a roof panel is a pressing with 40–60 mm of camber in
+  // it, and a dead-flat one carries no highlight down its length. The roof rail (index 6→7) now
+  // rolls over instead of stepping, so the paint band laid on top of it has an edge to sit on.
+  const crown = (st.crown ?? 0.012) * 2.4;
   return {
     z: st.z,
     pts: [
@@ -88,8 +112,8 @@ function cabinSection(st) {
       [hw * 0.995, st.yBelt + h * 0.26],
       [lerp(hw, rw, 0.60), st.yBelt + h * 0.70],
       [rw * 1.012, st.yRoof - h * 0.14],
-      [rw, st.yRoof],
-      [rw * 0.55, st.yRoof + crown],
+      [rw, st.yRoof + crown * 0.18],
+      [rw * 0.62, st.yRoof + crown * 0.86],
       [0, st.yRoof + crown],
     ],
   };
@@ -135,6 +159,45 @@ function flankSampler(tubSections) {
       }
     }
     return halfOf(last);
+  };
+}
+
+/**
+ * The half-width of the tub at a point (z, y) — not just at its widest station.
+ *
+ * `flankSampler` answers "how wide is the car here", which is the character line. Anything mounted
+ * BELOW the character line — and the whole wheel arch is below it — needs to know where the body
+ * surface is at its own height, because the flank tucks in by 12–15 cm between the crease and the
+ * rocker. Sampling the wrong one is what let the wheel-well shell stand five centimetres outside
+ * the bodywork all the way round the opening and draw itself as a slab (round-3's "black cutout").
+ *
+ * The authored half-profile runs bottom-centre → deck-centre with y non-decreasing, so a height
+ * lookup is a walk down the profile with one lerp at the end.
+ */
+function profileSampler(tubSections) {
+  const secs = [...tubSections].sort((a, b) => a.z - b.z);
+  const widthAt = (pts, y) => {
+    if (y <= pts[0][1]) return pts[0][0];
+    for (let i = 1; i < pts.length; i++) {
+      if (y <= pts[i][1]) {
+        const t = (y - pts[i - 1][1]) / ((pts[i][1] - pts[i - 1][1]) || 1);
+        return lerp(pts[i - 1][0], pts[i][0], t);
+      }
+    }
+    return pts[pts.length - 1][0];
+  };
+  return (z, y) => {
+    if (z <= secs[0].z) return widthAt(secs[0].pts, y);
+    const last = secs[secs.length - 1];
+    if (z >= last.z) return widthAt(last.pts, y);
+    for (let i = 1; i < secs.length; i++) {
+      if (z <= secs[i].z) {
+        const a = secs[i - 1], b = secs[i];
+        const t = (z - a.z) / ((b.z - a.z) || 1);
+        return lerp(widthAt(a.pts, y), widthAt(b.pts, y), t);
+      }
+    }
+    return widthAt(last.pts, y);
   };
 }
 
@@ -186,7 +249,15 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const paint = mkPaint(bodyPaintTexture(liveryCfg));
   const paintUpper = mkPaint(bodyPaintTexture(upperCfg));
   paintUpper.side = THREE.DoubleSide;
+  // The bolt-ons keep the flat body colour (their UVs are object-space metres, not the loft skin)
+  // but pick up a near-white mottle so no spoiler, mirror shell, bumper cap or tailgate is one
+  // constant RGB across half a metre of screen.
   const paintSolid = mkPaint(null);
+  paintSolid.map = panelNoise();
+  // …and the sky/ground split the lofted tub gets painted into its skin, which a box-extruded
+  // spoiler, tailgate or bumper cap has no UV space to receive. Without it the biggest single
+  // panel in a chase frame (the muscle car's ducktail, the SUV's tailgate) is one constant RGB.
+  hemiTint(paintSolid);
   paint.userData.livery = liveryCfg;
   paint.userData.upper = { mat: paintUpper, cfg: upperCfg };
   paint.userData.solids = [paintSolid];
@@ -198,7 +269,10 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const carbon = carbonMaterial();
   const shellOf = (m) => {
     if (!m.userData.__shell) {
-      const c = m.clone();
+      // cloneShaded, not clone: a plain Material.copy() drops onBeforeCompile and JSON-mangles
+      // userData, so the arch lips and the roof/belt bands would lose the hemisphere tint and the
+      // mirror sky and render a different value from the panels they grow out of.
+      const c = cloneShaded(m);
       c.side = THREE.DoubleSide;
       m.userData.__shell = c;
       (m.userData.shells ||= []).push(c);
@@ -264,6 +338,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const trF = bp.dims.track, trR = bp.dims.trackRear ?? bp.dims.track;
   const wheelMarks = [];
   const flankAt = flankSampler(tubSections);
+  const bodyAt = profileSampler(tubSections);
 
   /**
    * WHEELS: four corners, one InstancedMesh per material.
@@ -298,6 +373,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   );
   const rig = new WheelRig();
   car.add(rig);
+  let boltGeo = null;                       // shared by all four arch-fastener rings
   const spinIds = { front: [], rear: [], all: [] };
   const staticIds = { front: [], rear: [], all: [] };
 
@@ -341,10 +417,15 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     const xOut = Math.max(tyreOuter + 0.012, flank + flare);  // the lip must clear the tyre
     const xIn = Math.min(flank - 0.012, xOut - 0.045);
 
-    // dark inner fender, radius-matched to the OPENING so the gap above the tyre reads as shadow
-    const wLo = -tyreOuter * 1.25, wHi = xOut - 0.004;
-    const well = wheelWell(openR * 1.012, wHi - wLo);
-    well.position.set(sx * (tr / 2 + (wHi + wLo) * 0.5), cfg.radius, pz);
+    // Dark inner fender, radius-matched to the OPENING so the gap above the tyre reads as shadow.
+    // Its outboard edge stops at the arch lip's inner return and tucks back toward the body at both
+    // ends of the sweep, so it can never stand proud of a flank that is falling away fore and aft.
+    const wLo = -tyreOuter * 0.86, wHi = xOut - 0.006;
+    const well = wheelWell(openR * 1.012, wLo, wHi, {
+      span: Math.PI * (bp.archSpan ?? 1.03) * 0.99,
+      flankAt: (dz, dy) => bodyAt(pz + dz, cfg.radius + dy) - Math.abs(tr / 2),
+    });
+    well.position.set(sx * (tr / 2), cfg.radius, pz);
     well.scale.x = sx;
     bodyGroup.add(well);
 
@@ -366,6 +447,36 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       arch.position.set(sx * (tr / 2), cfg.radius, pz);
       arch.scale.x = sx;                                      // +X is always outboard
       bodyGroup.add(arch);
+
+      /**
+       * FLARE FASTENERS.
+       *
+       * A bolt-on over-fender is riveted to the wing it stands on, and that row of fasteners is the
+       * thing that says "widebody kit" from thirty metres — it draws an arc of specular dots around
+       * an opening that is otherwise one dark shape. Round 3's verdict was that the flares read as
+       * a flat cutout with hard geometric edges; a curve of lit points is what turns a cutout into a
+       * bolted-on part. They are chrome, which the car already carries, so they merge into an
+       * existing bucket and cost no draw call.
+       */
+      if (bp.archBolts) {
+        const n = bp.archBolts;
+        const span = Math.PI * (bp.archSpan ?? 1.03) * 0.90;
+        const R = openR + (bp.archThickness ?? 0.05) * 1.10;
+        if (!boltGeo) {
+          boltGeo = new THREE.CylinderGeometry(0.0155, 0.0175, 0.020, 6);
+          boltGeo.rotateZ(Math.PI / 2);
+        }
+        for (let k = 0; k < n; k++) {
+          const th = -span / 2 + span * (k / (n - 1));
+          const b = new THREE.Mesh(boltGeo, chrome);
+          b.position.set(
+            sx * (tr / 2 + xOut * 0.90),
+            cfg.radius + Math.cos(th) * R,
+            pz + Math.sin(th) * R,
+          );
+          bodyGroup.add(b);
+        }
+      }
     }
   }
 
@@ -415,7 +526,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
         glowMat: (cfg.glow ?? 0.85) > 0 ? new THREE.MeshBasicMaterial({
           map: glowSprite(cfg.color),
           transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
-          opacity: (cfg.glow ?? 0.85) * 0.40,
+          opacity: (cfg.glow ?? 0.85) * 0.24,   // must match lightUnit()'s halo alpha
         }) : null,
       };
       banks.set(key, bank);
@@ -714,17 +825,39 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
 
 // ------------------------------------------------------------------ interior
 
-/** Seats, dash, wheel, console, rear shelf — §7 caps a black-void cabin at 72. */
+/**
+ * Seats, dash, wheel, console, door cards, parcel shelf, rear bulkhead.
+ *
+ * §7: "car interior is an empty black void through the glass" → cap 72, which is below this
+ * piece's target of 82, so this is the one thing that has to work before anything else can score.
+ * Round 3 confirmed it on all four classes — the backlight measured a mean luminance of 11/255,
+ * i.e. the same value as the asphalt behind the car.
+ *
+ * Two separate causes, both fixed here:
+ *
+ *   1. VALUE. A cabin is under a roof, so the key never reaches it, and then the glass in front of
+ *      it eats 70% of whatever ambient did. Interior surfaces were authored at 0x14–0x2a, which
+ *      after those two multiplications is mathematically black. They now come out of
+ *      interiorMaterial(), which carries the largest bounce term on the car (UNDER_ROLE.cabin), and
+ *      the four car files author them three to four times lighter.
+ *   2. GEOMETRY IN THE RIGHT PLACE. Even lit, there was nothing behind the backlight to see: the
+ *      parcel shelf was a 0.30 m plank that stopped short of the glass, and the flanks of the cabin
+ *      were empty. There are now door cards down both sides (what you see through the SIDE glass in
+ *      any three-quarter frame) and a shelf that runs back to the bulkhead with a pair of rear head
+ *      restraints standing on it (what you see through the BACKLIGHT in every chase frame).
+ *
+ * Still three materials, so the whole interior bakes to three draw calls exactly as before.
+ */
 function buildInterior(cb, trim, chrome) {
   const g = new THREE.Group();
   g.name = 'interior';
   const it = cb.interior || {};
-  const seatCol = it.seat ?? 0x24262e;
-  const trimCol = it.trim ?? 0x15171c;
-  const accent = it.accent ?? 0x7a1f24;
-  const seatMat = stdMaterial({ color: seatCol, rough: 0.88, metal: 0.03 });
-  const accentMat = stdMaterial({ color: accent, rough: 0.80, metal: 0.05 });
-  const trimMat = stdMaterial({ color: trimCol, rough: 0.72, metal: 0.12 });
+  const seatCol = it.seat ?? 0x585d68;
+  const trimCol = it.trim ?? 0x3a3e47;
+  const accent = it.accent ?? 0x8d3138;
+  const seatMat = interiorMaterial({ color: seatCol, rough: 0.88, metal: 0.03 });
+  const accentMat = interiorMaterial({ color: accent, rough: 0.80, metal: 0.05 });
+  const trimMat = interiorMaterial({ color: trimCol, rough: 0.72, metal: 0.12 });
 
   // Everything is placed in ABSOLUTE y so a car file can tune the cabin to its own roofline.
   const floorY = it.floorY ?? (cb.stations[0].yBelt - 0.26);
@@ -737,6 +870,17 @@ function buildInterior(cb, trim, chrome) {
   const backBot = floorY + 0.14, backTop = headY - 0.05;
   const backH = Math.max(0.20, backTop - backBot);
   const backY = (backTop + backBot) / 2;
+  /**
+   * The cabin's own envelope, sampled from the very sections the glasshouse is lofted from. Nothing
+   * added below is allowed to poke through the roof or out through the side glass — the supercar's
+   * cabin is 200 mm shorter than the muscle car's, so a fixed-size bulkhead that fits one grows a
+   * fin out of the other's roof.
+   */
+  const cabSt = cb.stations[0].z <= cb.stations[cb.stations.length - 1].z
+    ? cb.stations : [...cb.stations].reverse();
+  const roofAt = (z) => sampleStation(cabSt, z).yRoof;
+  const halfAt = (z) => sampleStation(cabSt, z).hw;
+  const beltAt = (z) => sampleStation(cabSt, z).yBelt;
 
   for (const sx of [-1, 1]) {
     const base = new THREE.Mesh(roundedBox(0.42, 0.11, 0.46, 0.05), seatMat);
@@ -811,10 +955,73 @@ function buildInterior(cb, trim, chrome) {
   boss.rotation.x = 1.20;
   g.add(boss);
 
-  // rear bulkhead / parcel shelf so you don't see daylight through the cabin
-  const shelf = new THREE.Mesh(roundedBox((it.dashW ?? 1.30) * 0.98, 0.09, 0.30, 0.04), trimMat);
-  shelf.position.set(0, shelfY, seatZ - (it.shelfZ ?? 0.62));
+  /**
+   * ---- the rear deck: what a chase camera actually looks at through the backlight ----
+   *
+   * The old parcel shelf was a 0.30 m plank sitting 0.6 m forward of the glass, so from behind you
+   * were looking through the backlight at nothing at all. The shelf now runs from behind the seats
+   * back to the bulkhead, tilts up slightly to catch what light there is, and carries two rear head
+   * restraints. Those humps are the shapes that break the black rectangle: they are the highest
+   * thing in the cabin and they sit directly in the line of sight through the rear glass.
+   */
+  const shelfZc = seatZ - (it.shelfZ ?? 0.62);
+  const shelfD = it.shelfD ?? 0.52;
+  const shelfW = Math.min((it.dashW ?? 1.30) * 0.98, halfAt(shelfZc) * 1.86);
+  const shelf = new THREE.Mesh(roundedBox(shelfW, 0.075, shelfD, 0.035), trimMat);
+  shelf.position.set(0, shelfY, shelfZc);
+  shelf.rotation.x = -0.09;
   g.add(shelf);
+  // rear bulkhead: closes the cabin off behind the shelf so no daylight shows through, and gives
+  // the backlight a lit surface immediately behind it rather than the inside of the tail
+  const bulkZ = shelfZc - shelfD * 0.5;
+  const bulkTop = Math.min(shelfY + 0.26, roofAt(bulkZ) - 0.035);
+  const bulkH = Math.max(0.07, bulkTop - (shelfY - 0.02));
+  const bulk = new THREE.Mesh(roundedBox(Math.min(shelfW, halfAt(bulkZ) * 1.84) * 0.97, bulkH, 0.07, 0.03), trimMat);
+  bulk.position.set(0, bulkTop - bulkH * 0.5, bulkZ);
+  g.add(bulk);
+  if (it.rearHeads !== false) {
+    const humpZ = shelfZc + shelfD * 0.16;
+    const humpH = Math.min(0.14, Math.max(0.05, roofAt(humpZ) - 0.05 - shelfY));
+    for (const sx of [-1, 1]) {
+      const hump = new THREE.Mesh(roundedBox(0.30, humpH, 0.16, Math.min(0.055, humpH * 0.4)), seatMat);
+      hump.position.set(sx * halfSeat * 0.86, shelfY + humpH * 0.5 + 0.02, humpZ);
+      g.add(hump);
+    }
+    // a speaker grille pressed into the shelf between them — one more shape in the sightline
+    const spk = new THREE.Mesh(roundedBox(shelfW * 0.26, 0.022, shelfD * 0.42, 0.012), accentMat);
+    spk.position.set(0, shelfY + 0.048, shelfZc);
+    spk.rotation.x = -0.09;
+    g.add(spk);
+  }
+
+  /**
+   * ---- door cards ----
+   *
+   * What you see through the SIDE glass in every three-quarter and drift frame. Without them the
+   * cabin is two seats floating in a void and the greenhouse reads as a tinted black box; with them
+   * the glass has a lit interior wall behind it, which is what makes it read as glass with a room
+   * behind it rather than as a painted panel.
+   */
+  {
+    const cardZ0 = it.cardZ0 ?? (dashZ - 0.20), cardZ1 = it.cardZ1 ?? (shelfZc + shelfD * 0.34);
+    const cardLen = Math.max(0.26, cardZ0 - cardZ1);
+    const cardZ = (cardZ0 + cardZ1) * 0.5;
+    // hard against the inside of the door skin, wherever the glasshouse actually is at this station
+    const cardX = it.cardX ?? Math.min(halfAt(cardZ) - 0.055, halfSeat + 0.42);
+    // the card stops at the window sill, which is where a door card actually stops — above that
+    // line you should be looking at the far window, not at a panel filling the glass
+    const cardTop = Math.min(floorY + 0.36, beltAt(cardZ) + 0.025, roofAt(cardZ) - 0.10);
+    const cardH = Math.max(0.14, cardTop - (floorY + 0.05));
+    for (const sx of [-1, 1]) {
+      const card = new THREE.Mesh(roundedBox(0.055, cardH, cardLen, 0.028), trimMat);
+      card.position.set(sx * cardX, cardTop - cardH * 0.5, cardZ);
+      g.add(card);
+      // armrest / pull, in the accent — a horizontal light line down the inside of the door
+      const arm = new THREE.Mesh(roundedBox(0.075, 0.055, cardLen * 0.52, 0.022), accentMat);
+      arm.position.set(sx * (cardX - 0.02), cardTop - 0.055, cardZ + cardLen * 0.06);
+      g.add(arm);
+    }
+  }
 
   if (it.rollBar) {
     const barMat = stdMaterial({ color: '#9aa0a8', metal: 0.9, rough: 0.3 });

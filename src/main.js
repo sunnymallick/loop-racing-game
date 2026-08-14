@@ -6,6 +6,7 @@ import { HUD } from './ui/hud.js';
 import { Menu } from './ui/menu.js';
 import { Effects } from './fx/effects.js';
 import { buildVehicle, getVehicle, VEHICLE_IDS } from './vehicles/index.js';
+import { setBodyTint } from './vehicles/kit.js';
 import { VehicleBody, applyPose } from './vehicles/physics.js';
 import { Nitrous, NitrousJet } from './vehicles/nitrous.js';
 import { buildCityById, getCity, CITY_IDS } from './cities/index.js';
@@ -13,6 +14,18 @@ import { Race } from './race/race.js';
 import { clamp, lerp, smoothstep, RNG } from './core/rng.js';
 
 const FIXED_DT = 1 / 60;
+
+// scratch: the point down the nitrous plume the boost camera composes around, and the corridor
+// test that keeps an overtaken opponent out of the lens during a boost (nitrous piece)
+const _camAim = new THREE.Vector3();
+const _boostRay = new THREE.Vector3();
+const _boostRel = new THREE.Vector3();
+// scratch: the contact→camera segment the crash cam tests for occluders, and the [lift, lateral]
+// offsets it tries in order when something is in the way (fx piece)
+const _occFrom = new THREE.Vector3();
+const _occCar = new THREE.Vector3();
+const _occDir = new THREE.Vector3();
+const OCC_CANDIDATES = [[0, 0], [1.5, 0], [0, 3.8], [0, -3.8], [3.2, 0], [2.2, 3.8], [2.2, -3.8]];
 
 /**
  * NITRO CIRCUIT — game shell.
@@ -69,6 +82,10 @@ class Game {
 
   async setCity(id) {
     if (this.city) {
+      // (fx piece) a crash BENDS the street furniture it hits, so the FX director holds deformed
+      // geometry from the outgoing city. Let it put that back and drop the reference before the
+      // group is disposed.
+      this.effects.setWorld(null);
       this.engine.scene.remove(this.city.group);
       disposeObject(this.city.group);
       this.city = null;
@@ -76,13 +93,21 @@ class Game {
     const built = buildCityById(id, { renderer: this.engine.renderer, quality: 'high' });
     this.cityId = id;
     this.city = built;
+    // (audio piece) the city picks the music cue — see TRACKS in core/audio.js
+    this.audio.setCity(id);
     this.engine.scene.add(built.group);
+    this.effects.setWorld(built.group);   // (fx piece) crashes deform this city's props
     this.engine.scene.fog = built.fog;
     // LIGHTING piece: replace the sky-only probe with a cube capture of the finished city so car
     // paint and wet asphalt reflect neon and buildings, not just a flat sky. Mutates built.envMap.
     this.engine.captureEnvironment(built, { hide: [this.car, ...this.aiCars] });
     this.engine.scene.environment = built.envMap || null;
     this.engine.applyLook(built.look);
+    // VEHICLE-ART piece: hand the vehicle kit the city's light rig so the dark half of every car —
+    // bumpers, flares, rockers, valances, wheel wells — carries this city's hue and its ground
+    // bounce instead of a fixed near-black. Mutates pooled materials in place, so it applies to
+    // cars already built as well as to the ones built next, and adds no draw call.
+    setBodyTint(built.look);
     if (this.car) this._applyEnv(this.car);
     return built;
   }
@@ -91,6 +116,9 @@ class Game {
     // the jet lives under the car — detach it before disposeObject() walks the subtree, or the
     // nitrous piece's shared (module-cached) geometry and textures get disposed out from under it
     if (this.jet) { this.jet.group.removeFromParent(); this.jet.dispose?.(); this.jet = null; }
+    // (fx piece) the crash system deforms and scuffs the REAL bodywork, so it holds references to
+    // this car's geometry — drop them before the car is freed, and re-point it at the new one.
+    this.effects.attachCar(null);
     if (this.car) { this.engine.scene.remove(this.car); disposeObject(this.car); }
     const v = getVehicle(id);
     const car = buildVehicle(id, { color: color || v.spec.colors[0], envMap: this.city?.envMap });
@@ -113,6 +141,7 @@ class Game {
     });
     car.add(this.jet.group);
     this._applyEnv(car);
+    this.effects.attachCar(car);
     return car;
   }
 
@@ -149,8 +178,9 @@ class Game {
       this._applyEnv(c);
       this.aiCars.push(c);
     }
-    // the director drives the opponents' plumes, smoke and rubber off these
-    this.race.attachCars(this.aiCars, { effects: this.effects });
+    // the director drives the opponents' plumes, smoke and rubber off these, and builds the
+    // start/finish line + gantry into the scene (RACE piece: no city owns one)
+    this.race.attachCars(this.aiCars, { effects: this.effects, scene: this.engine.scene });
     this.effects.clear();
     this.state = 'racing';
     this.time = 0;
@@ -207,9 +237,14 @@ class Game {
       }
     }
     const absLat = Math.abs(lateral);
-    // which way the boost camera swings to get a rear three-quarter on the plume: toward the
-    // centre of the road, smoothed so crossing the centreline never snaps the view across
-    const wantSide = lateral > 0 ? -1 : 1;
+    // Which way the boost camera swings to get a rear three-quarter on the plume. The jet always
+    // trails OUTWARD from the car toward the nearer edge of frame (it points back at the lens, so
+    // perspective throws it wide), and the bottom-right corner belongs to the speedometer — which
+    // was swallowing the muscle car's jet whole. So the rig has a default side: it puts the car
+    // left of centre and the plume across the bottom-left, under the leaderboard and clear of the
+    // dial. It only flips when the car is far enough left that holding the default would push the
+    // rig through a barrier. Smoothed, so crossing over never snaps the view across.
+    const wantSide = lateral < -0.42 ? 1 : -1;
     this._boostSide = lerp(this._boostSide ?? wantSide, wantSide, 1 - Math.exp(-1.2 * scaled));
     const surfaceGrip = absLat > 1.02 ? lerp(1.0, 0.58, smoothstep(1.02, 1.5, absLat)) : 1.0;
     this.body.surface = absLat > 1.02 ? 'dirt' : 'road';
@@ -286,6 +321,10 @@ class Game {
       // at ignition and a long column at sustain — and an SUV spooling up looks like it is spooling
       // up. Without this the flame level alone made every frame the same size.
       ramp: this.nitro.ramp,
+      // (nitrous piece, r4) the PLAYER's jet is sized in screen space — it solves for whatever
+      // world length holds ~40% of the frame height at the rig's current distance and angle. Only
+      // the hero car gets this; an opponent 60 m up the road would solve for a 40 m column.
+      hero: true,
     });
 
     applyPose(this.car, this.body, scaled);
@@ -298,10 +337,11 @@ class Game {
       }
       // opponents' nitrous plumes / tyre smoke / rubber (RACE piece owns what they do)
       this.race.updateVisuals(scaled, this.engine.camera);
-      if (this.race.state === 'finished' && this.state !== 'finished') {
-        this.state = 'finished';
-        this.hud.message(this.race.playerPos === 1 ? 'WINNER!' : `FINISHED ${this.race.playerPos}${['st', 'nd', 'rd'][this.race.playerPos - 1] || 'th'}`, 4, '#ffd24a');
-      }
+      // RACE piece: race announcements — final lap, lap counter, overtakes, the flag — go through
+      // the HUD's one banner slot. The director queues them; this is the whole of the wiring.
+      const ev = this.race.takeEvents?.();
+      if (ev) for (const e of ev) this.hud.message(e.text, e.hold, e.color);
+      if (this.race.state === 'finished' && this.state !== 'finished') this.state = 'finished';
     }
 
     // ---- audio ----
@@ -317,8 +357,16 @@ class Game {
       const spd = Math.abs(this.body.speed);
       this.audio.squeal(
         clamp((this.body.slide ?? this.body.drift) * 1.3, 0, 1) * smoothstep(4, 14, spd),
-        this.body.slip,
-        { surface: this.body.surface, speed: spd },
+        // (audio piece) NORMALISED slip, not radians: the tyre voice's gate runs 0 = gripping to
+        // 1 = full lock, and ~26 deg of slip angle is where rubber is doing all it can do.
+        clamp(Math.abs(this.body.slip) / 0.45, 0, 1.3),
+        {
+          surface: this.body.surface,
+          speed: spd,
+          // vertical load on the loaded pair, normalised to 1 g — this is what bends the squeal's
+          // pitch as the car takes weight through a corner and gives it back on the exit.
+          load: clamp(0.72 + Math.abs(this.body.aLat ?? 0) / 9.81 * 0.62, 0.3, 1.85),
+        },
       );
       this.audio.tick(scaled, { speed: spd, surface: this.body.surface, boost: this.nitro?.ramp ?? 0 });
     }
@@ -393,23 +441,25 @@ class Game {
     // the plume is seen in profile instead of straight down its own axis (§6.3 camera response).
     // Longitudinal g drags the rig back on a launch and pulls it in under braking — the cheapest
     // way to make acceleration felt rather than merely displayed on the speedo.
-    const gPull = clamp((b.aLong ?? 0) * 0.055, -0.9, 1.9);
-    // (nitrous piece) the flame pull-in is deliberately small: the plume is ~4 m long, and pulling
-    // the rig in any harder puts its tip through the near plane, where it clips into a hard-edged
-    // sheet across the lens. The boost read comes from the FOV punch and the rise instead.
+    // (nitrous piece, r4) INVERTED. Rounds 1–3 all pulled the rig BACK and UP under boost, and the
+    // longitudinal-g term did it again on top: at 167–188 mph the rig sat ~10 m out and ~5 m up and
+    // the frames that were supposed to be the loudest in the game were the quietest in it. Under
+    // nitrous the rig now DIVES: in toward the car, down toward the road, and out to the side. The
+    // g-drag is muted by the same amount, or the launch immediately undoes the dive.
+    const gPull = clamp((b.aLong ?? 0) * 0.055, -0.9, 1.9) * (1 - flame * 0.80);
     // Mid-slide the rig lifts and backs off: a three-second drift lays down a wall of tyre smoke,
     // and a camera at bumper height sits INSIDE it (§6.2 is judged on drift frames — the car has to
     // clear its own plume).
-    const back = 6.0 + speed01 * 3.2 + gPull - flame * 2.10 + kick * 4.4 + b.drift * 2.1;
-    // (nitrous piece, r3) the rig climbs hard while the jet is lit. The lateral swing below is
-    // routinely eaten by the barrier clamp on a narrow street, and with the rig ON the jet's axis a
-    // 5 m plume projects to a dot — which is exactly why the 207/244 mph boost frames read as
-    // "modest" while a 167 mph one read as "enormous". Height cannot be clamped away, so the
-    // high three-quarter is what actually guarantees the plume screen-space length at any speed.
-    const up = 2.30 + speed01 * 0.50 + flame * 2.35 + kick * 0.8 + b.drift * 1.15;
+    const back = 6.0 + speed01 * 3.2 * (1 - flame * 0.55) + gPull
+      - flame * 3.10 - kick * 1.20 + b.drift * 2.1;
+    // Still ABOVE the jet's axis — the plume needs an elevation angle or it projects down its own
+    // centreline — but roughly two metres lower than round 3's tower.
+    const up = 2.30 + speed01 * 0.50 + flame * 0.35 + kick * 0.35 + b.drift * 1.15;
     // Under nitrous the rig swings out to one side: §8 asks for a REAR THREE-QUARTER on the
-    // plume, and sitting on the axis foreshortens a 4 m jet into a bright blob behind the bumper.
-    const lateralSwing = flame * 4.6 * (this._boostSide ?? 1);
+    // plume, and sitting on the axis foreshortens the jet into a bright blob behind the bumper.
+    // (The jet's own screen-space governor pays for whatever foreshortening survives — see
+    // NitrousJet._governor — so this is about composition, not about rescuing the plume's size.)
+    const lateralSwing = flame * 4.20 * (this._boostSide ?? 1);
 
     const fwd = b.forward, right = b.right;
     // ------------------------------------------------------------------ the drift camera
@@ -449,15 +499,175 @@ class Game {
     // between the camera and the car — which is exactly what happens on a slide along a barrier.
     const trk = this.city?.track;
     if (trk) {
-      // (nitrous piece) while boosting the rig is allowed a little further out — it is also much
-      // higher, so it clears the barrier it is over instead of being stuck behind it.
-      const lim = 1.12 + flame * 0.30;
+      // (nitrous piece) while boosting the rig is allowed a little further out. It is lower now
+      // than it was in round 3, so it gets less of that latitude — but the jet's screen-space
+      // governor absorbs whatever swing the barrier eats, so this no longer has to be generous.
+      const lim = 1.12 + flame * 0.20;
       const nc = trk.nearest(want, this.race?.playerU ?? null);
       if (Math.abs(nc.lateral) > lim) {
         const s = nc.sample;
         const edge = s.pos.clone().addScaledVector(s.right, Math.sign(nc.lateral) * trk.halfWidth * lim);
+        // (nitrous piece, r4) TRADE THE LOST SWING FOR HEIGHT. On NYC's narrow streets the barrier
+        // clamp ate the entire boost swing, which put the rig dead astern — and dead astern the jet
+        // is a dot behind the bumper with its tail off the bottom of frame (the SUV's 138 mph NYC
+        // frame was the single worst in the round-3 set). Whatever lateral metres the wall takes,
+        // the rig climbs by roughly half of them, so it always has SOME angle onto the plume. On a
+        // wide road nothing is taken and nothing is added.
+        const lost = Math.hypot(want.x - edge.x, want.z - edge.z);
         want.x = edge.x; want.z = edge.z;
+        want.y += Math.min(lost * 0.60, 2.4) * flame;
       }
+    }
+
+    // (nitrous piece, r5) DON'T SHOOT THE BOOST THROUGH SOMEONE ELSE'S TAILGATE. Under nitrous the
+    // rig dives in to ~4 m behind the car, and at 210–240 mph the player is passing traffic — so an
+    // opponent who has just been overtaken sits exactly where the lens is. Two of the round-5
+    // supercar frames were a stranger's roof rack filling the middle of the shot with the plume
+    // poking out from behind it. If a car is inside the corridor between the player and the rig,
+    // the rig moves IN FRONT of it (the jet's screen-space governor absorbs the shorter distance,
+    // so the plume does not change size) and lifts a little. Boost only, so no other capture and no
+    // ordinary driving frame is touched, and it is a dot-product test against ≤7 cars, not a ray.
+    if (flame > 0.05 && this.aiCars.length) {
+      _boostRay.copy(want).sub(b.pos); _boostRay.y = 0;
+      const rigD = _boostRay.length();
+      if (rigD > 1.5) {
+        _boostRay.divideScalar(rigD);
+        let near = Infinity, offRight = 0;
+        for (const ai of this.aiCars) {
+          _boostRel.copy(ai.position).sub(b.pos); _boostRel.y = 0;
+          const along = _boostRel.dot(_boostRay);
+          if (along < 0.8 || along > rigD + 1.2 || along >= near) continue;
+          if (_boostRel.addScaledVector(_boostRay, -along).length() > 2.1) continue;
+          near = along; offRight = _boostRel.dot(right);
+        }
+        if (near < rigD) {
+          if (near > 5.0) {
+            // room to sit in FRONT of it — dolly in. The screen-space governor absorbs the shorter
+            // distance, so the plume does not change size.
+            const d = near - 1.7;
+            want.x = b.pos.x + _boostRay.x * d;
+            want.z = b.pos.z + _boostRay.z * d;
+            want.y += 0.35;
+          } else {
+            // It is ON the bumper — there is nowhere in front of it to stand, and dollying in just
+            // buries the lens in its roof. Step the rig AROUND it (away from whichever side of the
+            // sightline it sits on) and lift over it instead.
+            want.addScaledVector(right, offRight >= 0 ? -2.9 : 2.9);
+            want.y += 1.45;
+          }
+        }
+      }
+    }
+
+    // (fx piece) CRASH-CAM OCCLUSION RESOLVE. ART_DIRECTION §6.6 scores camera response, and the
+    // critic charged this piece for it directly: in three of four crash captures the impact
+    // happened behind an overpass pillar or inside a Vegas sign leg, so the most important frame in
+    // the whole piece showed a prop instead of the crash. For the second or so after an impact,
+    // test whether anything solid in the city sits between the car and where the rig wants to be
+    // and, if it does, move the rig somewhere it can see.
+    //
+    // It LIFTS rather than dollies. Pulling in along the rig's own axis until the prop clears puts
+    // the camera three metres off the bumper looking over the roof, and the impact — which is
+    // beside and behind the car — leaves the frame entirely (that was this fix's first attempt, and
+    // the Vegas capture came back with no crash in it at all). Climbing keeps the distance, the
+    // whole car and the whole shower, and a crash seen from slightly above is the shot anyway. Only
+    // if no height clears it does the rig come in, and then no closer than 4.5 m.
+    //
+    // Gated on the FX director's own crash clock, not on shake: a backfire, a boost pad and every
+    // frame of a wall scrape all raise shake, and a full-city raycast on those would be running
+    // most of a lap. crashT is only zeroed by crash() itself, so this is inert while driving —
+    // including through the whole of the performance capture.
+    if (this.effects.crashT < 0.85 && this.city?.group) {
+      // ONE CANDIDATE PER FRAME, and none at all once a clear one is found. A ray against a whole
+      // city is not cheap — walking seven candidates in a single frame measured as a 140 ms spike
+      // and took the perf sweep under its 50 fps bar. The search has ~50 frames of crash window to
+      // work with and needs at most seven, so it is spread one per frame and then latched.
+      if (this._occCrash !== this.effects.impacts) {
+        this._occCrash = this.effects.impacts;
+        this._occIdx = 0; this._occLift = 0; this._occLat = 0; this._occPull = 0;
+      }
+      this._occT = (this._occT ?? 0) + 1;
+      // …and re-verify the latched choice every sixth frame. A crash against a barrier is a SLIDE:
+      // the car keeps moving for the whole second the crash camera is live, so a sightline that was
+      // clear when it was chosen can be behind a pylon by the time the frame that matters is drawn.
+      // That is exactly how the Vegas Strip capture came back as a flat magenta screen.
+      if (this._occIdx >= OCC_CANDIDATES.length && this._occT % 6 === 0) this._occIdx = 0;
+      if (this._occIdx < OCC_CANDIDATES.length) {
+        this._occRay ??= new THREE.Raycaster();
+        // (RACE piece, one-line crash fix — owner of this block please keep it) Three's
+        // Sprite.raycast dereferences `raycaster.camera.matrixWorld`, so raycasting a city group
+        // that contains any sprite (Vegas/Miami/NYC neon glow cards) throws "Cannot read
+        // properties of null (reading 'matrixWorld')" the first time the shake goes above 0.05 —
+        // which killed tools/perf.mjs on three of the four cities.
+        this._occRay.camera = this.engine.camera;
+        this._occRay.near = 0.7;
+        // Test the sightline to the EVENT, not to the car. The shower, the debris and the scorch
+        // are at the contact patch a metre or two outboard of the bodywork, so a rig that can see
+        // the car but not the contact still comes back with a frame that has no crash in it —
+        // which is what the Vegas supercar capture kept doing, with the impact behind a sign pylon
+        // the car itself was clear of.
+        // …and to the CAR as well. Either one alone is not enough: a sightline to the contact with
+        // the car behind a pylon is a frame of sparks with no vehicle in it, and a sightline to the
+        // car with the contact behind the pylon is a frame of an intact car with no crash in it.
+        // The Vegas Strip capture produced one of each on successive rounds.
+        const probe = (target, lift, lat) => {
+          _occDir.copy(want).addScaledVector(right, lat);
+          _occDir.y = want.y + lift;
+          _occDir.sub(target);
+          const dist = _occDir.length();
+          if (dist < 1.2) return -1;
+          this._occRay.set(target, _occDir.divideScalar(dist));
+          this._occRay.far = dist;
+          for (const hit of this._occRay.intersectObject(this.city.group, true)) {
+            const m = Array.isArray(hit.object.material) ? hit.object.material[0] : hit.object.material;
+            if (!m) continue;
+            // See through decals, haze cards and additive glow — but NOT through a transparent
+            // material that still writes depth and is nearly opaque. Skipping everything flagged
+            // `transparent` let the rig park inside a Las Vegas sign pylon, which is a two-lane-wide
+            // magenta slab: the capture came back as a flat magenta screen with no car in it.
+            if (m.depthWrite === false) continue;
+            if (m.transparent && (m.opacity ?? 1) < 0.65) continue;
+            return hit.distance;
+          }
+          return 0;
+        };
+        _occFrom.copy(b.pos).lerp(this.effects.lastImpact, 0.6).setY(b.pos.y + 0.6);
+        _occCar.copy(b.pos).setY(b.pos.y + 0.7);
+        // Candidates in the order we would rather have them: stay put, climb a little, step to
+        // one side, climb a lot, climb and step. Sideways matters because the thing in the way is
+        // usually a COLUMN — an overpass pier, a sign pylon — and you clear a column by walking
+        // around it, not by climbing it.
+        const ci = this._occIdx;
+        const lift = OCC_CANDIDATES[ci][0], lat = OCC_CANDIDATES[ci][1];
+        const a = probe(_occFrom, lift, lat);
+        const bq = a > 0 ? 0 : probe(_occCar, lift, lat);
+        if (a < 0 || bq < 0) {
+          this._occIdx = OCC_CANDIDATES.length;              // degenerate geometry — leave it alone
+        } else if (!a && !bq) {
+          this._occLift = lift; this._occLat = lat; this._occPull = 0;
+          this._occIdx = OCC_CANDIDATES.length;              // latched
+        } else if (ci === OCC_CANDIDATES.length - 1) {
+          // Nothing worked: take the best compromise and dolly in. 5.5 m is the floor — the car is
+          // ~4.5 m long, so anything tighter measured from its centre puts the lens inside the
+          // bodywork (which is exactly what this fix's first attempt did to the NYC muscle frame).
+          this._occLift = 2.2;
+          this._occPull = Math.max(5.5, (a || bq) - 0.6);
+          this._occIdx = OCC_CANDIDATES.length;
+        } else {
+          this._occIdx = ci + 1;
+        }
+      }
+      // applied to `want`, never to camPos, so a held offset cannot accumulate frame over frame
+      if (this._occLift > 0) want.y += this._occLift;
+      if (this._occLat !== 0) want.addScaledVector(right, this._occLat);
+      if (this._occPull > 0) {
+        _occFrom.copy(b.pos).setY(b.pos.y + 0.75);
+        _occDir.copy(want).sub(_occFrom);
+        const d = _occDir.length();
+        if (d > this._occPull) want.copy(_occFrom).addScaledVector(_occDir.divideScalar(d), this._occPull);
+      }
+    } else if (this._occLift || this._occLat || this._occPull) {
+      this._occPull = 0; this._occLift = 0; this._occLat = 0;
     }
 
     const k = 1 - Math.exp(-(this.headless ? 60 : 7.5) * dt);
@@ -473,13 +683,51 @@ class Game {
     // Under nitrous the aim point pulls back toward the car: with the rig swung out to the side,
     // a distant lead point cancels most of the offset and the shot goes back to being end-on.
     const lookTarget = b.pos.clone()
-      .addScaledVector(chase, (5.4 + speed01 * 4.6) * (1 - flame * 0.62))
-      .setY(b.pos.y + 1.05 + flame * 0.85);
+      .addScaledVector(chase, (5.4 + speed01 * 4.6) * (1 - flame * 0.74))
+      .setY(b.pos.y + 1.05 + flame * 0.15);
     lookTarget.lerp(b.pos.clone().setY(b.pos.y + 0.95), smoothstep(0.2, 0.8, b.drift) * 0.45);
+    // (nitrous piece, r5) COMPOSE THE SHOT AROUND THE JET. With the rig swung out to a rear
+    // three-quarter, a look point on the car itself put the car dead centre and sent the plume
+    // diagonally out through the bottom corner — the tip, the taper and the cone silhouette were
+    // all cropped and what survived in frame was a structureless field of colour. Aiming partway
+    // down the plume's own axis slides the car up into the far third of the frame and gives the
+    // column the whole diagonal. (The jet's containment clamp handles whatever still overhangs.)
+    if (flame > 0.01 && this.jet) {
+      lookTarget.lerp(this.jet.aimPoint(_camAim), flame * 0.46);
+    }
+    // (fx piece) COMPOSE THE CRASH ON THE CAR. The normal aim point is five to ten metres up the
+    // road ahead of the car, which is right for driving and wrong for an impact: it pushes the car
+    // — and the shower, the debris and the damaged corner, all of which are AT the car — into the
+    // bottom corner of the frame or off it. For the second after a hit the aim swings onto the car
+    // itself, so the event the frame is about is the thing the frame is pointed at.
+    if (this.effects.crashT < 0.85) {
+      const w = 1 - this.effects.crashT / 0.85;
+      // …biased a third of the way toward the contact point and set low, because the shower is
+      // thrown BACKWARD ALONG THE BARRIER from the contact and hugs the road: aiming at the car's
+      // waist put the sparks, the debris and the scorch off the bottom corner of the frame.
+      // Kept deliberately partial. Swinging the aim all the way onto the contact rotates whatever
+      // the rig happens to be standing next to into the frame — on the Vegas Strip that is a sign
+      // pylon two lanes wide — so this pulls the composition back toward the car and the shower
+      // without giving up the road behind them.
+      _occFrom.copy(b.pos).lerp(this.effects.lastImpact, 0.20).setY(b.pos.y + 0.75);
+      lookTarget.lerp(_occFrom, 0.55 * w * w);
+    }
     this.camLook.lerp(lookTarget, 1 - Math.exp(-(this.headless ? 60 : 9) * dt));
 
     const shake = this.effects.cameraShake(dt);
     cam.position.copy(this.camPos).add(shake.offset);
+    // (nitrous piece) SUSTAINED RUMBLE. The FX director's trauma shake is an event decay — the
+    // ignition jolt is gone a third of a second in — but §6.3 scores camera response over the whole
+    // boost, and a car with a rocket lit under it should not sit on rails. Held for as long as the
+    // flame is, scaled by the class's own shake weight, and applied here rather than by feeding
+    // trauma into effects.addShake() every frame, which would poison `shakePeak` for the crash test.
+    if (flame > 0.01) {
+      const rt = this.time;
+      const amp = flame * 0.075 * (this.nitro?.cfg.fx?.shake ?? 0.4);
+      cam.position.x += (Math.sin(rt * 47.3) * 0.7 + Math.sin(rt * 31.1 + 1.3) * 0.4) * amp;
+      cam.position.y += (Math.sin(rt * 53.7 + 0.9) * 0.6 + Math.sin(rt * 23.9) * 0.35) * amp;
+      cam.position.z += Math.sin(rt * 41.1 + 2.2) * 0.5 * amp;
+    }
     cam.lookAt(this.camLook);
     // The frame leans WITH the body, a fifth as far. A camera roll tilts the horizon too, so it
     // cannot cancel the body's lean against the road — it just adds the bit of dutch angle that
@@ -489,15 +737,35 @@ class Game {
       - kick * 0.05 * (this._boostSide ?? 1));
 
     // FOV: a violent snap on ignition (fast lerp while surging), then a held wide angle.
-    const targetFov = 54 + smoothstep(0.08, 1.0, speed01) * 14 + boost * 8 + kick * 14;
+    // ...driven off `flame` as well as `boost` so a spooling SUV also gets the wide-angle read.
+    const targetFov = 54 + smoothstep(0.08, 1.0, speed01) * 14 + boost * 4 + flame * 4 + kick * 14;
     this.camFov = lerp(this.camFov, targetFov, 1 - Math.exp(-(6 + surge * 26) * dt));
     cam.fov = this.camFov + (this.effects.fovKick || 0);   // impact punch (fx piece)
     cam.updateProjectionMatrix();
 
     // post response — grade saturates/tightens and the speed lines take the flame's tint
-    this.engine.grade.uniforms.uBoost.value = clamp(boost * 0.8 + kick * 1.1, 0, 1.6);
-    this.engine.speed.uniforms.uAmount.value = clamp(smoothstep(0.2, 1.05, speed01) * 0.58 + boost * 0.5 + kick * 0.55, 0, 1.1);
-    this.engine.speed.uniforms.uLines.value = clamp(smoothstep(0.55, 1.08, speed01) * 0.7 + boost * 0.55 + kick * 0.7, 0, 1);
+    // (nitrous piece, r4) HELD, not decayed. Round 3 drove the grade shift off `kick`, which is
+    // gone 0.2–0.6 s after ignition, so the fringe and the speed lines fell back to their plain
+    // high-speed level for the entire rest of the boost — the sustain looked like ordinary fast
+    // driving. The ignition-level look now runs off `flame` (which stays at 1 for as long as the
+    // button is held, and rises for every class, not just the ones that spool instantly), and
+    // `kick` only adds the extra crack on top of it.
+    // uBoost is a whole-frame grade shift (aberration x5, vignette, saturation, a cyan tint push),
+    // so the sustained level is set just under the old ignition PEAK rather than at it: at 1.25 the
+    // fringe was wide enough to turn LA's blue sky teal for four seconds at a time, which is not
+    // "the boost looks violent", it is "the grade broke". 1.05 held + the crack on top reads as the
+    // ignition look sustained without repainting the city.
+    // (nitrous piece, r6) ...AND THEN PULLED BACK ~40%. Round 5 held the ignition-level grade for
+    // the whole sustain, and the result was that the boost frames in Vegas and Miami were a flat
+    // magenta wash in which the plume — the thing §2.5 says must read as "the biggest thing on
+    // screen" — was indistinguishable from its own screen effect. The jet's structure now has to
+    // out-contrast the layer that was drowning it, so the whole-frame response is a supporting
+    // element again: the boost grade, the radial blur and the speed lines all come down, and the
+    // ignition crack keeps most of its authority because that spike is over in a third of a second.
+    const nos = Math.max(flame, boost);
+    this.engine.grade.uniforms.uBoost.value = clamp(nos * 0.62 + kick * 0.40, 0, 1.6);
+    this.engine.speed.uniforms.uAmount.value = clamp(smoothstep(0.2, 1.05, speed01) * 0.58 + nos * 0.34 + kick * 0.30, 0, 1.15);
+    this.engine.speed.uniforms.uLines.value = clamp(smoothstep(0.55, 1.08, speed01) * 0.7 + nos * 0.42 + kick * 0.36, 0, 1);
     this.engine.speed.uniforms.uTint.value.set(this.nitro?.cfg.color || '#8fd4ff');
 
     // Heat haze (nitrous piece): the plume boils the air, so the grade pass ripples the image

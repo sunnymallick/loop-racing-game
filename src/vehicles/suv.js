@@ -16,7 +16,7 @@ export const spec = {
   name: 'BRUTUS',
   full: 'BRUTUS H2 OVERLAND',
   klass: 'OFF-ROAD',
-  colors: ['#c8a038', '#3f4a2e', '#2b2f36', '#8c3520', '#d8d3c6', '#1d3b5c'],
+  colors: ['#dfb03c', '#4a5a34', '#38414c', '#a83d20', '#e2ddcf', '#22497a'],
   stats: { speed: 0.62, accel: 0.58, traction: 0.74, weight: 1.0 },
   // physics → handling.js · nitrous → nitrous.js NITRO · engine voicing → audio_tuning.js
   // (merged in by vehicles/index.js — do not add them back here)
@@ -28,11 +28,13 @@ export const blueprint = {
   id: 'suv', spec, colors: spec.colors,
   // the tub reaches 1.141 half-width at the arch stations; the track puts the tyre flush with it
   dims: { length: 4.92, width: 2.30, height: 2.08, wheelbase: 3.05, track: 1.895, trackRear: 1.895, rideHeight: 0.34 },
-  paint: { metalness: 0.20, roughness: 0.44, clearcoat: 0.55, clearcoatRoughness: 0.17, flake: 0.30, envIntensity: 0.92 },
+  // the truck stays the least glossy thing in the game — satin utility paint, not a show car —
+  // but it still needs enough of the probe in it to read as metal rather than as matt vinyl
+  paint: { metalness: 0.36, roughness: 0.36, clearcoat: 0.72, clearcoatRoughness: 0.105, flake: 0.30, envIntensity: 1.10 },
   livery: {
     // the lower cladding was #3b4048: on the shadowed flank that plus the rocker gradient made the
     // bottom two thirds of the truck one black void with the gold cab floating on top of it
-    style: 'offroad', stripe: '#e6e2d4', accent: '#6a7180',
+    style: 'offroad', stripe: '#e6e2d4', accent: '#3a3f49',
     panels: {
       doors: [V(0.86), V(-0.30), V(-1.32)],
       hood: [V(1.02), V(2.30)],
@@ -41,7 +43,9 @@ export const blueprint = {
       fuelCap: [0.30, V(-1.86)],
     },
   },
-  glass: { tint: '#0d151c', opacity: 0.66 },
+  // see muscle.js — the truck has the biggest glass area in the game and the flattest tailgate
+  // window, so it was the worst offender for §7's black-void cabin
+  glass: { tint: '#111a22', opacity: 0.56 },
 
   body: [
     { z: -2.46, w: 0.975, y0: 0.72, floor: 0.66, rocker: 0.97, ySill: 0.98, yBelt: 1.44, belt: 0.985, yDeck: 1.44, deck: 0.955, crown: 0.004 },
@@ -85,7 +89,9 @@ export const blueprint = {
       { z0: -1.78, z1: -1.98, a: 2, b: 5, mat: 'paint', steps: 4 },    // D
     ],
     beltZ0: -1.80, beltZ1: 0.56, beltMat: 'dark',
-    interior: { seat: 0x3a3227, trim: 0x1c1a17, accent: 0x2a2620, floorY: 1.275, headY: 1.815, dashY: 1.505, wheelY: 1.545, shelfY: 1.52, seatZ: 0.28, dashZ: 0.78, dashW: 1.76, seatX: 0.46, shelfZ: 1.12, clusterColor: '#9fe8a0' },
+    // sand-and-khaki utility cabin. shelfZ 1.48 puts the rear bench, its head restraints and the
+    // bulkhead directly behind the tailgate window — the black slot every chase frame showed.
+    interior: { seat: 0x6d6152, trim: 0x474138, accent: 0x5c5346, floorY: 1.275, headY: 1.815, dashY: 1.505, wheelY: 1.545, shelfY: 1.55, seatZ: 0.28, dashZ: 0.78, dashW: 1.76, seatX: 0.46, shelfZ: 1.70, shelfD: 0.66, clusterColor: '#9fe8a0' },
   },
 
   wheels: {
@@ -97,14 +103,26 @@ export const blueprint = {
     front: { radius: 0.500, width: 0.40, spokes: 6, tireProfile: 0.335 },
     rear: { radius: 0.500, width: 0.40, spokes: 6, tireProfile: 0.335 },
   },
-  // square bolt-on flares 55 mm proud of the slab side
+  // square bolt-on flares 55 mm proud of the slab side, riveted round the opening
   archThickness: 0.078, archGap: 1.05, archFlare: 0.055, archSpan: 1.02, blackArches: true,
+  archBolts: 7,
 
   lights: {
     head: [{ x: 0.70, y: 1.13, z: 2.455, w: 0.30, h: 0.30, shape: 'round', color: '#f4f8ff', intensity: 3.0 }],
-    // three-segment stacked lens: without the ribs a tall bright lens blooms into a white slab
-    tail: [{ x: 0.86, y: 1.16, z: -2.475, w: 0.20, h: 0.46, color: '#ff2a14', intensity: 1.9, glow: 0.45, segs: 3 }],
+    // Four-segment stacked lens. A 0.20 x 0.46 m lens is 2.4x the area of the muscle car's round
+    // lamps, so at the same emissive it carries 2.4x the energy into the bloom pass: the two rear
+    // corners of the truck rendered as solid red domes wider than the tailgate, with no lens, no
+    // bezel and no tailgate detail visible inside them. Lower intensity plus one more divider rib
+    // keeps the total light about the same while leaving the SHAPE of the lamp readable.
+    tail: [
+      { x: 0.86, y: 1.16, z: -2.475, w: 0.20, h: 0.46, color: '#ff2a14', intensity: 1.35, glow: 0.35, segs: 4 },
+      // high-mount stop lamp on the tailgate top lip — same colour/intensity/glow as the corner
+      // lamps so it joins their bank, and a bright red line above the tailgate in every chase frame
+      { x: 0, y: 1.462, z: -2.505, w: 0.46, h: 0.05, color: '#ff2a14', intensity: 1.35, glow: 0.35, segs: 4, mirror: false, bezel: false },
+    ],
     reverse: [{ x: 0.86, y: 0.86, z: -2.475, w: 0.18, h: 0.12, color: '#fff2d8', intensity: 1.5, glow: 0.3 }],
+    // (the high-mount stop lamp is declared in `tail` above so it shares that bank's lens and halo
+    //  materials and costs no extra draw call)
   },
 
   grilles: [{ w: 1.30, h: 0.46, d: 0.16, y: 1.13, z: 2.46, slats: 7, vertical: true, frame: 'chrome' }],
@@ -118,7 +136,16 @@ export const blueprint = {
   trim: [
     { w: 1.96, h: 0.26, d: 0.30, y: 0.86, z: 2.44, mat: 'dark', r: 0.05 },     // front bumper
     { w: 1.92, h: 0.24, d: 0.28, y: 0.86, z: -2.42, mat: 'dark', r: 0.05 },    // rear bumper
+    // Body-colour caps along the top of both bumpers. A 2 m black bar under a gold truck welded the
+    // bumper, the flares and the tyres into one silhouette in every chase frame; a painted upper
+    // half splits that bar in two and carries the car's colour all the way down the tailgate.
+    { w: 1.90, h: 0.075, d: 0.30, y: 1.005, z: 2.442, mat: 'paint', r: 0.026 },
+    { w: 1.86, h: 0.070, d: 0.28, y: 0.995, z: -2.422, mat: 'paint', r: 0.026 },
+    // and a satin blade along the bottom of each, so the bumper has a lit lower edge
+    { w: 1.70, h: 0.032, d: 0.26, y: 0.730, z: 2.446, mat: 'chrome', r: 0.011 },
+    { w: 1.66, h: 0.032, d: 0.25, y: 0.740, z: -2.426, mat: 'chrome', r: 0.011 },
     { x: 1.16, w: 0.14, h: 0.18, d: 2.70, y: 0.82, z: 0, mat: 'dark', mirror: true, r: 0.04 },  // rock slider
+    { x: 1.150, w: 0.055, h: 0.024, d: 2.50, y: 0.916, z: 0, mat: 'chrome', mirror: true, r: 0.009 }, // slider tread edge
     { w: 1.44, h: 0.10, d: 0.66, y: 0.60, z: 2.06, mat: 'chrome', r: 0.03 },   // front skid plate
     { w: 1.44, h: 0.10, d: 0.60, y: 0.60, z: -2.10, mat: 'chrome', r: 0.03 },  // rear skid plate
     { w: 1.72, h: 0.055, d: 0.10, y: 1.435, z: -2.485, mat: 'dark', r: 0.02 },  // tailgate top lip

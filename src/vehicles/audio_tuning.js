@@ -17,12 +17,23 @@
  *   character   key into CHARACTER in core/audio.js
  *   roughness   0..1 idle irregularity — how much the note wanders when it is not being asked
  *               to do anything
- *   trim        per-car level trim on the engine bus, so no one car is buried or shouting
+ *   trim        per-car level trim on the engine bus, so no one car is buried or shouting.
+ *               Note the supercar's is the LOWEST of the four despite being the biggest-sounding
+ *               engine: a flat-plane V8 is broadband, bright and screaming, so it needs less gain
+ *               than a lopey V8 to be equally present — and running it hot (r2 had it at 1.32) ate
+ *               the headroom its own crashes and nitrous need in order to land on top of it.
  *
- *   tyre.formant   multiplies the surface squeal formants — wide sticky rubber howls high
- *   tyre.howl      how tonal the squeal is (a race tyre sings, a truck tyre just scrubs)
- *   tyre.roar      broadband scrub weight — tall soft sidewalls move a lot of air
- *   tyre.stick     stick-slip rate multiplier: the "waaah" is slower on a heavy car
+ *   tyre.formant   transposes the WHOLE rubber voice — the stick-slip partial's own frequency and
+ *                  the three formants it is voiced through. A wide, stiff, sticky supercar tyre
+ *                  releases its tread blocks sooner and squeals a fourth above a tall soft truck
+ *                  sidewall; this is the single number that makes those two different instruments
+ *                  rather than the same one at two levels.
+ *   tyre.howl      how TONAL the slide is — the partial's level against the broadband scrub, plus
+ *                  the Q of the formants. A race tyre sings; a truck tyre mostly just scrubs.
+ *   tyre.roar      broadband scrub weight — tall soft sidewalls move a lot of air — and how hard
+ *                  the body answers a rumble strip.
+ *   tyre.stick     rate multiplier for the "waaah" and for the grinding roughness under it. Both
+ *                  are slower on a heavy car, because the tread block cycle is.
  *
  *   impact.mass    body thump level and how low it falls — a 2.6 t truck vs a 1.2 t coupe
  *   impact.thumpHz starting pitch of that thump
@@ -31,8 +42,22 @@
  *   impact.glass   glass/debris content on a heavy hit
  *   impact.rattle  loose-junk clatter after the hit — trucks have it, supercars do not
  *   impact.bright  spectral centre of the contact noise
+ *   impact.punch   per-class gain staging for the whole hit. An impact has to clear the engine it
+ *                  is interrupting, and these four engines are not the same size — the flat-plane
+ *                  supercar is the loudest, brightest programme in the game, so its crashes are
+ *                  voiced over it, while the diesel's dark low note needs no help.
  *
  *   nitrous.color  ignition crack brightness · nitrous.bore jet size / rumble weight
+ *
+ *   track      which of the four city cues in core/audio.js TRACKS this class's crew rolls with.
+ *              In a race the CITY picks the music; this is what the garage previews, and it is
+ *              what makes the four offline music clips four different pieces of music instead of
+ *              four identical renders of one loop.
+ *
+ *   space.room     how much of the car's own close reflections it hears — bodywork, road surface,
+ *                  the barrier a metre away. A bare carbon supercar cabin is full of it; a plush
+ *                  truck cabin two metres up with a headliner soaks most of it away.
+ *   space.street   how far the exhaust throws. A big-bore diesel is heard three streets over.
  *
  * The four voices, in one line each:
  *   tuner     — 4-cyl turbo. Small, buzzy, 2nd-order dominant; the induction whistle and the
@@ -47,27 +72,35 @@
  */
 export const AUDIO = {
   tuner: {
-    cylinders: 4, idleRpm: 950, redline: 8600, character: 'i4-turbo', roughness: 0.30, trim: 0.88,
+    cylinders: 4, idleRpm: 950, redline: 8600, character: 'i4-turbo', roughness: 0.30, trim: 0.94,
+    track: 'miami',
+    space: { room: 1.05, street: 0.95 },
     tyre: { formant: 1.10, howl: 0.85, roar: 0.85, stick: 1.15 },
-    impact: { mass: 0.62, thumpHz: 1.32, modeHz: 1.34, decay: 0.72, glass: 0.75, rattle: 0.55, bright: 1.25 },
+    impact: { mass: 0.62, thumpHz: 1.32, modeHz: 1.34, decay: 0.72, glass: 0.75, rattle: 0.55, bright: 1.25, punch: 1.00 },
     nitrous: { color: 1.18, bore: 0.78 },
   },
   muscle: {
     cylinders: 8, idleRpm: 660, redline: 6200, character: 'v8-lopey', roughness: 0.62, trim: 1.16,
+    track: 'la',
+    space: { room: 1.15, street: 1.12 },
     tyre: { formant: 0.92, howl: 1.05, roar: 1.15, stick: 0.88 },
-    impact: { mass: 1.18, thumpHz: 0.90, modeHz: 0.80, decay: 1.30, glass: 1.0, rattle: 0.85, bright: 0.92 },
+    impact: { mass: 1.18, thumpHz: 0.90, modeHz: 0.80, decay: 1.30, glass: 1.0, rattle: 0.85, bright: 0.92, punch: 1.05 },
     nitrous: { color: 0.92, bore: 1.15 },
   },
   suv: {
     cylinders: 8, idleRpm: 580, redline: 4400, character: 'v8-diesel', roughness: 0.78, trim: 1.06,
+    track: 'nyc',
+    space: { room: 0.82, street: 1.28 },
     tyre: { formant: 0.70, howl: 0.45, roar: 1.45, stick: 0.70 },
-    impact: { mass: 1.50, thumpHz: 0.70, modeHz: 0.62, decay: 1.55, glass: 0.55, rattle: 1.45, bright: 0.68 },
+    impact: { mass: 1.50, thumpHz: 0.70, modeHz: 0.62, decay: 1.55, glass: 0.55, rattle: 1.45, bright: 0.68, punch: 1.06 },
     nitrous: { color: 0.72, bore: 1.45 },
   },
   supercar: {
-    cylinders: 8, idleRpm: 1050, redline: 9000, character: 'v8-flatplane', roughness: 0.20, trim: 1.32,
+    cylinders: 8, idleRpm: 1050, redline: 9000, character: 'v8-flatplane', roughness: 0.20, trim: 1.04,
+    track: 'vegas',
+    space: { room: 1.28, street: 1.18 },
     tyre: { formant: 1.34, howl: 1.35, roar: 0.72, stick: 1.30 },
-    impact: { mass: 0.78, thumpHz: 1.15, modeHz: 1.62, decay: 0.58, glass: 1.50, rattle: 0.22, bright: 1.48 },
+    impact: { mass: 0.78, thumpHz: 1.15, modeHz: 1.62, decay: 0.58, glass: 1.50, rattle: 0.22, bright: 1.48, punch: 1.36 },
     nitrous: { color: 1.35, bore: 0.90 },
   },
 };
@@ -75,7 +108,7 @@ export const AUDIO = {
 /** Defaults, so a car without a full profile still gets a sane voice rather than a crash. */
 export const AUDIO_DEFAULTS = {
   tyre: { formant: 1, howl: 1, roar: 1, stick: 1 },
-  impact: { mass: 1, thumpHz: 1, modeHz: 1, decay: 1, glass: 1, rattle: 0.6, bright: 1 },
+  impact: { mass: 1, thumpHz: 1, modeHz: 1, decay: 1, glass: 1, rattle: 0.6, bright: 1, punch: 1 },
   nitrous: { color: 1, bore: 1 },
 };
 

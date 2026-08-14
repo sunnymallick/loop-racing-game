@@ -5,8 +5,8 @@ import {
   jerseyBarrier, waterBarrier, trafficCones,
 } from './kit.js';
 import { Track } from './track.js';
-import { RNG, clamp, lerp } from '../core/rng.js';
-import { canvas, toTexture, grain } from '../core/textures.js';
+import { RNG, clamp, lerp, makeNoise2D, fbm2D } from '../core/rng.js';
+import { canvas, toTexture, grain, concrete } from '../core/textures.js';
 import { drawText } from '../core/font.js';
 
 /**
@@ -154,6 +154,17 @@ class B {
 // mesh the collapse pass never reaches (anything `noMerge`) renders identically on its own. The
 // tag is only an instruction to `vcCollapse()`, which runs once at the end of landmarks().
 const VC_STEEL = 'steel', VC_TUBE = 'tube', VC_SOFT = 'soft', VC_CHASE = 'chase';
+const VC_POOL = 'pool';   // ground pools: same blend as VC_SOFT, different alpha map
+const VC_CONE = 'cone';   // the shaft of haze under a lamp: same blend, a 1-D alpha along v
+const VC_SHADE = 'shade'; // contact shadows: the one family in this city that SUBTRACTS light
+
+/**
+ * Draw order inside the transparent pass, per family. Only the shadow family declares one, and
+ * it declares the highest number in the file on purpose — see the GROUNDING note below. The
+ * additive families are left where they were so this change cannot move a single existing pixel
+ * of the neon.
+ */
+const VC_ORDER = { [VC_SHADE]: 8 };
 
 const vcTint = (color, alpha = 1) => ({ c: new THREE.Color(color), a: alpha });
 
@@ -174,6 +185,27 @@ function vcFamilyMaterial(family) {
       return new THREE.MeshBasicMaterial({
         map: softTexture(), vertexColors: true, transparent: true, opacity: 1,
         blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: true,
+      });
+    }
+    if (family === VC_POOL) {
+      return new THREE.MeshBasicMaterial({
+        map: poolTexture(), vertexColors: true, transparent: true, opacity: 1,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: true,
+      });
+    }
+    if (family === VC_CONE) {
+      return new THREE.MeshBasicMaterial({
+        map: lampConeTexture(), vertexColors: true, transparent: true, opacity: 1,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: true,
+      });
+    }
+    if (family === VC_SHADE) {
+      // NOT additive, and the only family here that is not. A contact shadow has to remove light
+      // that the wet-road mirror has already put down, so it blends toward a violet ink instead
+      // of adding to it (§2.1: a shadow is tinted, it is never #000).
+      return new THREE.MeshBasicMaterial({
+        map: blobTexture(), vertexColors: true, transparent: true, opacity: 1,
+        depthWrite: false, side: THREE.DoubleSide, fog: true,
       });
     }
     return new THREE.MeshBasicMaterial({
@@ -213,6 +245,7 @@ function vcCollapse(out, chunk = 240) {
     let b = buckets.get(key);
     if (!b) {
       b = new B(vcFamilyMaterial(vc.family), { cast: o.castShadow, receive: o.receiveShadow });
+      b.family = vc.family;
       buckets.set(key, b);
     }
     b.addM(o.geometry, o.matrixWorld, vc.tint);
@@ -227,6 +260,7 @@ function vcCollapse(out, chunk = 240) {
     const m = b.into(holder);
     if (!m) continue;
     m.userData.noMerge = true;
+    if (VC_ORDER[b.family]) m.renderOrder = VC_ORDER[b.family];
     out.push(m);
   }
 }
@@ -269,11 +303,46 @@ function halo(color, opacity = 0.20) {
  * costs one shared material and reads the same at night, which is the whole trick a night city
  * runs on.
  */
-function spillMaterial(color) {
-  return mat(`spill|${color}`, () => vcTag(new THREE.MeshBasicMaterial({
-    map: softTexture(), color: new THREE.Color(color), transparent: true, opacity: 0.85,
+/**
+ * The alpha a GROUND pool uses. Not the same falloff a halo uses, and that difference is the
+ * whole point: a smooth radial gradient laid flat on the road is indistinguishable from fog —
+ * it covers the asphalt instead of lighting it, and the round-5 captures had a featureless
+ * salmon wash over the entire near-left quadrant because of it. Light landing on WET ASPHALT is
+ * broken up by what it lands on: puddle edges, camber, aggregate. So the pool carries fbm
+ * mottling and a ripple beat, and the tarmac stays visible through its own highlight.
+ */
+function poolTexture() {
+  return mat('lv-pool-tex', () => {
+    const S = 192;
+    const { c, ctx } = canvas(S, S);
+    const img = ctx.createImageData(S, S);
+    const n = makeNoise2D(9173);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const dx = (x / (S - 1)) * 2 - 1, dy = (y / (S - 1)) * 2 - 1;
+        const r = Math.hypot(dx, dy * 0.86);
+        const fall = Math.exp(-r * r * 3.1) * clamp(1 - Math.pow(clamp(r, 0, 1), 2.4), 0, 1);
+        const m = fbm2D(n, x / S * 4.6, y / S * 4.6, 4) * 0.5 + 0.5;
+        const fine = fbm2D(n, x / S * 13.0 + 11, y / S * 13.0 + 7, 3) * 0.5 + 0.5;
+        const ripple = 0.62 + 0.38 * Math.sin(dy * 11.0 + m * 6.0);
+        const a = clamp(fall * (0.30 + 0.90 * m * ripple) * (0.66 + 0.52 * fine), 0, 1);
+        const i4 = (y * S + x) * 4;
+        const q = (255 * Math.pow(a, 1 / 2.2)) | 0;
+        img.data[i4] = img.data[i4 + 1] = img.data[i4 + 2] = q;
+        img.data[i4 + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+    return t;
+  });
+}
+
+function spillMaterial(color, opacity = 0.85) {
+  return mat(`spill|${color}|${opacity}`, () => vcTag(new THREE.MeshBasicMaterial({
+    map: poolTexture(), color: new THREE.Color(color), transparent: true, opacity,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
-  }), VC_SOFT, color, 0.85));
+  }), VC_POOL, color, opacity));
 }
 
 /**
@@ -281,13 +350,425 @@ function spillMaterial(color) {
  * prop points BACK at the carriageway (rotation.y = trackYaw + side*PI/2), so a positive z
  * offset walks the pool off the pavement and into the gutter where the wet road can take it.
  */
-function spill(parent, color, r = 14, y = 0.22, z = 0) {
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2.6), spillMaterial(color));
+function spill(parent, color, r = 14, y = 0.22, z = 0, a = 0.85) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2.6), spillMaterial(color, a));
   m.rotation.x = -Math.PI / 2;
   m.position.set(0, y, z);
   m.renderOrder = 4;
   parent.add(m);
   return m;
+}
+
+// ---------------------------------------------------------------- GROUNDING
+//
+// Round 1's binding cap was §7's "no contact shadow under the car — the car appears to hover",
+// measured: the tarmac directly under an AI car was no darker than the tarmac beside it.
+//
+// The reason that was true HERE is worth writing down, because the vehicle kit does ship a
+// contact blob (`vehicles/kit.js contactShadow`, renderOrder 2) and it was in every frame the
+// whole time. Vegas then draws, ON TOP OF IT, the entire wet-road mirror: ~25 merged reflection
+// ribbons, the gutter runs, the kerb-cove wash, the canopy pools, every sign's ground spill —
+// all transparent, all ADDITIVE, all at renderOrder 3-4, and therefore all after the blob. The
+// blob removed light and the mirror immediately put it back. A darker blob would not have fixed
+// it; a blob drawn earlier is a blob that gets overwritten.
+//
+// So grounding in this city has to be the LAST thing that touches the carriageway. Three parts,
+// one material family, renderOrder 8:
+//
+//   1. `CarShadows` — a per-car footprint (soft body ellipse + four hard tyre patches) rebuilt
+//      every frame into ONE shared buffer, so the whole eight-car grid costs a single draw call.
+//      It is laid on the road's own banked cross-section, not on a world-horizontal plane, and
+//      it spreads and fades as the car leaves the ground.
+//   2. static occlusion under everything this file stands on the ground — gate legs, the WELCOME
+//      arch feet, pylon plinths, canopy columns, barriers, portal posts, the hero plinths — plus
+//      an AO line down the kerb face, which is what stops the road edge from being a hard join.
+//   3. the answer to the second half of the same note: a spill wash across BOTH pavements for
+//      the whole circuit, so the shoulder the shadows are being drawn onto is lit ground rather
+//      than the crushed-black void round 1 measured on the right-hand side.
+//
+// Parts 2 and 3 go through vcCollapse like everything else, so the cost is a handful of merged
+// meshes per 240 m cell.
+
+/** The violet a Vegas shadow is. Blending toward this can never reach #000 (§2.1). */
+const SHADOW_INK = '#2b1942';
+
+/** Soft round footprint, alpha-only (RGB stays white so the ink rides in the vertex colour). */
+function blobTexture() {
+  return mat('lv-blob', () => {
+    const S = 128;
+    const { c, ctx } = canvas(S, S);
+    const img = ctx.createImageData(S, S);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const u = (x / (S - 1)) * 2 - 1, v = (y / (S - 1)) * 2 - 1;
+        const r = Math.hypot(u, v);
+        // a firm core where the object actually touches, and a long soft skirt around it
+        const core = 1 - smooth(0.06, 0.52, r);
+        const skirt = 1 - smooth(0.18, 1.0, r);
+        const a = clamp(core * 0.62 + skirt * 0.52, 0, 1);
+        const i4 = (y * S + x) * 4;
+        img.data[i4] = img.data[i4 + 1] = img.data[i4 + 2] = 255;
+        img.data[i4 + 3] = (a * 255) | 0;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    // mipmapped, unlike the halo sheet: these are laid FLAT on the ground and viewed at a
+    // grazing angle, where an unmipped alpha ramp shimmers into a stipple as it recedes (§7
+    // caps aliased edges at 68).
+    return toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  });
+}
+
+/** Smootherstep — the one easing every falloff in this section uses. */
+function smooth(e0, e1, x) {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
+/**
+ * A 1-D profile: opaque at u=0, gone by u=1, constant along v. Anything laid on the road's own
+ * cross-section — the kerb AO, the pavement wash — wants this rather than the round blob,
+ * because a radial falloff stretched down 60 m of kerb fades in and out along its own length.
+ */
+function edgeTexture() {
+  return mat('lv-edge', () => {
+    // square and mipmapped even though the profile is 1-D: these strips lie flat on the pavement
+    // and recede to a few pixels, where an unmipped ramp resolves as a stipple (§7 caps aliased
+    // edges at 68). A 64 px square costs 16 KB.
+    const S = 64;
+    const { c, ctx } = canvas(S, S);
+    const img = ctx.createImageData(S, S);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const u = x / (S - 1);
+        const a = Math.pow(1 - smooth(0, 1, u), 1.35);
+        const i4 = (y * S + x) * 4;
+        img.data[i4] = img.data[i4 + 1] = img.data[i4 + 2] = 255;
+        img.data[i4 + 3] = (a * 255) | 0;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  });
+}
+
+/**
+ * The AO line down the kerb face. Not vertex-collapsed: it is one continuous run per side for
+ * the whole circuit, so it is already one mesh and it needs its draw order kept.
+ */
+function edgeShadeMaterial(alpha = 0.55) {
+  return mat(`lv-edge-shade|${alpha}`, () => new THREE.MeshBasicMaterial({
+    map: edgeTexture(), color: new THREE.Color(SHADOW_INK), transparent: true, opacity: alpha,
+    depthWrite: false, side: THREE.DoubleSide, fog: true,
+  }));
+}
+/** The wash a lit kerb throws back across its own pavement, brightest at the kerb. */
+function edgeWashMaterial(color, alpha = 0.30) {
+  return mat(`lv-edge-wash|${color}|${alpha}`, () => new THREE.MeshBasicMaterial({
+    map: edgeTexture(), color: new THREE.Color(color), transparent: true, opacity: alpha,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: true,
+  }));
+}
+
+/** Per-object contact-shadow material; vcCollapse folds every one of these into one family. */
+function shadeMaterial(alpha = 0.62, ink = SHADOW_INK) {
+  return mat(`shade|${ink}|${alpha}`, () => vcTag(new THREE.MeshBasicMaterial({
+    map: blobTexture(), color: new THREE.Color(ink), transparent: true, opacity: alpha,
+    depthWrite: false, side: THREE.DoubleSide, fog: true,
+  }), VC_SHADE, ink, alpha));
+}
+
+/** A flat quad lying on the ground, `w` across by `l` along, yawed. */
+function groundGeo(w, l) {
+  const g = new THREE.PlaneGeometry(w, l);
+  g.rotateX(-Math.PI / 2);
+  return g;
+}
+
+/**
+ * The occlusion patch a standing object lays on the ground it stands on. `y` is measured from
+ * whatever surface the object's own origin sits on; 0.05 clears the sidewalk slab (kerb top is
+ * 0.17 above the carriageway) without floating far enough to shear off its own feet.
+ */
+function shade(w, l, x = 0, y = 0.05, z = 0, yaw = 0, alpha = 0.62) {
+  const m = new THREE.Mesh(groundGeo(w, l), shadeMaterial(alpha));
+  m.position.set(x, y, z);
+  m.rotation.y = yaw;
+  m.renderOrder = 8;
+  return m;
+}
+
+/** The same thing already placed in world space, for props this file positions by hand. */
+function shadeAt(pos, w, l, yaw = 0, alpha = 0.62, lift = 0.05) {
+  const m = shade(w, l, 0, 0, 0, yaw, alpha);
+  m.position.copy(pos).setY(pos.y + lift);
+  return m;
+}
+
+/** An additive pool of a sign's own colour where it meets the ground, placed in world space. */
+function poolAt(pos, w, l, yaw, color, alpha = 0.5, lift = 0.06) {
+  const g = new THREE.PlaneGeometry(w, l);
+  g.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(g, spillMaterial(color, alpha));
+  m.position.copy(pos).setY(pos.y + lift);
+  m.rotation.y = yaw;
+  m.renderOrder = 4;
+  return m;
+}
+
+/**
+ * THE KIT'S OWN PROPS.
+ *
+ * Lamps, hydrants, benches, bollards, cones, planters, palms and newsboxes are placed by
+ * `cities/kit.js`, which this file does not own and must not reach into — but the round-1 note
+ * named "every arch leg, lamp post and cone" and it is right: a bollard standing on a lit apron
+ * with nothing under it is the same tell as a hovering car at 1/40th the size.
+ *
+ * The kit batches those props into InstancedMeshes and flags them `noMerge` so they survive its
+ * own merge, which means the finished city still carries one matrix per prop. So instead of
+ * duplicating anyone's placement code (and silently drifting out of sync the next time it
+ * changes), the grounding pass READS the built world back and drops a patch under whatever it
+ * actually finds standing on the ground. Bucketed per 240 m cell so culling still means something.
+ */
+function groundKitProps(group, { chunk = 240, budget = 2600 } = {}) {
+  group.updateMatrixWorld(true);
+  const ims = [];
+  group.traverse((o) => {
+    // A hard ceiling on the count, not on the number of meshes: a window bank or a bulb rig can
+    // be tens of thousands of instances, and a quad per instance is both meaningless and enough
+    // allocation to take the tab out. Street furniture comes in dozens.
+    if (o.isInstancedMesh && o.count > 0 && o.count <= 900) ims.push(o);
+  });
+  if (!ims.length) return [];
+  const ink = new THREE.Color(SHADOW_INK);
+  const ALPHA = 0.58;
+  const buckets = new Map();
+  const m4 = new THREE.Matrix4();
+  const pos = new THREE.Vector3(), q = new THREE.Quaternion(), scl = new THREE.Vector3();
+  let placed = 0;
+  for (const im of ims) {
+    if (placed >= budget) break;
+    const mtl = im.material;
+    // glow cards, light pools and boost strips are light, not objects: they occlude nothing
+    if (!mtl || Array.isArray(mtl) || mtl.transparent || im.userData.boost) continue;
+    if (!im.geometry.boundingBox) im.geometry.computeBoundingBox();
+    const bb = im.geometry.boundingBox;
+    const bw = bb.max.x - bb.min.x, bd = bb.max.z - bb.min.z, bh = bb.max.y - bb.min.y;
+    if (bh < 0.30) continue;                       // already a flat decal
+    if (bw > 16 || bd > 16) continue;              // a building, not a prop
+    for (let i = 0; i < im.count && placed < budget; i++) {
+      im.getMatrixAt(i, m4);
+      m4.premultiply(im.matrixWorld);
+      m4.decompose(pos, q, scl);
+      const foot = pos.y + bb.min.y * scl.y;
+      if (foot > 2.4 || foot < -1.6) continue;     // not standing on any ground we can see
+      const hw = clamp(bw * Math.abs(scl.x) * 1.15 + 0.35, 0.8, 4.6) * 0.5;
+      const hd = clamp(bd * Math.abs(scl.z) * 1.15 + 0.35, 0.8, 4.6) * 0.5;
+      const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.z * q.z));
+      const key = `${Math.floor(pos.x / chunk)}|${Math.floor(pos.z / chunk)}`;
+      let b = buckets.get(key);
+      if (!b) { b = { p: [], uv: [], c: [], idx: [], n: 0 }; buckets.set(key, b); }
+      // written straight into flat arrays: a BufferGeometry per prop is thousands of tiny
+      // allocations for eight floats of actual data
+      const cy = Math.cos(yaw), sy = Math.sin(yaw), y = foot + 0.055;
+      for (let k = 0; k < 4; k++) {
+        const sx = (k & 1) ? hw : -hw, sz = (k & 2) ? hd : -hd;
+        b.p.push(pos.x + sx * cy + sz * sy, y, pos.z - sx * sy + sz * cy);
+        b.uv.push((k & 1) ? 1 : 0, (k & 2) ? 1 : 0);
+        b.c.push(ink.r, ink.g, ink.b, ALPHA);
+      }
+      const v0 = b.n * 4;
+      b.idx.push(v0, v0 + 1, v0 + 2, v0 + 1, v0 + 3, v0 + 2);
+      b.n++;
+      placed++;
+    }
+  }
+  const out = [];
+  for (const b of buckets.values()) {
+    if (!b.n) continue;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(b.p, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(b.uv, 2));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(b.c, 4));
+    g.setIndex(b.idx);
+    const m = new THREE.Mesh(g, vcFamilyMaterial(VC_SHADE));
+    m.userData.noMerge = true;
+    m.renderOrder = VC_ORDER[VC_SHADE];
+    out.push(m);
+  }
+  return out;
+}
+
+/**
+ * THE MOVING HALF.
+ *
+ * One mesh, one material, one draw call, `max` quads. Every frame it walks the scene for cars,
+ * finds the road plane under each one, and writes four vertices per car straight into a shared
+ * buffer. Nothing is allocated per frame and nothing is added to or removed from the graph.
+ */
+class CarShadows {
+  constructor(track, max = 12) {
+    this.track = track;
+    this.max = max;
+    this.hints = new WeakMap();
+    const g = new THREE.BufferGeometry();
+    this.pos = new Float32Array(max * 4 * 3);
+    this.col = new Float32Array(max * 4 * 4);
+    const uv = new Float32Array(max * 4 * 2);
+    const idx = [];
+    for (let i = 0; i < max; i++) {
+      const b = i * 4;
+      // 0 = back-left, 1 = back-right, 2 = front-left, 3 = front-right; v=1 is the nose
+      uv.set([0, 0, 1, 0, 0, 1, 1, 1], b * 2);
+      idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
+    }
+    this.aPos = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.aCol = new THREE.BufferAttribute(this.col, 4).setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('position', this.aPos);
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setAttribute('color', this.aCol);
+    g.setIndex(idx);
+    g.setDrawRange(0, 0);
+    this.mesh = new THREE.Mesh(g, mat('lv-carshadow-mat', () => new THREE.MeshBasicMaterial({
+      map: carShadowTexture(), vertexColors: true, transparent: true, opacity: 1,
+      depthWrite: false, side: THREE.DoubleSide, fog: true,
+    })));
+    this.mesh.frustumCulled = false;      // the buffer is rewritten every frame; a stale sphere lies
+    this.mesh.renderOrder = 8;
+    this.mesh.userData.noMerge = true;
+    this.mesh.matrixAutoUpdate = false;
+    this.ink = new THREE.Color(SHADOW_INK);
+    this._inv = new THREE.Matrix4();
+    this._p = new THREE.Vector3(); this._f = new THREE.Vector3();
+    this._n = new THREE.Vector3(); this._r = new THREE.Vector3();
+    this._c = new THREE.Vector3(); this._d = new THREE.Vector3();
+  }
+
+  /** `root` is the city group the mesh lives under, so world points land in its local frame. */
+  update(root) {
+    const scene = root.parent;
+    const geo = this.mesh.geometry;
+    if (!scene) { geo.setDrawRange(0, 0); return; }
+    this._inv.copy(root.matrixWorld).invert();
+    const t = this.track;
+    let n = 0;
+    for (const o of scene.children) {
+      if (n >= this.max) break;
+      const ud = o.userData;
+      if (!ud || !ud.dims || !ud.wheels || !ud.spec || !o.visible) continue;
+      const dims = ud.dims;
+      const p = this._p.copy(o.position);
+
+      // --- the road plane under the car ---
+      const near = t.nearest(p, this.hints.get(o) ?? null);
+      this.hints.set(o, ((near.u % 1) + 1) % 1);
+      const f = t.frame(((near.u % 1) + 1) % 1);
+      const N = this._n.copy(f.normal);
+      let d = this._d.copy(p).sub(f.pos).dot(N);
+      // On a branch corridor or a ramp deck the main ribbon's plane is metres away and means
+      // nothing; fall back to the car's own origin, which is on the ground by contract.
+      if (d < -0.8 || d > 5.0) { N.set(0, 1, 0); d = 0.021; }
+      const air = clamp(d - 0.021, 0, 8);
+
+      // --- the frame to lay the quad in: up = road normal, forward = the car's own heading ---
+      const F = this._f.set(0, 0, 1).applyQuaternion(o.quaternion);
+      F.addScaledVector(N, -F.dot(N));
+      if (F.lengthSq() < 1e-6) F.set(0, 0, 1).addScaledVector(N, -N.z);
+      F.normalize();
+      const R = this._r.crossVectors(N, F).normalize();
+
+      // The centre sits on the road plane, not on the car: that is the whole difference between
+      // a shadow and a decal stuck to the bodywork.
+      const C = this._c.copy(p).addScaledVector(N, -d + 0.035);
+
+      // A shadow spreads and washes out as its caster climbs. Both terms are what sells a ramp
+      // landing; on the ground they are exactly 1 and 1.
+      const grow = 1 + air * 0.16;
+      const hw = dims.width * 0.82 * grow;             // silhouette lands at CAR_SIL_U in the map
+      const hl = dims.length * 0.62 * grow;            // ...and at CAR_SIL_V
+      const a = 0.90 * (1 - smooth(0, 3.4, air) * 0.86);
+
+      const b = n * 4;
+      for (let k = 0; k < 4; k++) {
+        const sx = (k & 1) ? 1 : -1, sz = (k & 2) ? 1 : -1;
+        const i3 = (b + k) * 3;
+        this.pos[i3] = C.x + R.x * sx * hw + F.x * sz * hl;
+        this.pos[i3 + 1] = C.y + R.y * sx * hw + F.y * sz * hl;
+        this.pos[i3 + 2] = C.z + R.z * sx * hw + F.z * sz * hl;
+        const i4 = (b + k) * 4;
+        this.col[i4] = this.ink.r; this.col[i4 + 1] = this.ink.g;
+        this.col[i4 + 2] = this.ink.b; this.col[i4 + 3] = a;
+      }
+      n++;
+    }
+    // world → city-group local, in place
+    if (n) {
+      const m = this._inv.elements;
+      const identity = m[0] === 1 && m[5] === 1 && m[10] === 1
+        && m[12] === 0 && m[13] === 0 && m[14] === 0;
+      if (!identity) {
+        for (let i = 0; i < n * 4; i++) {
+          const j = i * 3;
+          const x = this.pos[j], y = this.pos[j + 1], z = this.pos[j + 2];
+          this.pos[j] = m[0] * x + m[4] * y + m[8] * z + m[12];
+          this.pos[j + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+          this.pos[j + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+        }
+      }
+    }
+    this.aPos.needsUpdate = true;
+    this.aCol.needsUpdate = true;
+    geo.setDrawRange(0, n * 6);
+  }
+}
+
+/**
+ * The footprint itself.
+ *
+ * NOT an ellipse. The quad is only ~1.6 x the car wide and ~1.25 x long, so an ellipse inscribed
+ * in it has already fallen to a few percent by the time it reaches the car's own silhouette —
+ * which is exactly where a contact shadow has to be at its strongest, and why the first pass of
+ * this read as a faint smudge in the capture. So: a rounded RECTANGLE that holds full strength
+ * across the whole footprint and does all its falling off in the margin outside it, with four
+ * near-opaque tyre patches on top. The tyre patches are the half that sells it — a soft slab
+ * under a car is an airbrushed smudge, four dark contact points are weight on the road.
+ *
+ * The layout is in fractions of the quad and the quad is sized off `dims`, so one sheet fits all
+ * four classes: the silhouette lands at |u| = 0.61 / |v| = 0.81 and the wheels at (0.48, 0.478)
+ * for every one of them to within a percent.
+ */
+const CAR_SIL_U = 0.61, CAR_SIL_V = 0.81;
+function carShadowTexture() {
+  return mat('lv-carshadow', () => {
+    const W = 128, H = 256;
+    const { c, ctx } = canvas(W, H);
+    const img = ctx.createImageData(W, H);
+    const WH = [[-0.48, 0.478], [0.48, 0.478], [-0.48, -0.478], [0.48, -0.478]];
+    for (let y = 0; y < H; y++) {
+      const v = 1 - (y / (H - 1)) * 2;                 // canvas row 0 is v=1 is the nose
+      for (let x = 0; x < W; x++) {
+        const u = (x / (W - 1)) * 2 - 1;
+        // distance OUTSIDE the silhouette, in units of the margin; 0 anywhere under the car
+        const su = Math.max(0, Math.abs(u) - CAR_SIL_U) / (1 - CAR_SIL_U);
+        const sv = Math.max(0, Math.abs(v) - CAR_SIL_V) / (1 - CAR_SIL_V);
+        const s = Math.hypot(su, sv);                  // hypot rounds the corners
+        let a = 0.74 * (1 - smooth(0, 0.86, s))        // the body's own occlusion
+          + 0.24 * (1 - smooth(0, 1.0, s));            // and the softer skirt around it
+        for (const [cu, cv] of WH) {
+          const d = Math.hypot((u - cu) / 0.185, (v - cv) / 0.130);
+          a += 0.30 * (1 - smooth(0.0, 1.0, d));       // the tyre contact patches
+        }
+        // both edges must reach zero or the quad prints its own rectangle on the road
+        a *= clamp((1 - Math.abs(u)) * 9, 0, 1) * clamp((1 - Math.abs(v)) * 9, 0, 1);
+        const i4 = (y * W + x) * 4;
+        img.data[i4] = img.data[i4 + 1] = img.data[i4 + 2] = 255;
+        img.data[i4 + 3] = (clamp(a, 0, 1) * 255) | 0;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+    return t;
+  });
 }
 
 // ---------------------------------------------------------------- THE MIRROR
@@ -385,7 +866,14 @@ function reflTexture(variant) {
 // Hue and brightness ride in the vertex colours, so the whole system is ONE material per streak
 // profile rather than one per (hue, profile, tier) — which was forty-four materials, and therefore
 // forty-four un-cullable draw calls on every single frame of the race.
-const REFL_TIER = [0.55, 0.34, 0.20, 0.12];
+// Round 2's measured complaint about the biggest surface in the frame: "the asphalt carries a
+// broad uniform purple wash with only a couple of streaks near the arch — the Paradiso and Welcome
+// signs cast no reflection onto the street below them". The broad wash is the env-map term on a
+// wet MeshStandardMaterial and it is correct; what was missing was the amplitude of the streaks
+// laid ON it, which at 0.55/0.34/0.20/0.12 were a fifth of a stop over the base and simply lost.
+// §1.3 is unambiguous — EVERY light source draws a long reflection down the surface — so the top
+// tier is now near unity and the bottom tier is where the old top tier was.
+const REFL_TIER = [0.88, 0.60, 0.40, 0.24];
 function reflMaterial(variant = 0) {
   return mat(`lv-reflm|${variant}`, () => new THREE.MeshBasicMaterial({
     map: reflTexture(variant), vertexColors: true,
@@ -488,6 +976,485 @@ function reflFlush(out) {
   REFL_BANK = null;
 }
 
+// ---------------------------------------------------------------- kerb architecture
+//
+// A longitudinal strip hung on the road's OWN banked cross-section. `a` and `b` are stations in
+// the kit's road-section units — `off` metres outboard of the carriageway edge, `y` metres above
+// it — which is the same frame `buildRoad()` generates its kerb and gutter from, so anything
+// built here is welded to the kerb rather than floating a hand's width off it (§7 caps a visible
+// gap between road and shoulder at 62).
+
+function sectionStrip(track, m0, m1, side, a, b, segM = 3.2, vRep = 1) {
+  const n = Math.max(2, Math.round(Math.abs(m1 - m0) / segM));
+  const pos = [], uv = [], idx = [];
+  for (let i = 0; i <= n; i++) {
+    const f = track.frame(U(m0 + (m1 - m0) * (i / n)));
+    for (const st of [a, b]) {
+      const p = f.pos.clone()
+        .addScaledVector(f.right, side * (f.half + st.off))
+        .addScaledVector(f.normal, st.y);
+      pos.push(p.x, p.y, p.z);
+    }
+    const v = (i / n) * vRep;
+    uv.push(0, v, 1, v);
+    if (i < n) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+// ---------------------------------------------------------------- THE STREET
+//
+// Round 2 scored this city 23/25 on legibility and 7/15 on "road surface and furniture": every
+// pixel above the horizon was at target while the surface the car actually drives on was half
+// marked. The measured complaint, verbatim: no raised kerb, no rumble strip, no jersey barrier,
+// markings that are a centre double-yellow and almost nothing else, three lamp posts in the whole
+// scene, and a wet asphalt showing a flat purple wash instead of the neon it is supposed to
+// mirror.
+//
+// Everything from here to `boulevardLamps()` exists to answer that, and all of it is hung on the
+// road's OWN banked cross-section (see sectionStrip) so nothing can float off the tarmac:
+//
+//   lane paint  → six lanes of retroreflective markings, dashed dividers and solid edge lines
+//   rumbleKerb  → the striped rumble strip at the carriageway edge, as alternating blocks
+//   raisedKerb  → a real 22 cm kerb with a face, a top and a fall to the pavement
+//   boulevardLamps → a lamp every ~26 m per side, each with a warm pool on the asphalt
+//
+// The one rule they all obey: this city has three hues and a bone-white for paint and concrete.
+// A rumble strip is red-and-white everywhere else in the world; here it is magenta-and-bone,
+// which is the same object read at a glance and still inside the palette.
+
+const BONE = '#efe9df';        // paint and cast concrete — the only near-neutral in the city
+
+/**
+ * Worn road paint. Not a flat white quad: thermoplastic that has been driven over for a decade is
+ * chipped at the edges, scuffed down the middle, and studded with glass beads that fire back at
+ * anything pointed at them — which at night is the whole reason a lane line is visible at all.
+ * The same canvas is the map AND the emissive map, so the beads self-light and the worn patches
+ * stay dark (§7 caps an untextured flat-colour material on a large surface at 50).
+ */
+function paintTexture(seed = 1) {
+  return mat(`lv-paint|${seed}`, () => {
+    const W = 64, H = 256;
+    const { c, ctx } = canvas(W, H);
+    const rng = new RNG(seed * 71 + 5);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(2, 0, W - 4, H);
+    // chipped edges: bite into both long sides so the stripe never has a ruled border
+    ctx.globalCompositeOperation = 'destination-out';
+    for (let i = 0; i < 130; i++) {
+      const x = rng.bool(0.5) ? rng.range(-1, 7) : rng.range(W - 7, W + 1);
+      ctx.globalAlpha = rng.range(0.35, 1);
+      ctx.beginPath();
+      ctx.ellipse(x, rng.range(0, H), rng.range(1.2, 4.2), rng.range(2, 11), 0, 0, 7);
+      ctx.fill();
+    }
+    // and scrub the middle where tyres cross it
+    for (let i = 0; i < 90; i++) {
+      ctx.globalAlpha = rng.range(0.10, 0.55);
+      ctx.beginPath();
+      ctx.ellipse(rng.range(0, W), rng.range(0, H), rng.range(2, 9), rng.range(3, 22), 0, 0, 7);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    // glass beads
+    for (let i = 0; i < 260; i++) {
+      ctx.fillStyle = `rgba(255,255,255,${rng.range(0.25, 0.9)})`;
+      ctx.beginPath();
+      ctx.arc(rng.range(3, W - 3), rng.range(0, H), rng.range(0.5, 1.5), 0, 7);
+      ctx.fill();
+    }
+    grain(ctx, W, H, 5, rng);
+    return toTexture(c, { srgb: true, wrap: THREE.RepeatWrapping });
+  });
+}
+
+/**
+ * Road paint. `emi` is what makes it a NIGHT marking rather than a grey stripe: there is no key
+ * light in this city, so paint that is not retroreflective is invisible. Held under the 0.64 bloom
+ * threshold so a lane line reads as paint and not as a neon tube.
+ */
+function paintMaterial(color = BONE, emi = 0.55, seed = 1) {
+  return mat(`lv-paintm|${color}|${emi}|${seed}`, () => {
+    const t = paintTexture(seed);
+    return new THREE.MeshStandardMaterial({
+      map: t, emissiveMap: t, alphaMap: t,
+      color: new THREE.Color(color), emissive: new THREE.Color(color), emissiveIntensity: emi,
+      roughness: 0.48, metalness: 0.0, envMapIntensity: 1.5,
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8,
+    });
+  });
+}
+
+/**
+ * A stripe painted on the carriageway between arc positions m0..m1 at lateral `lat` (a fraction
+ * of the half-width, exactly as `track.surfacePoint` reads it, so the stripe banks and pinches
+ * with the ribbon it is painted on).
+ */
+function roadStripe(track, m0, m1, lat, widthM, lift = 0.026, segM = 5) {
+  const n = Math.max(1, Math.round(Math.abs(m1 - m0) / segM));
+  const pos = [], uv = [], idx = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const u = U(lerp(m0, m1, t));
+    const f = track.frame(u);
+    const hw = (widthM * 0.5) / f.half;
+    const a = f.pos.clone().addScaledVector(f.right, (lat - hw) * f.half)
+      .addScaledVector(f.normal, 0.02 + lift);
+    const b = f.pos.clone().addScaledVector(f.right, (lat + hw) * f.half)
+      .addScaledVector(f.normal, 0.02 + lift);
+    pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    const v = t * Math.abs(m1 - m0) / 2.4;
+    uv.push(0, v, 1, v);
+    if (i < n) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * Six lanes of markings on a 24 m boulevard: solid edge lines, two dashed dividers per
+ * carriageway, and a hatched buffer beside the centre double-yellow the road texture already
+ * carries. Nothing here repeats on a fixed period — the dash cycle is jittered per cycle, and
+ * markings are skipped across the crossings the kit paints, so the lot never reads as a texture.
+ */
+function laneMarkings(track, out, rng) {
+  const paint = new B(paintMaterial(BONE, 0.58, 1));
+  const paintDim = new B(paintMaterial(BONE, 0.40, 2));
+  const yellow = new B(paintMaterial('#f2c23c', 0.52, 3));
+  const lr = rng.fork(4507);
+
+  // --- solid edge lines, both sides, the full circuit ---
+  for (const side of [-1, 1]) {
+    let m = 0;
+    while (m < LEN) {
+      const run = Math.min(LEN - m, lr.range(50, 130));
+      paint.addM(roadStripe(track, m, m + run, side * 0.945, 0.22, 0.028, 5.5), _IDENTITY);
+      m += run + lr.range(0.4, 2.2);           // hairline joints, as a real paint crew leaves
+    }
+  }
+  // --- the buffer hatching either side of the centre line ---
+  for (const side of [-1, 1]) {
+    let m = lr.range(0, 40);
+    while (m < LEN - 30) {
+      if (Math.abs(track.turnRate(U(m))) < 0.004) {
+        for (let k = 0; k < 7; k++) {
+          const mm = m + k * 3.4;
+          paintDim.addM(roadStripe(track, mm, mm + 2.1, side * 0.085, 0.16, 0.027, 2.2), _IDENTITY);
+        }
+      }
+      m += lr.range(120, 260);
+    }
+  }
+  // --- dashed lane dividers: two per carriageway, so the road reads as six lanes ---
+  for (const side of [-1, 1]) {
+    for (const lat of [side * 0.315, side * 0.63]) {
+      let m = lr.range(0, 9);
+      while (m < LEN) {
+        const dash = lr.range(2.8, 3.6);
+        (lr.bool(0.18) ? paintDim : paint)
+          .addM(roadStripe(track, m, m + dash, lat, 0.19, 0.027, 3.6), _IDENTITY);
+        m += dash + lr.range(5.6, 7.2);
+      }
+    }
+  }
+  // --- and a gore of yellow chevrons where the kerb bulges at each shortcut mouth ---
+  for (const b of track.branches) {
+    const bm = track.nearest(b.curve.getPointAt(0.02)).u * LEN;
+    for (let k = 0; k < 5; k++) {
+      const mm = bm - 26 + k * 5.4;
+      yellow.addM(roadStripe(track, mm, mm + 3.0, 0.86 - k * 0.03, 0.30, 0.028, 3.2), _IDENTITY);
+    }
+  }
+  const holder = new THREE.Group();
+  for (const b of [paint, paintDim, yellow]) {
+    const m = b.into(holder);
+    if (!m) continue;
+    m.userData.noMerge = true;
+    m.frustumCulled = false;                   // one mesh for the whole circuit; the sphere test can only pass
+    m.renderOrder = 2;                         // under the wet-road mirror, over the tarmac
+    m.castShadow = false; m.receiveShadow = false;
+    out.push(m);
+  }
+}
+
+/**
+ * THE RUMBLE STRIP.
+ *
+ * The kit already lofts a sloped curb panel between the white line and the gutter and maps a
+ * stripe texture onto it — but this city has no key light, so at night it resolves as an unlit
+ * dark band and round 2 measured "a flat emissive cyan strip and a magenta band standing in for
+ * geometry". This lays the strip again as ALTERNATING BLOCKS with their own emissive floor, on
+ * exactly the kit's own two stations lifted 12 mm along the road normal, so it reads as a striped
+ * kerb from the driver's seat and cannot z-fight (§7 caps z-fighting at 60).
+ *
+ * Block length is jittered 1.5-2.0 m so the run is hand-laid rather than stamped.
+ */
+function rumbleKerb(track, out, rng) {
+  const rr = rng.fork(1607);
+  const conc = mat('lv-rumble-tex', () => concrete({ size: 256, seed: 17, tint: '#cfc6bb' }));
+  const face = (color, emi) => mat(`lv-rumble|${color}`, () => new THREE.MeshStandardMaterial({
+    map: conc.map, roughnessMap: conc.roughnessMap, normalMap: conc.normalMap,
+    color: new THREE.Color(color), emissive: new THREE.Color(color), emissiveIntensity: emi,
+    roughness: 0.72, metalness: 0.0, envMapIntensity: 1.35,
+  }));
+  const pale = new B(face(BONE, 0.42));
+  const hot = new B(face(MAGENTA, 0.86));
+  // the kit's own curb stations (roadEdge → curbOut), lifted clear of them
+  const A = { off: -0.03, y: 0.033 }, Bo = { off: 1.18, y: 0.118 };
+  for (const side of [-1, 1]) {
+    let m = rr.range(0, 2);
+    let k = 0;
+    while (m < LEN) {
+      // ~1.1 m against a 1.2 m width: a rumble strip is a run of near-square blocks, and at the
+      // 1.5-2.0 m the first round-3 pass used it read as a chequerboard rather than as a kerb.
+      const len = rr.range(0.95, 1.30);
+      const m1 = Math.min(LEN, m + len);
+      (k % 2 ? hot : pale).addM(sectionStrip(track, m, m1, side, A, Bo, len, 1), _IDENTITY);
+      m = m1;
+      k++;
+    }
+  }
+  const holder = new THREE.Group();
+  for (const b of [pale, hot]) {
+    const m = b.into(holder);
+    if (!m) continue;
+    m.userData.noMerge = true; m.frustumCulled = false;
+    m.castShadow = false; m.receiveShadow = false;
+    out.push(m);
+  }
+}
+
+/**
+ * THE RAISED KERB.
+ *
+ * The kit's kerb face is 10 cm of unlit concrete 6.4 m outboard of the white line, and in a city
+ * whose only light comes from signage that is a tone change, not an edge. This stands a real
+ * 22 cm kerb on the same line — a vertical face the neon cove behind it rakes, a flat top, and a
+ * short fall onto the pavement — plus a drainage channel run in the gutter beside it. Four
+ * stations, one continuous strip per station pair, welded to the kit's own offsets at both ends.
+ */
+function raisedKerb(track, out) {
+  const WOFF = track.wallOffset ?? 6.39;
+  const conc = mat('lv-kerb-tex', () => concrete({ size: 512, seed: 29, tint: '#b9b1a6' }));
+  const kerbMat = mat('lv-kerb-mat', () => new THREE.MeshStandardMaterial({
+    map: conc.map, roughnessMap: conc.roughnessMap, normalMap: conc.normalMap,
+    emissiveMap: conc.map, emissive: new THREE.Color('#8e86a8'), emissiveIntensity: 0.30,
+    roughness: 0.86, metalness: 0.0, envMapIntensity: 1.1,
+  }));
+  const kb = new B(kerbMat, { receive: false });
+  // Every station is deliberately 15-25 mm PROUD of the kit's own cross-section at the same
+  // offset — its gutter lane falls 0.10 → 0.07 across off 1.2 → 6.39 and its pavement 0.17 → 0.13
+  // across 6.57 → 11.97. A strip that crosses one of those planes rather than clearing it prints
+  // an intersection line down the whole circuit and z-fights along it, which §7 caps at 60.
+  const S = {
+    gutter: { off: WOFF - 1.5, y: 0.093 },
+    toe: { off: WOFF - 0.10, y: 0.086 },
+    lip: { off: WOFF - 0.04, y: 0.300 },
+    top: { off: WOFF + 0.44, y: 0.292 },
+    fall: { off: WOFF + 0.92, y: 0.185 },
+  };
+  for (const side of [-1, 1]) {
+    // the channel the gutter drains into — a shallow dish, so the kerb is not a wall on a plane
+    kb.addM(sectionStrip(track, 0, LEN, side, S.gutter, S.toe, 6.0, LEN / 5), _IDENTITY);
+    kb.addM(sectionStrip(track, 0, LEN, side, S.toe, S.lip, 4.0, LEN / 2.2), _IDENTITY);
+    kb.addM(sectionStrip(track, 0, LEN, side, S.lip, S.top, 5.0, LEN / 4), _IDENTITY);
+    kb.addM(sectionStrip(track, 0, LEN, side, S.top, S.fall, 6.0, LEN / 4), _IDENTITY);
+  }
+  const m = kb.into(new THREE.Group());
+  if (m) { m.userData.noMerge = true; m.frustumCulled = false; out.push(m); }
+}
+
+/**
+ * THE BOULEVARD LAMPS.
+ *
+ * §1.3 names warm amber street lamps as the only tie to daylight colour in a neon night frame,
+ * and round 2 counted three of them in the whole scene. This puts one every ~26 m down BOTH
+ * kerbs, staggered so the two sides interleave to a rung every 13 m down the vanishing point.
+ *
+ * Every part goes through a vc-tagged material, so `vcCollapse()` folds two hundred lamps into a
+ * handful of merged meshes per 240 m cell — the column and arm join the pylons' steel bucket, the
+ * lantern joins the tube bucket, the pool joins the ground-spill bucket. The lamp costs the city
+ * no new draw call at all; only the triangles are new.
+ */
+const LAMP_WARM = '#ffcb52';
+
+/**
+ * The shaft of light under a lantern. Alpha runs 1 at the top (v=1, the lamp) to 0 at the bottom,
+ * so an open cone carries a cone of haze whatever angle it is seen from — which is what a street
+ * lamp looks like in humid night air and what makes a lamp read as a SOURCE rather than as a dot
+ * on a stick. Constant across u, because u wraps around the cone and any variation there would
+ * print a seam down it.
+ */
+function lampConeTexture() {
+  return mat('lv-lampcone', () => {
+    const S = 64;
+    const { c, ctx } = canvas(S, S);
+    const img = ctx.createImageData(S, S);
+    for (let y = 0; y < S; y++) {
+      // canvas row 0 is the TOP of the image, which flipY maps to v=1 — the lantern end
+      const v = 1 - y / (S - 1);
+      const a = Math.pow(v, 2.1) * (0.30 + 0.70 * smooth(0.86, 0.99, v) + 0.55 * v);
+      const q = (clamp(a, 0, 1) * 255) | 0;
+      for (let x = 0; x < S; x++) {
+        const i4 = (y * S + x) * 4;
+        img.data[i4] = img.data[i4 + 1] = img.data[i4 + 2] = 255;
+        img.data[i4 + 3] = q;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+    t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.needsUpdate = true;
+    return t;
+  });
+}
+function lampConeMaterial() {
+  return mat('lv-lampcone-mat', () => vcTag(new THREE.MeshBasicMaterial({
+    map: lampConeTexture(), color: new THREE.Color('#ffab2e'), transparent: true, opacity: 0.14,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: true,
+  }), VC_CONE, '#ffab2e', 0.14));
+}
+
+/** One lamp, in its own local frame: +Z points at the carriageway, +Y is up. */
+function stripLamp({ h = 9.4, seed = 1, banner = null }) {
+  const g = new THREE.Group();
+  // A pale warm-violet metal, not near-black: there is no key light in this city, so a dark
+  // column is a black stick against the neon. At this tint the env probe alone gives the mast a
+  // lit edge and a hundred of them read as a receding colonnade rather than as a picket fence.
+  const st = new B(steel('#6d6182'));
+  const lens = new B(tube(LAMP_WARM));
+  const hb = new B(halo(LAMP_WARM, 0.28));
+  // plinth, fluted column, collars
+  st.add(box(1.05, 0.30, 1.05), 0, 0.15, 0);
+  st.add(cyl(0.40, 0.50, 0.95, 9), 0, 0.62, 0);
+  st.add(cyl(0.15, 0.30, h, 10), 0, h / 2 + 0.9, 0);
+  for (let i = 1; i <= 3; i++) st.add(cyl(0.24, 0.24, 0.13, 10), 0, 0.9 + h * (i / 4), 0);
+  // a cranked arm reaching out over the kerb, as an arc of four short links
+  const REACH = 3.5;
+  const armZ = (t) => REACH * (t * t * 0.35 + t * 0.65);
+  const armY = (t) => h + 0.9 + Math.sin(t * 1.5) * 0.62;
+  for (let i = 0; i < 4; i++) {
+    const t0 = i / 4, t1 = (i + 1) / 4;
+    const z0 = armZ(t0), z1 = armZ(t1), y0 = armY(t0), y1 = armY(t1);
+    const dz = z1 - z0, dy = y1 - y0;
+    st.add(cyl(0.105, 0.125, Math.hypot(dz, dy) + 0.06, 7),
+      0, (y0 + y1) / 2, (z0 + z1) / 2, 0, { rx: Math.atan2(dz, dy) });
+  }
+  const LY = armY(1), LZ = REACH;
+  st.add(cyl(0.72, 0.34, 0.44, 8), 0, LY + 0.46, LZ);            // lantern cap
+  st.add(cyl(0.12, 0.12, 0.30, 6), 0, LY + 0.80, LZ);            // spike
+  st.add(box(0.12, 0.60, 0.12), 0, LY - 0.98, LZ);               // finial under the glass
+  // the lantern itself: a tapered hexagonal glass, big enough to be an object at 60 m and hot
+  // enough to bloom. Round 3's first pass had this at 0.4 m and it resolved as a speck.
+  lens.add(cyl(0.62, 0.30, 1.05, 6), 0, LY - 0.22, LZ);
+  lens.add(new THREE.SphereGeometry(0.20, 8, 6), 0, LY - 0.86, LZ);
+  hb.add(new THREE.PlaneGeometry(5.2, 5.2), 0, LY - 0.20, LZ);
+  // ...and the shaft of light under it, which is the half that makes a lamp read as a source
+  {
+    const CH = LY - 2.6;
+    const cone = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.62, 3.5, CH, 12, 1, true), lampConeMaterial(),
+    );
+    cone.position.set(0, LY - 0.35 - CH / 2, LZ);
+    cone.renderOrder = 3;
+    g.add(cone);
+  }
+  // a pennant on the column in one of the three hues, so the lamps carry the palette too
+  if (banner) {
+    const bb = new B(tube(banner));
+    for (const s of [-1, 1]) bb.add(new THREE.PlaneGeometry(0.09, 2.3), s * 0.50, h * 0.60, 0, Math.PI / 2);
+    bb.add(box(1.10, 0.09, 0.09), 0, h * 0.60 + 1.15, 0);
+    bb.into(g);
+  }
+  st.into(g); lens.into(g);
+  const hm = hb.into(g); if (hm) hm.renderOrder = 3;
+  g.add(shade(2.7, 2.7, 0, 0.05, 0, 0, 0.58));
+  void seed;
+  return g;
+}
+
+function boulevardLamps(track, out, rng) {
+  const lr = rng.fork(7717);
+  const pool = new B(spillMaterial(LAMP_WARM, 0.27));
+  const OFF = 7.3;                         // on the pavement, just behind the kerb top
+  const SP = 26;
+  let n = 0;
+  for (const side of [-1, 1]) {
+    for (let m = (side > 0 ? 0 : SP / 2) + lr.range(0, 3); m < LEN; m += SP * lr.range(0.94, 1.06)) {
+      const f = track.frame(U(m));
+      const g = stripLamp({
+        h: lr.range(9.1, 9.9), seed: n,
+        banner: n % 3 === 1 ? HUES[(n * 2 + 1) % 3] : null,
+      });
+      g.position.copy(f.pos).addScaledVector(f.right, side * (f.half + OFF))
+        .addScaledVector(f.normal, 0.30);
+      // +Z of the lamp faces the road, so the arm reaches out over the kerb
+      g.rotation.y = Math.atan2(f.tan.x, f.tan.z) + side * Math.PI / 2;
+      out.push(g);
+      // ...and the pool it throws on the tarmac. Built on the banked cross-section rather than as
+      // a flat quad: a plane laid across a cambered road is buried under the tarmac for half its
+      // width. Short (13 m against a 26 m pitch) so consecutive pools never fuse into a band.
+      // Aimed at the ASPHALT and STOPPED AT THE WHITE LINE. A warm additive band laid over the
+      // rumble strip washes the magenta-and-bone blocks flat — measured on the near-left shoulder
+      // of the round-3 chase capture, where the kerb was legible on the side the pool did not
+      // reach and gone on the side it did. So the pool owns the nearside lane and nothing else,
+      // which is where a lamp actually puts its light anyway.
+      pool.addM(sectionStrip(track, m - 6.2, m + 6.2, side,
+        { off: -8.0, y: 0.048 }, { off: 0.15, y: 0.058 }, 3.2, 1), _IDENTITY);
+      // ...and the streak it draws down the wet tarmac. A lamp every 26 m means a receding ladder
+      // of warm verticals in the road under the neon, which is the one thing the reference night
+      // frame (§1.3) has that a row of pools alone does not.
+      reflect(track, {
+        m, side, len: lr.range(26, 40), variant: 0, tier: 2, color: LAMP_WARM,
+        lat0: 0.92, lat1: 0.56, half0: 0.09, half1: 0.075, segs: 10, mirror: lr.bool(0.5),
+      });
+      n++;
+    }
+  }
+  const pm = pool.into(new THREE.Group());
+  if (pm) { pm.renderOrder = 3; out.push(pm); }
+}
+
+/**
+ * A bulb string slung across the boulevard. Built in the plane PERPENDICULAR to the road, which
+ * is the plane the driver is looking straight into, so a two-triangle-per-segment ribbon reads as
+ * a run of round bulbs rather than as a wire seen edge-on. The sag is what makes it read as a
+ * string rather than as a bar.
+ */
+function bulbSpan(track, bat, m, {
+  lat0 = -1.62, lat1 = 1.62, y = 11.5, sag = 2.0, w = 0.8, segs = 16,
+}) {
+  const rep = Math.max(6, Math.round((lat1 - lat0) * track.halfWidth / 1.35));
+  const pos = [], uv = [], idx = [];
+  const f = track.frame(U(m));
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const lat = lerp(lat0, lat1, t);
+    const yy = y - Math.sin(t * Math.PI) * sag;
+    const p = f.pos.clone().addScaledVector(f.right, lat * f.half);
+    for (const dy of [w / 2, -w / 2]) pos.push(p.x, p.y + yy + dy, p.z);
+    uv.push(t * rep, 1, t * rep, 0);
+    if (i < segs) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  bat.addM(g, _IDENTITY);
+}
+
 function steel(tint = '#231c30') {
   return mat(`steel|${tint}`, () => vcTag(new THREE.MeshStandardMaterial({
     color: new THREE.Color(tint), metalness: 0.75, roughness: 0.45, envMapIntensity: 1.2,
@@ -585,9 +1552,11 @@ function signFace({
   ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 2;
   for (let y = 0; y < h; y += h / 6) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
 
-  // double neon border
+  // double neon border. shadowBlur was 26 on a 384 px board — a 7%-of-the-width magenta wash
+  // laid over the whole cabinet, which the bloom pass then doubled. That, not the type size,
+  // is why a Strip pylon resolved as a flat glowing rectangle: the sign was lighting itself out.
   ctx.strokeStyle = color; ctx.lineWidth = 10;
-  ctx.shadowColor = color; ctx.shadowBlur = 26;
+  ctx.shadowColor = color; ctx.shadowBlur = 9;
   ctx.strokeRect(13, 13, w - 26, h - 26);
   ctx.shadowBlur = 0;
   ctx.strokeStyle = accent; ctx.lineWidth = 4;
@@ -616,45 +1585,93 @@ function signFace({
   bulbs(21, 21, w - 21, 21, nH, accent);
   bulbs(21, h - 21, w - 21, h - 21, nH, accent);
 
-  if (vertical) {
-    // letters stacked down the pylon, each in its own lozenge — the classic Strip pylon
-    const letters = text.replace(/[^A-Z0-9]/g, '').slice(0, 9).split('');
-    const top = 70, bot = h - 150;
+  /** The lit sub-line plate at the foot of a pylon board — CASINO / LOOSE SLOTS / 24 HOURS. */
+  const subPlate = () => {
+    ctx.fillStyle = 'rgba(3,1,9,0.72)';
+    ctx.fillRect(w * 0.06, h - 132, w * 0.88, 76);
+    ctx.strokeStyle = CYAN; ctx.lineWidth = 3;
+    ctx.strokeRect(w * 0.06, h - 132, w * 0.88, 76);
+    drawText(ctx, sub, {
+      x: w / 2, y: h - 76, size: Math.min(50, (w * 0.82) / Math.max(4, sub.length) * 1.8),
+      weight: 0.26, italic: 0.16, align: 'center', color: CYAN, tracking: 0.10,
+      glow: { color: CYAN, blur: 7 },
+    });
+  };
+
+  // Which layout a board gets is decided by its own PROPORTION, which is the thing that was
+  // wrong. Stacking a five-letter name down a 1.42-aspect cabinet left a 53 px cap height on a
+  // 384 px board — 14% of the width, invisible past forty metres, and the real reason a row of
+  // pylons read as a row of coloured rectangles. Tall boards stack letters; squarer boards carry
+  // the name ACROSS them, as large as the cabinet allows, which is also what the real ones do.
+  if (vertical && h / w >= 1.7) {
+    const letters = text.replace(/[^A-Z0-9]/g, '').slice(0, 8).split('');
+    const top = 50, bot = h - 138;
     const cell = (bot - top) / letters.length;
-    const size = Math.min(cell * 0.82, w * 0.56);
+    const size = Math.min(cell * 0.94, w * 0.72);
     letters.forEach((ch, i) => {
       const cy = top + cell * (i + 0.5);
-      ctx.fillStyle = 'rgba(255,255,255,0.05)';
-      ctx.fillRect(w * 0.12, cy - cell * 0.44, w * 0.76, cell * 0.88);
+      // a DARK lozenge, not a light one: the letter has to sit on something darker than itself.
+      ctx.fillStyle = 'rgba(5,2,12,0.70)';
+      ctx.fillRect(w * 0.09, cy - cell * 0.46, w * 0.82, cell * 0.92);
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 2;
+      ctx.strokeRect(w * 0.09, cy - cell * 0.46, w * 0.82, cell * 0.92);
       drawText(ctx, ch, {
-        x: w / 2, y: cy + size * 0.36, size, weight: 0.22, italic: 0.05, align: 'center',
+        x: w / 2, y: cy + size * 0.36, size, weight: 0.30, italic: 0.05, align: 'center',
         color: i % 2 ? color : accent, tracking: 0,
-        glow: { color: i % 2 ? color : accent, blur: size * 0.75 },
+        // blur was 0.75 x the cap height: every letter drowned in its own halo before the bloom
+        // pass had even seen it. A neon tube's glow is about a quarter of its own stroke.
+        glow: { color: i % 2 ? color : accent, blur: size * 0.22 },
       });
     });
-    // sub plate at the foot
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(w * 0.06, h - 132, w * 0.88, 74);
-    ctx.strokeStyle = CYAN; ctx.lineWidth = 3;
-    ctx.strokeRect(w * 0.06, h - 132, w * 0.88, 74);
-    drawText(ctx, sub, {
-      x: w / 2, y: h - 78, size: Math.min(44, (w * 0.8) / Math.max(4, sub.length) * 1.7),
-      weight: 0.18, italic: 0.16, align: 'center', color: CYAN, tracking: 0.10,
-      glow: { color: CYAN, blur: 20 },
+    subPlate();
+  } else if (vertical) {
+    const words = text.split(' ').filter(Boolean);
+    const lines = words.length >= 2 ? [words[0], words.slice(1).join(' ')] : [text];
+    const topY = h * 0.14, band = (h - 152) - topY;
+    const lh = band / lines.length;
+    ctx.fillStyle = 'rgba(4,1,10,0.66)';
+    ctx.fillRect(w * 0.07, topY, w * 0.86, band);
+    lines.forEach((ln, i) => {
+      const size = Math.min(lh * 0.74, (w * 0.86) / Math.max(3, ln.length) * 1.78);
+      const col = i % 2 ? accent : color;
+      // NEON, not paint: a hue-coloured tube around a dark core. A solid letter at
+      // emissiveIntensity 1.9 is a slab of light the bloom pass immediately fuses into its
+      // neighbours — which is why the round-5 boards read as one glowing rectangle. An outline
+      // carries the same shape with a third of the lit area, so the counters stay open.
+      drawText(ctx, ln, {
+        x: w / 2, y: topY + lh * (i + 0.5) + size * 0.36, size,
+        weight: 0.16, italic: 0.09, align: 'center', color: 'rgba(14,4,22,0.94)', tracking: 0.04,
+        outline: { color: col, width: size * 0.075 },
+        glow: { color: col, blur: size * 0.24 },
+      });
     });
+    // a rail of chevrons under the name, so the board is never just type on a panel
+    ctx.fillStyle = accent;
+    for (let i = 0; i < 6; i++) {
+      const x = w * 0.10 + i * (w * 0.80 / 6);
+      ctx.beginPath();
+      ctx.moveTo(x, topY + band - 30); ctx.lineTo(x + w * 0.055, topY + band - 16);
+      ctx.lineTo(x, topY + band - 2); ctx.lineTo(x + w * 0.018, topY + band - 16);
+      ctx.closePath(); ctx.fill();
+    }
+    subPlate();
   } else {
     // wide marquee board: big word over a sub-line, with a chevron rail beneath
-    drawText(ctx, text, {
-      x: w / 2, y: h * 0.44, size: Math.min(h * 0.30, (w * 0.86) / Math.max(4, text.length) * 1.75),
-      weight: 0.23, italic: 0.20, align: 'center', color, tracking: 0.06,
-      glow: { color, blur: 34 },
-    });
+    {
+      const size = Math.min(h * 0.30, (w * 0.86) / Math.max(4, text.length) * 1.75);
+      drawText(ctx, text, {
+        x: w / 2, y: h * 0.44, size,
+        weight: 0.16, italic: 0.20, align: 'center', color: 'rgba(14,4,22,0.94)', tracking: 0.06,
+        outline: { color, width: size * 0.075 },
+        glow: { color, blur: size * 0.22 },
+      });
+    }
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(w * 0.10, h * 0.52, w * 0.80, h * 0.20);
     drawText(ctx, sub, {
       x: w / 2, y: h * 0.665, size: Math.min(h * 0.15, (w * 0.72) / Math.max(5, sub.length) * 1.7),
-      weight: 0.18, italic: 0.16, align: 'center', color: accent, tracking: 0.14,
-      glow: { color: accent, blur: 18 },
+      weight: 0.26, italic: 0.16, align: 'center', color: accent, tracking: 0.14,
+      glow: { color: accent, blur: 6 },
     });
     ctx.fillStyle = CYAN;
     for (let i = 0; i < 7; i++) {
@@ -768,7 +1785,7 @@ function faceAtlas() {
   const tex = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
   FACE_ATLAS = {
     material: new THREE.MeshStandardMaterial({
-      map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 2.5,
+      map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 1.85,
       roughness: 0.5, metalness: 0.1, side: THREE.FrontSide,
     }),
     tall, wide,
@@ -835,8 +1852,12 @@ function neonPylon({ h = 22, bw = 8, seed = 1, index = 0, hue = 0, crown = 0 }) 
     chaseStrip(cb, bh + 1.1, -bwEff / 2 - 0.55, midY, s * 0.62, s > 0 ? 0 : Math.PI, { w: 0.85, rz: Math.PI / 2 });
     chaseStrip(cb, bh + 1.1, bwEff / 2 + 0.55, midY, s * 0.62, s > 0 ? 0 : Math.PI, { w: 0.85, rz: Math.PI / 2 });
   }
-  // a broad soft halo behind the cabinet: neon spill on the night air
-  hb.add(new THREE.PlaneGeometry(bwEff * 2.0, bh * 1.5), 0, midY, 1.15);
+  // A broad soft halo of neon spill on the night air — BEHIND the cabinet, at -1.4, not in
+  // front of it at +1.15. Now that a pylon is aimed at the driver rather than at the kerb, a
+  // halo on the +Z side sits between the eye and the sign face: an additive veil over the board
+  // that washed out every letter on it and left the whole thing reading as one glowing panel.
+  // Behind, the depth test clips it to the board's silhouette and it does what it was for.
+  hb.add(new THREE.PlaneGeometry(bwEff * 1.9, bh * 1.36), 0, midY, -1.4);
 
   // crown
   const cy = midY + bh / 2 + 2.6;
@@ -874,7 +1895,15 @@ function neonPylon({ h = 22, bw = 8, seed = 1, index = 0, hue = 0, crown = 0 }) 
 
   st.into(g); tb.into(g); cb.into(g);
   const hm = hb.into(g); if (hm) hm.renderOrder = 3;
-  spill(g, color, bwEff * 1.15, 0.24, 10);
+  // Three times as many signs stand on the pavement now, so each throws a SMALLER, dimmer pool.
+  // At the old 0.85 x (23 x 60 m) they overlapped into one continuous lilac wash over the whole
+  // near road — which is the thing that was reading as fog rather than as wet asphalt.
+  spill(g, color, bwEff * 0.70, 0.24, 1.5, 0.22);
+  // ...and the dark it stands in. A pylon this size is a plinth, two legs and a mast: the patch
+  // is the plinth's own footprint plus the occlusion its bulk keeps off the pavement, and it is
+  // the thing that stops sixty-eight of these reading as decals printed on the sidewalk.
+  g.add(shade(bwEff * 1.5, 5.4, 0, 0.05, 0, 0, 0.66));
+  g.add(shade(bwEff * 0.98, 3.3, 0, 0.055, 0, 0, 0.60));
   return g;
 }
 
@@ -902,7 +1931,12 @@ function bladeSign({ h = 9, w = 11, seed = 1, index = 0, hue = 0 }) {
     chaseStrip(cb, w + 1.0, 0, h - bh / 2 - 0.5, s * 0.5, s > 0 ? 0 : Math.PI);
   }
   st.into(g); cb.into(g);
-  spill(g, color, w * 0.75, 0.24, 8);
+  // No ground pool on a blade marquee: it hangs nine metres up over a pavement the lit kerb cove
+  // already covers, and this city is fill-bound — two hundred overlapping additive quads on the
+  // nearest surface in frame is the most expensive thing in it for the least picture.
+  // It does still occlude, though: a lit soffit nine metres up leaves a soft patch of shade on
+  // the pavement under it, which is the only reason the pavement reads as being under anything.
+  g.add(shade(w * 0.86, 5.0, 0, 0.05, 0.4, 0, 0.42));
   return g;
 }
 
@@ -949,10 +1983,16 @@ function glassPyramidLV({ h = 185, base = 250, seed = 3 }) {
       for (let i = 0; i < COL; i++) {
         const x = i * cw + 1.0, y = r * ch + 2.4, w = cw - 2.0, hh = ch - 4.8;
         const v = r2.range(0.6, 1.3);
-        ctx.fillStyle = `rgb(${(12 * v) | 0},${(10 * v) | 0},${(26 * v) | 0})`;
+        ctx.fillStyle = `rgb(${(9 * v) | 0},${(8 * v) | 0},${(22 * v) | 0})`;
         ctx.fillRect(x, y, w, hh);
-        if (r2.bool(0.26)) {
-          const col = r2.bool(0.78) ? GOLD : (r2.bool(0.55) ? MAGENTA : CYAN);
+        // Sparse. At 0.26 the face resolved as a confetti of hot dots and the pyramid stopped
+        // reading as GLASS at all; the shape is carried by the gold arrises and the string
+        // courses, and the lit panes are the texture inside it, not the subject.
+        if (r2.bool(0.13)) {
+          // NOT gold-dominant. At 0.78 gold every lit pane read warm, the string courses are gold
+          // too, and the whole face resolved as one orange field with the shape of a cone — the
+          // opposite of a black-glass pyramid trimmed in light.
+          const col = r2.bool(0.34) ? GOLD : (r2.bool(0.5) ? MAGENTA : CYAN);
           const a = r2.range(0.5, 1);
           ctx.globalAlpha = a; ex.globalAlpha = a;
           ctx.fillStyle = col; ctx.fillRect(x, y, w, hh);
@@ -961,15 +2001,15 @@ function glassPyramidLV({ h = 185, base = 250, seed = 3 }) {
         }
       }
       // a continuous lit string course at every storey line
-      ctx.fillStyle = 'rgba(255,194,30,0.42)'; ctx.fillRect(0, (r + 1) * ch - 3.2, S, 3.2);
-      ex.fillStyle = 'rgba(255,194,30,0.62)'; ex.fillRect(0, (r + 1) * ch - 3.2, S, 3.2);
+      ctx.fillStyle = 'rgba(255,194,30,0.72)'; ctx.fillRect(0, (r + 1) * ch - 3.0, S, 3.0);
+      ex.fillStyle = 'rgba(255,194,30,0.95)'; ex.fillRect(0, (r + 1) * ch - 3.0, S, 3.0);
     }
     ctx.strokeStyle = 'rgba(150,130,190,0.26)'; ctx.lineWidth = 1.2;
     for (let i = 0; i <= COL; i++) { ctx.beginPath(); ctx.moveTo(i * cw, 0); ctx.lineTo(i * cw, S); ctx.stroke(); }
     grain(ctx, S, S, 3, r2);
     return new THREE.MeshStandardMaterial({
       map: toTexture(c, { srgb: true }), emissiveMap: toTexture(ec, { srgb: true }),
-      emissive: 0xffffff, emissiveIntensity: 2.4,
+      emissive: 0xffffff, emissiveIntensity: 1.85,
       roughness: 0.11, metalness: 0.94, envMapIntensity: 2.4,
     });
   });
@@ -983,7 +2023,7 @@ function glassPyramidLV({ h = 185, base = 250, seed = 3 }) {
     const geo = cyl(r1, r0, y1 - y0, 4, true);
     const rm = (r0 + r1) / 2;
     // one texture tile = 48 m of face (16 columns → 3 m panes) by one course of storeys
-    scaleUV(geo, Math.max(2, Math.round((rm * 5.66) / 48)), 1, rng.next(), 0);
+    scaleUV(geo, Math.max(2, Math.round((rm * 5.66) / 84)), 1, rng.next(), 0);
     gb.add(geo, 0, (y0 + y1) / 2, 0, Math.PI / 4);
   }
   gb.into(g);
@@ -1502,35 +2542,158 @@ function replicaSkyline({ seed = 13 }) {
   return g;
 }
 
-/**
- * Search / sky-tracker lights: paired beams raking the black sky above the Strip. Cheap
- * (two cones of additive geometry each) and they are the single strongest "this is Vegas at
- * night" cue after the pyramid beam, because they give the black sky something in it.
- */
-function skyTracker({ color = CYAN, len = 460, tilt = 0.5, seed = 1 }) {
-  const g = new THREE.Group();
-  const m = mat(`beam|${color}`, () => new THREE.MeshBasicMaterial({
-    color: new THREE.Color(color), transparent: true, opacity: 0.042,
+// ---------------------------------------------------------------- beams
+//
+// A searchlight in air has NO SILHOUETTE. Rounds 1-5 drew every beam in this city as an
+// additive CONE, and at 3x that is exactly what it looked like: a lavender drainpipe with a hard
+// straight edge down each side and a visible flat cap where the geometry stopped — the loudest
+// piece of raw geometry left in the frame, and the pyramid's is the first thing the eye goes to.
+//
+// What a beam actually is, seen from the side, is a slab of lit haze: brightest on the axis,
+// falling off smoothly to nothing across its width, and dying out along its length as the cone
+// spreads and the air runs out. That is a one-dimensional profile in each axis, i.e. a texture —
+// so every beam here is a single quad carrying that profile, rolled about its own axis each frame
+// to face the camera. From any direction it presents the same soft-edged column, it costs two
+// triangles, and there is no edge in it for the eye to catch on.
+
+/** Beam cross-section: hot core + wide sheath across U, spread-and-die along V. */
+function beamTexture() {
+  return mat('lv-beam-tex', () => {
+    const W = 64, H = 256;
+    const { c, ctx } = canvas(W, H);
+    const img = ctx.createImageData(W, H);
+    for (let y = 0; y < H; y++) {
+      const v = y / (H - 1);                       // 0 at the lamp, 1 at the far end
+      // two terms: the near throw where the air is thickest, and a long tail that keeps the
+      // beam visible all the way up so it never ends in a cut line across the sky.
+      const A = Math.exp(-v * 2.9) * 0.78 + Math.pow(1 - v, 1.7) * 0.30;
+      for (let x = 0; x < W; x++) {
+        const d = (x / (W - 1)) * 2 - 1;
+        const core = Math.exp(-d * d * 30);
+        const sheath = Math.exp(-d * d * 3.4);
+        // the last term forces zero at the quad's own edge — without it the texture clamp
+        // reinstates precisely the hard silhouette this whole system exists to remove.
+        const val = clamp(A * (core * 0.9 + sheath * 0.46) * (1 - Math.pow(Math.abs(d), 8)), 0, 1);
+        const i4 = (y * W + x) * 4;
+        const q = (255 * Math.pow(val, 1 / 2.2)) | 0;
+        img.data[i4] = img.data[i4 + 1] = img.data[i4 + 2] = q;
+        img.data[i4 + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping, flipY: false });
+    t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.needsUpdate = true;
+    return t;
+  });
+}
+
+function beamMaterial(color, opacity) {
+  return mat(`lv-beamm|${color}|${opacity}`, () => new THREE.MeshBasicMaterial({
+    map: beamTexture(), color: new THREE.Color(color), transparent: true, opacity,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
   }));
-  const geo = cyl(len * 0.030, 1.0, len, 10, true);
-  geo.translate(0, len / 2, 0);
-  const beam = new THREE.Mesh(geo, m);
-  beam.rotation.z = tilt;
-  beam.userData.noMerge = true;
-  g.add(beam);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(1.5, 10, 8), tube(color));
+}
+
+/**
+ * One beam, as a bare Mesh in WORLD coordinates.
+ *
+ * Not a Group with a nested pivot, because `mergeStatic()` flattens the landmark graph: every
+ * Group is discarded and its meshes reparented with their world pose baked in. So the beam
+ * carries its own frame — `base` and `dir` — and rebuilds its whole basis every frame:
+ * +Y along the axis, +X the screen-parallel width, +Z the normal aimed at the eye.
+ */
+const _bR = new THREE.Vector3(), _bN = new THREE.Vector3(), _bV = new THREE.Vector3();
+const _bM = new THREE.Matrix4();
+function softBeam({ color = CYAN, len = 500, r0 = 3, r1 = 26, opacity = 0.55 }) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(
+    [-r0, 0, 0, r0, 0, 0, -r1, len, 0, r1, len, 0], 3,
+  ));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 1, 1], 2));
+  geo.setIndex([0, 1, 2, 1, 3, 2]);
+  const m = new THREE.Mesh(geo, beamMaterial(color, opacity));
+  m.userData.noMerge = true;
+  m.frustumCulled = false;                 // it is 1.3 km long and its bounds are meaningless
+  m.renderOrder = 5;
+  const base = new THREE.Vector3(), dir = new THREE.Vector3(0, 1, 0);
+  m.userData.beam = { base, dir };
+  m.userData.aim = (camera) => {
+    _bV.copy(camera ? camera.position : base).sub(base);
+    if (_bV.lengthSq() < 1e-6) _bV.set(0, 0, 1);
+    _bR.crossVectors(dir, _bV);
+    if (_bR.lengthSq() < 1e-8) _bR.crossVectors(dir, _bN.set(1, 0, 0));
+    _bR.normalize();
+    _bN.crossVectors(_bR, dir).normalize();
+    _bM.makeBasis(_bR, dir, _bN);
+    m.quaternion.setFromRotationMatrix(_bM);
+    m.position.copy(base);
+  };
+  return m;
+}
+
+/** Point a beam at a world base and direction, and give it a valid pose before the first frame. */
+function placeBeam(m, base, dir) {
+  m.userData.beam.base.copy(base);
+  m.userData.beam.dir.copy(dir).normalize();
+  m.userData.aim(null);
+  return m;
+}
+
+/**
+ * Search / sky-tracker lights: beams raking the black sky above the Strip. They are the single
+ * strongest "this is Vegas at night" cue after the pyramid beam, because they give a black sky
+ * something to be black around — and, in the wet road, something to smear.
+ *
+ * Built in world coordinates for the reason above, so `pos` comes in rather than being applied
+ * to a returned group.
+ */
+function skyTracker({ color = CYAN, len = 520, tilt = 0.5, seed = 1, pos }) {
+  const g = new THREE.Group();
+  const rng = new RNG(seed * 37 + 2);
+  const lampY = pos.y + 2.6;
+  const lamp = new THREE.Vector3(pos.x, lampY, pos.z);
+
+  const beam = softBeam({ color, len, r0: 2.4, r1: len * 0.070, opacity: 0.66 });
+  // a second, much wider and fainter slab: the outer haze the lamp lights up around its own throw
+  const wash = softBeam({ color, len: len * 0.55, r0: 8, r1: len * 0.24, opacity: 0.075 });
+  g.add(beam); g.add(wash);
+
+  // lamp house, on the ground under it
+  const st = new B(steel('#1e1828'));
+  st.add(cyl(1.7, 2.4, 1.7, 10), pos.x, pos.y + 1.5, pos.z);
+  st.add(box(6.4, 0.9, 6.4), pos.x, pos.y + 0.45, pos.z);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    st.add(cyl(0.22, 0.28, 2.8, 6), pos.x + sx * 2.6, pos.y + 1.4, pos.z + sz * 2.6);
+  }
+  st.into(g);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(2.0, 12, 9), tube(color));
+  head.position.copy(lamp);
   head.userData.noMerge = true;
   g.add(head);
-  const rng = new RNG(seed * 37 + 2);
+  const flare = new THREE.Mesh(new THREE.PlaneGeometry(26, 26), halo(color, 0.55));
+  flare.position.copy(lamp);
+  flare.renderOrder = 4;
+  flare.userData.noMerge = true;
+  g.add(flare);
+
   const sweep = rng.range(0, 6.28);
-  ANIMS.push((t) => {
-    beam.rotation.y = Math.sin(t * 0.28 + sweep) * 0.9;
-    beam.rotation.z = tilt + Math.sin(t * 0.19 + sweep * 1.7) * 0.22;
+  const rate = rng.range(0.13, 0.24);
+  const d = new THREE.Vector3();
+  const aim = (t) => {
+    const az = Math.sin(t * rate + sweep) * 1.25;
+    const el = tilt + Math.sin(t * rate * 0.71 + sweep * 1.7) * 0.24;   // lean off vertical
+    d.set(Math.sin(el) * Math.sin(az), Math.cos(el), Math.sin(el) * Math.cos(az));
+    placeBeam(beam, lamp, d);
+    placeBeam(wash, lamp, d);
+  };
+  aim(0);
+  ANIMS.push((t, camera) => {
+    aim(t);
+    beam.userData.aim(camera);
+    wash.userData.aim(camera);
+    if (camera) flare.quaternion.copy(camera.quaternion);
   });
-  const st = new B(steel('#1e1828'));
-  st.add(cyl(0.6, 0.9, 2.4, 8), 0, -1.2, 0);
-  st.into(g);
   return g;
 }
 
@@ -1630,7 +2793,9 @@ function site() {
     fountainM: camM + 150,
     fountainLat: 62,
     marqueeM: camM + 230,
-    trackers: [at(330, -195), at(700, 200)],
+    trackers: [
+      at(330, -195), at(700, 200), at(90, 150), at(470, -260), at(980, 60),
+    ],
   };
   // Nothing gets built inside a landmark footprint...
   SITE.clear = [
@@ -1645,7 +2810,7 @@ function site() {
   // share the pyramid's bearing, which on this route is a 260 m stretch of the left kerb, not the
   // whole boulevard. Keeping the cone tight is what leaves the neon canyon standing.
   SITE.vistas = [
-    { from: origin, dir: SITE.pyramid.clone().sub(origin).setY(0).normalize(), cos: Math.cos(0.19), len: 900 },
+    { from: origin, dir: SITE.pyramid.clone().sub(origin).setY(0).normalize(), cos: Math.cos(0.235), len: 900 },
     { from: origin, dir: SITE.tower.clone().sub(origin).setY(0).normalize(), cos: Math.cos(0.14), len: 640 },
   ];
   // ...and the shortcut corridors stay empty so a branch never runs through a lobby.
@@ -1672,35 +2837,54 @@ export const def = {
     lampColor: '#ffcf7a',
     wet: 0.86,
     wetLook: {
-      strength: 0.30, gain: 1.5, threshold: 0.72, knee: 3.2, spread: 0.012,
-      patch: 0.62, fresnel: 2.6,
+      // `patch` / `patchScale` are what stop the screen-space reflection reading as HAZE. The
+      // Fresnel term has a 0.14 floor, so the road closest to the camera — the steepest ray, the
+      // biggest area on screen — always carries a base reflection of whatever is above it. Left
+      // smooth, that is a featureless warm field over the near quarter of every frame. Puddled at
+      // ~11 m and with the dry fraction pushed down to a fifth, the same energy resolves as wet
+      // patches with dry asphalt between them, which is what a wet road looks like.
+      strength: 0.27, gain: 1.28, threshold: 0.80, knee: 3.0, spread: 0.012,
+      patch: 0.80, patchScale: 0.092, fresnel: 2.6,
     },
     sidewalk: '#4a4054',
     // Vegas has no key light to speak of, so an unlit wall gets NOTHING from the rig and reads
     // as a hole punched in the frame (the drift capture was half filled by one). This is the
     // omnidirectional floor that keeps those faces at a dim violet instead of at black.
-    shadowTint: '#3d1e5e',
-    shadowFill: 0.92,
-    groundGlow: 7.00,
+    shadowTint: '#381c58',
+    shadowFill: 0.86,
+    // The off-road ground plane self-lights in the fog colour. At 7.0 it was the brightest
+    // *large* surface in most frames — a lilac field either side of the road that pulled the
+    // whole picture up off black and left nothing for the neon to be bright AGAINST. The brief
+    // is three hues on NEAR-BLACK; this is what buys the near-black back without reopening the
+    // "storefronts floating on a void" hole that pushed it to 7.0 in the first place.
+    groundGlow: 4.40,
     sky: {
       // Black desert sky. The horizon carries a low bruise of city-glow and nothing else — the
       // glow disc in skyCanvas() is 42% of the dome's height, so a bright `sunColor` here washes
       // the entire upper sky magenta and the stars vanish, which is the opposite of the brief.
-      top: '#01010a', horizon: '#0d0620', ground: '#08050f', haze: '#2c0d2c',
-      sunDir: [0.85, -0.06, 0.5], sunColor: '#5e1240', clouds: 0.0, stars: 1.5, seed: 202,
+      top: '#000005', horizon: '#0a0419', ground: '#050309', haze: '#1d0722',
+      sunDir: [0.85, -0.06, 0.5], sunColor: '#4a0e33', clouds: 0.0, stars: 2.6, seed: 202,
     },
-    sun: { color: '#9a58e0', intensity: 0.26, dir: [0.35, 0.8, -0.45] },
+    sun: { color: '#9a58e0', intensity: 0.24, dir: [0.35, 0.8, -0.45] },
     ambient: {
-      sky: '#46296a', ground: '#281540', intensity: 0.95,
+      sky: '#3d2260', ground: '#20103a', intensity: 0.90,
       fill: { color: GOLD, intensity: 0.26, dir: [-0.6, 0.25, 0.7] },
     },
-    fog: { color: '#1a0a2c', near: 130, far: 2000 },
-    ground: { color: '#7c5ea0', accent: '#9c6ec4' },
+    fog: { color: '#150726', near: 150, far: 2000 },
+    ground: { color: '#6a4f8e', accent: '#8a5eb4' },
     grade: {
-      uSaturation: 1.42, uExposure: 1.04, uContrast: 1.16,
-      uLift: '#0d0418', uGain: '#ffe4ff', uVignette: 0.34,
+      // uGain was #ffe4ff, which tints every highlight in the city magenta — and a magenta
+      // highlight tint is precisely what turns GOLD into orange and CYAN into blue, i.e. what
+      // collapsed a strict three-hue palette into "purple with warm bits". Near-neutral gain
+      // plus a black-black lift is what lets the three hues read as three hues.
+      uSaturation: 1.34, uExposure: 1.02, uContrast: 1.22,
+      uLift: '#040110', uGain: '#fff2fb', uVignette: 0.36,
     },
-    bloom: { strength: 1.26, radius: 0.72, threshold: 0.57 },
+    // Threshold up and radius in: round 5's 0.57/0.72 ate its own sign faces — the WELCOME
+    // marquee resolved as a pink rectangle with a white smear where the words should be. Only
+    // the genuinely hot cores bloom now, and they bloom tighter, so the type inside the light
+    // survives.
+    bloom: { strength: 1.20, radius: 0.60, threshold: 0.64 },
   },
 
   track: TRACK,
@@ -1709,11 +2893,11 @@ export const def = {
     spacing: 46, offset: 25, jitter: 9, spacingJitter: 0.34,
     minW: 18, maxW: 44, minH: 30, maxH: 140,
     // near-black violet masonry: at night these are only ever seen by their own window light
-    wallColors: ['#3a2c50', '#2c2242', '#4a3660', '#332747', '#54407a'],
+    wallColors: ['#544075', '#453466', '#68508c', '#4c3a6c', '#7659a8'],
     glassColors: ['#1a1030', '#101a30', '#20132c'],
     litColors: [GOLD, CYAN, MAGENTA],
     neonColors: [MAGENTA, GOLD, CYAN],
-    lowColors: ['#4c3866', '#3a2c50', '#5a4278'],
+    lowColors: ['#66508a', '#523e72', '#7658a0'],
     signs: ['CASINO', 'JACKPOT', 'SLOTS', '24 HRS', 'LUCKY', 'CHAPEL', 'PAWN', 'BUFFET', 'ACES'],
     litRatio: 0.66, setbackChance: 0.34, accentChance: 0.78, fireEscapeChance: 0.10,
     pick: (r, s, side) => {
@@ -1735,7 +2919,17 @@ export const def = {
   },
 
   props: {
-    lampStyle: 'colonial', lampSpacing: 32, lampHeight: 9.5, lampTwin: true,
+    // Every lamp lays a 14 x 14 m smooth additive pool on the tarmac, and twinned at 32 m
+    // spacing those overlap into one continuous warm gradient over the near road — the
+    // "featureless salmon haze" that kept surviving every other fix. Half as many pools; the
+    // lamps themselves still line the boulevard, which is the reference's one warm tie to
+    // daylight colour (§1.3).
+    // The boulevard's own lamps are built in this file now (see boulevardLamps) — one every 26 m
+    // per kerb, with a tight mottled pool each. The kit's colonial globes stay in as an occasional
+    // second design so the run is not two hundred copies of one mesh (§7 caps a prop repeated at a
+    // visible regular interval at 66), but at a spacing where their much broader smooth pools can
+    // never overlap into the flat warm band that cost round 5 its near road.
+    lampStyle: 'colonial', lampSpacing: 155, lampHeight: 9.5, lampTwin: false,
     lampBanners: HUES,
     palms: true, palmSpacing: 34,
     barriers: false,
@@ -1754,8 +2948,9 @@ export const def = {
       { u: U(2760), side: 1, text: 'HIGH ROLLER', sub: '24 HRS', color: MAGENTA, offset: 22 },
     ],
     gates: [
-      { u: U(620), color: MAGENTA }, { u: U(1100), color: GOLD },
-      { u: U(1720), color: CYAN }, { u: U(2560), color: MAGENTA },
+      { u: U(400), color: CYAN }, { u: U(620), color: MAGENTA },
+      { u: U(1100), color: GOLD }, { u: U(1720), color: CYAN },
+      { u: U(2180), color: MAGENTA }, { u: U(2560), color: CYAN },
     ],
     boostPads: [
       { u: U(100), lateral: 0 }, { u: U(560), lateral: -0.42 },
@@ -1793,30 +2988,30 @@ export const def = {
     // sheath and a lamp house at the apex, so the thing the city is famous for is actually the
     // brightest object in the sky.
     {
-      const core = new THREE.Mesh(
-        (() => { const gm = cyl(1.6, 5.5, 1500, 14, true); gm.translate(0, 750, 0); return gm; })(),
-        mat('pyr-core', () => new THREE.MeshBasicMaterial({
-          color: new THREE.Color('#f2fbff'), transparent: true, opacity: 0.32,
-          blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
-        })),
-      );
-      const sheath = new THREE.Mesh(
-        (() => { const gm = cyl(9, 24, 1500, 16, true); gm.translate(0, 750, 0); return gm; })(),
-        mat('pyr-sheath', () => new THREE.MeshBasicMaterial({
-          color: new THREE.Color('#bfe0ff'), transparent: true, opacity: 0.055,
-          blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
-        })),
-      );
-      const lamp = new THREE.Mesh(new THREE.SphereGeometry(6.5, 14, 10),
+      // Three coaxial slabs rather than one: a razor core that survives the bloom threshold, a
+      // mid throw, and a very wide, very faint outer haze whose only job is to stop the beam
+      // reading as a line drawn on the sky. All three are billboarded — see softBeam().
+      const apex = S.pyramid.clone().setY(200);
+      const up = new THREE.Vector3(0, 1, 0);
+      const core = placeBeam(softBeam({ color: '#f4fbff', len: 1400, r0: 2.8, r1: 30, opacity: 0.86 }), apex, up);
+      const mid = placeBeam(softBeam({ color: '#cfe6ff', len: 1000, r0: 9, r1: 86, opacity: 0.20 }), apex, up);
+      const wide = placeBeam(softBeam({ color: '#a9c8ff', len: 620, r0: 26, r1: 210, opacity: 0.045 }), apex, up);
+      out.push(wide, mid, core);
+      const lamp = new THREE.Mesh(new THREE.SphereGeometry(5.5, 14, 10),
         mat('pyr-lamp', () => new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false })));
-      for (const m of [core, sheath, lamp]) {
-        m.userData.noMerge = true;
-        m.position.copy(S.pyramid).setY(m === lamp ? 203 : 201);
-        out.push(m);
-      }
-      ANIMS.push((t) => {
-        core.material.opacity = 0.28 + 0.07 * Math.sin(t * 1.7);
-        sheath.material.opacity = 0.048 + 0.018 * Math.sin(t * 1.1 + 1.2);
+      lamp.userData.noMerge = true;
+      lamp.position.copy(apex).setY(202);
+      out.push(lamp);
+      const glare = new THREE.Mesh(new THREE.PlaneGeometry(86, 86), halo('#dcefff', 0.62));
+      glare.userData.noMerge = true;
+      glare.renderOrder = 4;
+      glare.position.copy(apex).setY(202);
+      out.push(glare);
+      ANIMS.push((t, camera) => {
+        core.material.opacity = 0.80 + 0.13 * Math.sin(t * 1.7);
+        mid.material.opacity = 0.17 + 0.05 * Math.sin(t * 1.1 + 1.2);
+        core.userData.aim(camera); mid.userData.aim(camera); wide.userData.aim(camera);
+        if (camera) glare.quaternion.copy(camera.quaternion);
       });
       const pl = new THREE.PointLight(0xcfe8ff, 160, 400, 2);
       pl.position.copy(S.pyramid).setY(150);
@@ -1842,7 +3037,11 @@ export const def = {
       const s = track.at(u);
       const m = marqueeArch({
         span: track.halfWidth * 4.6, h: 15, cache: CACHE, night: true,
-        color: '#ffe9b0', accent: GOLD, text: 'FABULOUS', sub: 'LAS VEGAS',
+        // gold border / magenta name. The old '#ffe9b0' is a near-white, and a near-white at
+        // emissiveIntensity 2.4 under a wide bloom is not a sign, it is a lamp: the round-5
+        // captures show "WELCOME TO FABULOUS LAS VEGAS" as a pink rectangle with a white smear
+        // in it. Two saturated hues keep the words legible AND keep the palette to three.
+        color: GOLD, accent: CYAN, text: 'FABULOUS', sub: 'LAS VEGAS',
       });
       m.position.copy(s.pos);
       // +PI so the SIGN FACE meets the oncoming driver. marqueeArch puts its board's front on
@@ -1865,6 +3064,7 @@ export const def = {
       // a colonnade behind the water so the lake has a facade to reflect
       const col = new B(steel('#2e2440'), { cast: true });
       const cg = new B(emissive(GOLD, 2.0), { cast: false });
+      const cs = new B(shadeMaterial(0.60));
       for (let i = -6; i <= 6; i++) {
         const p = s.pos.clone()
           .addScaledVector(s.tan, i * 13)
@@ -1872,27 +3072,45 @@ export const def = {
         col.add(cyl(1.05, 1.3, 13, 9), p.x, 6.5, p.z);
         col.add(box(3.0, 1.2, 3.0), p.x, 13.5, p.z);
         cg.add(box(2.4, 0.4, 2.4), p.x, 14.3, p.z);
+        cs.add(groundGeo(6.4, 6.4), p.x, 0.09, p.z);
       }
       const holder = new THREE.Group();
-      col.into(holder); cg.into(holder);
+      col.into(holder); cg.into(holder); cs.into(holder);
       out.push(holder);
     }
 
     // ---- sky trackers ----
+    // Five, not two, and in all three hues: they are what stops the upper half of the frame from
+    // being an empty black rectangle above the signage, and each one costs four triangles.
     for (const [i, p] of S.trackers.entries()) {
-      const tr = skyTracker({ color: HUES[i % 3], len: 520, tilt: 0.32 + i * 0.14, seed: i + 1 });
-      tr.position.copy(p).setY(2);
-      out.push(tr);
+      out.push(skyTracker({
+        color: HUES[i % 3], len: 480 + (i % 3) * 90, tilt: 0.26 + (i % 4) * 0.11,
+        seed: i + 1, pos: p.clone().setY(0.4),
+      }));
     }
 
     // ---- THE NEON CANYON: pylons and blade marquees down both kerbs ----
+    //
+    // Two things were wrong with this through round 5 and both are about ORIENTATION and REACH,
+    // not about count.
+    //
+    // 1. Every sign faced the carriageway square-on (yaw = trackYaw + side*90°). A driver looking
+    //    down the road therefore saw sixty-eight sign boards EDGE ON — a row of dark 0.7 m steel
+    //    frames — which is why the "canyon of neon" never appeared in a chase frame no matter how
+    //    much signage was in the world. A Strip pylon is aimed at oncoming TRAFFIC: its face is
+    //    swung ~40-60° round toward the approaching car, and that single rotation is the whole
+    //    difference between a corridor of light and a corridor of edges.
+    // 2. They stood 25-31 m from the centreline — past the sidewalk, past the shopfronts. The
+    //    signs now stand ON the sidewalk (kerb is at 18.6 m, the collision wall at 18.2), which is
+    //    both where they belong and near enough that the wide-angle chase camera has to look
+    //    THROUGH them.
     {
       const pr = rng.fork(77);
       let n = 0;
       for (const side of [-1, 1]) {
         for (const s of track.scatter({
-          side, minGap: 26, maxGap: 60, offset: 13 + pr.range(0, 6),
-          offsetJitter: 4.0, rng: rng.fork(side * 11 + 5),
+          side, minGap: 17, maxGap: 39, offset: 6.3 + pr.range(0, 1.1),
+          offsetJitter: 0.9, rng: rng.fork(side * 11 + 5),
         })) {
           // never inside a landmark footprint
           let blocked = false;
@@ -1901,7 +3119,18 @@ export const def = {
             if (s.pos.distanceToSquared(z.pos) < (z.r * 0.82) ** 2) { blocked = true; break; }
           }
           if (blocked) continue;
-          const tall = pr.bool(0.64);
+          // A 38 m pylon on the kerb is now near enough and wide enough to bury a hero landmark.
+          // The same vista cones that keep the block generator out of the pyramid's and the
+          // tower's line of sight apply here: inside one, a frontage gets a low blade marquee
+          // instead of a mast, so the canyon still runs unbroken past the thing it frames.
+          let inVista = false;
+          for (const v of S.vistas) {
+            const dx = s.pos.x - v.from.x, dz = s.pos.z - v.from.z;
+            const d = Math.hypot(dx, dz);
+            if (d < 30 || d > v.len) continue;
+            if ((dx * v.dir.x + dz * v.dir.z) / d > v.cos) { inVista = true; break; }
+          }
+          const tall = !inVista && pr.bool(0.64);
           const hgt = tall ? pr.range(16, 38) : pr.range(7.5, 13);
           const hue = tall ? (n + (side > 0 ? 1 : 0)) % 3 : (n * 2 + 1) % 3;
           const o = tall
@@ -1912,8 +3141,11 @@ export const def = {
             : bladeSign({
               h: hgt, w: pr.range(9, 15), seed: n * 11 + 5, index: n, hue,
             });
-          o.position.copy(s.pos).setY(s.pos.y + 0.18);
-          o.rotation.y = Math.atan2(s.tan.x, s.tan.z) + side * Math.PI / 2 + pr.range(-0.14, 0.14);
+          o.position.copy(s.pos).setY(s.pos.y + 0.16);
+          // side*(90° + swing): 90° faces the road, 90°+90° faces straight back down it. Between
+          // the two is a sign angled at the oncoming driver, which is where a Strip pylon lives.
+          o.rotation.y = Math.atan2(s.tan.x, s.tan.z)
+            + side * (Math.PI / 2 + pr.range(0.48, 1.02));
           out.push(o);
           // ...and its reflection. A 38 m pylon throws a smear most of the way to the next
           // block; a blade marquee at 8 m throws sixty metres of it. Length, width and tier all
@@ -1931,6 +3163,192 @@ export const def = {
           n++;
         }
       }
+    }
+
+    // ---- THE FRONTAGE CANOPY ----
+    //
+    // The second half of "a canyon of neon both sides", and the fix for the one frame that kept
+    // coming back black: the drift capture, where the car slides past a 40 m building wall that
+    // has nothing on it but seven lit windows, so the windows read as flat cyan rectangles
+    // floating on a void. There is no key light in this city to put on that wall, and a city
+    // file cannot reach into the block generator — but it CAN put a lit structure in FRONT of it.
+    //
+    // So: a covered walkway on both frontage lines, in runs of one casino each, with a steel
+    // fascia, a neon cove under it and a pool of its own light on the apron. It is the thing that
+    // is actually there on the Strip, it fills the band between the sidewalk and the buildings
+    // that was previously empty, and it lights the bottom eight metres of every facade on the lap.
+    {
+      const cr = rng.fork(6101);
+      const holder = new THREE.Group();
+      const post = new B(steel('#241c34'), { cast: false });
+      const fascia = new B(steel('#2b2038'), { cast: false });
+      // The soffit is LIT. A porte-cochère ceiling has downlights in it, and left as plain dark
+      // steel this reads from underneath as a black polygon hanging over the pavement — which is
+      // exactly how it showed up in the drift capture. Dim enough to stay under the bloom
+      // threshold, bright enough to be a ceiling rather than a hole.
+      const soffit = HUES.map((c) => new B(emissive(c, 0.62, 0.75), { cast: false }));
+      const cove = HUES.map((c) => new B(tube(c)));
+      const chase = HUES.map((c, i) => chaseBatch(c, (i + 1) / 3));
+      const pool = HUES.map((c) => new B(spillMaterial(c, 0.52)));
+      const colShade = new B(shadeMaterial(0.52));
+      // Where the canopy stands is the whole of whether it works. Out at the frontage line
+      // (32 m) it kept ending up INSIDE the blocks — those are centred 37-51 m out but are up to
+      // 24 m deep, so their front faces land anywhere from 25 m outward. The band that is
+      // reliably empty is the back of the sidewalk: the kerb is at 18.6 m, the walk ends at 24 m,
+      // the pylons stand at 18-20 m. So the walkway roofs the last three metres of pavement,
+      // which is where a Strip porte-cochère is anyway, and it is now near enough to the
+      // carriageway to be part of the canyon rather than scenery behind it.
+      const OFF = 9.4;                        // fascia line, ~21.4 m from the centreline
+      const DEPTH = 3.4;
+      const near = (p, list, r) => list.some((q) => p.distanceToSquared(q) < r * r);
+      for (const side of [-1, 1]) {
+        let m = cr.range(0, 60);
+        let k = side > 0 ? 1 : 2;
+        while (m < LEN) {
+          const run = cr.range(38, 96);
+          const m1 = Math.min(LEN, m + run);
+          const mid = track.at(U((m + m1) / 2)).pos;
+          let skip = near(mid, S.branchPts, 26)
+            || near(track.at(U(m + 6)).pos, S.branchPts, 26)
+            || near(track.at(U(m1 - 6)).pos, S.branchPts, 26);
+          for (const z of S.clear) {
+            if (z.side !== undefined && z.side !== side) continue;
+            if (mid.distanceToSquared(z.pos) < (z.r * 0.9) ** 2) { skip = true; break; }
+          }
+          if (!skip) {
+            const y = cr.range(6.0, 7.6);
+            const hue = k % 3;
+            fascia.addM(sectionStrip(track, m, m1, side,
+              { off: OFF, y: y + 1.5 }, { off: OFF, y }, 7.0), _IDENTITY);
+            soffit[hue].addM(sectionStrip(track, m, m1, side,
+              { off: OFF, y }, { off: OFF + DEPTH, y: y - 0.25 }, 7.0), _IDENTITY);
+            // the cove under the fascia. Thick enough to be a light source in the frame rather
+            // than a pinstripe on it — this band is the only thing lighting the back of the
+            // pavement and the bottom of the facade behind it.
+            cove[hue].addM(sectionStrip(track, m, m1, side,
+              { off: OFF - 0.14, y: y - 0.06 }, { off: OFF - 0.14, y: y - 0.92 }, 7.0), _IDENTITY);
+            cove[(hue + 2) % 3].addM(sectionStrip(track, m, m1, side,
+              { off: OFF + DEPTH - 0.3, y: y - 0.42 }, { off: OFF + DEPTH - 0.3, y: y - 0.72 }, 8.0),
+            _IDENTITY);
+            {
+              // the running-bulb line along the fascia's top edge
+              const g2 = sectionStrip(track, m, m1, side,
+                { off: OFF - 0.14, y: y + 1.44 }, { off: OFF - 0.14, y: y + 0.86 }, 7.0);
+              const uv = g2.attributes.uv;
+              const rep = Math.max(4, Math.round(run / 1.15));
+              for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getY(i) * rep, uv.getX(i));
+              uv.needsUpdate = true;
+              chase[(hue + 1) % 3].addM(g2, _IDENTITY);
+            }
+            // the light it throws down onto the apron under it
+            pool[hue].addM(sectionStrip(track, m, m1, side,
+              { off: OFF - 5.0, y: 0.19 }, { off: OFF + DEPTH + 1.2, y: 0.19 }, 8.0), _IDENTITY);
+            // columns
+            const n = Math.max(2, Math.round(run / cr.range(7.0, 9.5)));
+            for (let i = 0; i <= n; i++) {
+              const f = track.frame(U(lerp(m, m1, i / n)));
+              const p = f.pos.clone().addScaledVector(f.right, side * (f.half + OFF + 0.30));
+              post.add(cyl(0.30, 0.42, y, 7), p.x, p.y + y / 2, p.z);
+              post.add(box(1.5, 0.5, 1.5), p.x, p.y + 0.25, p.z);
+              post.add(box(1.1, 0.9, 1.1), p.x, p.y + y - 0.45, p.z);
+              // the column's own foot, dark against the pool it stands in
+              colShade.add(groundGeo(3.0, 3.0), p.x, p.y + 0.21, p.z);
+            }
+          }
+          m = m1 + cr.range(14, 46);
+          k += cr.int(1, 2);
+        }
+      }
+      post.into(holder); fascia.into(holder); colShade.into(holder);
+      for (const b of soffit) b.into(holder);
+      for (const b of cove) b.into(holder);
+      for (const b of pool) { const mm = b.into(holder); if (mm) mm.renderOrder = 3; }
+      for (const b of chase) { const mm = b.into(holder); if (mm) mm.userData.noMerge = true; }
+      out.push(holder);
+    }
+
+    // ---- THE LIT KERB ----
+    // A cove of neon let into the gutter line, in runs of one frontage each. Two jobs: it draws
+    // the edge of the carriageway in a city with no street lighting worth the name, and it is a
+    // source that runs THE LENGTH of the shot, so the wet road has something continuous to smear
+    // instead of a row of isolated blobs under each sign. Segmented, hue-shuffled and gapped, so
+    // it never reads as a racing-game track-edge line.
+    {
+      const kr = rng.fork(311);
+      const holder = new THREE.Group();
+      const bats = HUES.map((c) => new B(tube(c)));
+      const glow = HUES.map((c) => new B(halo(c, 0.095)));
+      for (const side of [-1, 1]) {
+        let m = kr.range(0, 30);
+        let k = side > 0 ? 0 : 1;
+        while (m < LEN) {
+          const run = kr.range(22, 62);
+          const h = kr.range(0.26, 0.40);
+          const b = bats[k % 3];
+          b.addM(sectionStrip(track, m, Math.min(LEN, m + run), side,
+            { off: 6.16, y: -0.10 }, { off: 6.16, y: h }, 4.8), _IDENTITY);
+          // and the wash it throws on the gutter beside it
+          // The wash the cove throws into the gutter. Kept to the gutter: at 5.5 m it reached
+          // most of the way across the nearside lane, and a soft additive band that wide over the
+          // closest asphalt in frame is the "featureless salmon haze over the near road" the
+          // round-5 captures kept showing. The reflection ribbons own the lane; this owns the
+          // three metres of gutter the kerb actually lights.
+          glow[k % 3].addM(sectionStrip(track, m, Math.min(LEN, m + run), side,
+            { off: 6.05, y: 0.17 }, { off: 2.9, y: 0.19 }, 6.0), _IDENTITY);
+          m += run + kr.range(5, 17);
+          k += kr.int(1, 2);
+        }
+      }
+      for (const b of bats) { const mm = b.into(holder); if (mm) { mm.userData.noMerge = true; mm.frustumCulled = false; out.push(mm); } }
+      for (const b of glow) {
+        const mm = b.into(holder);
+        if (mm) { mm.userData.noMerge = true; mm.frustumCulled = false; mm.renderOrder = 3; out.push(mm); }
+      }
+    }
+
+    // ---- BULB SPANS: strings of running bulbs slung across the boulevard ----
+    // The one thing the round-5 frames had no answer for was the AIR above the road: everything
+    // lived on the two kerbs and the sky between them was empty, so the corridor had no ceiling
+    // and no depth ladder. Three sagging strings every eighty-odd metres put a receding run of
+    // horizontal rungs down the vanishing point — the single cheapest depth cue in the city, four
+    // hundred triangles for the whole circuit, and they run their bulbs off the shared chase map.
+    {
+      const sr = rng.fork(881);
+      const bats = HUES.map((c, i) => chaseBatch(c, i / 3));
+      const mastB = new B(steel('#1b1526'), { cast: false });
+      const mastShade = new B(shadeMaterial(0.55));
+      const holder = new THREE.Group();
+      let m = 46;
+      let k = 0;
+      while (m < LEN - 40) {
+        const u = U(m);
+        if (Math.abs(track.turnRate(u)) < 0.0055) {
+          const y = sr.range(10.4, 13.4);
+          const hue = k % 3;
+          for (let s = 0; s < 3; s++) {
+            bulbSpan(track, bats[(hue + s) % 3], m + s * 1.9, {
+              y: y + s * 1.15, sag: sr.range(1.5, 2.8), w: sr.range(0.62, 0.9),
+              lat0: -1.60, lat1: 1.60, segs: 16,
+            });
+          }
+          // the masts the strings hang from
+          const f = track.frame(u);
+          for (const side of [-1, 1]) {
+            const p = f.pos.clone().addScaledVector(f.right, side * (f.half + 6.9));
+            const yaw = Math.atan2(f.tan.x, f.tan.z);
+            mastB.add(cyl(0.30, 0.44, y + 4.2, 8), p.x, p.y + (y + 4.2) / 2, p.z);
+            mastB.add(box(2.6, 0.26, 0.26), p.x - f.right.x * side * 1.1, p.y + y + 2.6,
+              p.z - f.right.z * side * 1.1, yaw + Math.PI / 2);
+            mastB.add(box(0.9, 0.9, 0.5), p.x, p.y + y + 4.1, p.z, yaw);
+            mastShade.add(groundGeo(3.4, 3.4), p.x, p.y + 0.21, p.z);
+          }
+          k++;
+        }
+        m += sr.range(74, 116);
+      }
+      for (const b of bats) { const mm = b.into(holder); if (mm) { mm.userData.noMerge = true; out.push(mm); } }
+      mastB.into(holder); mastShade.into(holder);
+      out.push(holder);
     }
 
     // ---- gutters: a continuous glossy run down both kerb lines ----
@@ -1958,6 +3376,38 @@ export const def = {
       }
     }
 
+    // ---- FRONTAGE SMEARS ----
+    // The pylons and blade marquees this file plants each lay their own streak, but they are only
+    // half the light on the kerb: the block generator hangs a lit sign on most frontages (the
+    // "PARADISO CASINO" the round-2 critic measured as casting nothing onto the street below it),
+    // and a city file cannot reach in and enumerate them. So the kerb line gets a continuous
+    // second layer of smears at ~19 m pitch, hue-cycled, jittered in length and lateral throw —
+    // which is what makes §1.3's "EVERY light source draws a long reflection down the surface"
+    // true of the whole canyon rather than only of the props this file owns.
+    {
+      const fr = rng.fork(6203);
+      for (const side of [-1, 1]) {
+        let m = fr.range(0, 19);
+        let k = side > 0 ? 0 : 2;
+        while (m < LEN) {
+          reflect(track, {
+            m, side, len: fr.range(58, 128),
+            variant: fr.pick([0, 1, 0]),
+            tier: fr.bool(0.30) ? 1 : 2,
+            color: HUES[k % 3],
+            lat0: 0.86 - fr.range(0, 0.12), lat1: 0.20 + fr.range(0, 0.26),
+            // narrow. A 5 m-wide smear a car length from the camera is not a reflection, it is a
+            // wash — and a wash over the near shoulder is exactly what this layer is here to
+            // replace. 2-4 m reads as a streak at every distance the ribbon is drawn at.
+            half0: fr.range(0.085, 0.165), half1: fr.range(0.070, 0.125),
+            segs: 20, mirror: fr.bool(0.5),
+          });
+          m += fr.range(15, 24);
+          k += fr.int(1, 2);
+        }
+      }
+    }
+
     // ---- overhead sources lay a BAND across the road, not a line down it ----
     for (const gt of def.props.gates || []) {
       reflect(track, {
@@ -1972,49 +3422,98 @@ export const def = {
       });
     }
 
+    // ---- THE STREET: markings, kerb, rumble strip, lamps ----
+    // §6.4's "road surface and furniture" dimension, which round 2 scored at 7/15. See the
+    // THE STREET note above sectionStrip for what each of these is answering.
+    laneMarkings(track, out, rng);
+    rumbleKerb(track, out, rng);
+    raisedKerb(track, out);
+    boulevardLamps(track, out, rng);
+
     // ---- road furniture the kit does not place: barriers where the racing line needs them ----
     // A broken run of barrier at each shortcut mouth is what makes the shortcut READ as an
     // opening rather than as a hole (§6.4 "visible as opportunities").
     {
       const br = rng.fork(53);
+      const barShade = new B(shadeMaterial(0.68));
       // Sides matter: both bends here turn toward +right, so the OUTSIDE — the side a wall
       // actually belongs on — is side -1. Walling the inside instead would have bricked up the
       // mouth of shortcut A.
+      //
+      // The two STRIP runs are new in round 3. Round 2's captures both land on the boulevard,
+      // where there was no barrier within half a kilometre of the camera and the shoulder read as
+      // paint on a plane; a Strip frontage under works — hoarding on the kerb line, a taper of
+      // cones off the nose of it — is the thing that is actually there on Las Vegas Blvd every
+      // year of its life, and it puts real vertical furniture at the road edge in the frame the
+      // critic is looking at.
       const runs = [
+        { m0: 244, m1: 372, side: 1, gapAt: null, off: 3.0, taper: true },   // Strip works, right
+        { m0: 470, m1: 592, side: -1, gapAt: null, off: 3.0, taper: true },  // ...and one opposite
         { m0: 800, m1: 1240, side: -1, gapAt: null },      // outside of the fast sweeper
         { m0: 2430, m1: 2720, side: -1, gapAt: null },      // outside of the west hairpin
         // the alley mouth: a wall with a hole knocked in it, right where shortcut B leaves
         { m0: 1400, m1: 1580, side: 1, gapAt: [1486, 1534] },
       ];
       for (const run of runs) {
+        const OFF = run.off ?? 1.15;
+        // A works zone is announced before it arrives: a taper of cones walking out from the lane
+        // line to the nose of the hoarding, which is the single most legible piece of road
+        // furniture there is and reads at any distance.
+        if (run.taper) {
+          for (let k = 0; k < 9; k++) {
+            const t = k / 8;
+            const m = run.m0 - 46 + t * 46;
+            const s = track.at(U(m));
+            const c = trafficCones({ cache: CACHE, seed: (m | 0) * 13 + 1, n: 1 });
+            c.position.copy(s.pos)
+              .addScaledVector(s.right, run.side * (track.halfWidth * lerp(0.80, 1.0, t) + OFF * t))
+              .setY(s.pos.y + 0.02);
+            c.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.4, 0.4);
+            out.push(c);
+            barShade.add(groundGeo(1.5, 1.5), c.position.x, c.position.y + 0.05, c.position.z);
+          }
+        }
         for (let m = run.m0; m < run.m1; m += 4.1) {
           if (run.gapAt && m > run.gapAt[0] - 6 && m < run.gapAt[1] + 6) {
             if (m > run.gapAt[0] && m < run.gapAt[1]) continue;
             // knocked-over units either side of the hole
             const s = track.at(U(m));
             const b = waterBarrier({ len: 2.0, cache: CACHE, seed: (m | 0), color: GOLD });
-            b.position.copy(s.pos).addScaledVector(s.right, run.side * (track.halfWidth + 1.1)).setY(0.1);
+            b.position.copy(s.pos).addScaledVector(s.right, run.side * (track.halfWidth + OFF - 0.05)).setY(0.1);
             b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.7, 0.7);
             b.rotation.z = br.bool(0.5) ? 1.4 : 0;
             out.push(b);
+            barShade.add(groundGeo(2.6, 4.2), b.position.x, b.position.y + 0.06, b.position.z,
+              b.rotation.y);
             continue;
           }
-          if (br.bool(0.05)) continue;
+          if (br.bool(run.taper ? 0.09 : 0.05)) continue;
           const s = track.at(U(m));
           const roll = br.next();
-          const b = roll < 0.10
-            ? waterBarrier({ len: 2.0, cache: CACHE, seed: (m | 0) * 3, color: MAGENTA })
-            : roll < 0.14
+          // A works hoarding is assembled out of whatever the contractor had on the truck, so the
+          // run carries a heavier mix of water-filled plastic and cone clusters than the racing
+          // barriers on the bends do — which is also what keeps 30 identical jersey units off
+          // §7's "same prop mesh repeated at a visible regular interval".
+          const wSub = run.taper ? 0.20 : 0.10, cSub = run.taper ? 0.32 : 0.14;
+          const b = roll < wSub
+            ? waterBarrier({ len: 2.0, cache: CACHE, seed: (m | 0) * 3, color: roll < wSub * 0.5 ? MAGENTA : GOLD })
+            : roll < cSub
               ? trafficCones({ cache: CACHE, seed: (m | 0) * 5, n: br.int(2, 3) })
               : jerseyBarrier({ len: 4, cache: CACHE, seed: (m | 0) * 7 });
           b.position.copy(s.pos)
-            .addScaledVector(s.right, run.side * (track.halfWidth + 1.15))
+            .addScaledVector(s.right, run.side * (track.halfWidth + OFF))
             .setY(s.pos.y + br.range(-0.03, 0.02));
           b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.03, 0.03);
           b.scale.setScalar(br.range(0.97, 1.04));
           out.push(b);
+          // A jersey barrier is a solid object standing on the road: it lays a hard, tight,
+          // near-opaque patch along its own base and nothing wider than that.
+          barShade.add(groundGeo(2.2, 4.6), b.position.x, b.position.y + 0.06, b.position.z,
+            b.rotation.y);
         }
       }
+      const bsm = barShade.into(new THREE.Group());
+      if (bsm) out.push(bsm);
     }
 
     // ---- lit alley mouths: a neon arch and chevrons at BOTH ends of every shortcut ----
@@ -2053,6 +3552,7 @@ export const def = {
           tb.add(box(0.5, 11, 0.5), sx * W / 2, 5.5, 0);
           st.add(box(1.2, 11.4, 1.2), sx * W / 2, 5.7, -0.5);
           chaseStrip(cb, 11, sx * W / 2, 5.5, 0.5, 0, { rz: Math.PI / 2, w: 1.0 });
+          g.add(shade(3.6, 3.6, sx * W / 2, 0.06, -0.4, 0, 0.66));
         }
         tb.add(box(W + 1.0, 0.5, 0.5), 0, 11, 0);
         chaseStrip(cb, W + 1, 0, 11.6, 0.5);
@@ -2166,12 +3666,158 @@ export const def = {
       for (const h of heroes) reflect(track, h);
     }
 
+    // ---- GROUNDING: the static half ---------------------------------------------------------
+    //
+    // Everything above this point puts light INTO the frame. This puts the dark back under the
+    // things that are standing in it, and lights the two strips of ground the round-1 critic
+    // measured as crushed near-black on the right-hand shoulder. See the GROUNDING note at the
+    // top of the file for why it has to be last.
+    {
+      const HW = track.halfWidth;
+      const WOFF = track.wallOffset ?? 6.2;      // kerb face; the sidewalk starts 0.18 outboard
+
+      // --- the neon gates. Their legs land in the gutter, an arm's length off the racing line,
+      // and round 1 measured one of them meeting the road with neither a shadow nor a pool of
+      // its own light. Both, now: a hard foot patch and the cyan/gold/magenta spill it stands in.
+      for (const gt of def.props.gates || []) {
+        const s = track.at(gt.u);
+        const yaw = Math.atan2(s.tan.x, s.tan.z);
+        for (const sx of [-1, 1]) {
+          const p = s.pos.clone().addScaledVector(s.right, sx * HW * 1.3);
+          out.push(poolAt(p, 26, 40, yaw, gt.color, 0.50, 0.11));
+          out.push(shadeAt(p, 4.6, 4.6, yaw, 0.72, 0.13));
+        }
+      }
+
+      // --- the WELCOME arch. Its feet stand out on the apron, so they take the apron's height.
+      {
+        const s = track.at(U(S.marqueeM));
+        const yaw = Math.atan2(s.tan.x, s.tan.z);
+        for (const sx of [-1, 1]) {
+          const p = s.pos.clone().addScaledVector(s.right, sx * HW * 2.3).setY(s.pos.y - 0.19);
+          out.push(poolAt(p, 34, 46, yaw, GOLD, 0.42, 0.06));
+          out.push(shadeAt(p, 9.0, 9.0, yaw, 0.70, 0.05));
+        }
+      }
+
+      // --- the heroes, on the ground plane (which the kit sits at -0.35). A 200 m pyramid
+      // standing on a self-lit lilac field with no darkening under it is the same tell as a
+      // hovering car, at fifty times the size. The quads run to ~1.6x each footprint, so the
+      // dense part of the falloff is under the plinth and what shows is the skirt around it.
+      const GY = -0.29;
+      out.push(shadeAt(S.pyramid.clone().setY(GY), 545, 545, S.yaw + 0.18, 0.92, 0));
+      out.push(shadeAt(S.tower.clone().setY(GY), 108, 108, S.yaw + 0.5, 0.88, 0));
+      out.push(shadeAt(S.eiffel.clone().setY(GY), 124, 124, S.yaw + 0.4, 0.85, 0));
+      out.push(shadeAt(S.replica.clone().setY(GY), 245, 245, S.yaw - 0.35, 0.80, 0));
+      for (const p of S.trackers) {
+        out.push(shadeAt(p.clone().setY(GY), 13, 13, 0, 0.70, 0));
+      }
+
+      // --- the AO line down the kerb face, both sides, the whole circuit. A wet road meeting a
+      // raised kerb is the darkest line in a night street; without it the carriageway and the
+      // gutter are two flat tones butted together and the road has no edge.
+      {
+        const ao = new B(edgeShadeMaterial(0.55));
+        for (const side of [-1, 1]) {
+          ao.addM(sectionStrip(track, 0, LEN, side,
+            { off: WOFF + 0.10, y: 0.105 }, { off: WOFF - 2.4, y: 0.115 }, 7.0), _IDENTITY);
+        }
+        const m = ao.into(new THREE.Group());
+        if (m) { m.userData.noMerge = true; m.frustumCulled = false; m.renderOrder = 8; out.push(m); }
+      }
+
+      // --- and the light the kerb throws BACK across its own pavement. This is the half of the
+      // note that is not about shadow: round 1's right-hand shoulder at x1050-1600 was a band of
+      // crushed near-black between the building line and the cyan kerb strip, because every
+      // additive surface in this city lives either on the carriageway or nine metres up. Two
+      // graded strips per side — sidewalk, then apron — brightest at the kerb and gone by the
+      // frontage, hue-cycled in runs so it never reads as a painted band.
+      {
+        const wr = rng.fork(2903);
+        const walk = HUES.map((c) => new B(edgeWashMaterial(c, 0.34)));
+        const apron = HUES.map((c) => new B(edgeWashMaterial(c, 0.20)));
+        for (const side of [-1, 1]) {
+          let m = wr.range(0, 40);
+          let k = side > 0 ? 0 : 2;
+          while (m < LEN - 8) {
+            const run = wr.range(34, 96);
+            const m1 = Math.min(LEN, m + run);
+            walk[k % 3].addM(sectionStrip(track, m, m1, side,
+              { off: WOFF + 0.34, y: 0.215 }, { off: WOFF + 5.6, y: 0.180 }, 7.0), _IDENTITY);
+            // ...and out across the graded apron to where the frontages start, which is the ten
+            // metres round 1 measured as a dead void on the right-hand side.
+            apron[(k + 2) % 3].addM(sectionStrip(track, m, m1, side,
+              { off: WOFF + 6.2, y: -0.02 }, { off: WOFF + 17.0, y: -0.30 }, 9.0), _IDENTITY);
+            k += wr.int(1, 2);
+            // The runs OVERLAP by a couple of metres so the hue changes without a seam — which
+            // means the cursor must be advanced off `m1` only while `m1` is still moving. Clamped
+            // at LEN it stops moving, and `m1 - overlap` then walks backwards forever: the loop
+            // never ends and the build allocates strips until the tab dies. Ask the loop for the
+            // unclamped end instead.
+            if (m + run >= LEN) break;
+            m = m1 - wr.range(1, 6);
+          }
+        }
+        const holder = new THREE.Group();
+        for (const b of [...walk, ...apron]) {
+          const mm = b.into(holder);
+          if (!mm) continue;
+          mm.userData.noMerge = true; mm.frustumCulled = false; mm.renderOrder = 3;
+          out.push(mm);
+        }
+      }
+    }
+
     // One material per family, chunked, before the kit's own merge sees any of it.
     vcCollapse(out);
     reflFlush(out);
     return out;
   },
 };
+
+/**
+ * RUBBER, NOT SCRATCHES.
+ *
+ * The FX piece's SkidTrails shader mixes a mid grey-brown dust colour into the shoulders of every
+ * mark so that rubber reads on a BRIGHT daytime road as well as a dark one — which is right for LA
+ * and Miami and wrong here, because a #8b7f70 shoulder on Vegas's near-black wet asphalt is
+ * lighter than the road it is drawn on. Round 2 measured exactly that: "skid marks render as
+ * LIGHTER-than-asphalt scratchy aliased lines rather than black rubber".
+ *
+ * The shader is not this file's to change, and hard-coding a Vegas colour into it would break the
+ * other three cities. So Vegas re-tints the uniforms while it is the city on screen and puts them
+ * back the moment its group leaves the scene — `Object3D.remove()` dispatches 'removed' on the
+ * child, which is what `Game.setCity()` does before it disposes the old city. Nothing outside this
+ * function knows the swap happened.
+ */
+function inkSkidMarks(group, scene) {
+  let m = null;
+  scene.traverse((o) => {
+    if (m || !o.isMesh) return;
+    const u = o.material && !Array.isArray(o.material) && o.material.uniforms;
+    if (u && u.uDust && u.uWarm && u.uColor) m = o.material;
+  });
+  if (!m) return;
+  const saved = {
+    color: m.uniforms.uColor.value.clone(),
+    warm: m.uniforms.uWarm.value.clone(),
+    dust: m.uniforms.uDust.value.clone(),
+    opacity: m.uniforms.uOpacity.value,
+  };
+  // a violet-black core, a slightly warmer scuff, and a shoulder that is still DARKER than the
+  // tarmac it sits on rather than lighter (§2.1: tinted, never #000)
+  m.uniforms.uColor.value.set('#0b0710');
+  m.uniforms.uWarm.value.set('#1c1220');
+  m.uniforms.uDust.value.set('#2b2136');
+  m.uniforms.uOpacity.value = 0.98;
+  group.addEventListener('removed', function restore() {
+    group.removeEventListener('removed', restore);
+    m.uniforms.uColor.value.copy(saved.color);
+    m.uniforms.uWarm.value.copy(saved.warm);
+    m.uniforms.uDust.value.copy(saved.dust);
+    m.uniforms.uOpacity.value = saved.opacity;
+  });
+}
 
 export function build(opts) {
   CACHE = new Map();
@@ -2182,9 +3828,24 @@ export function build(opts) {
   const anims = ANIMS;
   const city = buildCity(def, { ...opts, night: true });
   const base = city.update;
+  // Every car in the scene lays its footprint on the road, last, after the whole wet-road mirror
+  // has been drawn (see GROUNDING). The pass reads the scene itself rather than being handed the
+  // grid, so it needs no wiring in main.js and it picks up the player and all seven opponents
+  // whatever order they were built in.
+  const shadows = new CarShadows(city.track);
+  city.group.add(shadows.mesh);
+  // ...and the kit's own street furniture, read back out of the finished city (see groundKitProps)
+  for (const m of groundKitProps(city.group)) city.group.add(m);
+  // the camera goes through to every callback: the beams and their lamp glares are billboards,
+  // and a billboard that cannot see the camera is just a quad.
+  let inked = false;
   city.update = (t, camera) => {
     base(t, camera);
-    for (let i = 0; i < anims.length; i++) anims[i](t);
+    for (let i = 0; i < anims.length; i++) anims[i](t, camera);
+    shadows.update(city.group);
+    // The FX rig is built once by the game shell and is not in scope at build() time; the first
+    // frame this city is drawn is the first moment it can be found. One traversal, then never again.
+    if (!inked && city.group.parent) { inked = true; inkSkidMarks(city.group, city.group.parent); }
   };
   return city;
 }

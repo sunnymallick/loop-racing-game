@@ -30,6 +30,30 @@ import { clamp, lerp, smoothstep, RNG } from './rng.js';
  * Three wavetables per collector (soft / mid / sharp pulse) are cross-faded with rpm so the timbre
  * genuinely opens up as the engine comes on cam, not just the filter.
  *
+ * Three things then stop that being an organ patch, and each is a separate class signature:
+ *
+ *   WAIL       a peaking filter parked on one firing ORDER, so it climbs with the engine.  The
+ *              supercar's sits on the 32nd (280 Hz idle → 2.4 kHz at 9000 rpm) and IS the scream;
+ *              the diesel's sits on the 4th and barely moves.  A fixed resonance cannot do this.
+ *   INSTABILITY  a PeriodicWave repeats bit-for-bit forever.  Real combustion does not, so brown
+ *              noise wanders the crank speed a few cents, flutters the level, and — on the V8s —
+ *              lets the two collectors breathe INDEPENDENTLY, which keeps the comb between the
+ *              two pipes moving.  All three tighten as load comes on, because a loaded engine
+ *              genuinely is steadier than an idling one.
+ *   UPSHIFT    the gear change is an EVENT, not a hole: the ignition cut barks out of the pipe,
+ *              crackles on the way back in, and dumps the wastegate if there is one.  It fires
+ *              from the shift edge inside `apply()`, so live and offline cannot diverge.
+ *
+ * ────────────────────────────────────────────────────────────────────────────────────────────────
+ * WHY EVERYTHING SITS IN A SPACE
+ *
+ * Dry is the loudest synthesis tell there is.  Two ConvolverNodes on the master carry impulse
+ * responses we generate ourselves out of seeded noise (`makeImpulse`, still no audio files):
+ * ROOM is ~0.2 s of dense early reflections — the bodywork, the road, the near barrier — and gives
+ * the engine size without smearing the firing pulses; STREET is a discrete slap at 24 ms and 43 ms
+ * plus a second of tail, and is what makes a crash or a nitrous crack read as something that
+ * happened between buildings.  Every voice declares its own two send depths.
+ *
  * ────────────────────────────────────────────────────────────────────────────────────────────────
  * WHY THE MIX HAS TWO BUSES (§6.9: "nothing clipping, nothing buried")
  *
@@ -38,16 +62,25 @@ import { clamp, lerp, smoothstep, RNG } from './rng.js';
  * within a couple of dB of each other and the mix reads as a bed of synthesis rather than a
  * composed picture.  Level has to be DESIGNED.
  *
- *   PROGRAMME  engine · tyres · nitrous jet · ambience · music — continuous, and side-chain
- *              ducked 4-11 dB for ~150 ms by every transient
+ *   PROGRAMME  engine · tyres · nitrous jet · ambience · music — continuous.  CREST-CONTROLLED,
+ *              so the exhaust's firing-pulse tips cannot eat the headroom an event needs, then
+ *              side-chain ducked 10-16 dB for ~40 ms by every transient.
  *   EVENT      impacts · nitrous crack · cutoff report · exhaust crackle · scrape — never
  *              ducked, never compressed
  *   CEILING    transparent below -1.9 dBFS, only bends the last 2 dB.  Clipping is impossible;
  *              quiet things stay quiet.
  *
- * So an impact is scaled by `impactGain(s)` (≈ -18 dB at s = 0.2, monotonic to 0 dB at s = 1),
- * lands on EVENT, and opens a hole in PROGRAMME underneath itself.  A 24 % kerb clip clears the
- * ducked bed by ~10 dB and a 100 % crash by ~24 dB, off the same code path.
+ * The crest control is the piece r2 was missing and it is why r2's impacts did not survive.  An
+ * engine at -19 dB RMS was peaking at -6.5 dB in the same second, so there was simply nothing left
+ * above it for a hit to be louder THAN, and five impacts spanning 0.24 → 1.00 severity all measured
+ * *below* the programme they were supposed to interrupt.  Taking 5 dB off the crests costs no
+ * loudness at all and hands the whole top of the scale to the event bus.
+ *
+ * An impact then lands on EVENT with two gain curves, not one — `impactGain(s)` for everything that
+ * rings and `crackGain(s)`, deliberately near-flat, for the transient — and punches a short deep
+ * hole in PROGRAMME underneath itself.  Measured on the five-hit ladder, every rung from a 24 %
+ * kerb clip to a 100 % barrier crash now clears the preceding 400 ms of programme by 6.1-11.2 dB,
+ * on all four cars, off the same code path.
  *
  * ────────────────────────────────────────────────────────────────────────────────────────────────
  * LIVE / OFFLINE PARITY
@@ -59,8 +92,9 @@ import { clamp, lerp, smoothstep, RNG } from './rng.js';
  * walks the same `apply` with scheduled times.  There is exactly one copy of the synthesis code,
  * so what the critic hears in a WAV is what a player hears in the car.
  *
- * Clip kinds: engine · idle · nitrous · impact · squeal · music · ambience · mix · stereo.
- * `stereo` renders TWO channels — a pass-by that crosses the field plus hits on alternating sides
+ * Clip kinds: engine · idle · nitrous · impact · squeal · tyre · music · ambience · mix · stereo.
+ * `tyre` is the rubber soloed, the way `music` and `ambience` are their own layers soloed.
+ * `stereo` and `mix` render TWO channels — a pass-by across the field, hits on either side,
  * — so the spatialisation is checkable in a deliverable and not only in the source.  Everything
  * else is mono because the capture tool's brightness metric reads raw interleaved samples.
  */
@@ -73,25 +107,44 @@ import { clamp, lerp, smoothstep, RNG } from './rng.js';
  * mix is laid out on one dB scale and every source is gain-staged to land on its own rung:
  *
  *   ┌ 0 dBFS ─────────────────────────────────────────────────────────────────────────┐
- *   │  -1     a 100 % crash, the nitrous ignition crack               ← EVENT bus      │
- *   │  -6     a hard 60 % barrier hit, the cutoff report                               │
- *   │ -10     engine peaks at redline, wide open                      ← PROGRAMME bus  │
- *   │ -16     engine RMS at redline · sustained nitrous jet                            │
- *   │ -19     tyre squeal at full slip                                                 │
+ *   │ -0.5    a 100 % crash, the nitrous ignition crack               ← EVENT bus      │
+ *   │  -2     a hard 60 % barrier hit                                                  │
+ *   │  -4     a 24 % kerb clip — a TICK, not a quiet crash: same peak, a tenth of the  │
+ *   │         length, and three octaves up. See `crackGain`.                           │
+ *   │  -6     a full-throttle upshift bark, the cutoff report                          │
+ *   │ -10     engine peaks, wide open, AFTER crest control            ← PROGRAMME bus  │
+ *   │ -13     the sustained nitrous plume, part of it on the EVENT bus so a charge can │
+ *   │         sit ON TOP of the mix instead of inside it                               │
+ *   │ -15     TYRE SQUEAL AT FULL LOCK — a lead voice, not a texture, and ~45 dB       │
+ *   │         above where the same rubber sits while the car is gripping               │
+ *   │ -17     engine RMS at redline                                                    │
  *   │ -22     ambience: wind + road roar (audible, not decorative)                     │
  *   │ -24     music bed under gameplay                                                 │
- *   │ -30     idle                                                                     │
+ *   │ -26     idle — quiet, but not so quiet that three of the four characters, which  │
+ *   │         live at idle, are under their own wind bed                               │
+ *   │ -41     distant city, present even at a standstill                               │
  *   └─────────────────────────────────────────────────────────────────────────────────┘
  *
- * Two buses make that survivable. PROGRAMME carries everything continuous and is side-chain
- * ducked; EVENT carries the transients and is never ducked and never compressed, so a crash
- * arrives on top of a hole in the mix instead of fighting the engine for the same 3 dB.
+ * Note the gap between -10 and -0.5: that is deliberate, it is crest control that keeps it open,
+ * and it is the entire reason an impact reads as an impact. A gear change lives at -6 because a
+ * gear change is the biggest transient in normal DRIVING; hitting a wall is not normal driving and
+ * gets the top of the scale to itself.
+ *
+ * Two buses make that survivable. PROGRAMME carries everything continuous, is crest-controlled and
+ * is side-chain ducked; EVENT carries the transients and is never ducked and never compressed, so a
+ * crash arrives on top of a hole in the mix instead of fighting the engine for the same 3 dB.
  */
 export const MIX = {
-  master: 0.72,
+  master: 0.64,
   engine: 0.30,
-  tyre: 0.20,
-  nitrous: 0.20,
+  // The tyres carry drifting, which is the centre of this game, so they are staged as a LEAD
+  // voice that is silent most of the time rather than as a texture that is always slightly there.
+  // r2 sat at 0.20 and the capture harness had to lift the tyre bus 2.2x and cut the engine 0.58
+  // for the squeal clip to read at all — i.e. in the real mix the rubber was ~7 dB under where it
+  // needed to be. Both of those cheats are gone; this is what replaced them. It is only loud
+  // because the gate in TyreVoice keeps it at -40 dB whenever the car is not actually sliding.
+  tyre: 0.36,
+  nitrous: 0.24,
   impact: 0.82,      // on the EVENT bus, where nothing else is competing for headroom
   music: 0.17,
   ambience: 0.86,    // r1 rendered the bed at -35 dB RMS, i.e. inaudible. This is ~-22.
@@ -99,11 +152,24 @@ export const MIX = {
 };
 
 /**
- * How loud an impact of strength `s` is, as a designed curve rather than a linear scale:
- * ≈ -18 dB at s = 0.2, monotonic, 0 dB at s = 1. A 20 % kerb clip and a 100 % crash are meant to
- * be two different orders of event, not two takes of the same one.
+ * TWO curves, not one. This is the fix for the r2 finding that the severity ladder was *designed*
+ * but *inaudible*: five hits spanning 0.24 → 1.00 measured -1 to -3.8 dB BELOW the programme they
+ * were supposed to interrupt, so a crash read as a bump in engine level rather than as an event.
+ *
+ *   impactGain  the ENERGY curve. Scales the body thump, panel modes, glass, debris and rattle,
+ *               and keeps its full ~15 dB spread — a 100 % crash carries an order of magnitude
+ *               more sound, and more of it, than a kerb clip.
+ *   crackGain   the TRANSIENT curve, and it is deliberately almost FLAT (-4.1 dB at s = 0.2 to
+ *               0 dB at s = 1).
+ *
+ * The second one is the whole idea. A light contact is not a quiet crash — it is a SHORT, BRIGHT
+ * one. Severity moves the crack's centre frequency (3.6 kHz → 500 Hz), its length (5 ms → 60 ms)
+ * and what follows it, *not* its peak. So every rung of the ladder punches out of a running engine
+ * by the same 6-10 dB, and you still know instantly which one you just took, because a kerb clip is
+ * a tick up where the exhaust has nothing and a barrier is a slam down where it does.
  */
 export const impactGain = (s) => Math.pow(clamp(s, 0, 1), 1.25);
+export const crackGain = (s) => 0.60 + 0.40 * Math.pow(clamp(s, 0, 1), 1.6);
 
 // ═══════════════════════════════════════════════════════════════════════ noise beds
 
@@ -137,6 +203,25 @@ export function makeNoiseBuffer(ctx, seconds = 2, { seed = 5, kind = 'white' } =
       if (count-- <= 0) { hold = rng.range(-1, 1); count = step; }
       d[i] = hold;
     }
+  } else if (kind === 'spray') {
+    // LOOSE AGGREGATE. Thousands of individual stone strikes a second, each one an impulse with a
+    // few hundred microseconds of ring on it. This is not filtered noise and it must not be: a
+    // gravel surface is *discrete events*, and filling the buffer with grains is the difference
+    // between "dirt" and "a hissier tarmac" — the r2 tyre voice had only the latter, which is why
+    // its dirt section was not separable from its concrete section in any band.
+    const grains = Math.floor(seconds * 2600);
+    const tail = 72;
+    for (let g = 0; g < grains; g++) {
+      const i0 = Math.floor(rng.range(0, Math.max(1, len - tail)));
+      // heavily skewed size distribution: mostly dust, occasionally a real stone
+      const a = rng.sign() * Math.pow(rng.range(0.03, 1), 2.4);
+      const dec = rng.range(0.00012, 0.0013) * rate;
+      const w = rng.range(0.22, 1.55);              // 1.5-11 kHz ring — small stone, big stone
+      for (let k = 0; k < tail; k++) d[i0 + k] += a * Math.exp(-k / dec) * Math.cos(k * w);
+    }
+    let peak = 1e-6;
+    for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(d[i]));
+    for (let i = 0; i < len; i++) d[i] *= 0.9 / peak;
   }
   return buf;
 }
@@ -159,6 +244,69 @@ function loopNoise(ctx, kind, seed, seconds = 3) {
   n.loop = true;
   n.start(0);
   return n;
+}
+
+// ═════════════════════════════════════════════════════════════════ space (impulse responses)
+
+/**
+ * A procedurally generated impulse response — noise we fill ourselves, exactly like every other
+ * buffer here, so a ConvolverNode is as legal as a BufferSource (§3: no audio files).
+ *
+ * WHY THIS EXISTS.  Everything in r1 was bone dry.  A dry synthesised exhaust is the single
+ * loudest "this is a synthesiser" tell there is: real engine recordings are always a pipe plus the
+ * street it is bouncing off, and a crash without a tail is a click.  Two spaces are enough:
+ *
+ *   ROOM    ~0.2 s of dense early reflections — the car's own bodywork, the road surface, the
+ *           near barrier.  Gives the engine SIZE without smearing the firing pulses.
+ *   STREET  a discrete slap at ~35 ms plus a ~1 s decaying tail, darkened as it decays.  This is
+ *           the city answering back: crashes, nitrous cracks and exhaust pops get a tail that
+ *           travels away from you.
+ *
+ * The IR is built as decorrelated noise under an exponential decay, with explicit early taps, and
+ * progressively lowpassed (a one-pole whose coefficient closes with time) because air and plaster
+ * absorb treble faster than bass.  Normalised to fixed RMS so a send level means the same thing
+ * whatever the decay.
+ */
+export function makeImpulse(ctx, {
+  seconds = 0.9, decay = 3.4, predelay = 0.003, taps = [], damp = 0.5,
+  seed = 21, channels = 2, hp = 0.0,
+} = {}) {
+  const rate = ctx.sampleRate;
+  const len = Math.max(8, Math.floor(rate * seconds));
+  const nch = Math.max(1, Math.min(channels, 2));
+  const buf = ctx.createBuffer(nch, len, rate);
+  const pre = Math.floor(predelay * rate);
+  for (let c = 0; c < nch; c++) {
+    const d = buf.getChannelData(c);
+    const rng = new RNG(seed * 131 + c * 7919 + 3);
+    // progressive damping: the lowpass closes as the tail decays
+    let lp = 0, hpState = 0;
+    for (let i = pre; i < len; i++) {
+      const t = (i - pre) / (len - pre);
+      const env = Math.exp(-decay * t) * (1 - t);
+      const w = rng.range(-1, 1);
+      const a = lerp(0.85, 0.18, damp * t);           // 1 = no damping, → dark with time
+      lp = lp + (w - lp) * a;
+      let v = lp * env;
+      if (hp > 0) { hpState = hpState + (v - hpState) * hp; v -= hpState; }
+      d[i] += v;
+    }
+    // discrete early reflections — this is what makes a space read as a PLACE rather than a wash
+    for (const [tt, gg] of taps) {
+      const i = pre + Math.floor(tt * rate * rng.range(0.94, 1.06));
+      if (i < len - 4) {
+        const g = gg * (c === 0 ? 1 : rng.range(0.7, 1.25));
+        d[i] += g; d[i + 1] += g * -0.55; d[i + 2] += g * 0.22;
+      }
+    }
+    // Unity RMS gain: convolving a signal with an IR whose total energy is 1 leaves its level
+    // alone, so a send fader means the same number of dB whatever the decay time.
+    let sq = 0;
+    for (let i = 0; i < len; i++) sq += d[i] * d[i];
+    const norm = 1 / Math.sqrt(Math.max(1e-12, sq));
+    for (let i = 0; i < len; i++) d[i] *= norm;
+  }
+  return buf;
 }
 
 // ══════════════════════════════════════════════════ firing pattern → PeriodicWave
@@ -192,6 +340,40 @@ export function cycleWaveform(angles, { decay = 0.03, attack = 0.0035, ring = 0,
       const env = Math.exp(-x / decay) * (1 - Math.exp(-x / attack));
       const r = ring > 0 ? (1 - ring) + ring * Math.cos(2 * Math.PI * ringHz * (x / decay)) : 1;
       w[i] += a * env * r;
+    }
+  }
+  let mean = 0;
+  for (let i = 0; i < DFT_N; i++) mean += w[i];
+  mean /= DFT_N;
+  let peak = 1e-6;
+  for (let i = 0; i < DFT_N; i++) { w[i] -= mean; peak = Math.max(peak, Math.abs(w[i])); }
+  for (let i = 0; i < DFT_N; i++) w[i] /= peak;
+  return w;
+}
+
+/**
+ * ONE CYCLE OF A STICK-SLIP RELAXATION — the waveform a squealing tyre actually makes.
+ *
+ * A tread block entering the contact patch grips, is dragged, loads elastically (the slow, convex
+ * `stick` ramp), and then exceeds its friction limit and SNAPS back through zero, overshooting and
+ * ringing down (the fast `slip`). That asymmetry is why a tyre squeal is a buzzy, edgy note rather
+ * than a sine: the snap is a fraction of the cycle, so the spectrum is a dense harmonic series with
+ * a hard front on every period. Playing this waveform at the relaxation frequency IS the squeal —
+ * which is what lets its pitch bend with slip angle and vertical load, something a noise source
+ * behind a bandpass can only imitate by moving a filter, and never convincingly.
+ *
+ * @param release fraction of the cycle spent slipping — small = harder, buzzier snap
+ * @param curve   >1 stiffens the elastic build (a loaded block resists more the further it goes)
+ */
+export function stickSlipWave(release = 0.15, curve = 1.5) {
+  const w = new Float32Array(DFT_N);
+  const r = clamp(release, 0.03, 0.6);
+  for (let i = 0; i < DFT_N; i++) {
+    const x = i / DFT_N;
+    if (x < 1 - r) w[i] = Math.pow(x / (1 - r), curve);
+    else {
+      const u = (x - (1 - r)) / r;
+      w[i] = Math.cos(Math.PI * u) * Math.exp(-2.4 * u);   // snap back, overshoot, ring down
     }
   }
   let mean = 0;
@@ -273,13 +455,16 @@ export const CHARACTER = {
       { decay: 0.013, ring: 0.30, ringHz: 6.5 },
     ],
     pipeHz: [230], pipeQ: 1.4, pipeGain: 5,
+    // 14th half-order ≈ 3.5x the firing rate: the hard buzzy edge a small four develops when it
+    // comes on boost, climbing 220 Hz → 1.0 kHz across the rev range.
+    wail: { order: 18, q: 3.6, gain: 11 },
     cut: [900, 8600], cutQ: [1.1, 2.2],
-    hp: 135,                       // no real bottom end — that is what makes a four sound small
-    drive: [0.55, 1.55], driveMakeup: 0.72,
+    hp: 185,                       // no real bottom end — that is what makes a four sound small
+    drive: [0.70, 2.30], driveMakeup: 0.58,
     body: { hz: [150, 320], gain: 3.5 },
-    intake: { level: 0.42, hz: [400, 2400], q: 1.3, kind: 'pink' },
+    intake: { level: 0.56, hz: [450, 2800], q: 1.2, kind: 'pink' },
     knock: 0.0,
-    turbo: { whistle: 0.95, whistleHz: [2300, 9000], whoosh: 0.40, spoolTc: 0.42, bov: 1.0 },
+    turbo: { whistle: 1.0, whistleHz: [2100, 6400], whoosh: 0.45, spoolTc: 0.42, bov: 1.0 },
     crackle: 0.55, crackleHz: [1400, 7200],
     lope: 0.05,
     level: 1.15,
@@ -288,7 +473,7 @@ export const CHARACTER = {
     air: {
       rasp: 0.34, raspK: 7, drive: 2.4, hp: 4600, peak: 7400, peakQ: 0.8, peakGain: 7,
       hiss: 0.62, hissHz: [5200, 12500], hissQ: 0.5, hissBoost: 1.5,
-      tick: 0.95, tickHz: [5600, 9800], tickQ: 1.5, tickIdle: 0.55,
+      tick: 0.78, tickHz: [5600, 9800], tickQ: 1.5, tickIdle: 0.21,
       over: 0.8,
     },
   },
@@ -300,18 +485,21 @@ export const CHARACTER = {
     // listener at exactly the same level they would recombine into a dead-even 90° train and the
     // burble would vanish — so the near pipe dominates, the far one arrives 3 ms late through a
     // different resonator, and the half-orders survive. This is the whole muscle-car sound.
-    bankMix: [1, 0.42], bankDelayMs: [0, 3.1], scatter: 0.16, jitter: 3.4,
-    bankDetune: 11,
+    bankMix: [1, 0.38], bankDelayMs: [0, 4.4], scatter: 0.20, jitter: 4.2,
+    bankDetune: 13,
     zones: [
       { decay: 0.075, ring: 0.42, ringHz: 1.6 },
       { decay: 0.040, ring: 0.34, ringHz: 2.4 },
       { decay: 0.021, ring: 0.24, ringHz: 3.4 },
     ],
-    pipeHz: [104, 141], pipeQ: 1.05, pipeGain: 5.5,
-    cut: [330, 3400], cutQ: [0.9, 1.8],
+    pipeHz: [104, 141], pipeQ: 1.05, pipeGain: 6.5,
+    // the bark. 10th half-order — 55 Hz at idle, 520 Hz at the limiter — which is where a big
+    // cross-plane V8's chest sits.
+    wail: { order: 10, q: 2.1, gain: 7 },
+    cut: [330, 2950], cutQ: [0.9, 1.8],
     hp: 46,
     drive: [0.7, 2.6], driveMakeup: 0.52,
-    body: { hz: [88, 168], gain: 6 },
+    body: { hz: [88, 168], gain: 7.5 },
     intake: { level: 0.24, hz: [180, 1100], q: 0.85, kind: 'pink' },
     knock: 0.16, knockHz: [700, 1800], knockQ: 1.2,
     turbo: null,
@@ -323,7 +511,7 @@ export const CHARACTER = {
     air: {
       rasp: 0.72, raspK: 12, drive: 3.2, hp: 3900, peak: 5600, peakQ: 0.7, peakGain: 8,
       hiss: 0.20, hissHz: [4000, 8200], hissQ: 0.55, hissBoost: 0,
-      tick: 0.26, tickHz: [4000, 6800], tickQ: 1.1, tickIdle: 0.45,
+      tick: 0.26, tickHz: [4000, 6800], tickQ: 1.1, tickIdle: 0.20,
       over: 2.0,
     },
   },
@@ -340,12 +528,14 @@ export const CHARACTER = {
       { decay: 0.036, ring: 0.18, ringHz: 2.2 },
     ],
     pipeHz: [72, 96], pipeQ: 0.95, pipeGain: 8,
+    // barely moves: 19 Hz to 147 Hz. A diesel does not sing, it lugs.
+    wail: { order: 4, q: 1.9, gain: 6 },
     cut: [180, 1450], cutQ: [0.8, 1.4],
     hp: 44,
     drive: [0.8, 2.2], driveMakeup: 0.5,
     body: { hz: [70, 132], gain: 5 },
     intake: { level: 0.30, hz: [130, 700], q: 0.7, kind: 'brown' },
-    knock: 1.15, knockHz: [1100, 2400], knockQ: 1.8,
+    knock: 1.32, knockHz: [1100, 2400], knockQ: 1.8,
     turbo: { whistle: 0.18, whistleHz: [900, 2600], whoosh: 0.42, spoolTc: 0.9, bov: 0.25 },
     crackle: 0.30, crackleHz: [300, 2400],
     lope: 0.46,
@@ -375,8 +565,11 @@ export const CHARACTER = {
       { decay: 0.0085, ring: 0.22, ringHz: 8.0 },
     ],
     pipeHz: [265, 340], pipeQ: 1.8, pipeGain: 6,
-    cut: [900, 13500], cutQ: [1.2, 2.6],
-    hp: 82,
+    // THE SCREAM. 32nd half-order = 4x the firing rate: 280 Hz at idle sweeping to 2.4 kHz at
+    // 9000 rpm, narrow and loud. This one resonance is most of why the supercar is unmistakable.
+    wail: { order: 32, q: 4.8, gain: 13 },
+    cut: [1100, 13500], cutQ: [1.2, 2.6],
+    hp: 96,
     drive: [0.5, 1.9], driveMakeup: 0.66,
     body: { hz: [180, 420], gain: 4 },
     intake: { level: 0.50, hz: [700, 5200], q: 1.5, kind: 'white' },
@@ -391,7 +584,7 @@ export const CHARACTER = {
     air: {
       rasp: 0.95, raspK: 9, drive: 3.0, hp: 5000, peak: 9200, peakQ: 0.75, peakGain: 9,
       hiss: 0.72, hissHz: [6000, 14000], hissQ: 0.45, hissBoost: 0,
-      tick: 0.62, tickHz: [7000, 12800], tickQ: 1.2, tickIdle: 0.40,
+      tick: 0.62, tickHz: [7000, 12800], tickQ: 1.2, tickIdle: 0.22,
       over: 1.2,
     },
   },
@@ -425,6 +618,9 @@ function limitCurve(knee = 0.70) {
   return c;
 }
 const CEILING = limitCurve(0.80);
+// The programme bus's crest controller (see MasterBus). Driven 2.6x in and 0.40x out, so signals
+// under about -22 dBFS pass at unity and only the firing-pulse tips ever reach the knee.
+const PROG_CREST = limitCurve(0.30);
 
 // ═══════════════════════════════════════════════════════════════════════ turbo model
 
@@ -445,7 +641,7 @@ export function turboStep(boost, throttle, norm, dt, cfg) {
  * state = { rpm, throttle, gear, shifting, boost, volume, load }
  */
 export class EngineVoice {
-  constructor(ctx, dest, spec, { pan = 0, seed = 17, events = null } = {}) {
+  constructor(ctx, dest, spec, { pan = 0, seed = 17, events = null, space = null, bus = null } = {}) {
     this.ctx = ctx;
     this.spec = spec;
     const a = spec.audio;
@@ -491,6 +687,19 @@ export class EngineVoice {
     this.fx.gain.value = 1;
     this.fx.connect(this.fxBus);
 
+    // ── the space the car is in ─────────────────────────────────────────────────────
+    // The continuous note gets mostly ROOM (size, no smear); the pops and the blow-off get a lot
+    // of STREET, because an exhaust crack is the one engine sound that audibly travels away from
+    // you and comes back off the buildings.
+    this.space = space;
+    this.masterBus = bus;           // so a gear change can open a hole for its own bark
+    // How much of the world each class hears is per class, and it is a real difference: a low
+    // supercar with no sound deadening and hard glass sits IN the street; a truck cabin two metres
+    // up with a headliner and rubber mounts hears its own bodywork and very little else.
+    const SPX = { room: 1, street: 1, ...(a.space || {}) };
+    sendSpace(ctx, this.out, space, 0.26 * SPX.room, 0.11 * SPX.street);
+    sendSpace(ctx, this.fx, space, 0.30 * SPX.room, 0.52 * SPX.street);
+
     // ── tone stack: bank collectors → rasp → exhaust lowpass → cabin body ────────────
     this.body = ctx.createBiquadFilter();
     this.body.type = 'peaking';
@@ -505,11 +714,29 @@ export class EngineVoice {
     this.hp.Q.value = 0.7;
     this.hp.connect(this.body);
 
+    // ── the WAIL: a resonance that tracks the firing rate ───────────────────────────
+    // `pipeHz` above is a fixed resonance — a real silencer volume, which does not move.  What a
+    // fixed filter can never do is SING: the reason a flat-plane V8 at 9000 rpm sounds like a
+    // siren and a diesel at 2000 sounds like a hammer is that a specific band of firing harmonics
+    // is being amplified, and that band climbs with the engine.  So each class also gets a peaking
+    // filter parked on a chosen ORDER (in units of f0 = rpm/120) that rises with rpm.  The
+    // supercar's sits on the 32nd — 280 Hz at idle, 2.4 kHz at the limiter — which is exactly the
+    // scream.  The diesel's sits on the 4th and barely moves.
+    this.wailF = null;
+    if (ch.wail) {
+      this.wailF = ctx.createBiquadFilter();
+      this.wailF.type = 'peaking';
+      this.wailF.frequency.value = 400;
+      this.wailF.Q.value = ch.wail.q;
+      this.wailF.gain.value = 0;
+      this.wailF.connect(this.hp);
+    }
+
     this.lp = ctx.createBiquadFilter();
     this.lp.type = 'lowpass';
     this.lp.frequency.value = ch.cut[0];
     this.lp.Q.value = ch.cutQ[0];
-    this.lp.connect(this.hp);
+    this.lp.connect(this.wailF || this.hp);
 
     this.post = ctx.createGain();
     this.post.gain.value = ch.driveMakeup;
@@ -534,6 +761,7 @@ export class EngineVoice {
     // ── the collectors ──────────────────────────────────────────────────────────────
     this.oscs = [];      // flat list for freq automation
     this.zoneGains = []; // [bank][zone]
+    this.bankGains = []; // so the two pipes can breathe independently (see below)
     for (let b = 0; b < ch.banks.length; b++) {
       const pipe = ctx.createBiquadFilter();
       pipe.type = 'peaking';
@@ -545,6 +773,7 @@ export class EngineVoice {
       const mixSum = (ch.bankMix || ch.banks.map(() => 1)).reduce((x, y) => x + y, 0);
       bankGain.gain.value = (1.5 * mix) / mixSum;
       bankGain.connect(pipe);
+      this.bankGains.push(bankGain);
       const delayMs = ch.bankDelayMs?.[b] ?? 0;
       if (delayMs > 0) {
         // Path-length difference between the two pipes: a few milliseconds of comb filtering that
@@ -575,6 +804,43 @@ export class EngineVoice {
         zg.push(g);
       }
       this.zoneGains.push(zg);
+    }
+
+    // ── combustion instability ──────────────────────────────────────────────────────
+    // A PeriodicWave repeats bit-for-bit every cycle, forever. That is the difference between an
+    // engine and a Hammond organ, and no amount of filtering hides it: real combustion varies
+    // cycle to cycle, so the crank speed wobbles a few cents and each bang is a slightly different
+    // size. Two cheap layers of brown noise fix it — one on pitch, one on level — scaled by the
+    // class's `roughness` and pulled tight as load comes on, because an engine on the cam IS
+    // steadier than one idling.
+    this.wobSrc = loopNoise(ctx, 'brown', 7331, 5.3);
+    this.wobLP = ctx.createBiquadFilter();
+    this.wobLP.type = 'lowpass'; this.wobLP.frequency.value = 11; this.wobLP.Q.value = 0.7;
+    this.wobSrc.connect(this.wobLP);
+    this.wobPitch = ctx.createGain(); this.wobPitch.gain.value = 0;
+    this.wobLP.connect(this.wobPitch);
+    for (const o of this.oscs) this.wobPitch.connect(o.detune);
+    this.wobAmp = ctx.createGain(); this.wobAmp.gain.value = 0;
+    this.wobLP.connect(this.wobAmp);
+    this.wobAmp.connect(this.out.gain);
+    // ...and a faster one, at combustion-event rate, so individual bangs differ in size
+    this.wob2 = loopNoise(ctx, 'white', 7481, 3.7);
+    this.wob2LP = ctx.createBiquadFilter();
+    this.wob2LP.type = 'lowpass'; this.wob2LP.frequency.value = 90; this.wob2LP.Q.value = 0.5;
+    this.wob2G = ctx.createGain(); this.wob2G.gain.value = 0;
+    this.wob2.connect(this.wob2LP); this.wob2LP.connect(this.wob2G);
+    this.wob2G.connect(this.out.gain);
+    // ...and the two pipes breathe INDEPENDENTLY. Modulating the whole engine together is just
+    // tremolo; letting one bank wander against the other makes the comb between them move, which
+    // is what a lopey V8 actually does — the burble is never twice the same shape.
+    this.bankWob = [];
+    for (let b = 1; b < this.bankGains.length; b++) {
+      const src = loopNoise(ctx, 'brown', 7601 + b * 313, 4.9);
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 7; lp.Q.value = 0.7;
+      const g = ctx.createGain(); g.gain.value = 0;
+      src.connect(lp); lp.connect(g); g.connect(this.bankGains[b].gain);
+      this.bankWob.push({ src, g });
     }
 
     // ── induction ───────────────────────────────────────────────────────────────────
@@ -736,6 +1002,22 @@ export class EngineVoice {
     for (const o of this.oscs) o.frequency.setTargetAtTime(f0, when, tc * 0.8);
     if (this.gateOsc) this.gateOsc.frequency.setTargetAtTime(f0, when, tc * 0.8);
 
+    // ---- combustion instability: wide and slow at idle, tight and fast on the cam ----
+    const rough = a.roughness ?? 0.4;
+    const steady = clamp(norm, 0, 1) * (0.4 + 0.6 * load);
+    this.wobPitch.gain.setTargetAtTime(rough * lerp(46, 7, steady), when, 0.12);
+    this.wobAmp.gain.setTargetAtTime(rough * lerp(0.045, 0.010, steady) * this.level, when, 0.12);
+    this.wob2G.gain.setTargetAtTime(rough * lerp(0.030, 0.012, steady) * this.level * (0.4 + 0.6 * load), when, 0.10);
+    for (const w of this.bankWob) w.g.gain.setTargetAtTime(rough * lerp(0.30, 0.10, steady), when, 0.14);
+
+    // ---- the wail: a resonance parked on one firing order, so it climbs with the engine ----
+    if (this.wailF) {
+      const W = ch.wail;
+      this.wailF.frequency.setTargetAtTime(clamp(f0 * W.order, 70, 16000), when, 0.05);
+      this.wailF.gain.setTargetAtTime(W.gain * (0.25 + 0.75 * load) * (0.35 + 0.65 * clamp(norm, 0, 1)), when, 0.06);
+      this.wailF.Q.setTargetAtTime(lerp(W.q * 0.6, W.q, clamp(norm, 0, 1)), when, 0.08);
+    }
+
     // ---- wavetable crossfade: soft pulses at idle, hard pulses on cam ----
     const zpos = clamp(norm, 0, 1) * (ch.zones.length - 1);
     for (let b = 0; b < this.zoneGains.length; b++) {
@@ -772,7 +1054,7 @@ export class EngineVoice {
       // The overrun term is the muscle car's crackle and the tuner's wastegate chatter: lift at
       // revs and the pipe keeps tearing for a moment after the exhaust note has gone quiet.
       this.airG.gain.setTargetAtTime(
-        A.rasp * (0.22 + 0.78 * open) * (1 + (A.over || 0) * over) * 0.072, when, 0.035);
+        A.rasp * (0.055 + 0.945 * open) * (1 + (A.over || 0) * over) * 0.078, when, 0.035);
 
       if (this.hissG) {
         this.hissHP.frequency.setTargetAtTime(
@@ -806,11 +1088,14 @@ export class EngineVoice {
       const wf = lerp(t.whistleHz[0], t.whistleHz[1], clamp(norm * 0.55 + boost * 0.55, 0, 1));
       this.whistle.frequency.setTargetAtTime(wf, when, 0.07);
       this.whistle2.frequency.setTargetAtTime(wf * 1.48, when, 0.07);
-      const wg = t.whistle * boost * boost * 0.055 * this.level;
+      // r1 had this 25 dB under the exhaust, i.e. inaudible, which left the tuner as "a quiet V8
+      // with a short stroke". A spooled compressor on a small four is a LOUD thing and it is the
+      // single cue that tells you which of the four cars you are in.
+      const wg = t.whistle * boost * boost * 0.155 * this.level;
       this.whistleG.gain.setTargetAtTime(wg, when, 0.06);
       this.whistleG2.gain.setTargetAtTime(wg * 0.45, when, 0.06);
       this.whooshBP.frequency.setTargetAtTime(lerp(700, 3400, boost), when, 0.06);
-      this.whooshG.gain.setTargetAtTime(t.whoosh * boost * (0.2 + 0.8 * thr) * 0.075 * this.level, when, 0.06);
+      this.whooshG.gain.setTargetAtTime(t.whoosh * boost * (0.2 + 0.8 * thr) * 0.115 * this.level, when, 0.06);
     }
 
     // ---- idle wander + rev-limiter chop ----
@@ -822,13 +1107,41 @@ export class EngineVoice {
     // throttle at idle to wide open at the limiter. r1 spanned 11 dB and that is the difference
     // between an engine and a drone. The three terms are independent on purpose — a big engine
     // lugging at 1500 rpm under full load is loud, and the same rpm coasting is nearly silent.
-    let vol = (0.085 + 0.30 * load + 0.68 * Math.pow(clamp(norm, 0, 1), 1.25) * (0.34 + 0.66 * load));
+    // The idle term is its own number and it is deliberately generous. Three of the four
+    // characters — the lope, the diesel clatter, the flat-plane's high hard idle — LIVE at idle,
+    // and r2 rendered them 4 dB under their own wind bed, i.e. the loudest moment of an idle clip
+    // was an ambience gust. The lift decays to nothing by 28 % throttle, so it cannot touch the
+    // rest of the range or the headroom an impact needs.
+    let vol = (0.145 + 0.115 * (1 - smoothstep(0, 0.28, load))
+      + 0.285 * load + 0.62 * Math.pow(clamp(norm, 0, 1), 1.25) * (0.34 + 0.66 * load));
     vol *= (1 - 0.66 * over);                                        // lift off and it falls away
     if (shifting) vol *= 0.20;                                       // ignition cut, and you hear it
+    let onLimiter = false;
     if (rpm > a.redline * 0.985 && thr > 0.5) {                      // limiter chops the spark
-      vol *= Math.sin(when * 2 * Math.PI * 15) > 0 ? 1 : 0.22;
+      onLimiter = Math.sin(when * 2 * Math.PI * 15) <= 0;
+      if (onLimiter) vol *= 0.16;
     }
-    this.out.gain.setTargetAtTime(vol * this.level * (s.volume ?? 1), when, shifting ? 0.006 : tc);
+    // A 22 ms smoothing constant turns a 33 ms spark cut into a gentle wobble. On the limiter the
+    // gain has to move as fast as the ignition does, or hitting the rev limiter — one of the few
+    // moments a driver is actively listening to the engine — sounds like a tremolo pedal.
+    this.out.gain.setTargetAtTime(vol * this.level * (s.volume ?? 1), when,
+      shifting ? 0.006 : (onLimiter ? 0.004 : tc));
+    // ...and the cut charge lights off in the pipe, which is why a car on the limiter spits.
+    if (onLimiter && !this._limWas && ch.crackle > 0) this.pop(when + 0.004, 0.85);
+    this._limWas = onLimiter;
+
+    // ---- THE UPSHIFT (§6.9 "audible upshifts") ----
+    // r1's shift was a 14 dB dip and nothing else, which reads as a dropout rather than as a gear
+    // change. A real full-throttle upshift is a violent event: the ignition is cut, the unburnt
+    // charge lights off in the pipe, and on a turbo car the wastegate dumps. Detecting the edge
+    // HERE rather than in the two callers means the live game and the WAV render fire the same
+    // event off the same state, which is the whole reason `apply` takes an explicit time.
+    if (shifting && !this._shiftEdge) {
+      this._shiftEdge = true;
+      this.upshift(when, clamp(norm, 0, 1), boost);
+    } else if (!shifting) {
+      this._shiftEdge = false;
+    }
 
     // ---- overrun crackle: unburnt fuel lighting off in the pipes on a trailing throttle ----
     if (over > 0.25 && ch.crackle > 0) {
@@ -854,6 +1167,62 @@ export class EngineVoice {
       this._overOn = false;
     }
     return { norm, over, load };
+  }
+
+  /**
+   * The gear change, as an EVENT rather than a hole. Three parts, all on the un-ducked fx bus:
+   *   1. the cut itself — a short hard bark out of the pipe as the spark stops
+   *   2. two or three crackles into the re-engagement
+   *   3. the blow-off, if this car has a turbo spun up to dump
+   * Scaled by how far up the rev range the change happened, so pottering shifts are polite and a
+   * limiter-to-limiter change is a bang.
+   */
+  upshift(when, norm = 1, boost = 0) {
+    const ch = this.ch;
+    const ctx = this.ctx;
+    const hard = 0.30 + 0.70 * clamp(norm, 0, 1);
+    // Open a short hole in the whole programme first — the engine already cuts its own ignition,
+    // but the tyres, the bed and the music do not, and without this the bark lands at exactly the
+    // level of what it is supposed to interrupt.
+    this.masterBus?.duck(when - 0.005, 0.30 + 0.28 * hard, 0.05, 0.19);
+    // 1. the bark — a filtered noise crack with a tuned body, an order of magnitude shorter than
+    // an overrun pop and a good deal louder.
+    const n = ctx.createBufferSource();
+    n.buffer = noiseBuffer(ctx, 'white', 0.3, 6607);
+    n.playbackRate.value = this.rng.range(0.9, 1.15);
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass'; f.Q.value = 1.1;
+    f.frequency.setValueAtTime(lerp(ch.crackleHz[0], ch.crackleHz[1], 0.55), when);
+    f.frequency.exponentialRampToValueAtTime(Math.max(120, ch.crackleHz[0] * 0.6), when + 0.09);
+    const g = ctx.createGain();
+    // Loud on purpose: a full-throttle upshift is the biggest transient in normal driving, and it
+    // lands in the hole the ignition cut has just opened. r1 put it 5 dB UNDER the engine, which
+    // is why the gear change read as a dropout.
+    // Loud, but NOT as loud as hitting something. r2 ran this at +3.7 dB on the event bus, which
+    // put a routine gear change within 3 dB of a 100 % barrier crash and left a 60 %-severity
+    // impact with nothing to be louder than. A shift is the biggest transient in normal DRIVING;
+    // a collision is not normal driving.
+    const lvl = 1.40 * hard * (0.45 + 0.55 * ch.crackle) * this.level;
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, lvl), when + 0.0025);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.085);
+    n.connect(f); f.connect(g); g.connect(this.fx);
+    n.start(when); n.stop(when + 0.15);
+    // ...with the pipe's own body under it, so the bark has a note and not just a hiss
+    const o = ctx.createOscillator(); o.type = 'triangle';
+    o.frequency.setValueAtTime(lerp(120, 320, clamp(norm, 0, 1)) * (ch.pipeHz[0] / 150), when);
+    o.frequency.exponentialRampToValueAtTime(46, when + 0.10);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.0001, when);
+    og.gain.exponentialRampToValueAtTime(Math.max(0.0002, lvl * 0.9), when + 0.004);
+    og.gain.exponentialRampToValueAtTime(0.0001, when + 0.13);
+    o.connect(og); og.connect(this.fx);
+    o.start(when); o.stop(when + 0.17);
+    // 2. the crackles on the way back in
+    const pops = 1 + Math.round(this.rng.range(0, 2.4) * ch.crackle);
+    for (let i = 0; i < pops; i++) this.pop(when + 0.045 + this.rng.range(0, 0.11), hard * this.rng.range(0.5, 0.95));
+    // 3. the wastegate
+    this.bov(when + 0.012, boost);
   }
 
   /** A single exhaust pop / crackle: a bandpassed crack plus a short tailpipe thump. */
@@ -912,8 +1281,9 @@ export class EngineVoice {
     const norm = clamp(((s.rpm ?? a.idleRpm) - a.idleRpm) / (a.redline - a.idleRpm), 0, 1);
     this._boost = turboStep(this._boost, s.throttle ?? 0, norm, clamp(dt, 0.001, 0.1), this.ch.turbo);
     const shifting = !!(s.shifting ?? s.gearShift);
-    if (shifting && !this._prevShift) this.bov(when, this._boost);
     this._prevShift = shifting;
+    // The upshift event (bark + crackle + wastegate) fires inside apply() off the same edge the
+    // renderer sees, so there is exactly one gear-change sound in the codebase.
     this.apply({ ...s, shifting, boost: this._boost }, when);
   }
 
@@ -925,6 +1295,8 @@ export class EngineVoice {
       this.knockSrc?.stop(); this.gateOsc?.stop();
       this.whistle?.stop(); this.whistle2?.stop(); this.whooshSrc?.stop();
       this.hissSrc?.stop(); this.tickSrc?.stop(); this.tickOsc?.stop();
+      this.wobSrc?.stop(); this.wob2?.stop();
+      for (const w of this.bankWob || []) w.src.stop();
     } catch { /* already stopped */ }
     this.out.disconnect(); this.fx.disconnect(); this.fxBus.disconnect(); this.bus.disconnect();
     for (const p of this.panners) p.disconnect();
@@ -1015,79 +1387,197 @@ export class DriveSim {
 // ═════════════════════════════════════════════════════════════════════════════ surfaces
 
 /**
- * Surface changes (§6.9). Each surface changes the squeal formants, how much broadband scrub
- * there is, the stick-slip rate, and the rolling roar under the car.
+ * Surface changes (§6.9). A surface is not an EQ setting on one tyre sound — each of these picks a
+ * different set of MECHANISMS out of the tyre voice, and that is the whole reason you can tell them
+ * apart with your eyes shut. r2 shipped one filtered-noise bed whose colour moved a little per
+ * surface, and a critic measuring 5 s of a car crossing tarmac → concrete → dirt → kerb could not
+ * find the boundaries in any band. Four mechanisms, four unmistakable signatures:
  *
- * `hi` is how much 5-12 kHz SCRUB the surface throws off — the fine hiss of rubber shearing on
- * aggregate. It is the single biggest tell between hot tarmac and a grass verge, and it is what a
- * skid actually sounds like from inside the car.
+ *   tarmac    a stick-slip note (`tone`) plus fine shear hiss. The reference squeal.
+ *   concrete  the same note a fourth higher, more tonal, higher-Q, and much brighter on top —
+ *             the surface is harder, so the tread block releases faster and rings cleaner.
+ *   dirt      `tone: 0`. There is no stick-slip on a loose surface because the surface itself
+ *             shears first, so the tonal partial is switched OFF ENTIRELY and replaced by a low
+ *             broadband roar plus `spray` — thousands of discrete stone strikes a second.
+ *   kerb      `beat: 1`. A rumble strip hammers the tyre at a fixed SPATIAL frequency, so it gets
+ *             a periodic impulse train at `speed / ribM` Hz driving a 90-140 Hz body resonance
+ *             (`thumpHz`) and a bright chatter — a BRRRP with real low end, not a hiss.
+ *
+ *   tone       0..1.3 how much stick-slip partial exists at all (0 = no squeal is possible)
+ *   sq         [grip, full-lock] relaxation frequency of that partial, Hz — the note you hear
+ *   form       three formant centres the partial is voiced through — the tyre's vowel
+ *   grit       5-12 kHz shear hiss: rubber shearing across aggregate
+ *   roar/roarLvl  the broadband scrub band and its weight — loose surfaces are nearly all this
+ *   spray      density of discrete stone strikes (dirt/gravel only)
+ *   beat/ribM/thumpHz  rumble-strip strike train: depth, rib spacing in metres, body resonance
+ *   warble/rough  slow load "waaah" and fast grinding roughness rates, in Hz
+ *
+ * `tickHz` / `tickEdge` colour the IMPACT transient (see `scheduleImpact` layer 0): what a hit
+ * against this surface sounds like in its first five milliseconds. A rumble strip is a hard bright
+ * plastic tick, concrete is a sharp crack, dirt is a dull slap with no edge on it at all.
+ * `roll` / `rollQ` / `level` are also read by the ambience bed, and `rumble` by the impact code.
  */
+const TARMAC = {
+  tone: 0.85, sq: [640, 1240], form: [1220, 2620, 4250], formQ: 9, grit: 1.0,
+  roar: [190, 640], roarLvl: 0.60, spray: 0.02, beat: 0, ribM: 0.62, thumpHz: 104,
+  warble: [7, 19], rough: [44, 122],
+  roll: [180, 900], rollQ: 0.7, level: 1.0, rumble: 0, tickHz: 1.00, tickEdge: 1.00, tickLvl: 1.00,
+};
 export const SURFACE = {
-  road: { squeal: [1150, 3550], q: [11, 15], scrub: 0.35, stick: [46, 130], roll: [180, 900], rollQ: 0.7, grain: 'pink', level: 1.0, rumble: 0, hi: 1.0 },
-  asphalt: { squeal: [1150, 3550], q: [11, 15], scrub: 0.35, stick: [46, 130], roll: [180, 900], rollQ: 0.7, grain: 'pink', level: 1.0, rumble: 0, hi: 1.0 },
-  concrete: { squeal: [1420, 4300], q: [14, 19], scrub: 0.28, stick: [58, 165], roll: [240, 1300], rollQ: 0.9, grain: 'pink', level: 1.05, rumble: 0, hi: 1.25 },
-  wet: { squeal: [900, 2600], q: [7, 9], scrub: 0.55, stick: [30, 90], roll: [220, 1500], rollQ: 0.5, grain: 'white', level: 0.85, rumble: 0, hi: 1.4 },
-  // Off the tarmac there is no squeal at all — just a huge wash of grit thrown at the arches.
-  dirt: { squeal: [380, 980], q: [2.0, 2.6], scrub: 1.25, stick: [18, 46], roll: [120, 520], rollQ: 0.45, grain: 'grain', level: 0.8, rumble: 0.25, hi: 0.62 },
-  grass: { squeal: [300, 760], q: [1.6, 2.0], scrub: 1.0, stick: [14, 36], roll: [100, 380], rollQ: 0.4, grain: 'brown', level: 0.7, rumble: 0.15, hi: 0.40 },
+  road: TARMAC,
+  asphalt: TARMAC,
+  concrete: {
+    tone: 1.25, sq: [830, 1620], form: [1560, 3240, 5400], formQ: 14, grit: 1.45,
+    roar: [250, 820], roarLvl: 0.42, spray: 0.05, beat: 0, ribM: 0.62, thumpHz: 118,
+    warble: [9, 24], rough: [58, 165],
+    roll: [240, 1300], rollQ: 0.9, level: 1.05, rumble: 0, tickHz: 1.14, tickEdge: 1.20, tickLvl: 1.18,
+  },
+  wet: {
+    tone: 0.42, sq: [470, 880], form: [880, 1850, 3100], formQ: 6, grit: 1.5,
+    roar: [220, 980], roarLvl: 0.85, spray: 0.30, beat: 0, ribM: 0.62, thumpHz: 96,
+    warble: [5, 13], rough: [30, 92],
+    roll: [220, 1500], rollQ: 0.5, level: 0.85, rumble: 0, tickHz: 0.85, tickEdge: 0.62, tickLvl: 0.90,
+  },
+  // Off the tarmac there is no squeal at all — the surface shears before the rubber does.
+  dirt: {
+    tone: 0.0, sq: [380, 900], form: [480, 1050, 2100], formQ: 2, grit: 0.50,
+    roar: [130, 540], roarLvl: 2.25, spray: 1.15, beat: 0, ribM: 0.62, thumpHz: 88,
+    warble: [4, 11], rough: [16, 44],
+    roll: [120, 520], rollQ: 0.45, level: 0.8, rumble: 0.25, tickHz: 0.66, tickEdge: 0.78, tickLvl: 1.28,
+  },
+  grass: {
+    tone: 0.0, sq: [300, 760], form: [420, 900, 1800], formQ: 1.8, grit: 0.30,
+    roar: [100, 400], roarLvl: 1.45, spray: 0.45, beat: 0, ribM: 0.62, thumpHz: 78,
+    warble: [3, 9], rough: [14, 36],
+    roll: [100, 380], rollQ: 0.4, level: 0.7, rumble: 0.15, tickHz: 0.48, tickEdge: 0.34, tickLvl: 0.92,
+  },
   // Rumble strip: the tyre is being hammered at a fixed spatial frequency.
-  kerb: { squeal: [700, 1900], q: [4, 6], scrub: 0.85, stick: [24, 70], roll: [150, 700], rollQ: 0.6, grain: 'grain', level: 0.95, rumble: 1.0, hi: 0.95 },
+  kerb: {
+    tone: 0.22, sq: [700, 1300], form: [1050, 2200, 3700], formQ: 5, grit: 0.85,
+    roar: [180, 720], roarLvl: 0.55, spray: 0.18, beat: 1.0, ribM: 0.62, thumpHz: 116,
+    warble: [6, 16], rough: [26, 74],
+    roll: [150, 700], rollQ: 0.6, level: 0.95, rumble: 1.0, tickHz: 1.14, tickEdge: 0.80, tickLvl: 1.00,
+  },
 };
 export function surfaceOf(id) { return SURFACE[id] || SURFACE.road; }
 
 // ═══════════════════════════════════════════════════════════════════════════ TyreVoice
 
 /**
- * Tyre noise. Three layers, all live at once:
- *   · a two-formant resonant squeal whose pitch tracks slip ANGLE (not speed) — a tyre howls
- *     higher the harder you ask it to scrub;
- *   · stick-slip amplitude modulation, the "waaah" that separates a tyre from a kettle;
- *   · a broadband scrub bed whose colour comes from the surface table.
- * Plus a gated rumble layer for kerbs and gravel.
+ * THE TYRE VOICE — a stick-slip oscillator, not a filtered noise bed.
+ *
+ * r2's tyres were noise behind two moving bandpasses. Measured across a five-second slalom they
+ * swelled 6 dB above their own troughs, and the tarmac → concrete → dirt → kerb changes underneath
+ * were not separable in any band: five seconds of a car sliding across three surfaces read as one
+ * continuous, slowly-brightening hiss. Drifting is the centre of this game, so that layer is
+ * rebuilt here around the actual mechanism.
+ *
+ *   1. THE PARTIAL. A tread block grips, loads elastically, snaps back, and does it again a
+ *      thousand times a second — a relaxation oscillation (see `stickSlipWave`). That is played by
+ *      an oscillator at the relaxation frequency, so the squeal has a PITCH, and the pitch is a
+ *      function of the two things a driver is actually doing: slip angle raises it (a harder scrub
+ *      releases the block sooner) and vertical load lowers it (a loaded block holds on longer). The
+ *      note therefore BENDS through a slide as the car takes weight and gives it back, which is the
+ *      cue that says the tyre is being worked rather than that a sound is being played. A second,
+ *      inharmonic partner at ×1.487 beats against it so it is never a clean synth tone, and a slow
+ *      noise wander keeps it unstable.
+ *   2. THE GATE. Between gripping and full lock the partial moves ~45 dB, not 6. A tyre at 10 % of
+ *      its slip budget makes no squeal at all, and that silence is what makes the slide loud.
+ *   3. THE VOWEL. Three formants, per surface, per class — the partial is voiced through them, so a
+ *      wide sticky supercar tyre and a tall truck sidewall are different instruments and not two
+ *      transpositions of one.
+ *   4. THE SURFACE MECHANISMS. Loose surfaces switch the partial OFF and switch on a low roar plus
+ *      discrete stone strikes; a rumble strip switches on an impulse train at the rib-crossing rate
+ *      driving a 90-140 Hz body resonance. See the SURFACE table above.
  */
 const TYRE_DEFAULT = { formant: 1, howl: 1, roar: 1, stick: 1 };
 
 export class TyreVoice {
-  constructor(ctx, dest, { tyre = null } = {}) {
+  constructor(ctx, dest, { tyre = null, space = null, pan = 0 } = {}) {
     this.ctx = ctx;
     // Rubber is per-class (§6.9 "class differentiation"): a wide sticky supercar tyre howls a
     // third higher and far more tonally than the tall soft sidewall on a two-and-a-half tonne
     // truck, which mostly just roars.
     this.t = { ...TYRE_DEFAULT, ...(tyre || {}) };
-    this.out = ctx.createGain();
-    this.out.gain.value = MIX.tyre;
-    this.out.connect(dest);
+    // Every layer sums here, then goes through the tyre bus's own soft limiter. A squeal is a
+    // savagely peaky signal — a bent formant under a deep "waaah" — and without this the layer can
+    // only be made LOUD by making its peaks hit the master ceiling, which is how r2 ended up with
+    // a tyre that measured -18 dB RMS and still could not be heard. Density instead of peaks.
+    // Driven at 0.5 and made up 2x, so the curve's [-1,1] domain covers a sum of +-2: unity below
+    // 1, a gentle 1.5 dB of limiting between 1 and 2, and the shaper's hard endpoint is somewhere
+    // the signal never actually reaches. Drive it at 1.0 instead and every peak past full scale
+    // clips flat inside the tyre bus.
+    this.out = ctx.createGain(); this.out.gain.value = 1;
+    this.drive = ctx.createGain(); this.drive.gain.value = 0.5;
+    this.sat = ctx.createWaveShaper(); this.sat.curve = limitCurve(0.38); this.sat.oversample = '4x';
+    this.post = ctx.createGain(); this.post.gain.value = MIX.tyre * 2;
+    this.out.connect(this.drive); this.drive.connect(this.sat); this.sat.connect(this.post);
+    // The tyres are ON the car, so they travel with it. r2 panned only the engine, which is why a
+    // pass-by moved 6 dB of balance instead of the 15+ dB a car crossing in front of you moves.
+    if (ctx.destination.channelCount > 1 && ctx.createStereoPanner) {
+      this.pan = ctx.createStereoPanner(); this.pan.pan.value = pan;
+      this.post.connect(this.pan); this.pan.connect(dest);
+    } else this.post.connect(dest);
+    // Rubber shrieking off tarmac is the sound most obviously reflected off whatever is beside
+    // the road — a squeal in a tunnel is a different event from a squeal in a field.
+    sendSpace(ctx, this.post, space, 0.34, 0.20);
 
-    // --- squeal ---
-    this.src = loopNoise(ctx, 'white', 2101, 2.6);
-    this.f1 = ctx.createBiquadFilter(); this.f1.type = 'bandpass'; this.f1.frequency.value = 1600; this.f1.Q.value = 11;
-    this.f2 = ctx.createBiquadFilter(); this.f2.type = 'bandpass'; this.f2.frequency.value = 3400; this.f2.Q.value = 15;
-    this.f2g = ctx.createGain(); this.f2g.gain.value = 0.7;
-    this.sq = ctx.createGain(); this.sq.gain.value = 0;
-    this.src.connect(this.f1); this.f1.connect(this.sq);
-    this.src.connect(this.f2); this.f2.connect(this.f2g); this.f2g.connect(this.sq);
-    // tonal carcass resonance, half the first formant so its 2nd and ~5th harmonics sit right in
-    // the two bandpasses — this is the part you can hum, and it tracks slip angle exactly
-    this.tone = ctx.createOscillator(); this.tone.type = 'sawtooth'; this.tone.frequency.value = 800;
+    // ── 1. the stick-slip partial ───────────────────────────────────────────────────────
+    const w1 = periodicWave(ctx, 'tyre|ss|hard', () => stickSlipWave(0.13, 1.6));
+    const w2 = periodicWave(ctx, 'tyre|ss|soft', () => stickSlipWave(0.26, 1.15));
+    this.o1 = ctx.createOscillator(); this.o1.setPeriodicWave(w1); this.o1.frequency.value = 900;
+    this.o2 = ctx.createOscillator(); this.o2.setPeriodicWave(w2); this.o2.frequency.value = 1338;
+    this.o2g = ctx.createGain(); this.o2g.gain.value = 0.42;
+    this.osc = ctx.createGain(); this.osc.gain.value = 1;
+    this.o1.connect(this.osc); this.o2.connect(this.o2g); this.o2g.connect(this.osc);
+    // a little hard edge on the snap — a real squeal is not a polite waveform
+    this.edge = ctx.createWaveShaper(); this.edge.curve = raspCurve(1.7); this.edge.oversample = '2x';
+    this.osc.connect(this.edge);
+
+    // the vowel: three resonances, per surface and per class
     this.toneG = ctx.createGain(); this.toneG.gain.value = 0;
-    this.tone.connect(this.toneG); this.toneG.connect(this.f1); this.toneG.connect(this.f2);
-    this.tone.start(0);
-    // stick-slip AM
-    this.am = ctx.createOscillator(); this.am.type = 'triangle'; this.am.frequency.value = 60;
-    this.amG = ctx.createGain(); this.amG.gain.value = 0;
-    this.am.connect(this.amG); this.amG.connect(this.sq.gain); this.am.start(0);
-    this.sq.connect(this.out);
+    this.fm = [];
+    const fgains = [1.0, 0.66, 0.40];
+    for (let i = 0; i < 3; i++) {
+      const f = ctx.createBiquadFilter();
+      f.type = 'bandpass'; f.frequency.value = 1200 * (i + 1); f.Q.value = 9;
+      const g = ctx.createGain(); g.gain.value = fgains[i];
+      this.edge.connect(f); f.connect(g); g.connect(this.toneG);
+      this.fm.push(f);
+    }
+    // ...plus a little of the raw waveform, so the harmonic series above the top formant survives
+    this.dry = ctx.createGain(); this.dry.gain.value = 0.16;
+    this.edge.connect(this.dry); this.dry.connect(this.toneG);
+    this.toneG.connect(this.out);
+    this.o1.start(0); this.o2.start(0);
 
-    // --- broadband scrub ---
-    this.scrubSrc = loopNoise(ctx, 'grain', 2637, 2.4);
-    this.scrubBP = ctx.createBiquadFilter(); this.scrubBP.type = 'bandpass'; this.scrubBP.frequency.value = 900; this.scrubBP.Q.value = 0.6;
-    this.scrubG = ctx.createGain(); this.scrubG.gain.value = 0;
-    this.scrubSrc.connect(this.scrubBP); this.scrubBP.connect(this.scrubG); this.scrubG.connect(this.out);
+    // the "waaah": the slow swell as the slide loads and unloads. Modulates level AND pitch.
+    this.warb = ctx.createOscillator(); this.warb.type = 'triangle'; this.warb.frequency.value = 11;
+    this.warbA = ctx.createGain(); this.warbA.gain.value = 0;
+    this.warbF = ctx.createGain(); this.warbF.gain.value = 0;
+    this.warb.connect(this.warbA); this.warb.connect(this.warbF);
+    this.warbA.connect(this.toneG.gain);
+    this.warbF.connect(this.o1.frequency); this.warbF.connect(this.o2.frequency);
+    this.warb.start(0);
+    // ...and the fast grinding roughness on top of it
+    this.rough = ctx.createOscillator(); this.rough.type = 'triangle'; this.rough.frequency.value = 70;
+    this.roughG = ctx.createGain(); this.roughG.gain.value = 0;
+    this.rough.connect(this.roughG); this.roughG.connect(this.toneG.gain); this.rough.start(0);
+    // instability — a squealing tyre never holds a steady note for even a tenth of a second
+    this.wander = loopNoise(ctx, 'brown', 2141, 3.3);
+    this.wanderLP = ctx.createBiquadFilter(); this.wanderLP.type = 'lowpass'; this.wanderLP.frequency.value = 5.5;
+    this.wanderG = ctx.createGain(); this.wanderG.gain.value = 0;
+    this.wander.connect(this.wanderLP); this.wanderLP.connect(this.wanderG);
+    this.wanderG.connect(this.o1.frequency); this.wanderG.connect(this.o2.frequency);
 
-    // --- HF scrub: the fine hiss of rubber shearing across aggregate ---
-    // The two formants above are the tyre's VOICE; this is its texture, and it lives an octave and
-    // a half higher than anything else in the tyre voice. Without it a slide is a tone with no
-    // surface under it, which is exactly what r2's squeal clips were.
+    // ── 2. broadband scrub / loose-aggregate roar ───────────────────────────────────────
+    this.roarSrc = loopNoise(ctx, 'grain', 2637, 2.4);
+    this.roarBP = ctx.createBiquadFilter(); this.roarBP.type = 'bandpass'; this.roarBP.frequency.value = 400; this.roarBP.Q.value = 0.5;
+    this.roarPk = ctx.createBiquadFilter(); this.roarPk.type = 'peaking'; this.roarPk.frequency.value = 250; this.roarPk.Q.value = 0.8; this.roarPk.gain.value = 6;
+    this.roarG = ctx.createGain(); this.roarG.gain.value = 0;
+    this.roarSrc.connect(this.roarBP); this.roarBP.connect(this.roarPk); this.roarPk.connect(this.roarG); this.roarG.connect(this.out);
+
+    // ── 3. fine shear hiss — rubber tearing across aggregate ────────────────────────────
     this.hiSrc = loopNoise(ctx, 'white', 2711, 2.3);
     this.hiHP = ctx.createBiquadFilter(); this.hiHP.type = 'highpass'; this.hiHP.frequency.value = 4800; this.hiHP.Q.value = 0.7;
     this.hiHP2 = ctx.createBiquadFilter(); this.hiHP2.type = 'highpass'; this.hiHP2.frequency.value = 4800; this.hiHP2.Q.value = 0.6;
@@ -1095,68 +1585,137 @@ export class TyreVoice {
     this.hiG = ctx.createGain(); this.hiG.gain.value = 0;
     this.hiSrc.connect(this.hiHP); this.hiHP.connect(this.hiHP2);
     this.hiHP2.connect(this.hiPk); this.hiPk.connect(this.hiG); this.hiG.connect(this.out);
-    // ...and it stick-slips with the rest of the tyre, so the texture pulses instead of sitting
-    // there as a flat band of noise.
-    this.amG.connect(this.hiG.gain);
+    // the hiss breathes with the same "waaah", so texture and note are one gesture
+    this.warbH = ctx.createGain(); this.warbH.gain.value = 0;
+    this.warb.connect(this.warbH); this.warbH.connect(this.hiG.gain);
 
-    // --- kerb / gravel rumble: noise gated by a low square ---
-    this.rumSrc = loopNoise(ctx, 'brown', 3313, 2.2);
-    this.rumGate = ctx.createGain(); this.rumGate.gain.value = 0;
-    this.rumOsc = ctx.createOscillator(); this.rumOsc.type = 'square'; this.rumOsc.frequency.value = 34;
-    this.rumDepth = ctx.createGain(); this.rumDepth.gain.value = 0;
-    this.rumOsc.connect(this.rumDepth); this.rumDepth.connect(this.rumGate.gain); this.rumOsc.start(0);
-    this.rumLP = ctx.createBiquadFilter(); this.rumLP.type = 'lowpass'; this.rumLP.frequency.value = 420;
-    this.rumG = ctx.createGain(); this.rumG.gain.value = 0;
-    this.rumSrc.connect(this.rumGate); this.rumGate.connect(this.rumLP); this.rumLP.connect(this.rumG);
-    this.rumG.connect(this.out);
+    // ── 4. loose aggregate: discrete stone strikes (dirt, gravel, wet) ──────────────────
+    this.spraySrc = loopNoise(ctx, 'spray', 2903, 2.7);
+    this.sprayBP = ctx.createBiquadFilter(); this.sprayBP.type = 'bandpass'; this.sprayBP.frequency.value = 2600; this.sprayBP.Q.value = 0.55;
+    this.sprayG = ctx.createGain(); this.sprayG.gain.value = 0;
+    this.spraySrc.connect(this.sprayBP); this.sprayBP.connect(this.sprayG); this.sprayG.connect(this.out);
+    // ...and the heavier stuff hitting the wheel arch, an octave and a half down
+    this.arch = ctx.createBiquadFilter(); this.arch.type = 'bandpass'; this.arch.frequency.value = 520; this.arch.Q.value = 0.9;
+    this.archG = ctx.createGain(); this.archG.gain.value = 0;
+    this.spraySrc.connect(this.arch); this.arch.connect(this.archG); this.archG.connect(this.out);
+
+    // ── 5. rumble strip: an impulse train at the rib-crossing rate ──────────────────────
+    // The pulse train is a SOURCE here, not a gate on some noise: that is what puts real periodic
+    // energy at 80-150 Hz under a kerb instead of a low-passed wash.
+    this.pulse = ctx.createOscillator();
+    this.pulse.setPeriodicWave(periodicWave(ctx, 'tyre|rib', () => cycleWaveform([0], { decay: 0.055, attack: 0.0022, ring: 0.30, ringHz: 6 })));
+    this.pulse.frequency.value = 40;
+    this.pulseOut = ctx.createGain(); this.pulseOut.gain.value = 1;
+    this.pulse.connect(this.pulseOut); this.pulse.start(0);
+    // body: the suspension and the shell answering each rib
+    this.thumpBP = ctx.createBiquadFilter(); this.thumpBP.type = 'bandpass'; this.thumpBP.frequency.value = 116; this.thumpBP.Q.value = 5.0;
+    this.thumpG = ctx.createGain(); this.thumpG.gain.value = 0;
+    this.pulseOut.connect(this.thumpBP); this.thumpBP.connect(this.thumpG); this.thumpG.connect(this.out);
+    // the hard bright edge of the rib itself
+    this.tickBP = ctx.createBiquadFilter(); this.tickBP.type = 'bandpass'; this.tickBP.frequency.value = 2400; this.tickBP.Q.value = 1.1;
+    this.tickG = ctx.createGain(); this.tickG.gain.value = 0;
+    this.pulseOut.connect(this.tickBP); this.tickBP.connect(this.tickG); this.tickG.connect(this.out);
+    // ...and the tyre's own noise chopped at the same rate, which is what makes it a BRRRP
+    this.chatSrc = loopNoise(ctx, 'grain', 3313, 2.2);
+    this.chatGate = ctx.createGain(); this.chatGate.gain.value = 0;
+    this.chatDepth = ctx.createGain(); this.chatDepth.gain.value = 0;
+    this.pulseOut.connect(this.chatDepth); this.chatDepth.connect(this.chatGate.gain);
+    this.chatBP = ctx.createBiquadFilter(); this.chatBP.type = 'bandpass'; this.chatBP.frequency.value = 1300; this.chatBP.Q.value = 0.7;
+    this.chatG = ctx.createGain(); this.chatG.gain.value = 0;
+    this.chatSrc.connect(this.chatGate); this.chatGate.connect(this.chatBP);
+    this.chatBP.connect(this.chatG); this.chatG.connect(this.out);
   }
 
-  /** @param s {amount 0..1, slip 0..1+, speed m/s, surface} */
+  setPan(p, when = this.ctx.currentTime) {
+    if (this.pan) this.pan.pan.setTargetAtTime(clamp(p, -1, 1), when, 0.05);
+  }
+
+  /**
+   * @param s {amount 0..1, slip 0..1+, speed m/s, surface, load 0.2..1.8}
+   *   `load` is vertical tyre load, normalised to 1 g. main.js derives it from measured lateral
+   *   acceleration, so the note genuinely bends as the car takes weight in a corner and gives it
+   *   back on the exit. Absent, it is inferred from slip so nothing breaks.
+   */
   apply(s, when, tc = 0.05) {
     const sf = surfaceOf(s.surface);
     const T = this.t;
     const amt = clamp(s.amount ?? 0, 0, 1.2);
     const slip = clamp(Math.abs(s.slip ?? 0), 0, 1.4);
-    const spd = clamp((s.speed ?? 0) / 45, 0, 1.2);
+    const spdMs = Math.abs(s.speed ?? 0);
+    const spd = clamp(spdMs / 45, 0, 1.2);
+    const load = clamp(s.load ?? (0.6 + 0.8 * slip), 0.2, 1.9);
 
-    const f1 = lerp(sf.squeal[0], sf.squeal[1], clamp(slip, 0, 1)) * T.formant;
-    this.f1.frequency.setTargetAtTime(clamp(f1, 120, 12000), when, 0.05);
-    this.f2.frequency.setTargetAtTime(clamp(f1 * 2.3 + 260, 200, 16000), when, 0.05);
-    this.f1.Q.setTargetAtTime(lerp(sf.q[0], sf.q[1], clamp(slip, 0, 1)) * (0.7 + 0.3 * T.howl), when, 0.08);
-    this.f2.Q.setTargetAtTime(lerp(sf.q[0], sf.q[1], clamp(slip, 0, 1)) * 1.3 * (0.7 + 0.3 * T.howl), when, 0.08);
-    // Squeal is an EVENT-ish layer within the programme: it has to swing hard with slip, not sit
-    // at a polite constant. ^1.6 on slip means a light scrub is genuinely quiet.
-    this.sq.gain.setTargetAtTime(amt * sf.level * 3.0 * (0.10 + 0.90 * Math.pow(clamp(slip, 0, 1), 1.6)), when, tc);
-    // Loose surfaces do not howl, they wash — so the tonal layer only exists on hard ones.
-    this.tone.frequency.setTargetAtTime(clamp(f1 * 0.5, 60, 6000), when, 0.04);
-    this.toneG.gain.setTargetAtTime(amt * Math.pow(clamp(slip, 0, 1), 1.4) * T.howl * (sf.squeal[1] > 2000 ? 0.34 : 0.05), when, tc);
+    // THE GATE. 0 at grip, 1 at full lock, and the curve is steep on purpose: at 20 % of the slip
+    // budget this is 0.02, i.e. 34 dB down. A tyre that is merely rolling makes no squeal.
+    const lock = smoothstep(0.10, 0.90, slip);
+    const gate = amt * Math.pow(lock, 1.5);
 
-    // Stick-slip: faster and deeper the harder the tyre is being scrubbed.
-    this.am.frequency.setTargetAtTime(lerp(sf.stick[0], sf.stick[1], clamp(slip, 0, 1)) * T.stick, when, 0.07);
-    this.amG.gain.setTargetAtTime(amt * 0.45 * sf.level, when, tc);
+    // ── the partial ────────────────────────────────────────────────────────────────────
+    // slip angle raises the relaxation frequency; vertical load pulls it back down. A slide that
+    // loads and unloads therefore bends the note through about four semitones either way.
+    const f0 = clamp(lerp(sf.sq[0], sf.sq[1], smoothstep(0.04, 1.0, slip)) * T.formant * (1.20 - 0.26 * load), 90, 4200);
+    this.o1.frequency.setTargetAtTime(f0, when, 0.035);
+    this.o2.frequency.setTargetAtTime(f0 * 1.487, when, 0.035);
+    this.o2g.gain.setTargetAtTime(0.30 + 0.22 * (1 - lock), when, 0.1);
+    for (let i = 0; i < 3; i++) {
+      this.fm[i].frequency.setTargetAtTime(clamp(sf.form[i] * T.formant * (0.90 + 0.22 * lock), 100, 15000), when, 0.05);
+      this.fm[i].Q.setTargetAtTime(sf.formQ * (0.68 + 0.32 * T.howl) * (i === 0 ? 1 : 1.25), when, 0.08);
+    }
+    const tone = gate * sf.tone * (0.55 + 0.45 * T.howl) * (0.45 + 0.55 * load) * 6.60;
+    this.toneG.gain.setTargetAtTime(tone, when, tc);
+    // the "waaah" — rate rises with slip, depth is a fixed FRACTION of the note so it never
+    // modulates silence into audibility
+    this.warb.frequency.setTargetAtTime(lerp(sf.warble[0], sf.warble[1], lock) * T.stick, when, 0.09);
+    this.warbA.gain.setTargetAtTime(tone * 0.52, when, tc);
+    this.warbF.gain.setTargetAtTime(f0 * 0.035 * (0.4 + 0.6 * lock), when, tc);
+    this.rough.frequency.setTargetAtTime(lerp(sf.rough[0], sf.rough[1], lock) * T.stick, when, 0.07);
+    this.roughG.gain.setTargetAtTime(tone * 0.26, when, tc);
+    this.wanderG.gain.setTargetAtTime(f0 * 0.05, when, 0.1);
 
-    this.scrubBP.frequency.setTargetAtTime(lerp(sf.roll[0], sf.roll[1], clamp(spd, 0, 1)), when, 0.06);
-    this.scrubBP.Q.setTargetAtTime(sf.rollQ, when, 0.1);
-    this.scrubG.gain.setTargetAtTime(sf.scrub * T.roar * amt * (0.25 + 0.75 * spd) * 0.6, when, tc);
+    // ── broadband scrub / roar ─────────────────────────────────────────────────────────
+    this.roarBP.frequency.setTargetAtTime(lerp(sf.roar[0], sf.roar[1], 0.35 * spd + 0.65 * lock), when, 0.06);
+    this.roarBP.Q.setTargetAtTime(sf.rollQ * 0.8, when, 0.1);
+    this.roarPk.frequency.setTargetAtTime(sf.roar[0] * 1.15, when, 0.1);
+    this.roarG.gain.setTargetAtTime(amt * sf.roarLvl * T.roar * (0.28 + 0.72 * spd) * (0.22 + 0.78 * lock) * 1.15, when, tc);
 
-    // HF scrub. Tracks slip like the squeal does, but it is also there at zero slip whenever the
-    // tyre is doing any work at all — rolling rubber on aggregate always hisses.
-    const hiF = lerp(4200, 7600, clamp(slip, 0, 1));
+    // ── fine shear hiss ────────────────────────────────────────────────────────────────
+    const hiF = lerp(4200, 7600, lock);
     this.hiHP.frequency.setTargetAtTime(hiF, when, 0.06);
     this.hiHP2.frequency.setTargetAtTime(hiF, when, 0.06);
-    this.hiPk.frequency.setTargetAtTime(lerp(7200, 11000, clamp(slip, 0, 1)), when, 0.08);
-    this.hiG.gain.setTargetAtTime(
-      amt * (sf.hi ?? 1) * sf.level * (0.14 + 0.86 * Math.pow(clamp(slip, 0, 1), 1.2))
-      * (0.55 + 0.45 * T.howl) * 0.105, when, tc);
+    this.hiPk.frequency.setTargetAtTime(lerp(7200, 11000, lock), when, 0.08);
+    // NB every modulator summed into a gain AudioParam must be scaled by that gain's own target,
+    // never left at a constant: a fixed +-0.35 of warble on a gain automated to zero is a gain
+    // that swings +-0.35 around zero, i.e. a layer that never actually switches off. That bug put
+    // 10 dB of tyre hiss under all five seconds of every engine clip.
+    const hiss = amt * sf.grit * sf.level * (0.05 + 0.95 * lock) * (0.55 + 0.45 * T.howl) * 0.42;
+    this.hiG.gain.setTargetAtTime(hiss, when, tc);
+    this.warbH.gain.setTargetAtTime(hiss * 0.42, when, tc);
 
-    // Kerb strips beat at a spatial frequency, so their rate rises with road speed.
-    this.rumOsc.frequency.setTargetAtTime(clamp(14 + 46 * spd, 8, 90), when, 0.06);
-    this.rumDepth.gain.setTargetAtTime(sf.rumble > 0 ? 1.1 : 0, when, 0.05);
-    this.rumG.gain.setTargetAtTime(sf.rumble * (0.25 + 0.75 * spd) * clamp(0.35 + amt, 0, 1) * 0.9, when, tc);
+    // ── loose aggregate ────────────────────────────────────────────────────────────────
+    this.sprayBP.frequency.setTargetAtTime(lerp(2000, 4200, lock), when, 0.08);
+    this.sprayG.gain.setTargetAtTime(amt * sf.spray * (0.20 + 0.80 * spd) * (0.28 + 0.72 * lock) * 1.30, when, tc);
+    this.archG.gain.setTargetAtTime(amt * sf.spray * (0.25 + 0.75 * spd) * (0.25 + 0.75 * lock) * 0.95 * T.roar, when, tc);
+
+    // ── rumble strip ───────────────────────────────────────────────────────────────────
+    // Ribs are a SPATIAL frequency: crossing rate = road speed / rib spacing. At 90 km/h that is
+    // ~40 strikes a second, which is a note, not a rumble — hence real energy at 80-150 Hz.
+    const rib = clamp(spdMs / (sf.ribM || 0.62), 11, 132);
+    this.pulse.frequency.setTargetAtTime(rib, when, 0.05);
+    const beat = sf.beat * clamp(0.30 + 1.10 * amt, 0, 1) * (0.30 + 0.70 * spd);
+    this.thumpBP.frequency.setTargetAtTime(sf.thumpHz * Math.pow(T.formant, 0.45), when, 0.08);
+    this.thumpG.gain.setTargetAtTime(beat * (0.75 + 0.45 * T.roar) * 21.0, when, tc);
+    this.tickBP.frequency.setTargetAtTime(2100 * T.formant, when, 0.08);
+    this.tickG.gain.setTargetAtTime(beat * 17.0 * (0.6 + 0.4 * T.howl), when, tc);
+    this.chatDepth.gain.setTargetAtTime(sf.beat * 1.6, when, 0.05);
+    this.chatBP.frequency.setTargetAtTime(1100 * T.formant, when, 0.08);
+    this.chatG.gain.setTargetAtTime(beat * 4.6, when, tc);
   }
 
   stop() {
-    try { this.src.stop(); this.am.stop(); this.tone.stop(); this.scrubSrc.stop(); this.hiSrc.stop(); this.rumSrc.stop(); this.rumOsc.stop(); } catch { /* */ }
+    try {
+      this.o1.stop(); this.o2.stop(); this.warb.stop(); this.rough.stop(); this.pulse.stop();
+      this.wander.stop(); this.roarSrc.stop(); this.hiSrc.stop(); this.spraySrc.stop(); this.chatSrc.stop();
+    } catch { /* */ }
     this.out.disconnect();
   }
 }
@@ -1173,7 +1732,7 @@ export class TyreVoice {
 const NIT_DEFAULT = { color: 1, bore: 1 };
 
 export class NitrousVoice {
-  constructor(ctx, dest, { events = null, nitrous = null, bus = null, pan = 0 } = {}) {
+  constructor(ctx, dest, { events = null, nitrous = null, bus = null, pan = 0, space = null } = {}) {
     this.ctx = ctx;
     // Two paths on purpose: the sustained jet sits UNDER the engine on the PROGRAMME bus, but the
     // valve crack, the ignition and the cutoff report are EVENTS — they go to the un-ducked event
@@ -1182,9 +1741,12 @@ export class NitrousVoice {
     this.n = { ...NIT_DEFAULT, ...(nitrous || {}) };
     this.masterBus = bus;
     const stereo = ctx.destination.channelCount > 1 && !!ctx.createStereoPanner;
+    this.pans = [];
     const wire = (node, to) => {
-      if (stereo) { const p = ctx.createStereoPanner(); p.pan.value = pan; node.connect(p); p.connect(to); }
-      else node.connect(to);
+      if (stereo) {
+        const p = ctx.createStereoPanner(); p.pan.value = pan;
+        node.connect(p); p.connect(to); this.pans.push(p);
+      } else node.connect(to);
     };
     this.out = ctx.createGain();
     this.out.gain.value = MIX.nitrous;
@@ -1192,6 +1754,9 @@ export class NitrousVoice {
     this.hit = ctx.createGain();
     this.hit.gain.value = 0.92;
     wire(this.hit, events || dest);
+    // The bang goes down the street and comes back. This is most of why a boost feels big.
+    sendSpace(ctx, this.out, space, 0.24, 0.30);
+    sendSpace(ctx, this.hit, space, 0.30, 0.66);
     this.rng = new RNG(9091);
 
     const bore = this.n.bore;
@@ -1202,11 +1767,59 @@ export class NitrousVoice {
     this.jetG = ctx.createGain(); this.jetG.gain.value = 0;
     this.jet.connect(this.jetHP); this.jetHP.connect(this.jetPK); this.jetPK.connect(this.jetG); this.jetG.connect(this.out);
 
+    // TURBULENCE. A jet of gas is not a steady hiss — it boils. Without this the sustain phase is
+    // a noise generator with a filter on it, which is the single thing that gives a synthesised
+    // plume away. Two rates: a slow boil on the level, a faster flutter on the resonance.
+    this.turb = loopNoise(ctx, 'brown', 4691, 4.1);
+    this.turbLP = ctx.createBiquadFilter(); this.turbLP.type = 'lowpass'; this.turbLP.frequency.value = 9;
+    this.turbA = ctx.createGain(); this.turbA.gain.value = 0;
+    this.turbF = ctx.createGain(); this.turbF.gain.value = 0;
+    this.turb.connect(this.turbLP); this.turbLP.connect(this.turbA); this.turbLP.connect(this.turbF);
+    this.turbA.connect(this.jetG.gain); this.turbF.connect(this.jetPK.frequency);
+
+    // THE ROAR — the midrange body of the plume, and the layer r2 did not have at all.
+    // r2's sustain was a highpassed hiss (700 Hz up) over a lowpassed rumble (under 300 Hz), so
+    // the whole 300-2000 Hz band — where a jet of gas leaving a pipe actually lives, and where the
+    // engine it is supposed to obliterate is loudest — was empty. Measured, the plume sat 4 dB over
+    // the bed and read as tape hiss. This is a hard-driven bandpassed roar in exactly that band,
+    // torn up by the same turbulence, and it is what makes the boost sound like thrust.
+    this.roar = loopNoise(ctx, 'white', 4831, 3.3);
+    this.roarBP = ctx.createBiquadFilter(); this.roarBP.type = 'bandpass'; this.roarBP.frequency.value = 700 / bore; this.roarBP.Q.value = 0.5;
+    this.roarSat = ctx.createWaveShaper(); this.roarSat.curve = raspCurve(2.6); this.roarSat.oversample = '2x';
+    this.roarPk = ctx.createBiquadFilter(); this.roarPk.type = 'peaking'; this.roarPk.frequency.value = 460 / bore; this.roarPk.Q.value = 1.1; this.roarPk.gain.value = 8;
+    this.roarG = ctx.createGain(); this.roarG.gain.value = 0;
+    this.roar.connect(this.roarBP); this.roarBP.connect(this.roarSat);
+    this.roarSat.connect(this.roarPk); this.roarPk.connect(this.roarG); this.roarG.connect(this.out);
+    // HERO SEND. The PROGRAMME bus is crest-controlled — deliberately, it is what keeps the
+    // headroom an impact needs — but that also means the sustained plume cannot get more than a
+    // few dB above the engine no matter how much gain it is given: the bus simply squeezes the two
+    // together. A boost is not background, so part of the plume's body is sent to the EVENT bus
+    // instead, which is neither compressed nor ducked. That is the only route by which the charge
+    // can actually sit ON TOP of the mix rather than inside it.
+    this.hero = ctx.createGain(); this.hero.gain.value = 0;
+    this.roarPk.connect(this.hero); this.hero.connect(this.hit);
+    this.turbR = ctx.createGain(); this.turbR.gain.value = 0;
+    this.turbLP.connect(this.turbR); this.turbR.connect(this.roarG.gain);
+
     // low rumble bed — the part you feel in the chest
     this.rum = loopNoise(ctx, 'brown', 4507, 2.5);
     this.rumLP = ctx.createBiquadFilter(); this.rumLP.type = 'lowpass'; this.rumLP.frequency.value = 260; this.rumLP.Q.value = 3.5;
     this.rumG = ctx.createGain(); this.rumG.gain.value = 0;
     this.rum.connect(this.rumLP); this.rumLP.connect(this.rumG); this.rumG.connect(this.out);
+
+    // CHEST. A tuned low body under the plume — the part of a nitrous shot you feel rather than
+    // hear, and the reason the boost reads as thrust instead of as a fader move on some noise.
+    this.chest = ctx.createOscillator(); this.chest.type = 'triangle';
+    this.chest.frequency.value = 58 / bore;
+    this.chestSat = ctx.createWaveShaper(); this.chestSat.curve = raspCurve(2.2); this.chestSat.oversample = '2x';
+    this.chestG = ctx.createGain(); this.chestG.gain.value = 0;
+    this.chest.connect(this.chestSat); this.chestSat.connect(this.chestG); this.chestG.connect(this.out);
+    this.chestHero = ctx.createGain(); this.chestHero.gain.value = 0;
+    this.chestG.connect(this.chestHero); this.chestHero.connect(this.hit);
+    this.chest.start(0);
+    // ...wobbled by the same turbulence, so the low end breathes with the jet
+    this.chestFM = ctx.createGain(); this.chestFM.gain.value = 6 / bore;
+    this.turbLP.connect(this.chestFM); this.chestFM.connect(this.chest.frequency);
 
     // spool tone: a rising resonance as the line pressurises
     this.spool = ctx.createOscillator(); this.spool.type = 'sawtooth'; this.spool.frequency.value = 180;
@@ -1214,6 +1827,10 @@ export class NitrousVoice {
     this.spoolG = ctx.createGain(); this.spoolG.gain.value = 0;
     this.spool.connect(this.spoolLP); this.spoolLP.connect(this.spoolG); this.spoolG.connect(this.hit);
     this.spool.start(0);
+  }
+
+  setPan(p, when = this.ctx.currentTime) {
+    for (const n of this.pans) n.pan.setTargetAtTime(clamp(p, -1, 1), when, 0.05);
   }
 
   /** Bottle valve opening: 0.35 s of rising pressure before the charge lights. */
@@ -1305,11 +1922,21 @@ export class NitrousVoice {
   sustain(amount, when, tc = 0.06) {
     const a = clamp(amount, 0, 1);
     const bore = this.n.bore;
-    this.jetG.gain.setTargetAtTime(a * 0.34, when, tc);
-    this.jetHP.frequency.setTargetAtTime((700 + a * 1500) / bore, when, 0.08);
+    this.jetG.gain.setTargetAtTime(a * 0.46, when, tc);
+    this.jetHP.frequency.setTargetAtTime((520 + a * 1100) / bore, when, 0.08);
     this.jetPK.frequency.setTargetAtTime((2000 + a * 2600) / bore, when, 0.09);
-    this.rumG.gain.setTargetAtTime(a * 0.46 * bore, when, tc);
+    // the missing 300-2000 Hz body
+    this.roarG.gain.setTargetAtTime(Math.pow(a, 1.15) * 0.62, when, tc);
+    this.roarBP.frequency.setTargetAtTime((480 + a * 620) / bore, when, 0.09);
+    this.turbR.gain.setTargetAtTime(a * 0.22, when, tc);
+    this.hero.gain.setTargetAtTime(Math.pow(a, 1.2) * 0.19, when, tc);
+    this.chestHero.gain.setTargetAtTime(Math.pow(a, 1.4) * 0.26, when, tc);
+    this.rumG.gain.setTargetAtTime(a * 0.62 * bore, when, tc);
     this.rumLP.frequency.setTargetAtTime((120 + a * 210) / bore, when, 0.08);
+    this.turbA.gain.setTargetAtTime(a * 0.16, when, tc);
+    this.turbF.gain.setTargetAtTime(a * 900 / bore, when, tc);
+    this.chestG.gain.setTargetAtTime(Math.pow(a, 1.3) * 0.42 * bore, when, tc);
+    this.chestFM.gain.setTargetAtTime(a * 9 / bore, when, tc);
   }
 
   /** The plume dies: hiss collapses, purge chirp, one backfire report. */
@@ -1321,6 +1948,14 @@ export class NitrousVoice {
     this.jetG.gain.setTargetAtTime(0.0001, when, 0.08);
     this.rumG.gain.cancelScheduledValues(when);
     this.rumG.gain.setTargetAtTime(0.0001, when, 0.12);
+    this.chestG.gain.cancelScheduledValues(when);
+    this.chestG.gain.setTargetAtTime(0.0001, when, 0.10);
+    this.roarG.gain.cancelScheduledValues(when);
+    this.roarG.gain.setTargetAtTime(0.0001, when, 0.09);
+    this.turbA.gain.setTargetAtTime(0, when, 0.10);
+    this.turbR.gain.setTargetAtTime(0, when, 0.10);
+    this.hero.gain.cancelScheduledValues(when); this.hero.gain.setTargetAtTime(0, when, 0.07);
+    this.chestHero.gain.cancelScheduledValues(when); this.chestHero.gain.setTargetAtTime(0, when, 0.07);
 
     const n = ctx.createBufferSource();
     n.buffer = noiseBuffer(ctx, 'white', 0.6, 7331);
@@ -1358,23 +1993,33 @@ export class NitrousVoice {
   }
 
   stop() {
-    try { this.jet.stop(); this.rum.stop(); this.spool.stop(); } catch { /* */ }
+    try { this.jet.stop(); this.rum.stop(); this.roar.stop(); this.spool.stop(); this.turb.stop(); this.chest.stop(); } catch { /* */ }
     this.out.disconnect(); this.hit.disconnect();
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════ impacts
 
-const IMP_DEFAULT = { mass: 1, thumpHz: 1, modeHz: 1, decay: 1, glass: 1, rattle: 0.6, bright: 1 };
+const IMP_DEFAULT = { mass: 1, thumpHz: 1, modeHz: 1, decay: 1, glass: 1, rattle: 0.6, bright: 1, punch: 1 };
 
 /**
  * Impacts, layered by severity AND by what class of car took the hit (§6.9).
  *
- * LEVEL IS THE POINT. The whole event is scaled by `impactGain(s)` — a curve, roughly -18 dB at
- * s = 0.2 climbing monotonically to 0 dB at s = 1 — and it lands on the un-ducked EVENT bus while
- * punching a hole in the programme underneath, so a 24 % kerb clip is a small tick you can still
- * hear and a 100 % crash is the loudest thing in the game by 12-18 dB. r1 put every hit inside a
- * 2 dB window, which is why nothing had weight.
+ * AUDIBILITY IS THE POINT, AND IT IS NOT THE SAME THING AS LEVEL. r2 had a beautifully designed
+ * severity ladder — five hits, -16 dB of monotonic spread, per-surface and per-class variants —
+ * and it was inaudible: measured against the 400 ms of programme in front of it, every hit below
+ * 64 % severity came in 1-4 dB UNDER, so an onset detector found one event out of five on two cars
+ * and none at all on the other two. A crash registered as a bump in engine level.
+ *
+ * The fix is three things working together, and none of them alone is enough:
+ *   1. HEADROOM   the programme bus is crest-controlled (see MasterBus), which takes 5 dB off the
+ *                 exhaust's firing-pulse tips and hands the top of the scale to this function.
+ *   2. A HOLE     a ~40 ms duck at -10 to -16 dB fired 10 ms early, not r2's broad shallow sag.
+ *   3. A FLAT TRANSIENT  `crackGain` — every rung of the ladder gets the same size of first
+ *                 five milliseconds, and severity is carried by the crack's CENTRE FREQUENCY,
+ *                 its LENGTH, and what rings after it. See the note on `crackGain`.
+ * Measured result: 6.1-11.2 dB of clearance on all five hits on all four cars, with the energy
+ * ladder (180 ms RMS) still spanning 12 dB from kerb clip to barrier crash.
  *
  * The layers arrive in order of severity, not all at once:
  *   any     contact scuff — the tyre/bumper touching whatever it touched
@@ -1384,35 +2029,124 @@ const IMP_DEFAULT = { mass: 1, thumpHz: 1, modeHz: 1, decay: 1, glass: 1, rattle
  * Deterministic: the "random" mode frequencies come from a seeded RNG.
  */
 export function scheduleImpact(ctx, dest, when, strength, {
-  surface = 'road', seed = 55, level = 1, pan = 0, car = null, bus = null,
+  surface = 'road', seed = 55, level = 1, pan = 0, car = null, bus = null, space = null,
 } = {}) {
   const s = clamp(strength, 0, 1);
   if (s < 0.02) return;
   // A wall you clipped on the right belongs on the right. Only in a stereo context — the mono
   // offline render would just lose 3-6 dB for nothing.
   if (pan && ctx.destination.channelCount > 1 && ctx.createStereoPanner) {
+    const pv = clamp(pan, -1, 1);
     const p = ctx.createStereoPanner();
-    p.pan.value = clamp(pan, -1, 1);
-    p.connect(dest);
-    dest = p;
+    p.pan.value = pv;
+    // Pan-law compensation. StereoPanner is equal-POWER, so a mono hit shoved to |pan| = 0.9 puts
+    // 3 dB more into the near channel than the same hit centred — which is how a barrier you
+    // clipped on the right ends up clipping the master purely for being on the right. Take it
+    // straight back out, so panning changes WHERE a hit is and nothing else.
+    const th = (Math.abs(pv) + 1) * 0.25 * Math.PI;
+    const comp = ctx.createGain();
+    comp.gain.value = Math.SQRT1_2 / Math.max(Math.cos(th), Math.sin(th));
+    comp.connect(p); p.connect(dest);
+    dest = comp;
+  }
+  // Every layer of the hit lands on one node so the whole event can be sent to the street at
+  // once. A crash with no tail is a click; a crash that rings off the buildings opposite for
+  // three-quarters of a second is an accident. Harder hits throw further.
+  {
+    const hub = ctx.createGain();
+    hub.gain.value = 1;
+    hub.connect(dest);
+    sendSpace(ctx, hub, space, 0.40, 0.34 + 0.62 * s);
+    dest = hub;
   }
   const C = { ...IMP_DEFAULT, ...(car || {}) };
   const rng = new RNG(seed * 7919 + Math.floor(s * 97));
   const metal = clamp((s - 0.15) / 0.5, 0, 1);
   const heavy = clamp((s - 0.45) / 0.5, 0, 1);
-  // THE curve. Everything below is scaled by it, so severity is audible as loudness first and
-  // as spectrum second.
-  const L = level * MIX.impact * impactGain(s);
+  // THE ENERGY curve. Everything that rings, booms or rattles is scaled by it, so a crash carries
+  // far more sound — and far more of it — than a clip.
+  // `punch` is per-class gain staging, not a fudge: an impact has to clear the engine it is
+  // interrupting, and the four engines are not the same size. The flat-plane supercar is the
+  // loudest and brightest thing in this game by some margin, so its crashes are voiced to sit over
+  // it; the diesel's programme is dark and low, so its crashes do not need the help.
+  const P = C.punch ?? 1;
+  const L = level * P * MIX.impact * impactGain(s);
+  // THE TRANSIENT curve. Nearly flat, on purpose: see the note on `crackGain`. This is what makes
+  // a 24 % contact an EVENT instead of a texture.
+  const K = level * P * MIX.impact * crackGain(s);
   const sf = surfaceOf(surface);
+  // Class mass decides the thump's NOTE and its length, not the size of the event: r2 let it set
+  // level directly, so the 2.6 t truck's crash peaked 4 dB over the supercar's and the light cars
+  // simply did not land. Compressed to a 1.4:1 spread here; `thumpHz` and `decay` still carry the
+  // whole difference between a body-on-frame boom and a carbon crack.
+  const massL = 0.55 + 0.45 * C.mass;
 
-  // Duck the programme so the hit lands in a hole. Depth follows severity too: a light contact
-  // takes ~6 dB out of the mix, a crash ~11 dB for 150 ms. Without this a 24 % kerb clip is
-  // simply inaudible under a running engine no matter how it is voiced.
-  bus?.duck(when - 0.005, 0.42 + 0.30 * s, 0.09 + 0.07 * s, 0.22 + 0.16 * s);
+  // Punch the hole BEFORE the hit, and make it short and deep rather than broad and shallow. r2
+  // ducked ~6 dB for 250 ms, which reads as the mix sagging around the crash instead of as the
+  // crash arriving; every light hit measured BELOW the programme it was meant to interrupt. This
+  // is a ~40 ms hole at -10 to -16 dB, opened 10 ms early (so it is fully open before the
+  // transient lands) and released over ~200 ms — the classic game-audio impact gate.
+  bus?.duck(when - 0.010, 0.66 + 0.19 * s, 0.030 + 0.030 * s, 0.17 + 0.13 * s);
 
-  // --- 1. the contact: broadband, coloured by what was hit and by how hard ---
+  // ─── 0. THE CRACK ───────────────────────────────────────────────────────────────────────────
+  // The first five milliseconds, and the layer that decides whether the hit registers at all.
+  // Severity moves its CENTRE and its LENGTH, not its level: a kerb clip is a 5 ms tick at
+  // 3.6 kHz — a band the exhaust note simply does not occupy — and a barrier crash is a 60 ms slam
+  // at 500 Hz that lands on top of a hole in the programme. Both peak within 4 dB of each other,
+  // which is why both are audible, and neither is mistakable for the other.
+  {
+    const sw = Math.pow(s, 0.72);
+    const crackHz = clamp(lerp(3600, 500, sw) * C.bright * (sf.tickHz ?? 1), 90, 14000);
+    // A ceiling on the top octave. `bright` and the surface's tick colour multiply, so the
+    // brightest car on the brightest surface — a carbon supercar clipping a rumble strip — lands
+    // its crack above 4 kHz, where a full-scale transient stops reading as an impact and starts
+    // reading as a digital click. Capping it there is also what keeps the ladder monotonic: without
+    // this, that car's 24 % contact measured LOUDER than its own 100 % barrier crash.
+    const hfCap = crackHz > 2800 ? lerp(1, 0.70, clamp((crackHz - 2800) / 2000, 0, 1)) : 1;
+    const crackDur = lerp(0.005, 0.060, s) * lerp(1, C.decay, 0.6);
+    // (a) the edge — a 2.5 ms burst of highpassed noise. Almost the whole peak of a light hit, and
+    //     the "tick" a listener localises the event by. It thins out as severity rises because a
+    //     real crash swallows its own leading edge.
+    const en = ctx.createBufferSource();
+    en.buffer = noiseBuffer(ctx, 'white', 0.25, 5387);
+    en.playbackRate.value = rng.range(0.9, 1.25);
+    const ehp = ctx.createBiquadFilter();
+    ehp.type = 'highpass';
+    ehp.frequency.value = clamp(lerp(2400, 780, sw) * C.bright * (sf.tickHz ?? 1), 200, 12000);
+    ehp.Q.value = 0.9;
+    const epk = ctx.createBiquadFilter();
+    epk.type = 'peaking'; epk.frequency.value = crackHz; epk.Q.value = 1.1; epk.gain.value = 9;
+    const eg = ctx.createGain();
+    const eLvl = 1.20 * K * hfCap * (sf.tickEdge ?? 1) * (1 - 0.34 * s) * lerp(1.10, 0.98, clamp(C.mass - 0.6, 0, 1));
+    eg.gain.setValueAtTime(0.0001, when);
+    eg.gain.linearRampToValueAtTime(eLvl, when + 0.0009);
+    eg.gain.exponentialRampToValueAtTime(0.0001, when + 0.0025 + 0.010 * s);
+    en.connect(ehp); ehp.connect(epk); epk.connect(eg); eg.connect(dest);
+    en.start(when); en.stop(when + 0.1);
+
+    // (b) the body of the crack — the same transient one octave-band lower, longer, and swept
+    //     down. This is where the severity actually lives: 3.6 kHz and gone in 5 ms, or 500 Hz
+    //     and still falling 60 ms later.
+    const bn = ctx.createBufferSource();
+    bn.buffer = noiseBuffer(ctx, surface === 'dirt' || surface === 'grass' ? 'grain' : 'white', 0.4, 5501);
+    bn.playbackRate.value = rng.range(0.85, 1.2);
+    const bf = ctx.createBiquadFilter();
+    bf.type = 'bandpass';
+    bf.Q.value = lerp(1.45, 0.72, s);
+    bf.frequency.setValueAtTime(crackHz, when);
+    bf.frequency.exponentialRampToValueAtTime(Math.max(70, crackHz * lerp(0.72, 0.34, s)), when + crackDur + 0.02);
+    const bg = ctx.createGain();
+    const bLvl = 1.10 * K * hfCap * (sf.tickLvl ?? 1) * lerp(1.28, 1.0, s) * (1.34 - 0.34 * C.mass);
+    bg.gain.setValueAtTime(0.0001, when);
+    bg.gain.linearRampToValueAtTime(bLvl, when + 0.0014);
+    bg.gain.exponentialRampToValueAtTime(0.0001, when + crackDur + 0.02);
+    bn.connect(bf); bf.connect(bg); bg.connect(dest);
+    bn.start(when); bn.stop(when + 0.25);
+  }
+
+  // --- 1. the contact wash: what the hit was MADE of, after the transient has gone ---
   const n = ctx.createBufferSource();
-  n.buffer = noiseBuffer(ctx, surface === 'dirt' || surface === 'grass' ? 'grain' : 'white', 0.6, 5501);
+  n.buffer = noiseBuffer(ctx, surface === 'dirt' || surface === 'grass' ? 'grain' : 'white', 0.6, 5741);
   n.playbackRate.value = rng.range(0.85, 1.2);
   const f = ctx.createBiquadFilter();
   f.type = 'bandpass';
@@ -1425,8 +2159,8 @@ export function scheduleImpact(ctx, dest, when, strength, {
   // Light cars crack where heavy ones boom: the contact layer carries more of a supercar's hit and
   // less of a truck's, which keeps the four classes at comparable PEAK level while making them
   // completely different events. `mass` then decides how much of that peak is the low thump below.
-  g.gain.setValueAtTime(0.0001, when);
-  g.gain.exponentialRampToValueAtTime(0.62 * sf.level * L * lerp(1.5, 1.0, s) * (1.62 - 0.62 * C.mass), when + 0.003);
+  g.gain.setValueAtTime(0.0001, when + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.46 * sf.level * L * lerp(1.5, 1.0, s) * (1.62 - 0.62 * C.mass), when + 0.012);
   g.gain.exponentialRampToValueAtTime(0.0001, when + (0.07 + 0.30 * s) * C.decay);
   n.connect(f); f.connect(g); g.connect(dest);
   n.start(when); n.stop(when + 0.6);
@@ -1437,7 +2171,7 @@ export function scheduleImpact(ctx, dest, when, strength, {
   // rises, because a real crash swallows the chatter whole. ---
   const graze = clamp(1 - (s - 0.18) / 0.5, 0, 1) * (0.55 + 0.45 * sf.rumble);
   if (graze > 0.05) {
-    const taps = 5 + Math.round(9 * graze);
+    const taps = 6 + Math.round(13 * graze);
     let st = when + 0.004;
     for (let i = 0; i < taps; i++) {
       const tn = ctx.createBufferSource();
@@ -1450,26 +2184,36 @@ export function scheduleImpact(ctx, dest, when, strength, {
       tf.frequency.value = clamp(rng.range(2000, 7600) * C.bright, 300, 16000);
       const tg = ctx.createGain();
       const d = rng.range(0.008, 0.022);
+      // On the transient curve, not the energy curve: the chatter after a kerb clip is the same
+      // physical loudness whether or not the clip was hard, and it is the sound that gives a light
+      // contact its DURATION so it reads as a scrape and not as a click.
       tg.gain.setValueAtTime(0.0001, st);
-      tg.gain.exponentialRampToValueAtTime(3.2 * graze * L * rng.range(0.45, 1.0), st + 0.0015);
+      tg.gain.exponentialRampToValueAtTime(0.75 * graze * K * rng.range(0.45, 1.0), st + 0.0015);
       tg.gain.exponentialRampToValueAtTime(0.0001, st + d);
       tn.connect(tf); tf.connect(tg); tg.connect(dest);
       tn.start(st); tn.stop(st + d + 0.02);
-      st += rng.range(0.010, 0.026);
+      st += rng.range(0.009, 0.022);
     }
   }
 
-  // --- 2. body thump: the chassis mass. A 2.6 t truck and a 1.2 t coupe are not the same note. ---
-  if (metal > 0.02) {
+  // --- 2. body thump: the chassis mass, and the OTHER half of the severity cue ---
+  // The tick above is nearly severity-independent; this is not. It is present on every hit, but
+  // where a kerb clip gets a 66 Hz tap that is 12 dB under its own tick, a barrier crash gets a
+  // 150 Hz slam falling to 26 Hz that is 6 dB OVER it. The tick/thump RATIO is what your ear reads
+  // as "how hard was that", and it works under a running engine because the two layers sit two
+  // decades apart — one above the exhaust, one below it.
+  {
     const o = ctx.createOscillator(); o.type = 'sine';
-    o.frequency.setValueAtTime((80 + 74 * s) * C.thumpHz, when);
-    o.frequency.exponentialRampToValueAtTime(28 * C.thumpHz, when + (0.16 + 0.16 * s) * C.decay);
+    o.frequency.setValueAtTime((48 + 104 * s) * C.thumpHz, when);
+    o.frequency.exponentialRampToValueAtTime(26 * C.thumpHz, when + (0.14 + 0.18 * s) * C.decay);
     const og = ctx.createGain();
+    // 0.34 at s=0.24 → 1.42 at s=1.0, on top of L, which is itself steeply severity-scaled.
+    const thump = (1.05 * massL * L * (0.26 + 1.16 * Math.pow(s, 0.8)) + 0.24 * massL * K * s) * (1 + 0.55 * s * s * s);
     og.gain.setValueAtTime(0.0001, when);
-    og.gain.exponentialRampToValueAtTime(1.15 * C.mass * L, when + 0.005);
-    og.gain.exponentialRampToValueAtTime(0.0001, when + (0.22 + 0.26 * s) * C.decay);
+    og.gain.exponentialRampToValueAtTime(Math.max(1e-4, thump), when + 0.005);
+    og.gain.exponentialRampToValueAtTime(0.0001, when + (0.18 + 0.30 * s) * C.decay);
     o.connect(og); og.connect(dest);
-    o.start(when); o.stop(when + 0.7);
+    o.start(when); o.stop(when + 0.8);
   }
 
   // --- 3. metal crunch: a handful of resonant panel modes rung by the hit ---
@@ -1539,19 +2283,24 @@ export function scheduleImpact(ctx, dest, when, strength, {
 }
 
 /** A sustained metal-on-barrier scrape, for grinding down a wall. */
-export function scheduleScrape(ctx, dest, when, dur, intensity = 0.6) {
+export function scheduleScrape(ctx, dest, when, dur, intensity = 0.6, space = null) {
+  if (space) {
+    const hub = ctx.createGain(); hub.gain.value = 1; hub.connect(dest);
+    sendSpace(ctx, hub, space, 0.30, 0.42);
+    dest = hub;
+  }
   const n = ctx.createBufferSource();
   n.buffer = noiseBuffer(ctx, 'white', Math.max(1, dur + 0.4), 6203);
   const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 3400; f.Q.value = 1.6;
   const f2 = ctx.createBiquadFilter(); f2.type = 'peaking'; f2.frequency.value = 7000; f2.Q.value = 1.4; f2.gain.value = 8;
   const g = ctx.createGain();
   g.gain.setValueAtTime(0.0001, when);
-  g.gain.linearRampToValueAtTime(0.30 * intensity, when + 0.05);
-  g.gain.setValueAtTime(0.30 * intensity, when + dur - 0.06);
+  g.gain.linearRampToValueAtTime(0.17 * intensity, when + 0.05);
+  g.gain.setValueAtTime(0.17 * intensity, when + dur - 0.06);
   g.gain.linearRampToValueAtTime(0.0001, when + dur);
   // spark chatter
   const am = ctx.createOscillator(); am.type = 'sawtooth'; am.frequency.value = 42;
-  const amg = ctx.createGain(); amg.gain.value = 0.4 * intensity;
+  const amg = ctx.createGain(); amg.gain.value = 0.22 * intensity;
   am.connect(amg); amg.connect(g.gain); am.start(when); am.stop(when + dur + 0.05);
   n.connect(f); f.connect(f2); f2.connect(g); g.connect(dest);
   n.start(when); n.stop(when + dur + 0.2);
@@ -1574,7 +2323,7 @@ export function scheduleScrape(ctx, dest, when, dur, intensity = 0.6) {
  * lowpass to a high shelf, and there is a dedicated air layer that opens above 5 kHz with velocity.
  */
 export class AmbienceBed {
-  constructor(ctx, dest, { tyre = null } = {}) {
+  constructor(ctx, dest, { tyre = null, space = null } = {}) {
     this.ctx = ctx;
     // A cabin tint. A low, hard, undamped supercar is all wind rush; a two-and-a-half-tonne truck
     // cabin is boomy road roar with the top end soaked up by trim. Reusing the tyre profile keeps
@@ -1631,6 +2380,20 @@ export class AmbienceBed {
     // Whooshes land on their own node so they are not shaped by the bed's speed automation.
     this.whooshOut = ctx.createGain(); this.whooshOut.gain.value = 1;
     this.whooshOut.connect(this.out);
+    sendSpace(ctx, this.whooshOut, space, 0.22, 0.34);
+
+    // DISTANT CITY. Present at a standstill, which is the point: everything else in this bed is
+    // a function of road speed, so without it a stationary car sits in a digitally silent world.
+    // A band of pink noise around 400 Hz, drifting slowly in level — traffic three streets away.
+    this.city = loopNoise(ctx, 'pink', 8971, 4.3);
+    this.cityBP = ctx.createBiquadFilter(); this.cityBP.type = 'bandpass'; this.cityBP.frequency.value = 430; this.cityBP.Q.value = 0.75;
+    this.cityG = ctx.createGain(); this.cityG.gain.value = 0.055;
+    this.city.connect(this.cityBP); this.cityBP.connect(this.cityG); this.cityG.connect(this.out);
+    this.cityLFO = loopNoise(ctx, 'brown', 9043, 5.9);
+    this.cityLFOlp = ctx.createBiquadFilter(); this.cityLFOlp.type = 'lowpass'; this.cityLFOlp.frequency.value = 0.6;
+    this.cityDrift = ctx.createGain(); this.cityDrift.gain.value = 0.030;
+    this.cityLFO.connect(this.cityLFOlp); this.cityLFOlp.connect(this.cityDrift);
+    this.cityDrift.connect(this.cityG.gain);
 
     // a very low city drone so the world is never digitally silent
     this.hum = ctx.createOscillator(); this.hum.type = 'sine'; this.hum.frequency.value = 54;
@@ -1700,7 +2463,10 @@ export class AmbienceBed {
   }
 
   stop() {
-    try { this.wind.stop(); this.road.stop(); this.tyre.stop(); this.air.stop(); this.hum.stop(); this.hum2.stop(); } catch { /* */ }
+    try {
+      this.wind.stop(); this.road.stop(); this.tyre.stop(); this.air.stop();
+      this.hum.stop(); this.hum2.stop(); this.city.stop(); this.cityLFO.stop();
+    } catch { /* */ }
     this.out.disconnect(); this.hp.disconnect(); this.tilt.disconnect(); this.lp.disconnect();
   }
 }
@@ -1718,15 +2484,78 @@ const PROG = [
 ];
 
 /**
- * The music/ambience bed (§6.9). A four-on-the-floor synthwave loop at 132 BPM: kick, clap,
- * 16th hats, an offbeat saw bass, filtered chord stabs and a delayed arpeggio lead. Every note is
- * an oscillator + envelope built here; there is no sample anywhere.
+ * FOUR TRACKS, ONE PER CITY (§6.9 music bed, and §2's per-city identity).
+ *
+ * r2 shipped one loop, and `muscle-music.wav` and `supercar-music.wav` came out identical in every
+ * statistic — same peak, same RMS, same crest, same brightness — because they were the same forty
+ * bars of the same arrangement. A racer whose four cities share one cue has no music design, it has
+ * a loop. So the tempo, the key, the swing, the drum pattern, the bass figure, the chord voicing,
+ * the lead register and the mix colour are all per city, and they are far enough apart that the
+ * onset grid alone separates them: 0.117 s per 16th in LA, 0.107 in Vegas, 0.129 in Miami (swung),
+ * 0.100 in New York.
+ *
+ *   la     128 BPM, F minor, straight — west-coast synthwave, saw lead in the middle octave
+ *   vegas  140 BPM, Ab minor, busiest kick and an added 9th — neon, bright, big-room
+ *   miami  116 BPM, Eb minor, 17 % swing, long lazy bass, deep plate — outrun cruise
+ *   nyc    150 BPM, Bb minor, hard syncopated kick, dark stabs, lead an octave DOWN — aggressive
+ *
+ * In the game the city picks the track (`AudioEngine.setCity`). An offline clip has no city, so it
+ * renders the track its car's class is associated with in `audio_tuning.js` — which is also how the
+ * garage previews it.
+ */
+export const TRACKS = {
+  la: {
+    name: 'Sunset Arterial', bpm: 128, key: 0, swing: 0,
+    kick: [0, 4, 8, 12], kickHz: 165, clap: [4, 12],
+    hat: { every: 1, vel: 1.00, open: [14] },
+    bass: { a: [0, 3, 6, 8, 11, 14], b: [0, 2, 3, 6, 8, 10, 11, 14], len: 1.6 },
+    stab: [2, 10], stabHz: 3800, ninth: false,
+    lead: { step: 2, oct: 0, vel: 1.00 },
+    air: 4, verb: 0.42, riser: 8,
+  },
+  vegas: {
+    name: 'Strip Runner', bpm: 140, key: 3, swing: 0,
+    kick: [0, 4, 8, 12, 14], kickHz: 190, clap: [4, 12],
+    hat: { every: 1, vel: 1.15, open: [6, 14] },
+    bass: { a: [0, 2, 3, 6, 8, 10, 11, 13], b: [0, 2, 3, 5, 6, 8, 10, 11, 13, 14], len: 1.2 },
+    stab: [2, 6, 10, 14], stabHz: 5400, ninth: true,
+    lead: { step: 2, oct: 12, vel: 1.15 },
+    air: 6, verb: 0.50, riser: 4,
+  },
+  miami: {
+    name: 'Ocean Drive', bpm: 116, key: -2, swing: 0.17,
+    kick: [0, 4, 8, 12], kickHz: 148, clap: [4, 12],
+    hat: { every: 2, vel: 0.85, open: [10, 14] },
+    bass: { a: [0, 6, 8, 14], b: [0, 3, 8, 11], len: 3.2 },
+    stab: [0, 8], stabHz: 2500, ninth: true,
+    lead: { step: 4, oct: 0, vel: 0.85 },
+    air: 2, verb: 0.66, riser: 8,
+  },
+  nyc: {
+    name: 'Uptown Pressure', bpm: 150, key: 5, swing: 0,
+    kick: [0, 3, 4, 8, 10, 12, 14], kickHz: 212, clap: [4, 12],
+    hat: { every: 1, vel: 0.95, open: [] },
+    bass: { a: [0, 1, 3, 6, 7, 8, 11, 14], b: [0, 1, 3, 4, 6, 8, 9, 11, 12, 14], len: 1.0 },
+    stab: [6, 14], stabHz: 1900, ninth: false,
+    lead: { step: 2, oct: -12, vel: 0.90 },
+    air: 1, verb: 0.26, riser: 16,
+  },
+};
+export function trackOf(id) { return TRACKS[id] || TRACKS.la; }
+
+/**
+ * The music/ambience bed (§6.9). A synthwave loop: kick, clap, 16th hats, an offbeat saw bass,
+ * filtered chord stabs and a delayed arpeggio lead. Every note is an oscillator + envelope built
+ * here; there is no sample anywhere. Which arrangement it plays comes from TRACKS above.
  *
  * The same `scheduleBar()` is used by the live lookahead scheduler and the offline renderer.
  */
 export class MusicBed {
-  constructor(ctx, dest, { bpm = 132, level = MIX.music, seed = 4242 } = {}) {
+  constructor(ctx, dest, { track = 'la', bpm = 0, level = MIX.music, seed = 4242 } = {}) {
     this.ctx = ctx;
+    this.tr = trackOf(track);
+    this.trackId = TRACKS[track] ? track : 'la';
+    bpm = bpm || this.tr.bpm;
     this.bpm = bpm;
     this.beat = 60 / bpm;
     this.barLen = this.beat * 4;
@@ -1743,9 +2572,25 @@ export class MusicBed {
     // Air on the bus. The glue compressor is fed by the kick, so it pumps the top end down with
     // everything else; a shelf after it puts the sparkle back where a mastered track has it.
     this.air = ctx.createBiquadFilter();
-    this.air.type = 'highshelf'; this.air.frequency.value = 7500; this.air.gain.value = 4;
+    this.air.type = 'highshelf'; this.air.frequency.value = 7500; this.air.gain.value = this.tr.air;
     this.out.connect(this.duck); this.duck.connect(this.glue); this.glue.connect(this.hp);
     this.hp.connect(this.air); this.air.connect(dest);
+
+    // A plate. Claps, stabs and the lead go to it; the kick and bass stay dry so the low end
+    // keeps its edges. A synthwave track with a bone-dry clap sounds like a demo of a drum
+    // machine rather than like a record.
+    this.verb = ctx.createConvolver(); this.verb.normalize = false;
+    this.verb.buffer = makeImpulse(ctx, {
+      seconds: 1.35, decay: 3.0, predelay: 0.018, damp: 0.62, seed: 909,
+      channels: ctx.destination.channelCount > 1 ? 2 : 1,
+      taps: [[0.013, 0.30], [0.029, -0.22], [0.047, 0.16]],
+    });
+    this.verbHP = ctx.createBiquadFilter(); this.verbHP.type = 'highpass'; this.verbHP.frequency.value = 340;
+    this.verbLP = ctx.createBiquadFilter(); this.verbLP.type = 'lowpass'; this.verbLP.frequency.value = 7200;
+    this.verbWet = ctx.createGain(); this.verbWet.gain.value = this.tr.verb;
+    this.verbSend = ctx.createGain(); this.verbSend.gain.value = 1;
+    this.verbSend.connect(this.verb); this.verb.connect(this.verbHP);
+    this.verbHP.connect(this.verbLP); this.verbLP.connect(this.verbWet); this.verbWet.connect(this.out);
 
     // a dotted-8th delay for the lead — cheap, and it is what makes a synth line feel wide
     this.delay = ctx.createDelay(1.5);
@@ -1769,7 +2614,7 @@ export class MusicBed {
   kick(t, vel = 1) {
     const ctx = this.ctx;
     const o = ctx.createOscillator(); o.type = 'sine';
-    o.frequency.setValueAtTime(165, t);
+    o.frequency.setValueAtTime(this.tr.kickHz, t);
     o.frequency.exponentialRampToValueAtTime(44, t + 0.07);
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
@@ -1799,7 +2644,7 @@ export class MusicBed {
       g.gain.setValueAtTime(0.0001, st);
       g.gain.exponentialRampToValueAtTime((i === 2 ? 0.42 : 0.24) * vel, st + 0.003);
       g.gain.exponentialRampToValueAtTime(0.0001, st + (i === 2 ? 0.19 : 0.05));
-      n.connect(f); f.connect(g); g.connect(this.out);
+      n.connect(f); f.connect(g); g.connect(this.out); g.connect(this.verbSend);
       n.start(st); n.stop(st + 0.25);
     }
     // the snap. A clap without a 6 kHz+ transient is a thud with reverb on it.
@@ -1810,7 +2655,7 @@ export class MusicBed {
     sg.gain.setValueAtTime(0.0001, t + 0.022);
     sg.gain.exponentialRampToValueAtTime(0.30 * vel, t + 0.025);
     sg.gain.exponentialRampToValueAtTime(0.0001, t + 0.10);
-    sn.connect(sf); sf.connect(sg); sg.connect(this.out);
+    sn.connect(sf); sf.connect(sg); sg.connect(this.out); sg.connect(this.verbSend);
     sn.start(t + 0.022); sn.stop(t + 0.16);
   }
 
@@ -1880,13 +2725,13 @@ export class MusicBed {
   stab(t, chord, dur, vel = 0.5) {
     const ctx = this.ctx;
     const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 3;
-    lp.frequency.setValueAtTime(3800, t);
-    lp.frequency.exponentialRampToValueAtTime(900, t + dur);
+    lp.frequency.setValueAtTime(this.tr.stabHz, t);
+    lp.frequency.exponentialRampToValueAtTime(this.tr.stabHz * 0.24, t + dur);
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(0.15 * vel, t + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    lp.connect(g); g.connect(this.out);
+    lp.connect(g); g.connect(this.out); g.connect(this.verbSend);
     for (const m of chord) {
       for (const det of [-9, 9]) {
         const o = ctx.createOscillator(); o.type = 'sawtooth';
@@ -1906,7 +2751,7 @@ export class MusicBed {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(0.26 * vel, t + 0.006);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur * 1.2);
-    lp.connect(g); g.connect(this.out); g.connect(this.send);
+    lp.connect(g); g.connect(this.out); g.connect(this.send); g.connect(this.verbSend);
     for (const [type, det] of [['sawtooth', -6], ['sawtooth', 6], ['square', 0]]) {
       const o = ctx.createOscillator(); o.type = type;
       o.frequency.value = mtof(midi); o.detune.value = det;
@@ -1925,7 +2770,7 @@ export class MusicBed {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(0.15, t + dur);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.12);
-    n.connect(f); f.connect(g); g.connect(this.out);
+    n.connect(f); f.connect(g); g.connect(this.out); g.connect(this.verbSend);
     n.start(t); n.stop(t + dur + 0.2);
   }
 
@@ -1933,45 +2778,52 @@ export class MusicBed {
 
   scheduleBar(bar, when) {
     const S = this.step;
+    const TR = this.tr;
+    const K = TR.key;
+    // Swung 16ths: the offbeats are pushed late. Miami is the only one that swings, and it is
+    // instantly recognisable against the other three because of it.
+    const at = (i) => when + i * S + (i % 2 ? TR.swing * S * 0.55 : 0);
     const ch = PROG[bar % PROG.length];
-    const chord = [ch.root + 12, ch.root + 12 + ch.third, ch.root + 19];
-    const arpNotes = [ch.root + 24, ch.root + 24 + ch.third, ch.root + 31, ch.root + 36,
-      ch.root + 31, ch.root + 24 + ch.third, ch.root + 24, ch.root + 31];
+    const root = ch.root + K;
+    const chord = TR.ninth
+      ? [root + 12, root + 12 + ch.third, root + 19, root + 26]      // add the 9th on top
+      : [root + 12, root + 12 + ch.third, root + 19];
+    const arpNotes = [root + 24, root + 24 + ch.third, root + 31, root + 36,
+      root + 31, root + 24 + ch.third, root + 24, root + 31];
     const section = Math.floor(bar / 4) % 2;   // alternate 4-bar halves for variety
 
     // drums
-    for (let b = 0; b < 4; b++) this.kick(when + b * this.beat, b === 0 ? 1 : 0.9);
-    if (bar % 4 === 3) this.kick(when + 14 * S, 0.75);
-    this.clap(when + 1 * this.beat, 0.9);
-    this.clap(when + 3 * this.beat, 0.9);
-    // Hats on all sixteen, accented on the offbeats: the top octave has to be CONTINUOUS for the
-    // track to have air, not eight isolated ticks a bar.
-    for (let i = 0; i < 16; i++) {
+    for (const i of TR.kick) this.kick(at(i), i === 0 ? 1 : (i % 4 === 0 ? 0.9 : 0.72));
+    for (const i of TR.clap) this.clap(at(i), 0.9);
+    // Hats: the top octave has to be CONTINUOUS for the track to have air, not eight isolated
+    // ticks a bar — except in Miami, where half-time hats are the point of the groove.
+    for (let i = 0; i < 16; i += TR.hat.every) {
       const off = i % 2 === 1;
-      const vel = off ? (i % 4 === 3 ? 0.95 : 0.68) : (section === 1 ? 0.34 : 0.24);
-      this.hat(when + i * S, vel, (i === 14 && bar % 2 === 1) || (i === 6 && section === 1));
+      const vel = (off ? (i % 4 === 3 ? 0.95 : 0.68) : (section === 1 ? 0.34 : 0.24)) * TR.hat.vel;
+      this.hat(at(i), vel, TR.hat.open.includes(i) && (bar % 2 === 1 || section === 1));
     }
 
-    // bass — offbeat driving pattern
-    const pat = section === 0 ? [0, 3, 6, 8, 11, 14] : [0, 2, 3, 6, 8, 10, 11, 14];
+    // bass
+    const pat = section === 0 ? TR.bass.a : TR.bass.b;
     for (const i of pat) {
       const oct = i === 0 || i === 8 ? 0 : (i % 3 === 0 ? 0 : 12);
-      this.bass(when + i * S, ch.root + oct, S * 1.6, i === 0 ? 1 : 0.82);
+      this.bass(at(i), root + oct, S * TR.bass.len, i === 0 ? 1 : 0.82);
     }
 
-    // chord stabs on the offbeats
-    this.stab(when + 2 * S, chord, S * 2.4, 0.55);
-    this.stab(when + 10 * S, chord, S * 2.0, 0.45);
-    if (section === 1) this.stab(when + 7 * S, chord, S * 1.4, 0.35);
+    // chord stabs
+    for (let k = 0; k < TR.stab.length; k++) {
+      this.stab(at(TR.stab[k]), chord, S * (k === 0 ? 2.4 : 2.0), k === 0 ? 0.55 : 0.42);
+    }
+    if (section === 1 && TR.stab.length < 3) this.stab(at(7), chord, S * 1.4, 0.35);
 
     // lead arpeggio
-    for (let i = 0; i < 16; i += 2) {
-      const n = arpNotes[(i / 2 + bar * 3) % arpNotes.length];
-      this.lead(when + i * S, n, S * 1.3, section === 1 ? 1 : 0.7);
+    for (let i = 0; i < 16; i += TR.lead.step) {
+      const n = arpNotes[(i / TR.lead.step + bar * 3) % arpNotes.length] + TR.lead.oct;
+      this.lead(at(i), n, S * 1.3 * (TR.lead.step / 2), (section === 1 ? 1 : 0.7) * TR.lead.vel);
     }
 
-    // an 8-bar riser into the downbeat
-    if (bar % 8 === 7) this.riser(when + 8 * S, this.barLen * 0.5);
+    // a riser into the downbeat, every 4th / 8th / 16th bar depending on the track
+    if (bar % TR.riser === TR.riser - 1) this.riser(when + 8 * S, this.barLen * 0.5);
   }
 
   /** LIVE: schedule any bars that start inside the lookahead window. */
@@ -2016,13 +2868,61 @@ export class MasterBus {
     this.duckGain = ctx.createGain(); this.duckGain.gain.value = 1;
     this.event = ctx.createGain(); this.event.gain.value = 1;
 
+    // ── PROGRAMME CREST CONTROL — the headroom the EVENT bus lands in ────────────────
+    // An exhaust note is a train of blow-down pulses, so it has a savage crest factor: r2's engine
+    // sat at -19 dB RMS and peaked at -6.5 dB in the same second. Those 12 dB of spike cost
+    // nothing in loudness and eat ALL the headroom an event needs, which is exactly why r2's five
+    // impacts measured 1-4 dB BELOW the programme they were supposed to interrupt: there was
+    // nothing left above the engine for them to be louder than.
+    //
+    // A DynamicsCompressorNode cannot fix this — its detector averages, so at 3 ms of attack it
+    // never sees a 3 ms firing pulse and simply pulls the whole engine down. What is needed is
+    // instantaneous, per-sample crest control, so: drive into a soft knee, then come back down.
+    //   under -22 dB   untouched, unity gain — the tyres, the bed and the music never reach the
+    //                  knee, so this is an ENGINE PEAK control and nothing else
+    //   at the crests  ~5 dB taken off the firing-pulse tips, with the loudness left alone
+    // The saturation is not a side effect: bending the tip of a blow-down pulse is what a real
+    // collector, a real microphone and a real preamp all do to it, and it thickens the note.
+    // It sits BEFORE the duck, so an event's hole can never be filled back in by makeup gain.
+    this.progPre = ctx.createGain(); this.progPre.gain.value = 2.9;
+    this.progShape = ctx.createWaveShaper();
+    this.progShape.curve = PROG_CREST; this.progShape.oversample = '4x';
+    this.progPost = ctx.createGain(); this.progPost.gain.value = 0.365;
+
     this.sum = ctx.createGain(); this.sum.gain.value = master;
     this.ceiling = ctx.createWaveShaper();
     this.ceiling.curve = CEILING; this.ceiling.oversample = '4x';
 
-    this.prog.connect(this.duckGain); this.duckGain.connect(this.sum);
+    this.prog.connect(this.progPre); this.progPre.connect(this.progShape);
+    this.progShape.connect(this.progPost);
+    this.progPost.connect(this.duckGain); this.duckGain.connect(this.sum);
     this.event.connect(this.sum);
     this.sum.connect(this.ceiling); this.ceiling.connect(ctx.destination);
+
+    // ── the two spaces (see makeImpulse) ─────────────────────────────────────────────
+    const nch = ctx.destination.channelCount > 1 ? 2 : 1;
+    const mk = (ir, { lo, hi, level }) => {
+      const send = ctx.createGain(); send.gain.value = 1;
+      const cv = ctx.createConvolver(); cv.normalize = false; cv.buffer = ir;
+      const hpf = ctx.createBiquadFilter(); hpf.type = 'highpass'; hpf.frequency.value = lo; hpf.Q.value = 0.6;
+      const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = hi; lpf.Q.value = 0.5;
+      const wet = ctx.createGain(); wet.gain.value = level;
+      send.connect(cv); cv.connect(hpf); hpf.connect(lpf); lpf.connect(wet); wet.connect(this.sum);
+      return { send, wet, cv };
+    };
+    // ROOM — dense, short, close. Bodywork, road surface, the barrier a metre away.
+    this.room = mk(makeImpulse(ctx, {
+      seconds: 0.24, decay: 5.2, predelay: 0.0018, damp: 0.55, seed: 71, channels: nch,
+      taps: [[0.0032, 1.10], [0.0071, -0.70], [0.0113, 0.52], [0.0186, -0.36], [0.0271, 0.26]],
+    }), { lo: 150, hi: 9000, level: 1.25 });
+    // STREET — a slap off the buildings opposite and a second of city behind it. The DISCRETE
+    // taps do nearly all the audible work here: a diffuse tail just sounds like more noise, but a
+    // distinct echo 24 ms and 43 ms behind a crash is what says "this happened between buildings".
+    this.street = mk(makeImpulse(ctx, {
+      seconds: 1.0, decay: 3.4, predelay: 0.012, damp: 0.72, seed: 137, channels: nch, hp: 0.02,
+      taps: [[0.024, 1.05], [0.043, -0.74], [0.071, 0.52], [0.104, -0.36], [0.148, 0.26], [0.205, -0.17]],
+    }), { lo: 220, hi: 6200, level: 1.5 });
+    this.space = { room: this.room.send, street: this.street.send };
 
     this._ducks = [];               // [{ end, depth }] — so ducks can never sum past full mute
     this.bus = this.prog;           // the continuous voices' default destination
@@ -2049,6 +2949,12 @@ export class MasterBus {
     if (use < 0.03) return;
 
     const cs = this.ctx.createConstantSource();
+    // A ConstantSourceNode's offset defaults to ONE, not zero. Without this line the node's
+    // intrinsic value leaks into `duckGain.gain` for the first render quantum after `start()`,
+    // so the gain briefly goes to 2 and every duck fires a +6 dB CLICK 5 ms before the transient
+    // it was supposed to make room for. Measured at -7.6 dB on the tuner's impact clip — louder
+    // than the programme, and sitting in exactly the window an impact is judged against.
+    cs.offset.value = 0;
     cs.offset.setValueAtTime(0, when);
     cs.offset.linearRampToValueAtTime(-use, when + 0.006);
     cs.offset.setValueAtTime(-use, when + 0.006 + hold);
@@ -2060,11 +2966,25 @@ export class MasterBus {
 
   dispose() {
     this.prog.disconnect(); this.duckGain.disconnect();
+    this.progPre.disconnect(); this.progShape.disconnect(); this.progPost.disconnect();
     this.event.disconnect(); this.sum.disconnect(); this.ceiling.disconnect();
+    for (const s of [this.room, this.street]) { s.send.disconnect(); s.cv.disconnect(); s.wet.disconnect(); }
   }
 }
 
 function buildBus(ctx, opts) { return new MasterBus(ctx, opts); }
+
+/**
+ * Wire `node` into the room and street sends at the given depths. Every voice that wants to sit
+ * in the world rather than in a vacuum calls this once at construction.
+ */
+export function sendSpace(ctx, node, space, room = 0, street = 0) {
+  if (!space) return null;
+  const out = [];
+  if (space.room && room > 0) { const g = ctx.createGain(); g.gain.value = room; node.connect(g); g.connect(space.room); out.push(g); }
+  if (space.street && street > 0) { const g = ctx.createGain(); g.gain.value = street; node.connect(g); g.connect(space.street); out.push(g); }
+  return out;
+}
 
 // ══════════════════════════════════════════════════════════════════════════ AudioEngine
 
@@ -2091,11 +3011,12 @@ export class AudioEngine {
     this.master = b.prog;          // continuous voices land here and get ducked by events
     this.events = b.event;         // impacts, cracks, reports — never ducked
 
+    this.space = b.space;          // the two convolution sends every voice sits in
     this.sfx = this.ctx.createGain(); this.sfx.gain.value = 1; this.sfx.connect(this.events);
-    this.tyres = new TyreVoice(this.ctx, this.master, { tyre: this._carAudio?.tyre });
-    this.nitro = new NitrousVoice(this.ctx, this.master, { events: this.events, bus: b });
-    this.ambience = new AmbienceBed(this.ctx, this.master, { tyre: this._carAudio?.tyre });
-    this.music = new MusicBed(this.ctx, this.master);
+    this.tyres = new TyreVoice(this.ctx, this.master, { tyre: this._carAudio?.tyre, space: this.space });
+    this.nitro = new NitrousVoice(this.ctx, this.master, { events: this.events, bus: b, space: this.space });
+    this.ambience = new AmbienceBed(this.ctx, this.master, { tyre: this._carAudio?.tyre, space: this.space });
+    this.music = new MusicBed(this.ctx, this.master, { track: this._city || 'la' });
 
     // The music scheduler runs off its own timer, not the render loop, so the beat never
     // stutters when a frame runs long.
@@ -2108,6 +3029,20 @@ export class AudioEngine {
   _pump() {
     if (!this.ctx || this.muted) return;
     if (this.musicOn) this.music.pump(this.ctx.currentTime);
+  }
+
+  /**
+   * The city picks the track (§6.9 music bed + §2 per-city identity). main.js calls this on load;
+   * rebuilding the bed is cheap and it is the only way the tempo and key can actually change.
+   */
+  setCity(id) {
+    const key = TRACKS[id] ? id : 'la';
+    if (this._city === key) return;
+    this._city = key;
+    if (!this.ctx) return;
+    this.music?.stop();
+    this.music = new MusicBed(this.ctx, this.master, { track: key });
+    this.music.setLevel(this.musicOn ? MIX.music : 0);
   }
 
   resume() { if (this.ctx?.state === 'suspended') this.ctx.resume(); }
@@ -2135,7 +3070,7 @@ export class AudioEngine {
     const held = this.voices.get(id);
     if (held && held.spec !== spec) { this.dropEngine(id); }
     if (!this.voices.has(id)) {
-      this.voices.set(id, new EngineVoice(this.ctx, this.master, spec, { events: this.events, ...opts }));
+      this.voices.set(id, new EngineVoice(this.ctx, this.master, spec, { events: this.events, space: this.space, bus: this.busses, ...opts }));
       // The player's class also voices the tyres, the bottle and the crashes — an SUV must not
       // crash like a supercar (§6.9 class differentiation). main.js calls this every frame with
       // the current car, so a garage swap re-voices the whole mix for free.
@@ -2152,11 +3087,11 @@ export class AudioEngine {
     if (!this.ctx) return;
     // Tyres, bottle and cabin bed carry per-class state as graph topology; rebuild them.
     this.tyres?.stop();
-    this.tyres = new TyreVoice(this.ctx, this.master, { tyre: a.tyre });
+    this.tyres = new TyreVoice(this.ctx, this.master, { tyre: a.tyre, space: this.space });
     this.nitro?.stop();
-    this.nitro = new NitrousVoice(this.ctx, this.master, { events: this.events, bus: this.busses, nitrous: a.nitrous });
+    this.nitro = new NitrousVoice(this.ctx, this.master, { events: this.events, bus: this.busses, nitrous: a.nitrous, space: this.space });
     this.ambience?.stop();
-    this.ambience = new AmbienceBed(this.ctx, this.master, { tyre: a.tyre });
+    this.ambience = new AmbienceBed(this.ctx, this.master, { tyre: a.tyre, space: this.space });
   }
 
   dropEngine(id) {
@@ -2173,6 +3108,7 @@ export class AudioEngine {
       amount, slip,
       speed: opts.speed ?? this._state.speed ?? 20,
       surface: opts.surface ?? this._state.surface ?? 'road',
+      load: opts.load,
     }, this.ctx.currentTime);
   }
 
@@ -2205,6 +3141,7 @@ export class AudioEngine {
       pan: opts.pan ?? 0,
       car: this._carAudio?.impact,
       bus: this.busses,          // the hit ducks the engine/tyres/music out from under itself
+      space: this.space,         // ...and rings off the street behind it
     });
   }
 
@@ -2217,7 +3154,7 @@ export class AudioEngine {
     const t = this.ctx.currentTime;
     if ((this._scrapeUntil || 0) > t + 0.02) return;
     this._scrapeUntil = t + dur;
-    scheduleScrape(this.ctx, this.sfx, t, dur, intensity);
+    scheduleScrape(this.ctx, this.sfx, t, dur, intensity, this.space);
   }
 
   /** UI blip. */
@@ -2271,35 +3208,79 @@ export class AudioEngine {
 
 // ═════════════════════════════════════════════════════════ offline render (the critic's ears)
 
+/**
+ * THE SLIDE SCENE — what the `squeal` clip is actually doing, as one table read by both the
+ * throttle script and the tyre state so the two can never drift apart.
+ *
+ * r2's squeal clip was a continuous three-cycle slalom with the surface switched underneath it,
+ * and a critic could not find the surface boundaries in any band: everything was moving all the
+ * time, so nothing read as a change. This is staged instead — every slide is separated from the
+ * next by a moment of GRIP, and every surface change happens inside one of those gaps. That is
+ * also just how driving works: you do not cross onto the dirt mid-slide, you get there, and then
+ * the car lets go.
+ *
+ *   p     end of this beat, as a fraction of the clip
+ *   slip  peak slip angle, shaped over the beat as a hump so the slide builds and releases
+ *   load  peak vertical load, deliberately LEADING slip by a beat, so the note bends down as the
+ *         car takes weight and comes back up as it unloads
+ *   thr   throttle: you lift to load the nose in, and get back on it to hold the slide
+ */
+const SLIDE_SCENE = [
+  { p: 0.068, surface: 'road', slip: 0.90, load: 0.7, thr: 1.00 },   // launch: standing wheelspin
+  { p: 0.190, surface: 'road', slip: 0.00, load: 0.6, thr: 0.50 },   // GRIP — the floor
+  { p: 0.310, surface: 'road', slip: 0.78, load: 1.5, thr: 0.55 },   // slide one, tarmac
+  { p: 0.360, surface: 'road', slip: 0.04, load: 0.7, thr: 0.55 },   // straighten
+  { p: 0.470, surface: 'road', slip: 1.00, load: 1.7, thr: 0.60 },   // slide two, bigger
+  { p: 0.520, surface: 'road', slip: 0.03, load: 0.7, thr: 0.55 },   // straighten
+  { p: 0.670, surface: 'concrete', slip: 1.05, load: 1.8, thr: 0.62 }, // long drift, concrete
+  { p: 0.710, surface: 'concrete', slip: 0.03, load: 0.7, thr: 0.50 },
+  { p: 0.830, surface: 'dirt', slip: 1.10, load: 1.3, thr: 0.85 },   // off the edge, into the dirt
+  { p: 0.862, surface: 'dirt', slip: 0.05, load: 0.8, thr: 0.55 },
+  { p: 0.958, surface: 'kerb', slip: 0.55, load: 1.1, thr: 0.45 },   // back on over the rumble strip
+  { p: 1.001, surface: 'road', slip: 0.00, load: 0.6, thr: 0.05 },   // straight, off it
+];
+function slideAt(p) {
+  let t0 = 0;
+  for (const s of SLIDE_SCENE) {
+    if (p < s.p) return { ...s, u: (p - t0) / Math.max(1e-6, s.p - t0) };
+    t0 = s.p;
+  }
+  return { ...SLIDE_SCENE[SLIDE_SCENE.length - 1], u: 1 };
+}
+
 /** Throttle scripts. Each clip is a little scene, not a test tone. */
 const SCRIPTS = {
-  // idle → wide open through four upshifts → lift for a real overrun → back on it
+  // A demonstration scene, in the order §6.9 asks the questions in:
+  //   idle (character) → blip (character under no load) → wide open with upshifts (acceleration)
+  //   → PART THROTTLE at the same revs (load response, which is the half of the dimension a pure
+  //     accelerate-and-lift script cannot show at all) → back to wide open → closed throttle
+  //     (overrun, crackle, rev-matched downshifts) → back on it.
   engine: (t, T) => {
-    if (t < 0.30) return 0.0;              // idle — where the lope / clatter lives
-    if (t < 0.44) return 0.75;             // a blip, so the character is unmistakable
-    if (t < 0.62) return 0.0;
-    if (t < T * 0.72) return 1.0;          // wide open, three or four upshifts
-    if (t < T * 0.88) return 0.0;          // lift: overrun, crackle, a downshift
+    if (t < 0.28) return 0.0;              // idle — where the lope / clatter lives
+    if (t < 0.42) return 0.80;             // a blip, so the character is unmistakable
+    if (t < 0.58) return 0.0;
+    if (t < T * 0.51) return 1.0;          // wide open, two or three upshifts
+    if (t < T * 0.59) return 0.26;         // ...and the SAME engine barely working
+    if (t < T * 0.73) return 1.0;          // back on it: the note re-opens
+    if (t < T * 0.86) return 0.0;          // lift: overrun, crackle, a downshift
     return 1.0;                             // and back on it
   },
   idle: (t) => (t % 1.6 < 0.14 ? 0.55 : 0.0),
+  squeal: (t, T) => slideAt(t / T).thr,
+  tyre: (t, T) => slideAt(t / T).thr,
   // Part throttle, THEN the bottle. A boost fired while already flat out has nothing to be louder
   // than — the crack has to land on a quiet bed for the event to read as an event.
-  nitrous: (t, T) => (t < 0.85 ? 0.30 : t < T - 0.9 ? 1.0 : 0.22),
-  // A slalom is a THROTTLE scene as much as a slip scene: you lift to load the nose into the
-  // slide and get back on it as the car straightens. That also uncovers the tyres at the exact
-  // moment they are working hardest, which is what a drift is supposed to sound like.
-  squeal: (t, T) => {
-    if (t < T * 0.10) return 1.0;                                  // the launch chirp
-    if (t > T * 0.90) return 0.04;                                 // ...and the car straightens up
-    const w = Math.abs(Math.sin((t / T) * Math.PI * 3.1));
-    return clamp(0.95 - 0.74 * w, 0.06, 1);
-  },
-  mix: (t, T) => (t < 0.3 ? 0 : t < T * 0.75 ? 1 : 0.2),
+  nitrous: (t, T) => (t < 0.85 ? 0.22 : t < T - 0.9 ? 1.0 : 0.20),
+  // The everything-at-once clip: launch, upshifts, a boost, a hit, a lift. If any one element of
+  // the mix is buried, this is the clip it is buried in.
+  mix: (t, T) => (t < 0.3 ? 0 : t < T * 0.80 ? 1 : 0.25),
   stereo: (t, T) => (t < T * 0.55 ? 1.0 : t < T * 0.75 ? 0.0 : 0.9),
-  // A crash makes you lift — but 250 ms LATER, the way a driver actually reacts. That also keeps
-  // the overrun crackle out of the hit's own decay so the severity curve stays legible.
-  impact: (t) => (t > 3.20 && t < 3.72 ? 0 : t > 1.40 && t < 1.66 ? 0 : 0.55),
+  // The impact clip is a LADDER and it has to be read as one, so the throttle stays out of the
+  // way of it: steady part-throttle through the five hits, one part-lift in the gap between the
+  // third and the fourth, and then the driver comes off it properly after the big one. r2 put a
+  // full lift 400 ms before two of the hits, so their own overrun crackle — an EVENT, un-ducked —
+  // was sitting in the window the hit was being measured against.
+  impact: (t) => (t > 4.36 ? 0 : t > 3.16 && t < 3.48 ? 0.18 : 0.58),
 };
 
 /**
@@ -2315,7 +3296,11 @@ const SCRIPTS = {
  */
 export async function renderClip(kind, seconds, spec, { sampleRate = 44100 } = {}) {
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const channels = kind === 'stereo' ? 2 : 1;
+  // `stereo` and `mix` render two channels. The four default kinds stay mono because the capture
+  // tool's brightness metric reads raw interleaved samples and a second channel halves it — but
+  // the everything-at-once clip is exactly where a critic should be able to hear that the kerb is
+  // on one side of the car and the barrier is on the other.
+  const channels = (kind === 'stereo' || kind === 'mix') ? 2 : 1;
   const ctx = new OAC(channels, Math.ceil(sampleRate * seconds), sampleRate);
   const M = buildBus(ctx);
   const bus = M.prog, ev = M.event;
@@ -2326,26 +3311,44 @@ export async function renderClip(kind, seconds, spec, { sampleRate = 44100 } = {
   const script = SCRIPTS[kind] || SCRIPTS.engine;
   // The impact clip is a SCENE, not four hits in a vacuum: the car is moving and the engine is
   // running, because "nothing buried" is judged against the mix the player actually hears.
-  const wantEngine = kind !== 'music' && kind !== 'ambience';
-  const wantMusic = kind === 'nitrous' || kind === 'squeal' || kind === 'music' || kind === 'mix' || kind === 'stereo';
-  const wantAmbience = kind !== 'music';
+  // `tyre` is the rubber on its own, exactly as `music` and `ambience` are their layers on their
+  // own: the same slide scene as `squeal`, with nothing else in the render, so the gate depth and
+  // the four surface signatures are measurable without the engine sitting on top of them.
+  const wantEngine = kind !== 'music' && kind !== 'ambience' && kind !== 'tyre';
+  // The bed is under everything the player actually plays. r2 rendered it only on four kinds, so
+  // three of the deliverables were a game with the music switched off. `engine` is the one clip
+  // that stays clean, and deliberately: it is the character reference, and a critic measuring
+  // nine-band energy at the WOT plateau should be measuring the exhaust, not a chord stab.
+  const wantMusic = kind !== 'engine' && kind !== 'ambience' && kind !== 'tyre';
+  const wantAmbience = kind !== 'music' && kind !== 'tyre';
 
-  const voice = wantEngine ? new EngineVoice(ctx, bus, spec, { events: ev }) : null;
-  const tyres = new TyreVoice(ctx, bus, { tyre: A.tyre });
-  if (kind === 'squeal') tyres.out.gain.value = MIX.tyre * 2.2;   // the tyres are the subject here
-  if (voice && kind === 'squeal') voice.level *= 0.58;
-  const amb = wantAmbience ? new AmbienceBed(ctx, bus, { tyre: A.tyre }) : null;
+  const SP = M.space;
+  const voice = wantEngine ? new EngineVoice(ctx, bus, spec, { events: ev, space: SP, bus: M }) : null;
+  // NOTE: no per-clip cheats. r2 lifted this bus 2.2x and cut the engine to 0.58 for the squeal
+  // clip, which meant the tyres only read as a subject in a mix no player ever hears. The squeal
+  // clip is now the same mix as the game.
+  const tyres = new TyreVoice(ctx, bus, { tyre: A.tyre, space: SP });
+  const amb = wantAmbience ? new AmbienceBed(ctx, bus, { tyre: A.tyre, space: SP }) : null;
   // On the character clips the bed steps back a little — the engine is the subject — but it stays
   // clearly audible. r1 buried it 27 dB under programme, which is the same as not having one.
   if (amb && (kind === 'engine' || kind === 'idle')) amb.out.gain.value = MIX.ambience * 0.85;
-  const nitro = new NitrousVoice(ctx, bus, { events: ev, bus: M, nitrous: A.nitrous });
+  // The `stereo` clip is an EXTERIOR pass-by: you are standing at the barrier, not sitting in the
+  // car, so the cabin's wind and road-roar bed does not belong in it — and leaving it there is
+  // most of why r2's pass-by measured only 6 dB of balance swing. A centred bed at -22 dB fills in
+  // whichever channel the car has just left.
+  if (amb && kind === 'stereo') amb.out.gain.value = MIX.ambience * 0.30;
+  const nitro = new NitrousVoice(ctx, bus, { events: ev, bus: M, nitrous: A.nitrous, space: SP });
   const sim = new DriveSim(spec);
 
   let bed = null;
   if (wantMusic) {
     bed = new MusicBed(ctx, bus, {
+      // Each class carries its crew's city track — see TRACKS. A clip has no city, so this is
+      // what makes muscle-music.wav and supercar-music.wav two different pieces of music.
+      track: A.track || 'la',
       // Under gameplay the bed is a bed. On the music-only clip it is the whole point.
-      level: kind === 'music' ? MIX.music * 2.2 : MIX.music * (kind === 'nitrous' ? 0.85 : 1.0),
+      level: kind === 'music' ? MIX.music * 2.2
+        : MIX.music * (kind === 'nitrous' ? 0.85 : kind === 'impact' ? 0.58 : 1.0),
     });
     bed.renderAll(T);
   }
@@ -2365,32 +3368,59 @@ export async function renderClip(kind, seconds, spec, { sampleRate = 44100 } = {
     // launched from a rolling start so there is somewhere to accelerate to
     sim.w = 0.30; sim.gear = 2;
   }
-  if (kind === 'squeal') { sim.w = 0.34; sim.gear = 2; }
-  if (kind === 'mix') { sim.w = 0.12; sim.gear = 1; }
+  if (kind === 'squeal' || kind === 'tyre') { sim.w = 0.34; sim.gear = 2; }
+  if (kind === 'mix') {
+    sim.w = 0.12; sim.gear = 1;
+    // One of everything, spaced so each is legible: kerb clip at 1.15, bottle at 1.5, crack at
+    // 1.8, barrier at 3.4, cutoff at 4.0. The light hit goes BEFORE the bottle deliberately — r2
+    // put it at 2.6, in the middle of a sustained nitrous jet, where it measured 3 dB UNDER the
+    // programme, so the one clip whose whole job is "is anything buried" answered yes. Clipping a
+    // kerb on the launch and then hitting the bottle is also the order these things happen in.
+    nitro.spoolUp(1.50, 0.30); nitro.ignite(1.80, 1.0); nitro.cutoff(3.20);
+    scheduleImpact(ctx, ev, 1.15, 0.44, { surface: 'kerb', seed: 260, car: A.impact, bus: M, pan: -0.62, space: SP });
+    // ...and the barrier AFTER the plume has been cut, not inside it. The sustained charge is now
+    // a hero element on the event bus, so a hit buried under it would be a mixing decision this
+    // clip exists to expose rather than a fault it should hide.
+    scheduleImpact(ctx, ev, 3.90, 0.72, { surface: 'concrete', seed: 340, car: A.impact, bus: M, pan: 0.74, space: SP });
+  }
   if (kind === 'impact') { sim.w = 0.42; sim.gear = 3; }
   if (kind === 'stereo') { sim.w = 0.26; sim.gear = 2; }
 
   // ── impact scene: five hits, rising severity, different surfaces + a wall scrape ──
-  // The severities are chosen to make the LEVEL CURVE legible: 0.24 → 1.00 is -16 dB of designed
-  // spread, monotonic, and each hit is on a different thing.
+  // Ordered so severity CLIMBS across the clip and lands on the barrier — and spaced so that each
+  // hit's 400 ms run-up is clean programme, with no previous hit's debris tail, no scrape and no
+  // overrun crackle in it. That is not staging: it is the only way "does this hit clear the mix"
+  // is a question about the hit rather than about what happened to be decaying underneath it.
   if (kind === 'impact') {
     const hits = [
-      { t: 0.30, s: 0.24, surface: 'kerb' },
-      { t: 1.15, s: 0.40, surface: 'road' },
-      { t: 2.00, s: 0.64, surface: 'concrete' },
-      { t: 2.95, s: 1.00, surface: 'concrete' },
-      { t: 4.20, s: 0.46, surface: 'dirt' },
+      { t: 0.28, s: 0.24, surface: 'kerb' },       // a rumble strip: bright, short, chattery
+      { t: 1.12, s: 0.40, surface: 'road' },       // a scuff down the tarmac
+      { t: 1.96, s: 0.46, surface: 'dirt' },       // off the edge — dull, no tick at all
+      { t: 2.90, s: 0.64, surface: 'concrete' },   // a real hit on the wall
+      { t: 4.30, s: 1.00, surface: 'concrete' },   // and the crash
     ];
     for (const h of hits) {
-      if (h.t < T) scheduleImpact(ctx, ev, h.t, h.s, { surface: h.surface, seed: Math.round(h.t * 100), car: A.impact, bus: M });
+      if (h.t >= T) continue;
+      scheduleImpact(ctx, ev, h.t, h.s, { surface: h.surface, seed: Math.round(h.t * 100), car: A.impact, bus: M, space: SP });
+      // The score gets out of the way of a crash — the same gesture the nitrous crack gets, and
+      // the reason the bed can be present under the ladder without eating it. Depth follows
+      // severity: a kerb clip dips it, the barrier drops it by 8 dB.
+      if (bed) {
+        const dip = lerp(0.80, 0.38, clamp(h.s, 0, 1));
+        bed.duck.gain.setValueAtTime(1, Math.max(0, h.t - 0.02));
+        bed.duck.gain.linearRampToValueAtTime(dip, h.t + 0.04);
+        bed.duck.gain.setValueAtTime(dip, h.t + 0.16 + 0.30 * h.s);
+        bed.duck.gain.linearRampToValueAtTime(1, h.t + 0.55 + 0.45 * h.s);
+      }
     }
-    if (T > 3.7) scheduleScrape(ctx, ev, 3.35, 0.55, 0.8);
+    // ...then the car grinds down the barrier it just hit.
+    if (T > 4.6) scheduleScrape(ctx, ev, 4.42, Math.min(0.52, T - 4.5), 0.85, SP);
   }
 
   // ── stereo scene: a car goes past left→right, clipping a barrier on each side ─────
   if (kind === 'stereo') {
-    scheduleImpact(ctx, ev, 1.60, 0.55, { surface: 'concrete', seed: 160, car: A.impact, bus: M, pan: -0.9 });
-    scheduleImpact(ctx, ev, 2.90, 0.85, { surface: 'concrete', seed: 290, car: A.impact, bus: M, pan: 0.9 });
+    scheduleImpact(ctx, ev, 1.60, 0.55, { surface: 'concrete', seed: 160, car: A.impact, bus: M, pan: -0.9, space: SP });
+    scheduleImpact(ctx, ev, 2.90, 0.85, { surface: 'concrete', seed: 290, car: A.impact, bus: M, pan: 0.9, space: SP });
     nitro.spoolUp(3.60, 0.30); nitro.ignite(3.90, 1.0); nitro.cutoff(T - 0.35);
   }
 
@@ -2402,8 +3432,9 @@ export async function renderClip(kind, seconds, spec, { sampleRate = 44100 } = {
     const st = sim.step(DT, thr);
 
     // nitrous ramp shape (matches Nitrous's attack/decay feel)
-    if (kind === 'nitrous' || kind === 'stereo') {
-      const fire = kind === 'stereo' ? 3.90 : NIT_FIRE, end = kind === 'stereo' ? T - 0.35 : NIT_END;
+    if (kind === 'nitrous' || kind === 'stereo' || kind === 'mix') {
+      const fire = kind === 'stereo' ? 3.90 : kind === 'mix' ? 1.80 : NIT_FIRE;
+      const end = kind === 'stereo' ? T - 0.35 : kind === 'mix' ? 3.20 : NIT_END;
       const target = t > fire && t < end ? 1 : 0;
       boostRamp += (target - boostRamp) * (1 - Math.exp(-DT / (target ? 0.10 : 0.16)));
       nitro.sustain(boostRamp, t);
@@ -2412,33 +3443,49 @@ export async function renderClip(kind, seconds, spec, { sampleRate = 44100 } = {
     }
 
     if (voice) {
-      if (st.shifting && !voice._prevShift) voice.bov(t, st.boost);
       voice._prevShift = st.shifting;
-      voice.apply(st, t);
-      // a pass-by: the car crosses the stereo field, which is what the panners are for
-      if (kind === 'stereo') voice.setPan(clamp(-1 + 2 * (t / T), -1, 1), t);
+      // A pass-by is not just a pan. The car is far away, comes past, and goes away again, so it
+      // gets quieter at the edges of the sweep as well as moving across the field — that pairing
+      // is what makes the stereo read as a car in a place rather than as a fader.
+      if (kind === 'stereo') {
+        const u = t / T;
+        const d = Math.min(1, Math.abs(u - 0.5) * 2.1);
+        st.volume = lerp(1.0, 0.09, d * d);      // ~21 dB of approach, not 12
+        // a real pass-by does not sweep linearly: the bearing barely moves while the car is far
+        // away and swings through 180 degrees in the moment it goes past
+        const p = clamp(Math.tanh((u - 0.5) * 5.0) / Math.tanh(2.5), -1, 1);
+        voice.setPan(p, t);
+        tyres.setPan(p, t);                       // the rubber travels with the car
+        nitro.setPan?.(p, t);
+      }
+      voice.apply(st, t);          // the upshift event fires inside apply(), off the same edge
     }
 
     // ---- tyres ----
-    let squeal = 0, slip = 0, surface = 'road';
-    if (kind === 'squeal') {
-      // a slalom: three slides of growing angle, then off onto dirt, then over a kerb
-      const p = t / T;
-      const wave = Math.abs(Math.sin(p * Math.PI * 3.1));
-      slip = wave * (0.35 + 0.65 * p);
-      squeal = smoothstep(0.06, 0.30, wave) * (0.55 + 0.45 * p);
-      surface = p < 0.42 ? 'road' : p < 0.62 ? 'concrete' : p < 0.82 ? 'dirt' : 'kerb';
-      // ...and back onto clean tarmac, straight, off the throttle: the clip needs somewhere to
-      // land or it is five seconds of the same busy texture and reads as one flat event.
-      if (p > 0.90) { slip = 0; squeal = 0; surface = 'road'; }
+    let squeal = 0, slip = 0, surface = 'road', load = 1;
+    if (kind === 'squeal' || kind === 'tyre') {
+      const sc = slideAt(t / T);
+      // a hump across the beat: the slide builds, peaks, and is caught
+      const shape = Math.pow(Math.sin(Math.PI * clamp(sc.u, 0, 1)), 0.7);
+      // load LEADS slip — the car takes weight before the rear lets go, and gives it back before
+      // the slide is fully caught, so the squeal bends down and then up through every slide
+      const lshape = Math.pow(Math.sin(Math.PI * clamp(sc.u * 0.82 + 0.16, 0, 1)), 0.9);
+      slip = sc.slip * shape;
+      load = 0.45 + (sc.load - 0.45) * lshape;
+      squeal = clamp(0.06 + 1.05 * sc.slip * Math.pow(shape, 0.55), 0, 1);
+      surface = sc.surface;
+      // the rumble strip hammers whether or not the tyre is sliding
+      if (surface === 'kerb') squeal = Math.max(squeal, 0.45);
     } else if (kind === 'nitrous' || kind === 'mix' || kind === 'stereo') {
       squeal = clamp(0.55 - st.speed * 1.4, 0, 1) * (thr > 0.5 ? 1 : 0);   // wheelspin off the line
-      slip = 0.5;
+      slip = 0.62 * squeal;
+      load = 0.8;
     } else if (kind === 'engine') {
       squeal = clamp(0.42 - st.speed * 2.2, 0, 1);                          // launch chirp only
-      slip = 0.35;
+      slip = 0.55 * squeal;
+      load = 0.7;
     }
-    tyres.apply({ amount: squeal, slip, speed: st.speed * 62, surface }, t);
+    tyres.apply({ amount: squeal, slip, speed: st.speed * 62, surface, load }, t);
     amb?.apply({ speed: st.speed * 62, surface, boost: boostRamp }, t);
   }
 

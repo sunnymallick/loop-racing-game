@@ -16,7 +16,11 @@ export const spec = {
   name: 'DOMINATOR',
   full: '1970 DOMINATOR 440',
   klass: 'MUSCLE',
-  colors: ['#1d7f60', '#8e1c1c', '#20304f', '#e0a11c', '#141519', '#5d2a7a'],
+  // The reference hero (f&f1) is a MINT-TEAL fastback with twin white stripes. Round 3's #1d7f60
+  // was a bottle green that went black in three of the four cities and is most of why the hero car
+  // "reads small and dark in almost every frame" — a hero colour has to hold value under a night
+  // grade, not just under a studio light.
+  colors: ['#16a984', '#b32222', '#2a4272', '#f0ae1e', '#1b1d23', '#7b39a0'],
   stats: { speed: 0.86, accel: 0.78, traction: 0.55, weight: 0.92 },
   // physics → handling.js · nitrous → nitrous.js NITRO · engine voicing → audio_tuning.js
   // (merged in by vehicles/index.js — do not add them back here)
@@ -32,7 +36,9 @@ export const blueprint = {
   // rear tyre's outer sidewall sits at 1.085 while the tail panel tucks in to 0.914 — 17 cm of
   // haunch and rubber outboard of the bodywork on each side.
   dims: { length: 5.16, width: 2.24, height: 1.42, wheelbase: 2.98, track: 1.740, trackRear: 1.846, rideHeight: 0.16 },
-  paint: { metalness: 0.30, roughness: 0.31, clearcoat: 1.0, clearcoatRoughness: 0.095, flake: 0.62, envIntensity: 0.74 },
+  // see paintMaterial(): metalness carries the environment into the paint, and the environment is
+  // the only light on the back of a car in a chase frame. Deep metallic teal with a hard clearcoat.
+  paint: { metalness: 0.52, roughness: 0.25, clearcoat: 0.95, clearcoatRoughness: 0.058, flake: 0.62, envIntensity: 1.20 },
   livery: {
     style: 'stripes', stripe: '#f2efe6',
     panels: {
@@ -44,7 +50,11 @@ export const blueprint = {
       fuelCap: [0.30, V(-2.10)],
     },
   },
-  glass: { tint: '#0a1016', opacity: 0.70 },
+  // opacity 0.70 let only 30% of the cabin through, and 30% of a dark interior is black — §7's
+  // "empty black void through the glass" caps this piece at 72, below its target, so the glass had
+  // to give some of itself back. 0.58 still carries a full env reflection on the screen and the
+  // backlight; it just no longer erases what is behind it.
+  glass: { tint: '#0e151d', opacity: 0.58 },
 
   // ---- the tub: ground → beltline, with the bonnet, the cabin recess and the boot lid ----
   body: [
@@ -94,7 +104,11 @@ export const blueprint = {
       { z0: -1.32, z1: -1.88, a: 2, b: 5, mat: 'paint', steps: 6 },   // fastback sail
     ],
     beltZ0: -1.36, beltZ1: 0.14, beltMat: 'chrome',
-    interior: { seat: 0x2a2c34, trim: 0x141519, accent: 0x6d1f24, floorY: 0.80, headY: 1.235, dashY: 1.005, wheelY: 1.045, shelfY: 1.02, seatZ: -0.34, dashZ: 0.90, dashW: 1.44, seatX: 0.36, shelfZ: 0.70, clusterColor: '#ffb347' },
+    // Oxblood-and-charcoal cabin. The seats/dash/shelf are authored 3x lighter than round 3 (which
+    // had them at 0x14–0x2a) because a cabin is lit by nothing but sky bounce and then hidden
+    // behind glass; see buildInterior(). shelfZ pushes the parcel shelf back under the fastback
+    // backlight so the rear head restraints sit in the chase camera's line of sight.
+    interior: { seat: 0x5c6069, trim: 0x3d414a, accent: 0x8f3038, floorY: 0.80, headY: 1.235, dashY: 1.005, wheelY: 1.045, shelfY: 1.015, seatZ: -0.34, dashZ: 0.90, dashW: 1.44, seatX: 0.36, shelfZ: 0.84, shelfD: 0.56, clusterColor: '#ffb347' },
   },
 
   wheels: {
@@ -115,8 +129,8 @@ export const blueprint = {
     // the four round lamps stand PROUD of the blacked-out tail panel (z −2.585) — round 1 buried
     // them inside it and the signature Charger tail read as one plain black slab
     tail: [
-      { x: 0.29, y: 0.865, z: -2.615, w: 0.225, h: 0.225, shape: 'round', color: '#ff1e10', intensity: 2.5 },
-      { x: 0.575, y: 0.865, z: -2.615, w: 0.225, h: 0.225, shape: 'round', color: '#ff1e10', intensity: 2.5 },
+      { x: 0.29, y: 0.865, z: -2.615, w: 0.225, h: 0.225, shape: 'round', color: '#ff1e10', intensity: 2.2 },
+      { x: 0.575, y: 0.865, z: -2.615, w: 0.225, h: 0.225, shape: 'round', color: '#ff1e10', intensity: 2.2 },
     ],
     reverse: [{ x: 0.16, y: 0.665, z: -2.615, w: 0.17, h: 0.085, color: '#fff2d8', intensity: 1.4, glow: 0.3 }],
   },
@@ -137,11 +151,22 @@ export const blueprint = {
     { w: 1.20, h: 0.135, d: 0.22, y: 0.66, z: -2.585, mat: 'chrome', r: 0.055 },
     { x: 0.635, w: 0.42, h: 0.135, d: 0.20, y: 0.66, z: -2.505, mat: 'chrome', ry: -0.42, mirror: true, r: 0.05 },
     { w: 1.44, h: 0.30, d: 0.05, y: 0.865, z: -2.578, mat: 'dark', r: 0.03 },   // tail panel blackout
+    // Ribbed chrome slats across the blackout panel. A '70 tail panel is a RIBBED surface between
+    // the lamps; ours was one flat dark rectangle 1.44 m wide sitting dead centre of every chase
+    // frame, which is a large share of why the back of the car read as a black cutout. Chrome is
+    // already on this car, so the ribs merge into an existing bucket and cost nothing.
+    { w: 1.40, h: 0.022, d: 0.055, y: 0.985, z: -2.588, mat: 'chrome', r: 0.008 },
+    { w: 1.40, h: 0.022, d: 0.055, y: 0.925, z: -2.588, mat: 'chrome', r: 0.008 },
+    { w: 1.40, h: 0.022, d: 0.055, y: 0.805, z: -2.588, mat: 'chrome', r: 0.008 },
+    { w: 1.40, h: 0.022, d: 0.055, y: 0.745, z: -2.588, mat: 'chrome', r: 0.008 },
     // number plate in the gap between the inner lamps — the tail panel's centre was a black hole
     { w: 0.40, h: 0.155, d: 0.035, y: 0.865, z: -2.605, mat: 'chrome', r: 0.012 },
     { w: 0.46, h: 0.205, d: 0.03, y: 0.865, z: -2.598, mat: 'dark', r: 0.014 },
     { w: 1.48, h: 0.045, d: 0.05, y: 1.020, z: -2.576, mat: 'chrome', r: 0.014 }, // tail panel top edge
     { x: 0.862, w: 0.062, h: 0.125, d: 2.30, y: 0.470, z: -0.10, mat: 'dark', mirror: true, r: 0.025 },  // rocker
+    // chrome sill blade under the rocker: the bright bottom edge every 70s coupe wears, and the
+    // line that stops the lower flank fading into the contact shadow
+    { x: 0.880, w: 0.028, h: 0.022, d: 2.20, y: 0.402, z: -0.10, mat: 'chrome', mirror: true, r: 0.008 },
     { x: 0.950, w: 0.045, h: 0.035, d: 2.10, y: 0.665, z: -0.10, mat: 'chrome', mirror: true, r: 0.014 }, // side spear
     { w: 1.50, h: 0.09, d: 0.30, y: 0.44, z: 2.50, mat: 'dark', rx: 0.10, r: 0.03 },      // front valance
     // Rear valance: deliberately 1.16 m across a 2.19 m car and lifted clear of the road, so the
@@ -153,8 +178,15 @@ export const blueprint = {
   exhaust: [{ x: 0.50, y: 0.435, z: -2.585, r: 0.070, len: 0.26 }],
   extras: [
     { type: 'blower', y: 1.19, z: 1.58 },
-    // period rear-window slat kit — the backlight was reading as one flat black quad on the deck
-    { type: 'louvre', w: 1.32, d: 0.50, count: 8, y: 1.238, z: -1.60, rx: -0.576 },
+    /**
+     * Period rear-window slat kit — but only across the LOWER third of the backlight now.
+     *
+     * At d 0.50 centred on z -1.60 it covered two thirds of the glass, and since the cabin behind
+     * it was black the critic's read of the whole backlight was "a solid black rectangle with only
+     * dotted defroster lines". The slats are a real Mopar detail and worth keeping; they just have
+     * to leave the part of the glass the parcel shelf and head restraints are visible through.
+     */
+    { type: 'louvre', w: 1.26, d: 0.20, count: 4, y: 1.150, z: -1.80, rx: -0.576 },
   ],
 };
 

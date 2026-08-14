@@ -42,8 +42,11 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  *
  * The jet is built from EIGHT cooperating layers, not one sprite:
  *
- *   1. a white-hot lathe core with hard pressure banding baked into the fragment shader
- *   2. a class-tinted mid shell with its own band phase and turbulence
+ *   1. THE CORE IMPOSTOR — one quad per outlet, rolled about the plume's own axis to face the
+ *      camera, whose shader integrates a round column analytically and draws the hard-edged shock
+ *      diamonds. This is the layer the whole effect is judged on; see the CORE_FRAG block comment
+ *      for why it is a quad and not a lathe, and why it is the only composited layer in the file
+ *   2. a class-tinted lathe body with its own band phase and turbulence — volume and parallax
  *   3. a soft lathe fringe
  *   4. a stack of rolled, spinning, soft-edged "gas cards" down the axis — the wide fringe, and
  *      the layer that guarantees a soft outline from any angle
@@ -56,6 +59,35 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  *
  * Ignition adds a muzzle flash, an expanding shock ring and a rearward spark blast, and main.js
  * turns `Nitrous.surge` into an FOV punch, a camera kick and a grade shift.
+ *
+ * ── THE ROUND-6 RULE: THE JET MUST OUT-CONTRAST ITS OWN POST ─────────────────────────────────
+ * Rounds 1–5 all drew the structure on additive lathe shells and every round got the same note
+ * back: at 6x the plume is a soft low-frequency gradient with no banding and no cone. Two changes
+ * fix it, and both are about CONTRAST rather than about drawing more:
+ *   · the structural layer is an axis-billboarded impostor, composited (not added), so a band gap
+ *     is dark on a night road in Vegas AND on a sunset road in Miami (see CORE_FRAG);
+ *   · and everything that was drowning it comes down — the boost grade, the radial blur and the
+ *     speed lines in main.js by ~40%, the heat haze by the same and re-centred BEHIND the tip, the
+ *     white-hot lathe core deleted outright, the remaining two shells and the gas cards a third
+ *     dimmer. The plume is now the brightest structured thing in the frame by a distance, which is
+ *     what §2.5's "readable as the biggest thing on screen" actually asks for.
+ *
+ * ── THE ROUND-5 RULES: FRAME IT, BAND IT, AND MAKE THE CLASSES DIFFERENT SHAPES ──────────────
+ * Round 4 solved the jet's SIZE on screen (see _governor) and the shot got worse, because size is
+ * not the same thing as composition. Three things now:
+ *
+ *   · CONTAINMENT. The governor clips its own solution to the longest column whose visible end
+ *     still lands inside a safe box in the frame, and pays the lost length back as width. A jet
+ *     that exits the corner has no tip, no taper and no cone — it is a field of colour.
+ *   · COMPOSITION. `aimPoint()` hands main.js a point down the plume's axis; the boost camera aims
+ *     partway at it, which slides the car into the far third and gives the column the diagonal.
+ *   · TESSELLATION. The vertex shader wobbles this surface at up to 29 cycles axially and 40
+ *     around, and the old lathe had 30 x 40 segments — every displacement term was past Nyquist and
+ *     folded into flat triangles. That, not the shading, is why the plume kept reading as "soft
+ *     sheets with straight alpha boundaries". 88 x 56 segments and much lower wobble frequencies.
+ *   · ...and the profile of the lathe is now a per-class parameter (`fx.profile`), so the SUV's
+ *     blunt bell, the muscle's barrel and the supercar's long spindle are different SHAPES, not one
+ *     shape in four colours.
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -83,6 +115,10 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //                 most bloomed part of the jet and the car's rear silhouette disappeared.
 //   fx.rad        core radius. It has to stay well UNDER half the twin-outlet spacing or the two
 //                 jets merge into one blob — the single biggest round-2 note.
+//   fx.screen     THE round-4 knob: how much of the FRAME HEIGHT the lit column should occupy for
+//                 the whole sustain. `fx.len` is now only a shape reference — the world length is
+//                 SOLVED for every frame so this number comes true at whatever distance and angle
+//                 the chase rig happens to be sitting at. See NitrousJet._governor().
 // ---------------------------------------------------------------------------------------------
 export const NITRO = {
   // Short and sharp. A tiny screamer: near-instant, thin white-cyan needle, gone in a blink.
@@ -92,10 +128,12 @@ export const NITRO = {
     ramp: 0.13, curve: 0.52, surge: 0.88, surgeTime: 0.22, color: '#3ce0ff',
     fx: {
       core: '#f4ffff', mid: '#34dcff', edge: '#0b46ff', spark: '#cdf4ff',
-      len: 3.85, rad: 0.255, splay: 0.0, standoff: 0.28, flameRise: 0.045, gain: 0.70,
-      bands: 16.0, bandSharp: 2.8, bandSpeed: 30, flick: 62, turb: 0.30,
-      cards: 7, cardSpread: 1.30, cardWidth: 2.20, cardGain: 0.46,
-      sparkRate: 94, sparkSpeed: [3.5, 11], sparkWidth: 0.046, sparkLife: [0.09, 0.17],
+      len: 3.85, rad: 0.255, splay: 0.0, standoff: 0.28, flameRise: 0.045, gain: 0.62,
+      screen: 0.36, profile: [0.22, 0.74, 1.05, 0.22],   // long thin needle, waist well aft
+      bands: 12.0, bandSharp: 1.45, bandSpeed: 30, flick: 62, turb: 0.30,
+      coreW: 0.80, coreGain: 1.38, coreOpacity: 0.92, coreHot: 1.0,
+      cards: 5, cardSpread: 1.30, cardWidth: 1.75, cardGain: 0.20,
+      sparkRate: 120, sparkSpeed: [3.5, 11], sparkWidth: 0.050, sparkLife: [0.14, 0.26],
       wake: 0.16, cone: 0.22, smearRate: 8, smearWidth: 0.22,
       poolWidth: 2.6, poolLen: 7.2, lightI: 19, shake: 0.30, heat: 1.00,
     },
@@ -105,11 +143,13 @@ export const NITRO = {
     thrust: 1.10, duration: 3.4, drain: 1.0, refill: 0.34, topSpeedMul: 1.32,
     ramp: 0.52, curve: 1.20, surge: 0.62, surgeTime: 0.44, color: '#ff7a1e',
     fx: {
-      core: '#fff0cf', mid: '#ff6a08', edge: '#c81400', spark: '#ffc477',
-      len: 4.25, rad: 0.320, splay: 0.020, standoff: 0.32, flameRise: 0.15, gain: 0.56,
-      bands: 8.5, bandSharp: 1.9, bandSpeed: 12, flick: 28, turb: 0.48,
-      cards: 8, cardSpread: 1.20, cardWidth: 2.85, cardGain: 0.42,
-      sparkRate: 80, sparkSpeed: [2.5, 9], sparkWidth: 0.070, sparkLife: [0.13, 0.26],
+      core: '#fffaf2', mid: '#ff6a08', edge: '#c81400', spark: '#ffc477',
+      len: 4.25, rad: 0.320, splay: 0.020, standoff: 0.32, flameRise: 0.15, gain: 0.48,
+      screen: 0.42, profile: [0.38, 0.44, 0.62, 0.34],   // fat barrel, widest close to the bumper
+      bands: 9.0, bandSharp: 1.30, bandSpeed: 12, flick: 28, turb: 0.48,
+      coreW: 0.84, coreGain: 1.15, coreOpacity: 0.94, coreHot: 1.0,
+      cards: 5, cardSpread: 1.20, cardWidth: 2.20, cardGain: 0.18,
+      sparkRate: 104, sparkSpeed: [2.5, 9], sparkWidth: 0.074, sparkLife: [0.18, 0.34],
       wake: 0.21, cone: 0.28, smearRate: 9, smearWidth: 0.34,
       poolWidth: 3.5, poolLen: 9.4, lightI: 24, shake: 0.46, heat: 1.15,
     },
@@ -120,11 +160,13 @@ export const NITRO = {
     thrust: 1.26, duration: 4.6, drain: 1.0, refill: 0.28, topSpeedMul: 1.22,
     ramp: 1.25, curve: 2.00, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
-      core: '#ffdf9a', mid: '#ff8a04', edge: '#c81a00', spark: '#ffd487',
+      core: '#fff3d6', mid: '#ff8a04', edge: '#c81a00', spark: '#ffd487',
       len: 3.80, rad: 0.355, splay: 0.020, standoff: 0.34, flameRise: 0.26, gain: 0.29,
-      bands: 5.5, bandSharp: 1.4, bandSpeed: 7, flick: 16, turb: 0.64,
-      cards: 8, cardSpread: 1.16, cardWidth: 3.05, cardGain: 0.28,
-      sparkRate: 72, sparkSpeed: [2, 8], sparkWidth: 0.086, sparkLife: [0.16, 0.30],
+      screen: 0.38, profile: [0.48, 0.34, 0.50, 0.48],   // blunt bell — fat off the pipe, stubby
+      bands: 8.0, bandSharp: 1.15, bandSpeed: 7, flick: 16, turb: 0.64,
+      coreW: 0.92, coreGain: 1.02, coreOpacity: 0.90, coreHot: 0.96,
+      cards: 5, cardSpread: 1.16, cardWidth: 2.40, cardGain: 0.13,
+      sparkRate: 96, sparkSpeed: [2, 8], sparkWidth: 0.090, sparkLife: [0.20, 0.38],
       wake: 0.25, cone: 0.32, smearRate: 10, smearWidth: 0.44,
       poolWidth: 3.9, poolLen: 8.8, lightI: 20, shake: 0.54, heat: 1.30,
     },
@@ -136,10 +178,12 @@ export const NITRO = {
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
       core: '#ffffff', mid: '#9a72ff', edge: '#2a2fff', spark: '#ded2ff',
-      len: 4.85, rad: 0.285, splay: 0.030, standoff: 0.30, flameRise: 0.035, gain: 0.72,
-      bands: 13.5, bandSharp: 2.6, bandSpeed: 34, flick: 74, turb: 0.27,
-      cards: 8, cardSpread: 1.26, cardWidth: 2.45, cardGain: 0.47,
-      sparkRate: 90, sparkSpeed: [4, 14], sparkWidth: 0.046, sparkLife: [0.09, 0.18],
+      len: 4.85, rad: 0.285, splay: 0.030, standoff: 0.30, flameRise: 0.035, gain: 0.62,
+      screen: 0.43, profile: [0.18, 0.66, 1.30, 0.16],   // long spindle, waist metres aft, sharp
+      bands: 11.0, bandSharp: 1.40, bandSpeed: 34, flick: 74, turb: 0.27,
+      coreW: 0.82, coreGain: 1.42, coreOpacity: 0.94, coreHot: 1.0,
+      cards: 5, cardSpread: 1.26, cardWidth: 1.95, cardGain: 0.21,
+      sparkRate: 116, sparkSpeed: [4, 14], sparkWidth: 0.050, sparkLife: [0.14, 0.26],
       wake: 0.14, cone: 0.20, smearRate: 8, smearWidth: 0.26,
       poolWidth: 3.1, poolLen: 9.6, lightI: 24, shake: 0.62, heat: 1.10,
     },
@@ -404,15 +448,20 @@ function poolTexture() {
         const o = (y * S + x) * 4;
         const v = (y + 0.5) / S;          // 0 at the nozzle end, 1 at the far end
         const u = (x + 0.5) / S - 0.5;    // -0.5 .. 0.5 across
-        const halfW = 0.055 + v * 0.40;   // the spill fans out down the road
-        let a = Math.exp(-(u * u) / (halfW * halfW)) * Math.pow(1 - v, 1.7);
+        // (r5) The fan used to reach halfW = 0.455 at the far end — i.e. the gaussian was still at
+        // ~1/e when it hit the tile border, so the only thing ending the pool was the border cut,
+        // and on the road at a grazing angle that drew a STRAIGHT bright edge across the asphalt
+        // (§7's hard-edged-sprite tell). The fan is narrower and the axial falloff longer, so the
+        // field is at zero on its own well before the quad runs out.
+        const halfW = 0.050 + v * 0.235;  // the spill fans out down the road
+        let a = Math.exp(-(u * u) / (halfW * halfW)) * Math.pow(1 - v, 1.5);
         let lum = 1;
         for (const [lv, lu, lr, la] of lumps) {
           const dv = (v - lv) / lr, du = (u - lu) / (lr * 1.5);
           lum += la * 0.5 * Math.exp(-(dv * dv + du * du));
         }
         a *= 0.55 + 0.45 * Math.min(lum, 2.2);
-        a *= (1 - smoothstep(0.84, 1.0, v)) * (1 - smoothstep(0.80, 1.0, Math.abs(u) * 2));
+        a *= (1 - smoothstep(0.58, 0.98, v)) * (1 - smoothstep(0.46, 0.92, Math.abs(u) * 2));
         d[o] = 255; d[o + 1] = 255; d[o + 2] = 255;
         d[o + 3] = clamp(a, 0, 1) * 255;
       }
@@ -475,38 +524,80 @@ function ringTexture() {
 /**
  * Unit lathe: radius 0..1 across, length 0..1 along +Y, then rotated so the axis runs down -Z
  * (out the back of the car). Necks at the nozzle, bulges just aft of it, tapers to a point.
+ *
+ * ── PER-CLASS SILHOUETTE (r5) ────────────────────────────────────────────────────────────────
+ * The profile is a class parameter, not a constant. Round 4 drew every class from ONE lathe and
+ * changed only hue and scale — the standing note was "plume geometry is identical across all four
+ * classes". `fx.profile` is [neck, bulgeAt, bulgeSharp, taper]:
+ *
+ *   neck        radius at the nozzle lip, as a fraction of the maximum. Low = a jet that pinches
+ *               to a throat and flares; high = a blunt torch that leaves the pipe already fat.
+ *   bulgeAt     exponent placing the widest point. <0.5 puts it right on the bumper (muscle, SUV),
+ *               >0.6 pushes it a long way aft (tuner, supercar).
+ *   bulgeSharp  how pointed the widest section is. >1 is a slim spindle, <0.7 is a fat barrel.
+ *   taper       how hard the column closes at the tip. Low = a long needle, high = a stub.
+ *
+ * So the SUV's column is a blunt bell that is widest on the bumper, the supercar's is a long
+ * spindle with its waist metres back, and the two read as different machines even in greyscale.
  */
-let _plumeGeo = null;
-function plumeGeometry() {
-  if (_plumeGeo) return _plumeGeo;
+const _plumeGeos = new Map();
+function plumeGeometry(profile) {
+  const [neck, at, sharp, taper] = profile || [0.30, 0.55, 0.75, 0.30];
+  const key = `${neck},${at},${sharp},${taper}`;
+  let geo = _plumeGeos.get(key);
+  if (geo) return geo;
   const pts = [];
-  const N = 30;
+  // ── TESSELLATION IS WHY THE PLUME USED TO SHOW STRAIGHT EDGES (r5) ─────────────────────────
+  // The vertex shader displaces this surface with turbulence at up to 29 cycles along the axis and
+  // 40 around the circumference, and the fragment shader bands it at up to 8.5 cycles. On the old
+  // 30 x 40 lathe every one of those was far past Nyquist: the displacement aliased into a crown of
+  // flat triangles, which is exactly the "flat sheets with visible straight alpha boundaries" note
+  // that has followed this effect since round 1. 88 x 56 (plus lower turbulence frequencies, see
+  // PLUME_VERT) puts every term at 6+ samples per cycle. It is vertex work on a 5k-vertex mesh —
+  // the plume's cost is fill rate, and this does not add a single pixel of it.
+  const N = 88;
   for (let i = 0; i <= N; i++) {
     const t = i / N;
-    const shape = Math.pow(Math.sin(Math.PI * Math.pow(t, 0.55)), 0.75);
-    const r = (0.30 + 0.70 * shape) * Math.pow(1 - t, 0.30);
+    const shape = Math.pow(Math.sin(Math.PI * Math.pow(t, at)), sharp);
+    const r = (neck + (1 - neck) * shape) * Math.pow(1 - t, taper);
     pts.push(new THREE.Vector2(Math.max(0.002, r), t));
   }
-  const geo = new THREE.LatheGeometry(pts, 40);
+  geo = new THREE.LatheGeometry(pts, 56);
   geo.rotateX(-Math.PI / 2);   // +Y (axial) → -Z
-  _plumeGeo = geo;
+  _plumeGeos.set(key, geo);
   return geo;
 }
 
 const PLUME_VERT = /* glsl */`
-  uniform float uTime, uLevel, uTurb, uPhase;
+  uniform float uTime, uLevel, uTurb, uPhase, uBands, uBandSpeed, uBandBulge;
   varying float vT;
   varying float vA;
   varying float vFace;
   varying float vDepth;
   void main(){
     vT = uv.y; vA = uv.x;
-    // unstable, wobbling column — the plume must never look like a static cone
-    float w = sin(vT*17.0 + uTime*34.0 + vA*25.13 + uPhase) * 0.5
-            + sin(vT*29.0 - uTime*47.0 + vA*15.7 + uPhase*2.1) * 0.32
-            + sin(vT*8.0  + uTime*19.0 + vA*40.2 + uPhase*0.6) * 0.18;
+    // Unstable, wobbling column — the plume must never look like a static cone.
+    // (r5) Frequencies pulled WAY down. These are vertex displacements, so a term at 29 cycles
+    // along the axis and 40 around the circumference on a lathe with 30 and 40 segments was pure
+    // aliasing: it folded into a jagged crown of flat triangles and gave the plume the straight
+    // silhouette edges it has been marked down for since round 1. Every term now sits at 6+
+    // samples per cycle on the retessellated lathe (see plumeGeometry), so the wobble is a wobble.
+    float w = sin(vT*9.0  + uTime*34.0 + vA*5.13 + uPhase) * 0.5
+            + sin(vT*15.0 - uTime*47.0 + vA*3.13 + uPhase*2.1) * 0.32
+            + sin(vT*5.0  + uTime*19.0 + vA*7.70 + uPhase*0.6) * 0.18;
+    // ── SHOCK DIAMONDS AS GEOMETRY ──────────────────────────────────────────────────────────
+    // The fragment shader also bands the colour and the alpha, but the core of the jet CLIPS to
+    // white, and once a pixel is clipped no amount of brightness modulation is visible in it — the
+    // supercar's column came out a smooth white blur with no banding at all. So the same band
+    // function also pinches and bulges the column's RADIUS: the silhouette itself goes lumpy, which
+    // survives clipping, bloom and any grade. Phase-matched to the fragment banding so the bulges
+    // and the bright zones are the same feature, and faded in over the first third so the nozzle
+    // stays a clean neck.
+    float bnd = sin(vT*uBands*6.28318 - uTime*uBandSpeed + uPhase*3.0);
     vec3 radial = normalize(vec3(normal.xy, 0.0) + vec3(0.0001));
-    vec3 p = position + radial * (w * uTurb * smoothstep(0.02, 0.45, vT) * (0.35 + 0.65*uLevel));
+    vec3 p = position + radial * (
+        w * uTurb * smoothstep(0.02, 0.45, vT) * (0.35 + 0.65*uLevel)
+      + bnd * uBandBulge * smoothstep(0.05, 0.34, vT) * (0.5 + 0.5*uLevel));
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     vec3 n = normalize(normalMatrix * normal);
     // Facing ratio, NOT a rim term. |N·V| is 0 exactly on the silhouette, so multiplying alpha by
@@ -537,6 +628,10 @@ const PLUME_FRAG = /* glsl */`
     // a second, slower band set so the pattern never looks like a single sine
     float b2 = pow(clamp(0.5 + 0.5*sin(t*uBands*2.1*6.28318 - uTime*uBandSpeed*0.42 + 1.7 + uPhase), 0.0, 1.0), uBandSharp*0.6);
     float band = clamp(b*0.85 + b2*0.38, 0.0, 1.4);
+    // Shock diamonds are strongest at the throat and dissolve into turbulence downstream. Without
+    // this decay the column is a perfectly regular string of identical beads all the way to the
+    // tip, which reads as a repeating texture rather than as pressure structure.
+    float bandDecay = mix(1.0, 0.32, smoothstep(0.12, 0.86, t));
 
     // Colour: only the innermost shell is allowed to go white-hot. The outer shells stay on the
     // class tint — an additive stack that all pushes toward white clips every channel and the
@@ -547,7 +642,7 @@ const PLUME_FRAG = /* glsl */`
     float w0 = uRamp * 0.55;
     vec3 col = mix(uMid, uCore, uWhite * (1.0 - smoothstep(w0, w0 + 0.40, t)));
     col = mix(col, uEdge, smoothstep(w0 + 0.20, 1.0, t) * uEdgeMix);
-    col *= uGain * mix(1.0, 0.45 + 0.80*band, uBandAmt);
+    col *= uGain * mix(1.0, 0.30 + 1.05*band, uBandAmt*bandDecay);
 
     // ---- alpha: axial profile x facing fade x banding x flicker ----
     // The brightest part of a real jet is a short way DOWN the column, not at the lip: ramping in
@@ -562,7 +657,11 @@ const PLUME_FRAG = /* glsl */`
     // angular breakup so a lathe never reads as a lathe
     a *= 0.80 + 0.20*sin(vA*6.28318*3.0 + t*9.0 + uTime*3.1)
              + 0.10*sin(vA*6.28318*7.0 - t*4.0 - uTime*5.3);
-    a *= mix(1.0, 0.16 + 1.05*band, uBandAmt);
+    // Bands modulate BRIGHTNESS hard (see col above) but ALPHA only gently. A band is a ring of
+    // the lathe surface, so a deep alpha notch draws it as a closed ellipse OUTLINE — and a stack
+    // of those down a foreshortened column reads as a coiled spring, not as shock diamonds. Keeping
+    // alpha continuous leaves one unbroken column with hot and cool zones in it.
+    a *= mix(1.0, 0.26 + 1.02*band, uBandAmt*bandDecay);
     a *= uOpacity * uLevel;
     a *= 0.80 + 0.20*sin(uTime*uFlick) + 0.08*sin(uTime*uFlick*0.37 + vA*12.0);
     // never let a shell be clipped by the near plane into a hard-edged wedge across the lens
@@ -573,9 +672,189 @@ const PLUME_FRAG = /* glsl */`
   }
 `;
 
+// ---------------------------------------------------------------------------------------------
+// THE CORE IMPOSTOR — the round-6 fix, and the reason the banding finally survives to the frame
+//
+// Every previous round drew the jet's structure on LATHE SURFACES and every previous critic said
+// the same thing: "at 6x the plume is a soft, low-frequency wavy gradient — no banding, no crisp
+// core boundary, no tapered nozzle cone". That is not a shading failure, it is a topology failure:
+//
+//   · a lathe is a HOLLOW shell. Additive, double-sided, it sums front and back faces, so the
+//     brightest part of the drawn image is the SILHOUETTE (the grazing rim), not the axis — the
+//     exact inverse of a real jet, and the reason the column reads as a soft tube of gas;
+//   · because it is a shell, an alpha notch between two bands draws a closed ELLIPSE OUTLINE (a
+//     slinky), so band contrast had to be kept low, which is why the bands never read;
+//   · and the white core clips. Once a pixel is at 1.0 no brightness modulation inside it is
+//     visible at all, so on the classes with a hot core the banding was mathematically invisible.
+//
+// So the structural layer is now a single quad per nozzle, rolled about the plume's own axis to
+// face the camera (an axis-billboard, NOT a camera-facing card — it cannot spin into a disc), whose
+// fragment shader integrates a round column analytically:
+//
+//   · `chord = sqrt(1 - r²)` is the path length through a cylinder of the class's cone radius, so
+//     density peaks ON THE AXIS and falls to exactly zero at the silhouette. Bright spine, soft
+//     outline, no rim, no §7 hard edge anywhere on the quad;
+//   · the cone half-width `w(t)` is the SAME `fx.profile` curve the lathes are built from, so the
+//     impostor tapers from the nozzle orifice to a point and agrees with the volume behind it;
+//   · the band function does three things at once — it pinches and bulges `w` (silhouette shock
+//     diamonds), it drives brightness hard (a band peaks ~7x its gap), and it bows by r² so the
+//     bright zones are pointed lens/diamond shapes rather than a ladder of flat rectangles. ~7-9
+//     bands across the visible length, with a ~2 px transition at capture resolution;
+//   · and it composites with NORMAL blending, alone in this file. Additive structure added to an
+//     already-bright frame saturates in the gaps as well as on the bands, which is why the muscle
+//     car's Miami boost was a featureless field while its Vegas boost read perfectly. Compositing
+//     makes the contrast independent of the background.
+// ---------------------------------------------------------------------------------------------
+
+const CORE_VERT = /* glsl */`
+  varying vec2 vUv;
+  varying float vDepth;
+  void main(){
+    vUv = uv;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vDepth = -mv.z;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const CORE_FRAG = /* glsl */`
+  uniform vec3 uCore, uMid, uEdge;
+  uniform vec4 uProf;               // neck, bulgeAt, bulgeSharp, taper — the class silhouette
+  uniform float uTime, uLevel, uBands, uBandSpeed, uPhase, uTurb;
+  uniform float uOpacity, uGain, uPad, uFade, uNear0, uNear1, uHot;
+  varying vec2 vUv;
+  varying float vDepth;
+
+  void main(){
+    float t = clamp(vUv.y, 0.0, 1.0);
+    float x = (vUv.x - 0.5) * 2.0 * uPad;        // in units of the cone's max radius
+
+    // ---- the class cone: identical curve to plumeGeometry(), so impostor and volume agree ----
+    float shape = pow(max(sin(3.1415926 * pow(max(t, 1e-4), uProf.y)), 0.0), uProf.z);
+    float w = (uProf.x + (1.0 - uProf.x) * shape) * pow(max(1.0 - t, 0.0), uProf.w);
+
+    // ---- shock diamonds. ONE function pinches the column, lights it and punches the gaps ----
+    float bp = t * uBands * 6.2831853 - uTime * uBandSpeed + uPhase * 3.0;
+    float sw = sin(bp);
+    float grow = smoothstep(0.015, 0.13, t);     // a short clean neck at the orifice, then the chain
+    w *= 1.0 + 0.16 * sw * grow;
+    w = max(w, 0.004);
+
+    // the column wanders — a jet is never a straight cone
+    float cx = (sin(t * 4.1 - uTime * 8.0 + uPhase) * 0.052
+              + sin(t * 7.7 + uTime * 12.5 + uPhase * 2.3) * 0.026) * uTurb * smoothstep(0.05, 0.70, t);
+
+    float r = abs(x - cx) / w;
+    if (r >= 1.0) discard;
+    float chord = sqrt(max(0.0, 1.0 - r * r));   // density through a round column: hot axis, soft rim
+
+    // A shock diamond is not a slice: the reflected shock crosses ON THE AXIS, so the bright zone
+    // is a lens that lags at the rim. Bowing the band phase by r² turns a ladder of flat-topped
+    // rectangles into a chain of pointed diamonds — the difference between "barcode" and "jet".
+    float bpr = bp + 2.4 * r * r;
+    // near-square band: ~2 px of transition at 1600x900, i.e. hard-edged but still antialiased
+    float sq  = smoothstep(0.42, 0.57, 0.5 + 0.5 * sin(bpr));
+    float sq2 = smoothstep(0.40, 0.66, 0.5 + 0.5 * sin(bpr * 0.41 + 1.7 + uPhase));
+    float band = clamp(sq * 0.86 + sq2 * 0.26, 0.0, 1.12);
+    // diamonds are a throat phenomenon: they dissolve into turbulence downstream
+    float decay = mix(1.0, 0.38, smoothstep(0.12, 0.88, t)) * grow;
+    float hotAx = 1.0 - smoothstep(0.03, 0.46, t);
+    // THE SPINE. Bands alone drew a string of separate beads — a caterpillar, not a jet. A narrow
+    // un-banded hot filament straight down the axis ties the diamonds into ONE column, which is
+    // what §1.2's "bright, banded, cone-shaped" describes. Narrow (chord^6) on purpose: a fat spine
+    // is just the old continuous glow back again, filling the gaps this layer exists to open.
+    float spine = pow(chord, 6.0) * mix(0.52, 0.22, smoothstep(0.06, 0.80, t));
+    float lit = clamp(band + spine * (1.0 - band), 0.0, 1.15);
+
+    vec3 col = mix(uEdge, uMid, smoothstep(0.0, 0.62, chord));
+    // chord^3.1, not ^2.1: the white-hot region has to be a NARROW filament. Wide enough to cover
+    // half the column's width it clips the whole throat to featureless white, and a clipped pixel
+    // cannot show a band — which is how the muscle's fat barrel lost its structure in Miami.
+    col = mix(col, uCore, clamp(pow(chord, 3.1) * (0.40 + 0.60 * hotAx) * uHot, 0.0, 1.0));
+    // ---- WHERE THE CONTRAST ACTUALLY COMES FROM ----
+    // The column's COVERAGE is continuous (alpha ≈ chord, so the silhouette is one unbroken cone
+    // that dissolves at its outline) and the bands are carried mostly by BRIGHTNESS: a band peaks
+    // near 1.6 and blooms, a gap sits at ~15% of it and stays dark. Punching the gaps out of ALPHA
+    // instead lets a bright road (Miami's sunset, LA's afternoon) shine through them at full
+    // strength — which is how three rounds of banding kept dissolving into a flat bright field — and
+    // it is not what a plume does either: the cool zones between shock diamonds are dark gas, not
+    // holes. A little alpha modulation stays, so the column still breathes rather than reading as a
+    // painted tube.
+    col *= uGain * mix(1.0, 0.12 + 1.48 * lit, decay);
+
+    float a = chord * mix(1.0, 0.70 + 0.34 * lit, decay) * uOpacity * uLevel;
+    a *= smoothstep(0.0, 0.06, t);               // never lit ON the orifice lip
+    a *= 1.0 - smoothstep(0.78, 1.0, t);         // and dead well inside the quad's far edge
+    a *= uFade;
+    a *= smoothstep(uNear0, uNear1, vDepth);
+    if (a < 0.004) discard;
+    gl_FragColor = vec4(col, a);
+  }
+`;
+
+/**
+ * How much wider than the cone's maximum radius the impostor quad is cut. Every pixel between the
+ * cone and the quad edge is a discard, i.e. paid-for fill that draws nothing, so it is kept just
+ * clear of the band bulge (±0.16) rather than generously padded.
+ */
+const CORE_PAD = 1.24;
+
+/** Unit quad spanning x ∈ [-0.5, 0.5] across and z ∈ [0, -1] down the plume axis. */
+let _coreGeo = null;
+function coreGeometry() {
+  if (!_coreGeo) {
+    const g = new THREE.PlaneGeometry(1, 1, 1, 1);
+    g.translate(0, 0.5, 0);
+    g.rotateX(-Math.PI / 2);     // +Y (axial) → -Z, uv.y = 0 at the orifice, 1 at the tip
+    _coreGeo = g;
+  }
+  return _coreGeo;
+}
+
+function coreMaterial(fx, phase) {
+  const pf = fx.profile || [0.30, 0.55, 0.75, 0.30];
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uLevel: { value: 0 },
+      uPhase: { value: phase },
+      uCore: { value: new THREE.Color(fx.core) },
+      uMid: { value: new THREE.Color(fx.mid) },
+      uEdge: { value: new THREE.Color(fx.edge) },
+      uProf: { value: new THREE.Vector4(pf[0], pf[1], pf[2], pf[3]) },
+      uBands: { value: fx.bands },
+      uBandSpeed: { value: fx.bandSpeed },
+      uTurb: { value: fx.turb },
+      uOpacity: { value: fx.coreOpacity ?? 0.92 },
+      uGain: { value: fx.coreGain ?? ((fx.gain ?? 1) * 1.6) },
+      uHot: { value: fx.coreHot ?? 1.0 },
+      uPad: { value: CORE_PAD },
+      uFade: { value: 1 },
+      uNear0: { value: 0.85 },
+      uNear1: { value: 2.60 },
+    },
+    vertexShader: CORE_VERT,
+    fragmentShader: CORE_FRAG,
+    transparent: true,
+    // NORMAL, not additive — the one blend mode in this file that is not. Additive light added to
+    // an already-bright frame (Miami's sunset road, the LA afternoon) saturates in the band gaps as
+    // well as on the bands, so the structure this layer exists to draw disappears exactly where the
+    // background is bright: the muscle car's Miami boost was a featureless yellow field. Compositing
+    // the core OVER the frame instead makes the contrast independent of what is behind it — opaque
+    // bands, near-transparent gaps, on any road, in any city. Everything around it (the volume
+    // shells, the gas cards, the ground pool, the point light) stays additive, so the jet still
+    // reads as light; it is only the structural layer that is composited.
+    blending: THREE.NormalBlending,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+  });
+}
+
 function plumeMaterial(fx, {
   opacity, taper, facePow, turb, bandMul = 1, sharpMul = 1,
   white = 0, edgeMix = 1, gain = 1, bandAmt = 1, ramp = 0.10, faceFloor = 0.22, phase = 0,
+  bulge = 0.18,
 }) {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -601,6 +880,7 @@ function plumeMaterial(fx, {
       uNear1: { value: 2.60 },
       uRamp: { value: ramp },
       uFaceFloor: { value: faceFloor },
+      uBandBulge: { value: bulge },
     },
     vertexShader: PLUME_VERT,
     fragmentShader: PLUME_FRAG,
@@ -801,8 +1081,19 @@ const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _q3 = new THREE.Quaternion();
 const _e = new THREE.Euler(0, 0, 0, 'YXZ');
+const _gp = new THREE.Vector3();
+const _gd = new THREE.Vector3();
+const _gq = new THREE.Quaternion();
 const AXIS_Z = new THREE.Vector3(0, 0, 1);
 const WHITE = new THREE.Color(0xffffff);
+
+/**
+ * Where the column visually ENDS, as a fraction of baseLen. The shells' alpha is
+ * `smoothstep(0,ramp,t) · pow(1−t, taper)`, so the last third is a fade the eye does not count as
+ * part of the jet; measuring the governor against t = 1.0 sized every plume roughly twice too big
+ * and sent the tail sweeping past the lens.
+ */
+const VIS_T = 0.62;
 
 export class NitrousJet {
   /**
@@ -826,7 +1117,7 @@ export class NitrousJet {
     this.fxRoot = new THREE.Group();
     this.group.add(this.fxRoot);
 
-    const geo = plumeGeometry();
+    const geo = plumeGeometry(fx.profile);
     // three nested lathe shells: white-hot core → class mid → soft fringe.
     // `facePow` is the silhouette softener; the outer shell gets the highest power so its outline
     // has completely dissolved by the time it reaches the edge of the plume.
@@ -835,18 +1126,27 @@ export class NitrousJet {
     // summed to alpha > 1 across the whole rear third of the car: the taillights, bumper and
     // exhaust tips were erased and the banding the shaders draw was invisible inside the clip.
     // A jet you can see the car's silhouette through is a better jet.
+    // (r6) THE WHITE-HOT CORE IS NO LONGER A LATHE. It was the layer that clipped, and a clipped
+    // shell cannot show banding at all — see the CORE_FRAG block comment. The core is now the
+    // axis-billboarded impostor built below; these two lathes are demoted to what a lathe is
+    // actually good at, which is VOLUME: a class-tinted body and a soft fringe that give the jet
+    // parallax as the rig swings, seen THROUGH the impostor's hard structure. Both are roughly a
+    // third dimmer than round 5, because a continuous glow sitting behind the impostor fills in the
+    // transparent gaps between the shock diamonds and that is precisely what erases the banding.
     this.shellSpec = [
-      // 1 white-hot core — the only layer allowed to approach white, and the shortest/thinnest
-      { opacity: 2.00, taper: 1.20, facePow: 0.40, turb: 0.40, bandMul: 1.35, sharpMul: 1.3, white: 1.0, edgeMix: 0.25, gain: 1.05, bandAmt: 1.00, ramp: 0.24, faceFloor: 0.34 },
-      // 2 class-tinted body — carries the colour, so its gain stays under 1
-      { opacity: 1.80, taper: 0.98, facePow: 0.62, turb: 0.75, white: 0.38, edgeMix: 0.72, gain: 0.88, bandAmt: 0.72, ramp: 0.19, faceFloor: 0.27 },
-      // 3 soft fringe
-      { opacity: 0.90, taper: 0.82, facePow: 0.95, turb: 1.05, bandMul: 0.55, sharpMul: 0.55, white: 0.08, edgeMix: 1.0, gain: 0.72, bandAmt: 0.38, ramp: 0.13, faceFloor: 0.19 },
+      // 1 class-tinted body — carries the colour, so its gain stays under 1
+      { opacity: 0.76, taper: 0.98, facePow: 0.58, turb: 0.75, white: 0.24, edgeMix: 0.72, gain: 0.74, bandAmt: 1.00, ramp: 0.19, faceFloor: 0.32, bulge: 0.28 },
+      // 2 soft fringe — the layer that does the §7 silhouette dissolve, so its floor stays low.
+      // (r5) Much tighter and dimmer: at 1.42x radius and 0.90 opacity the two nozzles' fringes
+      // fused into one red gas cloud twice the width of the car, and the cloud — not the jet — was
+      // what the frame read as.
+      { opacity: 0.40, taper: 0.82, facePow: 0.95, turb: 1.05, bandMul: 0.55, sharpMul: 0.55, white: 0.06, edgeMix: 1.0, gain: 0.62, bandAmt: 0.50, ramp: 0.13, faceFloor: 0.19, bulge: 0.14 },
     ];
     // shell radius / length multipliers
-    this.shellR = [0.40, 0.80, 1.45];
-    this.shellL = [0.60, 0.88, 1.06];
+    this.shellR = [0.82, 1.16];
+    this.shellL = [0.92, 1.06];
     this.shellMats = [];   // flat list, for uTime/uLevel updates and disposal
+    this.coreMats = [];
 
     const nz = (nozzles && nozzles.length) ? nozzles : [new THREE.Vector3(0, 0.5, -2)];
     // a single centre outlet has to carry the whole jet on its own
@@ -870,7 +1170,10 @@ export class NitrousJet {
       // A real tailpipe washes down a few degrees, and the down-wash is the one deflection that
       // costs nothing in "is it on the centreline?" while still giving the column screen-space
       // length when the chase camera is sitting almost on the jet's axis.
-      g.rotation.x = 0.075;
+      // (r5) 0.075 rad of down-wash dropped the tip ~0.3 m over the column, which at exhaust height
+      // planted the whole back half of the jet ON the asphalt: the plume and its own ground pool
+      // fused into one flat orange field. It now runs very nearly level and stays clear of the road.
+      g.rotation.x = 0.025;
       // per-nozzle phase so the twin jets band, wobble and flicker independently
       const phase = ni * 2.399963;
       const shells = [];
@@ -885,6 +1188,14 @@ export class NitrousJet {
         g.add(m);
         shells.push(m);
       }
+
+      // ---- the structural core: one axis-billboarded impostor (see CORE_FRAG) ----
+      const coreMat = coreMaterial(fx, phase);
+      this.coreMats.push(coreMat);
+      const core = new THREE.Mesh(coreGeometry(), coreMat);
+      core.renderOrder = 8.2;      // over the volume shells, under the burner disc
+      core.frustumCulled = false;
+      g.add(core);
 
       // ---- gas cards: the wide soft fringe ----
       // Camera-facing, but each one carries its own roll and spins slowly, and its texture is a
@@ -949,7 +1260,7 @@ export class NitrousJet {
       this.fxRoot.add(g);
       // `base` is where sparks and smear are born — the standoff point, not the tip, so the ember
       // shower starts in the same clear air the plume does.
-      this.nozzles.push({ group: g, shells, mats, cards, disc, flash, ring, phase, base: g.position.clone() });
+      this.nozzles.push({ group: g, shells, mats, core, coreMat, coreRoll: 0, cards, disc, flash, ring, phase, base: g.position.clone() });
     }
 
     // ---- light spilling onto the road ----
@@ -999,6 +1310,7 @@ export class NitrousJet {
       n.ring.material.color.copy(this.color).lerp(WHITE, 0.6);
     }
     for (const m of this.shellMats) m.uniforms.uMid.value.set(c);
+    for (const m of this.coreMats) m.uniforms.uMid.value.set(c);
     this._colMid.set(c);
   }
 
@@ -1008,6 +1320,8 @@ export class NitrousJet {
    */
   ignite() {
     this.igT = 0;
+    // the governor re-solves from scratch for this boost rather than easing off the last one's size
+    this._gLen = undefined; this._gRad = undefined; this._gAx = undefined;
     const fx = this.fx;
     const r = this.rng;
     const cone = fx.cone ?? 0.3;
@@ -1026,6 +1340,131 @@ export class NitrousJet {
     }
   }
 
+  /**
+   * ── THE SCREEN-SPACE GOVERNOR (the round-4 fix) ─────────────────────────────────────────────
+   *
+   * Round 3's plume was sized in WORLD units, and the chase rig pulls back and climbs with speed.
+   * The two fought each other: at 167–188 mph the rig sat ~10 m out and ~5 m up, and a 4–5 m
+   * column seen from up there and nearly down its own axis projected to a ~120 px stub. The frames
+   * where nitrous is supposed to dominate were the least spectacular in the set.
+   *
+   * So the jet no longer has a length. It has a TARGET SIZE ON SCREEN (`fx.screen`, a fraction of
+   * the frame height) and the world length is SOLVED FOR every frame against the real projection.
+   *
+   * Screen position, measured in frame heights from the optical axis, is
+   *
+   *   F(p) = ( p.x / (−p.z · 2·tan(fov/2)),  p.y / (−p.z · 2·tan(fov/2)) )
+   *
+   * — the aspect divisor in ndc_x cancels against the frame being `aspect` frame heights wide, so
+   * x and y share one scale and combine directly. The wanted length is the L that makes
+   * |F(nozzle + L·axis) − F(nozzle)| equal `fx.screen`. That separation is monotonic in L up to
+   * the point where the tip reaches the lens, so a short bisection nails it.
+   *
+   * It is deliberately NOT the first-order form d|F|/dL: the governor routinely asks for a 10 m
+   * column from a rig 6 m away, and out there the linear estimate is off by a factor of two —
+   * and it has no idea when the tip has gone PAST the camera, which is where it diverges outright.
+   * The search is bracketed at a tip 2.5 m in front of the lens for exactly that reason.
+   *
+   * Radius is NOT solved for. It is derived from the solved length (see the caller), because
+   * `fx.rad` has to stay under half the twin-outlet spacing or the two hot cores merge into one
+   * blob — the headline round-2 note. Length has no such constraint, so length is where the
+   * governor spends.
+   *
+   * @returns {{len:number, axial:number}|null} null when the jet is behind the lens.
+   *          `axial` is how squarely the camera is looking down the jet's own centreline (0 = pure
+   *          side-on, 1 = straight down the barrel). At high `axial` no amount of length buys
+   *          screen size — the column is a dot with a long tail — so the caller spends on width
+   *          and on the burner disc instead.
+   */
+  _governor(camera, target) {
+    // main.js updates the jet before the camera, so matrixWorldInverse can be a frame stale (and on
+    // the very first frame of a capture, unset). PerspectiveCamera.updateMatrixWorld() refreshes the
+    // inverse and is a cheap no-op when nothing moved.
+    camera.updateMatrixWorld();
+    const n0 = this.nozzles[0];
+    n0.group.getWorldPosition(_gp);
+    n0.group.getWorldQuaternion(_gq);
+    _gd.set(0, 0, -1).applyQuaternion(_gq);            // the plume axis, in world space
+    _gp.applyMatrix4(camera.matrixWorldInverse);       // → view space
+    _gd.transformDirection(camera.matrixWorldInverse);
+    const pz = _gp.z;
+    if (!(pz < -0.4)) return null;                     // behind the lens (or NaN) — leave it alone
+    const k = 0.5 / Math.tan(camera.fov * Math.PI / 360);
+    const sx0 = k * _gp.x / -pz, sy0 = k * _gp.y / -pz;
+    // Screen position of the point t metres down the axis, in FRAME HEIGHTS from the optical axis.
+    const sxT = (t) => k * (_gp.x + _gd.x * t) / -(pz + _gd.z * t);
+    const syT = (t) => k * (_gp.y + _gd.y * t) / -(pz + _gd.z * t);
+    // Separation, in frame heights, between the nozzle and the point the column visually ends at
+    // when the whole column is L metres long.
+    const sep = (L) => {
+      const t = L * VIS_T;
+      return Math.hypot(sxT(t) - sx0, syT(t) - sy0);
+    };
+    // never let the solver walk the TIP (t = 1) into, or through, the lens
+    let hi = Math.min(30, _gd.z > 1e-4 ? (-2.2 - pz) / _gd.z : 30);
+    let lo = 0;
+    const out = { len: 0.4, axial: clamp(Math.abs(_gd.z), 0, 1), fit: 1 };
+    if (hi <= 0.4) return out;
+    if (sep(hi) > target) {
+      for (let i = 0; i < 16; i++) {
+        const mid = (lo + hi) * 0.5;
+        if (sep(mid) < target) lo = mid; else hi = mid;
+      }
+    }
+    out.len = hi;
+
+    // ── FRAME CONTAINMENT (the round-5 fix) ───────────────────────────────────────────────────
+    // Solving for screen SIZE alone is not the same as putting the jet ON SCREEN. From a rig swung
+    // out to a rear three-quarter, a column sized to 40% of frame height ran diagonally out through
+    // the bottom-left corner: the tip, the taper and the whole cone silhouette were cropped away
+    // and what was left inside the frame was a wide, structureless orange field. A jet has to END
+    // somewhere the viewer can see, or it is a smear.
+    //
+    // So the solved length is additionally clipped to the longest column whose visible end still
+    // sits inside a safe box (frame minus a `margin` gutter, measured in frame heights — the box is
+    // `aspect` frame heights wide). Only applied when the nozzle itself is comfortably inside the
+    // frame, and never below 55% of the wanted length: if the car is already half out of shot,
+    // cropping the plume too is not going to save the composition.
+    const halfW = camera.aspect * 0.5 - 0.085;
+    const halfH = 0.5 - 0.075;
+    const inBox = (L) => {
+      const t = L * VIS_T;
+      return Math.abs(sxT(t)) < halfW && Math.abs(syT(t)) < halfH;
+    };
+    if (Math.abs(sx0) < halfW && Math.abs(sy0) < halfH && !inBox(out.len)) {
+      let flo = 0, fhi = out.len;
+      for (let i = 0; i < 14; i++) {
+        const mid = (flo + fhi) * 0.5;
+        if (inBox(mid)) flo = mid; else fhi = mid;
+      }
+      const fitted = Math.max(flo, out.len * 0.55);
+      out.fit = fitted / out.len;
+      out.len = fitted;
+    }
+    return out;
+  }
+
+  /**
+   * World-space point a fixed distance down the plume's own axis — main.js aims the boost camera
+   * partly at this so the COLUMN is what the frame is composed around, with the car pushed off to
+   * one side, instead of the car being dead centre and the jet exiting the corner.
+   *
+   * Deliberately a fixed multiple of the class's reference length, NOT of the solved length: the
+   * governor's containment clamp reacts to where the tip lands on screen, so feeding the solved
+   * length back into the aim would let the two chase each other.
+   */
+  aimPoint(out) {
+    const n0 = this.nozzles[0];
+    n0.group.getWorldPosition(out);
+    if (this.nozzles.length > 1) {
+      this.nozzles[this.nozzles.length - 1].group.getWorldPosition(_v2);
+      out.lerp(_v2, 0.5);
+    }
+    n0.group.getWorldQuaternion(_q);
+    _v2.set(0, 0, -1).applyQuaternion(_q);
+    return out.addScaledVector(_v2, this.fx.len * this.scale * 0.62);
+  }
+
   /** Screen-space anchor + strength for the grade pass' heat haze. */
   heatPoint(camera, out) {
     this.nozzles[0].group.getWorldPosition(_v);
@@ -1033,9 +1472,17 @@ export class NitrousJet {
       this.nozzles[this.nozzles.length - 1].group.getWorldPosition(_v2);
       _v.lerp(_v2, 0.5);
     }
-    // sample a little way down the plume, away from the camera, where the shimmer actually is
-    _v2.copy(camera.position).sub(_v).normalize();
-    _v.addScaledVector(_v2, -(this._baseLen ?? this.fx.len * this.scale) * 0.5);
+    // Sample a third of the way DOWN THE PLUME'S OWN AXIS, where the shimmer actually is. (Round 3
+    // pushed the sample along the camera ray instead; harmless when the jet was 4 m long, but the
+    // governor now routinely runs it to 10 m and that put the haze centre metres off the flame.)
+    this.nozzles[0].group.getWorldQuaternion(_q);
+    _v2.set(0, 0, -1).applyQuaternion(_q);
+    // (r6) Sampled BEYOND the visible column, not a third of the way down it. The ripple is a
+    // gaussian ~0.4 frame-heights across, so centred on the jet it wobbled the shock diamonds
+    // themselves — the one layer whose whole job is to be crisp. Centred on the hot trail behind the
+    // tip it bends the road, the lane lines and the barrier BEHIND the plume instead, which is where
+    // refraction is legible anyway.
+    _v.addScaledVector(_v2, (this._baseLen ?? this.fx.len * this.scale) * 0.92);
     _v.project(camera);
     out.set(_v.x * 0.5 + 0.5, _v.y * 0.5 + 0.5);
     return _v.z < 1 ? this.heat : 0;
@@ -1089,50 +1536,112 @@ export class NitrousJet {
     //            AND HOT and sustain is long. Round 2 drew the same giant plume in every frame.
     //   stretch— and it lengthens with road speed, so the jet reads as tied to how fast you are
     //            actually going.
-    const hold = 1 - Math.exp(-Math.max(0, this.igT) / 0.60);
-    const stretch = 0.84 + 0.36 * smoothstep(16, 82, speed);
-    // 0.42 is the floor, not 0: a spooling SUV should look like a jet that has not opened up yet,
-    // not like a stub of flame under the bumper.
-    const lenDrive = (0.42 + 0.58 * ramp) * (0.66 + 0.34 * hold) * stretch;
-    const baseLen = fx.len * this.scale * lenDrive * (1 + surge * 0.12) * flick;
+    const hold = 1 - Math.exp(-Math.max(0, this.igT) / 0.42);
+    const stretch = 0.94 + 0.12 * smoothstep(16, 82, speed);
+    // The floors are HIGH now (0.66, 0.78): the governor below sets the sustained size, and these
+    // two terms only carve the per-class spool out of it. A spooling SUV reads as a jet that has
+    // not opened up yet — about 2/3 size — rather than as the stub it used to be.
+    const lenDrive = (0.66 + 0.34 * ramp) * (0.78 + 0.22 * hold) * stretch;
+
+    // ── screen-space governor ────────────────────────────────────────────────────────────────
+    // `hero` is opt-in (main.js passes it for the player). Opponent jets are seen from 20–120 m
+    // and would each solve for a 40 m column; they keep the plain world-space sizing.
+    let gLen = 1, gRad = 1, axial = 0;
+    if (camera && opts.hero) {
+      const g = this._governor(camera, fx.screen ?? 0.40);
+      if (g) {
+        gLen = clamp(g.len / (fx.len * this.scale), 0.42, 2.60);
+        // Radius tracks the GOVERNED LENGTH, sub-linearly, rather than raw distance. Tying it to
+        // distance instead held the width fixed while the solver shortened the column, and a 2 m
+        // jet 1.3 m across is not a jet, it is a lozenge — the exact "one off-axis blob" note from
+        // round 2. Sub-linear (^0.62) so a stretched column also gets *relatively* more slender.
+        // The one thing that does buy width is `axial`: with the rig on the jet's own centreline
+        // no length reads at all, and the plume has to be seen end-on as a wide, hot disc.
+        axial = smoothstep(0.72, 0.97, g.axial);
+        // ...and whatever LENGTH the frame-containment clamp took away is paid back in WIDTH, so a
+        // jet that has to end early to stay in shot still owns its share of the frame.
+        gRad = clamp(Math.pow(gLen, 0.62), 0.62, 1.35) * (1 + axial * 0.34)
+             * (1 + (1 - g.fit) * 0.55);
+      }
+    }
+    // Smoothed, or the column pumps every time the rig settles or a shake displaces the lens.
+    const gk = 1 - Math.exp(-11 * Math.min(dt, 0.05));
+    this._gLen = this._gLen === undefined ? gLen : this._gLen + (gLen - this._gLen) * gk;
+    this._gRad = this._gRad === undefined ? gRad : this._gRad + (gRad - this._gRad) * gk;
+    this._gAx = this._gAx === undefined ? axial : this._gAx + (axial - this._gAx) * gk;
+    const gL = this._gLen, gR = this._gRad, gA = this._gAx;
+
+    const baseLen = fx.len * this.scale * gL * lenDrive * (1 + surge * 0.12) * flick;
     // Radius follows the visual level and barely moves: a jet that fattens as much as it lengthens
-    // just scales up, and the "short and hot / long and wide" contrast disappears.
+    // just scales up, and the "short and hot / long and wide" contrast disappears. The governor's
+    // radius term is applied PER SHELL below (see gRp) so the white-hot cores stay narrow even when
+    // the soft fringe is asked to hold its screen width from a long way out.
     const baseRad = fx.rad * this.scale * this.radMul
-      * (0.72 + 0.28 * s) * (0.88 + 0.12 * ramp) * (1 + surge * 0.16);
+      * (0.76 + 0.24 * s) * (0.90 + 0.10 * ramp) * (1 + surge * 0.16);
+    const gRp = [Math.pow(gR, 0.72), gR];
     this._baseLen = baseLen;
 
+    const shellLevel = s * (0.94 + 0.10 * flick) + igBloom * 0.16;
     for (const m of this.shellMats) {
       m.uniforms.uTime.value = this.t;
-      m.uniforms.uLevel.value = s * (0.85 + 0.15 * flick) + igBloom * 0.20;
+      // Held, not decayed: §6.3's payoff is the SUSTAIN, and round 3 let the shells settle ~15%
+      // below their ignition level a third of a second in.
+      m.uniforms.uLevel.value = shellLevel;
+    }
+    // The impostor loses authority as the rig comes onto the jet's own centreline: seen down the
+    // barrel a flat quad rolled to face the lens degenerates, and the burner disc (which comes UP
+    // by exactly the same term) is the layer that reads there.
+    const coreFade = (1 - gA * 0.80) * (fx.coreFade ?? 1);
+    for (const m of this.coreMats) {
+      m.uniforms.uTime.value = this.t;
+      m.uniforms.uLevel.value = shellLevel;
+      m.uniforms.uFade.value = coreFade;
     }
 
     const camQ = camera ? camera.quaternion : null;
+    // max radius of the impostor's cone, in world units — matched to the tinted body shell so the
+    // hard structure sits INSIDE the volume rather than cutting across its silhouette
+    const coreR = baseRad * (fx.coreW ?? 0.86) * gRp[0];
     for (const n of this.nozzles) {
       // parent-space → so a billboard can be built from the camera's world quaternion
       const invParent = camera ? _q2.copy(n.group.getWorldQuaternion(_q3)).invert() : null;
 
       for (let i = 0; i < n.shells.length; i++) {
         const wob = 1 + Math.sin(this.t * (23 + i * 7) + n.base.x * 5) * 0.05 * (i + 1) * 0.5;
-        n.shells[i].scale.set(
-          baseRad * this.shellR[i] * wob,
-          baseRad * this.shellR[i] * wob,
-          baseLen * this.shellL[i],
-        );
+        const r = baseRad * this.shellR[i] * gRp[i] * wob;
+        n.shells[i].scale.set(r, r, baseLen * this.shellL[i]);
       }
+
+      // ---- core impostor: roll it about the PLUME AXIS until it faces the camera ----
+      // Not a camera-facing card: it can only spin around its own centreline, so the column never
+      // collapses into a disc and never presents a square to the lens (§7).
+      if (camera) {
+        n.group.getWorldPosition(_v2);
+        _v.setFromMatrixPosition(camera.matrixWorld).sub(_v2).applyQuaternion(invParent);
+        const m2 = Math.hypot(_v.x, _v.y);
+        // degenerate only when the lens is exactly on the axis, where uFade has already taken the
+        // impostor out — hold the last good roll rather than letting it spin
+        if (m2 > 1e-3) n.coreRoll = Math.atan2(-_v.x, _v.y);
+        n.core.rotation.z = n.coreRoll;
+      }
+      n.core.scale.set(coreR * 2 * CORE_PAD, 1, baseLen);
 
       // ---- gas cards ----
       const cardGain = fx.cardGain ?? ((fx.gain ?? 1) * 0.7);
+      const cardRad = baseRad * gR;
+      const pf = fx.profile || [0.30, 0.55, 0.75, 0.30];
       for (let i = 0; i < n.cards.length; i++) {
         const cd = n.cards[i];
         const u = cd.u;
-        // plume envelope: necks at the nozzle, widest around a third of the way down, tapers out
-        const env = Math.pow(Math.sin(Math.PI * Math.pow(u, 0.55)), 0.7);
-        const w = baseRad * (fx.cardWidth ?? 2.0) * (0.42 + 0.90 * env) * (fx.cardSpread ?? 1.15);
+        // plume envelope — the SAME class silhouette the lathe shells use (fx.profile), so the soft
+        // fringe hugs the class's own cone instead of drawing a generic one around it
+        const env = Math.pow(Math.sin(Math.PI * Math.pow(u, pf[1])), pf[2]) * Math.pow(1 - u, pf[3] * 0.6);
+        const w = cardRad * (fx.cardWidth ?? 2.0) * (pf[0] * 1.25 + 1.02 * env) * (fx.cardSpread ?? 1.15);
         const puff = 1 + Math.sin(this.t * (9 + i * 2.3) + cd.ph + n.phase) * 0.10;
         cd.mesh.scale.set(w * puff, w * puff * (0.92 + 0.16 * Math.sin(cd.ph + this.t * 4)), 1);
         cd.mesh.position.set(
-          cd.jx * baseRad * 1.6 + Math.sin(this.t * 6.3 + cd.ph) * baseRad * 0.10,
-          cd.jy * baseRad * 1.6 + Math.sin(this.t * 5.1 + cd.ph * 1.7) * baseRad * 0.09,
+          cd.jx * cardRad * 1.6 + Math.sin(this.t * 6.3 + cd.ph) * cardRad * 0.10,
+          cd.jy * cardRad * 1.6 + Math.sin(this.t * 5.1 + cd.ph * 1.7) * cardRad * 0.09,
           -u * baseLen * (fx.cardSpread ?? 1.15),
         );
         // colour graded down the axis: hot core near the nozzle → class tint → edge tint
@@ -1157,15 +1666,17 @@ export class NitrousJet {
       // burner disc — deliberately faint now. Held at round-2 strength it was a bloom ball sitting
       // on the exhaust tips, and it is the single element most responsible for erasing them.
       const dm = n.disc.material;
-      dm.opacity = clamp(s * 0.085 * flick + igBloom * 0.14, 0, 0.4);
-      const ds = (baseRad * 2.3 + 0.12) * (1 + surge * 0.32);
+      // ...and it is the one layer that is ALLOWED to come up when the rig is on the jet's axis:
+      // that is the framing where the column itself is a dot and the disc is the whole read.
+      dm.opacity = clamp(s * (0.085 + 0.20 * gA) * flick + igBloom * 0.14, 0, 0.5);
+      const ds = (baseRad * gRp[0] * 2.3 + 0.12) * (1 + surge * 0.32);
       n.disc.scale.set(ds * (1 + Math.sin(this.t * fx.flick * 0.7) * 0.05), ds, 1);
       if (camQ) n.disc.quaternion.copy(camQ).premultiply(invParent);
 
       // muzzle flash
       const fm = n.flash.material;
       fm.opacity = clamp(igFlash * 1.1 + igBloom * 0.42, 0, 1.5);
-      const fs = lerp(0.5, 3.0 * this.scale, 1 - Math.exp(-this.igT / 0.09)) * (0.6 + s * 0.6);
+      const fs = lerp(0.5, 3.0 * this.scale, 1 - Math.exp(-this.igT / 0.09)) * (0.6 + s * 0.6) * gR;
       n.flash.scale.set(fs, fs, 1);
       n.flash.position.z = -0.18 - this.igT * 1.2;
       if (camQ) n.flash.quaternion.copy(n.disc.quaternion);
@@ -1174,7 +1685,7 @@ export class NitrousJet {
       const rm = n.ring.material;
       const rt = clamp(this.igT / 0.34, 0, 1);
       rm.opacity = (1 - rt) * (1 - rt) * 1.25;
-      const rs = 0.35 + rt * 5.5 * this.scale;
+      const rs = (0.35 + rt * 5.5 * this.scale) * gR;
       n.ring.scale.set(rs, rs, 1);
       n.ring.position.z = -0.2 - rt * 2.4;
       n.ring.quaternion.identity();
@@ -1184,6 +1695,9 @@ export class NitrousJet {
     // Ejecta rides the wake: the drift is only a FRACTION of the car's speed (see StreakPool.update).
     const drift = -speed * (fx.wake ?? 0.2);
     const cone = fx.cone ?? 0.3;
+    // Sparks are part of the jet, so they are governed too: a shower that stays 1.5 m long behind a
+    // 10 m column is invisible. Speed (hence stretch) and width follow the governor sub-linearly.
+    const gS = Math.sqrt(gL);
     const rate = fx.sparkRate * s * (0.55 + 0.45 * smoothstep(0, 40, speed)) * (1 + surge * 1.2);
     this._acc = (this._acc || 0) + rate * dt;
     const r = this.rng;
@@ -1193,21 +1707,27 @@ export class NitrousJet {
       // Born in an ANNULUS around the column, not inside it. Embers launched down the middle are
       // invisible — they sit inside the brightest part of the plume — so the shower only reads
       // when the streaks fly clear of the core and cross the dark road behind it.
-      const a = r.range(0, Math.PI * 2), rad = baseRad * r.range(0.65, 1.8);
-      const back = r.range(fx.sparkSpeed[0], fx.sparkSpeed[1]);
+      // (r6) The annulus used to start at 0.65 x the core radius, i.e. INSIDE the tinted body shell
+      // and well inside the fringe, so every ember was born in the brightest additive region of the
+      // frame and the standing note has been "no sparks anywhere at any zoom" for three rounds. The
+      // shower is now born at 1.4–3.1 x the core radius — outside the fringe — thrown outward as
+      // well as backward, and lives long enough (life x2.0, gravity 3.2) to arc clear of the plume
+      // and cross the dark asphalt, which is the only place a spark can actually be seen.
+      const a = r.range(0, Math.PI * 2), rad = baseRad * gR * r.range(1.4, 3.1);
+      const back = r.range(fx.sparkSpeed[0], fx.sparkSpeed[1]) * gS;
       // rearward cone: lateral velocity is bounded by tan(cone) * axial speed
       const th = Math.sqrt(r.range(0, 1)) * cone;
       const lat = Math.tan(th) * back;
       this.streaks.emit(
-        n.base.x + Math.cos(a) * rad, n.base.y + Math.sin(a) * rad, n.base.z - r.range(0, baseLen * 0.45),
-        Math.cos(a) * lat * 1.25, Math.sin(a) * lat * 1.25 + r.range(-0.2, 0.9), -back,
-        r.range(fx.sparkLife[0], fx.sparkLife[1]) * 1.35,
-        fx.sparkWidth * r.range(0.6, 1.7),
+        n.base.x + Math.cos(a) * rad, n.base.y + Math.sin(a) * rad, n.base.z - r.range(0, baseLen * 0.80),
+        Math.cos(a) * (lat * 1.25 + 1.5), Math.sin(a) * (lat * 1.25 + 1.2) + r.range(0.1, 1.5), -back,
+        r.range(fx.sparkLife[0], fx.sparkLife[1]) * 2.0,
+        fx.sparkWidth * gR * r.range(0.6, 1.7),
         // Never pure white: the tonemap desaturates clipped highlights and the city grade then
         // tints them, which turned round 1's white embers ORANGE on the cyan tuner.
-        r.bool(0.30) ? this._hot : fx.spark,
-        r.range(0.42, 0.86) * (0.45 + 0.55 * s),
-        3.5,
+        r.bool(0.45) ? this._hot : fx.spark,
+        r.range(0.70, 1.15) * (0.45 + 0.55 * s),
+        3.2,
       );
     }
     // ---- light smear: a few wide, dim, long-lived streaks that smear the jet down the road ----
@@ -1215,34 +1735,49 @@ export class NitrousJet {
     while (this._sacc >= 1) {
       this._sacc -= 1;
       const n = this.nozzles[r.int(0, this.nozzles.length - 1)];
-      const a = r.range(0, Math.PI * 2), rad = r.range(0, 1) * baseRad * 0.8;
-      const back = r.range(fx.sparkSpeed[0] * 0.5, fx.sparkSpeed[1] * 0.7);
+      const a = r.range(0, Math.PI * 2), rad = r.range(0, 1) * baseRad * gR * 0.8;
+      const back = r.range(fx.sparkSpeed[0] * 0.5, fx.sparkSpeed[1] * 0.7) * gS;
       this.streaks.emit(
         n.base.x + Math.cos(a) * rad, n.base.y + Math.sin(a) * rad, n.base.z - baseLen * 0.35,
         Math.cos(a) * 0.6, Math.sin(a) * 0.5 + 0.4, -back,
-        r.range(0.26, 0.46), (fx.smearWidth ?? 0.35) * r.range(0.7, 1.3),
+        r.range(0.26, 0.46), (fx.smearWidth ?? 0.35) * gR * r.range(0.7, 1.3),
         r.bool(0.5) ? fx.mid : fx.spark,
         r.range(0.06, 0.16) * s, 0.6,
       );
     }
-    this.streaks.material.uniforms.uStretch.value = 0.026 + s * 0.010;
+    const su = this.streaks.material.uniforms;
+    su.uStretch.value = 0.034 + s * 0.014;
+    su.uMinLen.value = 0.20 * gS;
+    su.uMaxLen.value = 2.4 * gS;
     this.streaks.update(dt, 2.2, drift);
 
     // ---- ground pool ----
     // Its reach follows the plume, so the tint on the road grows and shrinks with the jet rather
     // than sitting there as a constant painted patch.
+    // The round-3 critic could not find it at all in the sustained frames: at 3.5 m wide and 0.30
+    // opacity, seen from 10 m up-and-back, it was a few dozen dim pixels under the car. It is now
+    // governed like the jet — it reaches as far down the road as the column does — and carries
+    // half again the density, so the road under the boost is visibly stained with the class tint.
+    // ...and round 4 then over-corrected: governed to the same reach as the column and sitting
+    // directly under it, the pool stopped reading as light ON the road and became a second flame
+    // lying flat on it — the two superimposed into one wide low smear with no layer separation
+    // (ablation: hiding the shells left an orange band on the asphalt the same length and shape as
+    // the jet). A spill is BROADER and SHORTER than the thing casting it: it now reaches about
+    // half as far down the road and spreads wider than the plume envelope, so the structured jet
+    // sits IN FRONT of a soft glow instead of inside it.
     const pm = this.pool.material;
-    pm.opacity = clamp(s * 0.30 * flick + igBloom * 0.26, 0, 0.72);
+    pm.opacity = clamp(s * 0.19 * flick + igBloom * 0.18, 0, 0.44);
     this.pool.scale.set(
-      fx.poolWidth * this.scale * (0.7 + 0.3 * s) * (1 + surge * 0.30),
+      fx.poolWidth * this.scale * (0.95 + 0.30 * gR) * (0.80 + 0.20 * s) * (1 + surge * 0.30),
       1,
-      fx.poolLen * this.scale * (0.42 + 0.58 * lenDrive) * (1 + surge * 0.35),
+      fx.poolLen * this.scale * (0.30 + 0.34 * gL * lenDrive) * (1 + surge * 0.30),
     );
     // keep it flat on the road and aligned with the car's heading, whatever the body is doing
     this.group.getWorldPosition(_v);
     this.group.getWorldQuaternion(_q);
     _e.setFromQuaternion(_q, 'YXZ');
-    _q2.setFromEuler(new THREE.Euler(0, _e.y, 0, 'YXZ'));
+    _e.set(0, _e.y, 0, 'YXZ');           // heading only — reuse the scratch, don't allocate here
+    _q2.setFromEuler(_e);
     this.pool.quaternion.copy(_q).invert().multiply(_q2);
     _v2.set(_v.x, 0.055, _v.z);
     this.pool.position.copy(this.group.worldToLocal(_v2));
@@ -1250,16 +1785,23 @@ export class NitrousJet {
     // ---- bodywork spill ----
     // Roughly half of round 2. The rear panel should be LIT by the jet, with the taillight
     // housings and diffuser picked out; at the old intensity it was a flat blown card.
-    this.light.intensity = (s * fx.lightI * 0.52 * flick + igFlash * fx.lightI * 1.0 + igBloom * fx.lightI * 0.30);
-    this.light.distance = 11 + s * 5;
+    // (r5) Up from 0.50: the REAL light is what should be staining the asphalt behind the car, not
+    // an additive decal — a point light has no edges, falls off correctly, and lights the rear
+    // panel, the diffuser, the tyres and the road in one pass. Raising it let the painted ground
+    // pool drop to a soft supporting glow instead of being the whole ground-spill story.
+    this.light.intensity = (s * fx.lightI * 0.86 * flick + igFlash * fx.lightI * 1.2 + igBloom * fx.lightI * 0.40);
+    this.light.distance = (13 + s * 6) * (0.82 + 0.24 * gL);
 
     // ---- heat haze strength handed to the grade pass ----
-    this.heat = clamp((s * 0.95 + igBloom * 0.60) * (fx.heat ?? 1), 0, 1.5);
+    // (r6) 40% down. Everything nitrous does to the frame is now deliberately quieter than the jet
+    // itself: the standing note is that the plume is indistinguishable from its own screen effects.
+    this.heat = clamp((s * 0.58 + igBloom * 0.40) * (fx.heat ?? 1), 0, 1.5);
   }
 
   dispose() {
     this.streaks.dispose();
     for (const m of this.shellMats) m.dispose();
+    for (const m of this.coreMats) m.dispose();
     this.pool.geometry.dispose(); this.pool.material.dispose();
     for (const n of this.nozzles) {
       n.disc.geometry.dispose(); n.disc.material.dispose();
