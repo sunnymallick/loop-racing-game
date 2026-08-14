@@ -1,4 +1,4 @@
-import { drawText, drawSevenSeg, measure, gradientFill } from '../core/font.js';
+import { drawText, drawSevenSeg, measure, measureSevenSeg, gradientFill } from '../core/font.js';
 import { clamp, lerp, smoothstep } from '../core/rng.js';
 
 /**
@@ -26,6 +26,33 @@ import { clamp, lerp, smoothstep } from '../core/rng.js';
  * Rasterisation (§7 "aliased, jaggy text or UI edges" → cap 68): the whole HUD is drawn into a
  * backbuffer at SS × CSS pixels and box-filtered down on composite, so every edge — type, plate
  * edges, gauge ticks, needle — gets a real gradient rather than Canvas2D's one-pixel blend step.
+ *
+ * COST — read this before you add a glow
+ * --------------------------------------
+ * Measured on an M1 Pro at 1600×900: this HUD used to issue ~140 non-zero canvas2D `shadowBlur`
+ * assignments per frame into the supersampled backbuffer, and they were the ENTIRE cost of the
+ * piece — ~37 ms of a 45 ms frame. Forcing shadowBlur to 0 on the backbuffer context took the game
+ * from 22 fps to 120 (the display cap): exactly as fast as deleting the HUD outright. Everything
+ * else — the 1360-call scene behind it, the 9.2 Mpx clear, the high-quality downscale, every path,
+ * gradient and glyph — came to under 1 ms combined. Note that patching only the *visible* canvas
+ * context moves nothing, because the HUD draws into `bctx`; that is why the shadowBlur lead looks
+ * false if you measure it that way.
+ *
+ * The bill is per-operation as well as per-radius — forcing every radius to 0.01 still left 9 ms on
+ * the table — so shrinking the glows does not help. The operations themselves have to go. Two
+ * mechanisms do that here, and between them they carry the HUD's glows for ~12 blurred ops a frame:
+ *
+ *   · `_patch()`  — art that is not changing this frame is rendered ONCE into an offscreen canvas
+ *                   at exactly the backbuffer's resolution and blitted back with the identity
+ *                   transform at an integer device pixel. That is a bit-exact copy: no resampling,
+ *                   no blur, one op. See the note on ordering above `_patch`.
+ *   · `_seg()`    — the two seven-segment clocks re-drew ~62 blurred fills per frame between them
+ *                   (seven segments per digit, each one glowed) and they change every frame, so no
+ *                   static cache can catch them. Instead each *character* is baked once, glow and
+ *                   all, and the clock is blitted a character at a time.
+ *
+ * If you add art here, put it in a `_patch` unless it genuinely changes every frame, and if it
+ * does, give it a glow only if you are willing to spend ~0.25 ms of the frame budget on it.
  */
 
 const CYAN = '#39d7f2';
@@ -55,6 +82,10 @@ const GR = {
 };
 const SKEW = GR.SHEAR;
 const RAIL = GR.RAIL;
+
+// Seven-segment character sprites held at once (see _seg). One digit per glow step per display is
+// well under this, so the live set is never evicted.
+const GLYPH_CAP = 128;
 
 const SS = 3;               // HUD backbuffer supersample, in samples per CSS pixel
 const SS_MAX_EDGE = 4096;   // …never wider than the common GPU texture limit: a 2D canvas past
@@ -223,11 +254,149 @@ export class HUD {
     this.msg = null;       // ONE centre-screen slot…
     this.msgQueue = [];    // …everything else waits its turn
     this.t = 0;
+    this._patches = new Map();   // id → cached static art, see _patch()
+    this._glyphs = new Map();    // seven-segment character sprites, see _seg()
+    this._res = 1;               // device pixels per design unit, set every draw()
     this.resize();
+  }
+
+  // ------------------------------------------------------------- the static-art cache
+  //
+  // ORDERING. Source-over compositing is associative, so baking a run of draws into a transparent
+  // layer and compositing that layer is pixel-identical to issuing the same draws straight onto the
+  // destination — PROVIDED the run order survives. It does not survive if you bake "everything
+  // static" and then draw "everything live" on top: a static wash that originally covered a live
+  // glow would end up underneath it. (Concretely: the race clock's glow bleeds ~5 px up out of its
+  // deck, and the deck above it is a static tint. Bake all the tints first and that bleed stops
+  // being painted over.) So the static art is split into several patches that are called from the
+  // same points in the draw order the original code drew them, never hoisted.
+  //
+  // Anything that changes must be in `key`, or the HUD silently freezes — which is a far worse bug
+  // than a slow HUD. Flash and pulse states are deliberately NOT in any key: an element that is
+  // mid-flash is drawn live instead, because a key that changes every frame is a cache that costs
+  // more than it saves.
+
+  /**
+   * Draw a run of STATIC art through an offscreen cache.
+   *
+   * @param id       stable identity of this run — one cached canvas per id
+   * @param x,y,w,h  bounds in the space `paint` draws in, generous enough to hold its shadows/glows
+   * @param key      everything the art depends on; when it changes the patch is repainted
+   * @param paint    (ctx) => void, drawing at exactly the coordinates the live path would use
+   * @param o.ox,oy  design-space origin of that space, when the caller has translated the context
+   *                 (the speedo draws about the dial's centre). Baked in, so it must not animate.
+   * @param o.tx,ty  blit-only offset for a slide, snapped to a whole device pixel so that an
+   *                 animating position can never invalidate the patch
+   * @param o.alpha  blit alpha (group opacity — only for whole-cluster fades and the pip breath)
+   */
+  _patch(ctx, id, x, y, w, h, key, paint, o = {}) {
+    const res = this._res;
+    const ox = o.ox || 0, oy = o.oy || 0;
+    const dx = Math.floor((x + ox) * res), dy = Math.floor((y + oy) * res);
+    const cw = Math.max(1, Math.ceil((x + ox + w) * res) - dx);
+    const ch = Math.max(1, Math.ceil((y + oy + h) * res) - dy);
+    let p = this._patches.get(id);
+    if (!p) { p = { canvas: document.createElement('canvas'), ctx: null }; this._patches.set(id, p); }
+    const full = `${key}|${res}|${cw}x${ch}|${dx},${dy}`;
+    if (p.key !== full) {
+      if (p.canvas.width !== cw || p.canvas.height !== ch) {
+        p.canvas.width = cw; p.canvas.height = ch;          // reallocating also clears
+        p.ctx = p.canvas.getContext('2d');
+      } else {
+        p.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        p.ctx.clearRect(0, 0, cw, ch);
+      }
+      // identical mapping to the live path: local → device, minus the patch's device origin
+      p.ctx.setTransform(res, 0, 0, res, ox * res - dx, oy * res - dy);
+      paint(p.ctx);
+      p.key = full; p.dx = dx; p.dy = dy;
+    }
+    // Blit under the identity transform at the exact device pixel it was baked for, so this is a
+    // straight copy rather than a resample — the type stays as crisp as a direct draw.
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (o.alpha != null) ctx.globalAlpha *= o.alpha;
+    ctx.drawImage(p.canvas,
+      p.dx + (o.tx ? Math.round(o.tx * res) : 0),
+      p.dy + (o.ty ? Math.round(o.ty * res) : 0));
+    ctx.restore();
+  }
+
+  /** Drop every cached canvas — the resolution changed, so nothing baked is reusable. */
+  _flushCache() {
+    this._patches.clear();
+    this._glyphs.clear();
+  }
+
+  /**
+   * Seven-segment text, one cached sprite per character.
+   *
+   * `drawSevenSeg` glows each lit segment individually, so a `MM:SS:CS` clock costs ~30 blurred
+   * fills — and it re-costs them every frame, because the centiseconds change every frame. The
+   * character set is tiny and each character is identical wherever it appears, so each one is baked
+   * once (glow included) and blitted.
+   *
+   * The sprite is baked at the sub-pixel phase of the slot it lands in and blitted at an integer
+   * device pixel, so digits keep the exact even spacing a seven-segment display lives or dies by.
+   */
+  _seg(ctx, text, o) {
+    const { x = 0, y = 0, size = 40, color = '#ff2e2e', dim = 0.12, tracking = 0.20,
+      italic = 0.06, glow = 10, align = 'left', dimColor = null } = o;
+    const str = String(text);
+    const res = this._res;
+    // metrics straight from the font module, so this can never drift out of step with drawSevenSeg
+    const adv = measureSevenSeg('0', { size, tracking: 0 }) + size * tracking;
+    const punct = measureSevenSeg(':', { size, tracking: 0 });
+    let total = 0;
+    for (const ch of str) total += (ch === ':' || ch === '.') ? punct : adv;
+    total -= size * tracking;
+    let cx = align === 'center' ? x - total / 2 : align === 'right' ? x - total : x;
+
+    // Generous local bounds: the glyph box plus the italic lean plus the glow's falloff.
+    const pad = glow * 1.6 + 3;
+    const bx = -pad, by = -size * 1.08 - pad;
+    const bw = (0.72 + italic) * size + pad * 2, bh = size * 1.2 + pad * 2;
+    const PH = 8;                    // sub-pixel phases per axis; 1/16 px of placement error
+
+    for (const ch of str) {
+      const fx = (cx + bx) * res, fy = (y + by) * res;
+      const ix = Math.floor(fx), iy = Math.floor(fy);
+      const phx = Math.round((fx - ix) * PH) / PH, phy = Math.round((fy - iy) * PH) / PH;
+      const key = `${ch}|${size}|${color}|${dimColor}|${dim}|${italic}|${glow}|${res}|${phx}|${phy}`;
+      let sp = this._glyphs.get(key);
+      if (sp) {
+        // touch: a Map iterates in insertion order, so re-inserting makes this the newest entry
+        this._glyphs.delete(key); this._glyphs.set(key, sp);
+      } else {
+        const c = document.createElement('canvas');
+        c.width = Math.ceil(bw * res) + 2; c.height = Math.ceil(bh * res) + 2;
+        const sc = c.getContext('2d');
+        sc.setTransform(res, 0, 0, res, -bx * res + phx, -by * res + phy);
+        drawSevenSeg(sc, ch, { x: 0, y: 0, size, color, dim, tracking, italic, glow, align: 'left', dimColor });
+        sp = c;
+        // Bounded LRU rather than a wholesale clear. The live working set is one glyph per digit
+        // per glow step — under a hundred sprites — so this never evicts anything in use, but it
+        // does stop a long race in the pulsing "over the record" state from accumulating a variant
+        // of all ten digits at every glow step it has ever passed through.
+        this._glyphs.set(key, sp);
+        while (this._glyphs.size > GLYPH_CAP) {
+          const oldest = this._glyphs.keys().next().value;
+          this._glyphs.delete(oldest);
+        }
+      }
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(sp, ix, iy);
+      ctx.restore();
+      cx += (ch === ':' || ch === '.') ? punct : adv;
+    }
   }
 
   resize(w, h) {
     const W = w || window.innerWidth, H = h || window.innerHeight;
+    // Everything in the cache was rasterised for the old backbuffer resolution and for layout at
+    // the old size. None of it is reusable, and a stale HUD is worse than a slow one.
+    this._flushCache();
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.scale = Math.max(this.dpr, Math.min(
       SS,
@@ -294,6 +463,9 @@ export class HUD {
     ctx.save();
     ctx.scale(k, k);
     const VW = W / k, VH = H / k;
+    // device pixels per design unit — the resolution every cached patch and sprite is baked at
+    const res = scale * k;
+    if (res !== this._res) { this._res = res; this._flushCache(); }
 
     this._drawChassis(ctx, s);
     this._drawCityBanner(ctx, s, VW - GR.M, GR.TOP);
@@ -392,6 +564,14 @@ export class HUD {
     return { x: GR.M, y: GR.TOP, w: GR.COLW, h, decks, rows };
   }
 
+  /**
+   * The chassis was the single most expensive thing on screen — 65 blurred ops a frame, half of
+   * them the race clock's. Two things in it actually move: the clock and the lap pips. Everything
+   * else is repainted only when the position, lap or standings change, so it is split into three
+   * patches that bracket the live art in the original draw order. The seven-segment clock's halo
+   * bleeds a few pixels up out of its own deck and the lit pips' halo bleeds down out of theirs, so
+   * the decks below them cannot be hoisted into one layer — hence three, not one.
+   */
   _drawChassis(ctx, s) {
     const R = this._chassisRect(s);
     const { x, y, w, h, decks } = R;
@@ -401,30 +581,57 @@ export class HUD {
     const lx = (yy) => x + (h - (yy - y)) * SKEW;
     R.lx = lx;
 
-    panel(ctx, x, y, w, h, {
-      fill: ['rgba(19,25,35,0.91)', 'rgba(5,8,13,0.87)'],
-      edge: `rgba(160,196,224,${0.24 + f * 0.35})`,
-      accent: [
-        [0, ORANGE], [decks[0] / h * 0.98, `rgba(255,146,20,${0.9})`],
-        [decks[0] / h, CYAN], [1, 'rgba(20,120,150,0.9)'],
-      ],
-      glow: 9 + f * 22,
-    });
+    const y1 = y + decks[0], y2 = y1 + decks[1], y3 = y2 + decks[2];
+    // A flash repaints a plate's edge, its deck wash, the rail glow and the numeral's halo all at
+    // once. Keying a cache on a value that changes every frame would repaint it every frame and
+    // cost more than it saves, so a flashing deck is drawn live instead — but ONLY that deck. The
+    // standings are the most expensive part of this cluster by far (two glowed labels a row, plus
+    // the leader chip) and they do not react to either flash, so they stay cached throughout.
+    const posLive = f > 0.02;
+    const lapLive = this.lapFlash > 0.02;
+    const P = 40;
+    const rowSig = (s.standings || []).slice(0, 8).map((r) => `${r.name}${r.you ? '*' : ''}`).join(',');
+    const sig = `${x}|${y}|${w}|${h}|${s.position}|${s.totalRacers}|${s.lap}|${s.laps}|${rowSig}`;
+    const via = (id, live, bx, by, bw, bh, paint) => (live
+      ? paint(ctx)
+      : this._patch(ctx, id, bx, by, bw, bh, sig, paint));
 
-    let yy = y;
-    // deck bodies: each deck is tinted a little differently so the chassis has internal structure
-    // without ever breaking into separate plates. Always inset past the rail — the rail is the one
-    // element that must run the full height uninterrupted.
-    this._tint(ctx, R, yy, decks[0], `rgba(${62 + f * 90},${48 + f * 30},30,${0.72 + f * 0.28})`, 'rgba(10,12,17,0.05)');
-    this._deckPosition(ctx, s, R, yy, decks[0]); yy += decks[0];
-    this._tint(ctx, R, yy, decks[1], 'rgba(8,26,34,0.55)', 'rgba(4,10,16,0.30)');
-    this._rule(ctx, R, yy, CYAN); this._deckClock(ctx, s, R, yy, decks[1]); yy += decks[1];
-    this._tint(ctx, R, yy, decks[2], 'rgba(24,28,38,0.45)', 'rgba(10,13,19,0.25)');
-    this._rule(ctx, R, yy, this.lapFlash > 0.02 ? AMBER : CYAN); this._deckLap(ctx, s, R, yy, decks[2]); yy += decks[2];
-    if (decks[3]) {
-      this._tint(ctx, R, yy, decks[3], 'rgba(0,0,0,0.30)', 'rgba(0,0,0,0.36)');
-      this._rule(ctx, R, yy, CYAN); this._deckStandings(ctx, s, R, yy, decks[3]);
-    }
+    // ---- deck bodies: each deck is tinted a little differently so the chassis has internal
+    // structure without ever breaking into separate plates. Always inset past the rail — the rail
+    // is the one element that must run the full height uninterrupted.
+    via('chassisA', posLive, x - P, y - P, w + h * SKEW + P * 2, h + P * 2, (c) => {
+      panel(c, x, y, w, h, {
+        fill: ['rgba(19,25,35,0.91)', 'rgba(5,8,13,0.87)'],
+        edge: `rgba(160,196,224,${0.24 + f * 0.35})`,
+        accent: [
+          [0, ORANGE], [decks[0] / h * 0.98, `rgba(255,146,20,${0.9})`],
+          [decks[0] / h, CYAN], [1, 'rgba(20,120,150,0.9)'],
+        ],
+        glow: 9 + f * 22,
+      });
+      this._tint(c, R, y, decks[0], `rgba(${62 + f * 90},${48 + f * 30},30,${0.72 + f * 0.28})`, 'rgba(10,12,17,0.05)');
+      this._deckPosition(c, s, R, y, decks[0]);
+      this._tint(c, R, y1, decks[1], 'rgba(8,26,34,0.55)', 'rgba(4,10,16,0.30)');
+      this._rule(c, R, y1, CYAN);
+      this._deckClockLabel(c, R, y1, decks[1]);
+    });
+    this._deckClockDigits(ctx, s, R, y1, decks[1]);
+
+    via('chassisB', lapLive, x - P, y2 - P, w + h * SKEW + P * 2, decks[2] + P * 2, (c) => {
+      this._tint(c, R, y2, decks[2], 'rgba(24,28,38,0.45)', 'rgba(10,13,19,0.25)');
+      this._rule(c, R, y2, this.lapFlash > 0.02 ? AMBER : CYAN);
+      this._deckLap(c, s, R, y2, decks[2]);
+    });
+    this._lapPips(ctx, s, R, y2, decks[2], lapLive);
+
+    via('chassisC', false, x - P, y2, w + h * SKEW + P * 2, decks[2] + decks[3] + P, (c) => {
+      this._lapPipFrames(c, s, R, y2, decks[2]);
+      if (decks[3]) {
+        this._tint(c, R, y3, decks[3], 'rgba(0,0,0,0.30)', 'rgba(0,0,0,0.36)');
+        this._rule(c, R, y3, CYAN);
+        this._deckStandings(c, s, R, y3, decks[3]);
+      }
+    });
   }
 
   /** Deck body wash, clipped to the chassis and inset past the rail. */
@@ -506,11 +713,15 @@ export class HUD {
     }
   }
 
-  _deckClock(ctx, s, R, y, h) {
+  /** The RACE caption — static; the digits beside it are the only part that ticks. */
+  _deckClockLabel(ctx, R, y, h) {
     const base = y + h - 13;
-    const L = R.lx(base) + RAIL;
-    label(ctx, 'RACE', L + GR.PAD, base - 1, 10, CYAN_DIM, { tracking: 0.3 });
-    drawSevenSeg(ctx, fmtTime(s.raceTime || 0), {
+    label(ctx, 'RACE', R.lx(base) + RAIL + GR.PAD, base - 1, 10, CYAN_DIM, { tracking: 0.3 });
+  }
+
+  _deckClockDigits(ctx, s, R, y, h) {
+    const base = y + h - 13;
+    this._seg(ctx, fmtTime(s.raceTime || 0), {
       x: R.lx(base) + R.w - GR.PAD - 5, y: base, size: 22, color: CYAN, align: 'right', glow: 10,
       italic: 0.14, dim: 0.10, dimColor: 'rgba(90,150,175,1)',
     });
@@ -528,17 +739,52 @@ export class HUD {
       color: f > 0.02 ? '#fff6df' : PAPER, glow: f > 0.02 ? { color: AMBER, blur: 18 * f } : null,
     });
     label(ctx, `/${laps}`, L + GR.PAD + 56, base, 11, 'rgba(150,172,196,0.8)', { tracking: 0.06 });
+  }
 
-    // pips: one per lap, lit as they are completed — same shear as the plates
+  /** Geometry of pip `i` — shared by the lit fill and the frame drawn over it. */
+  _pipRect(s, R, y, h, i) {
+    const laps = s.laps || 3;
+    const py = y + 8, ph = h - 16;
+    return { px: R.lx(py + ph) + R.w - GR.PAD - 11 - (laps - 1 - i) * 17, py, ph, w: 11 };
+  }
+
+  /**
+   * Pips: one per lap, lit as they are completed.
+   *
+   * The completed and unlit pips are fixed art and are cached. The CURRENT lap's pip breathes, and
+   * it is the one thing in this HUD that cannot be faked with a cached sprite and a blit alpha:
+   * its fill is translucent and sits directly on top of its own glow, so painting it at full
+   * strength into a layer and fading the layer (group opacity) hides the halo that the original
+   * lets show through the ink (per-element opacity). It is one blurred op — spend it.
+   */
+  _lapPips(ctx, s, R, y, h, live) {
+    const laps = s.laps || 3;
+    const lap = clamp(s.lap || 1, 1, laps);
+    const breath = 0.35 + 0.25 * Math.sin(this.beat * 5);
     for (let i = 0; i < laps; i++) {
-      const py = y + 8, ph = h - 16;
-      const px = R.lx(py + ph) + R.w - GR.PAD - 11 - (laps - 1 - i) * 17;
+      const { px, py, ph, w } = this._pipRect(s, R, y, h, i);
       const done = i < lap - 1, cur = i === lap - 1;
-      platePath(ctx, px, py, 11, ph, SKEW);
-      ctx.fillStyle = done ? AMBER : cur ? `rgba(255,194,61,${0.35 + 0.25 * Math.sin(this.beat * 5)})` : 'rgba(255,255,255,0.12)';
-      if (done || cur) { ctx.shadowBlur = 10; ctx.shadowColor = AMBER; }
-      ctx.fill(); ctx.shadowBlur = 0;
-      platePath(ctx, px, py, 11, ph, SKEW);
+      const paint = (c) => {
+        platePath(c, px, py, w, ph, SKEW);
+        c.fillStyle = done ? AMBER : cur ? `rgba(255,194,61,${breath})` : 'rgba(255,255,255,0.12)';
+        if (done || cur) { c.shadowBlur = 10; c.shadowColor = AMBER; }
+        c.fill(); c.shadowBlur = 0;
+      };
+      if (live || cur) paint(ctx);
+      else {
+        const P = 18;
+        this._patch(ctx, `pip${i}`, px - P, py - P, w + ph * SKEW + P * 2, ph + P * 2,
+          `${done}|${px}|${py}|${ph}`, paint);
+      }
+    }
+  }
+
+  /** The pip frames sit OVER the lit fills, so they are baked with the deck below them, not above. */
+  _lapPipFrames(ctx, s, R, y, h) {
+    const laps = s.laps || 3;
+    for (let i = 0; i < laps; i++) {
+      const { px, py, ph, w } = this._pipRect(s, R, y, h, i);
+      platePath(ctx, px, py, w, ph, SKEW);
       ctx.strokeStyle = 'rgba(255,255,255,0.20)'; ctx.lineWidth = 1; ctx.stroke();
     }
   }
@@ -592,14 +838,23 @@ export class HUD {
 
   // ---------------------------------------------------------------- top band, right
 
+  // The banner never animates: it is the same art from lights-out to the flag, and only a city or
+  // record change can alter it. It is the cheapest thing in the HUD to cache and one of the more
+  // expensive to draw (6 blurred ops), so the whole cluster goes in one patch.
   _drawCityBanner(ctx, s, xRight, y) {
     if (!s.cityName) return;
     const size = 22;
     const name = String(s.cityName).toUpperCase();
     const tw = measure(name, { size, tracking: 0.13 }).width;
     const w = Math.max(226, tw + 60), h = GR.BAND;      // same 64 px band as the position deck
-    const nameH = 38;
     const x = xRight - w;                                // bottom-right corner on the margin
+    const P = 34;
+    this._patch(ctx, 'banner', x - P, y - P, w + h * SKEW + P * 2, h + P * 2,
+      `${name}|${s.record}|${x}|${y}|${w}`, (c) => this._paintCityBanner(c, s, x, y, w, h, name, size));
+  }
+
+  _paintCityBanner(ctx, s, x, y, w, h, name, size) {
+    const nameH = 38;
     const lx = (yy) => x + (h - (yy - y)) * SKEW;
 
     panel(ctx, x, y, w, h, {
@@ -668,50 +923,66 @@ export class HUD {
     const p = counting ? this.countPulse : (urgent ? 0.4 + 0.4 * Math.sin(this.beat * 8) : 0);
     const col = urgent ? RED : '#ff9b3c';
 
-    panel(ctx, x, y, w, h, {
-      fill: ['rgba(21,12,12,0.94)', 'rgba(3,4,7,0.93)'],
-      edge: `rgba(255,110,70,${0.30 + p * 0.5})`, accent: col, glow: 9 + p * 24,
-    });
-
-    // caption deck across the top, tinted so it separates from the digit window below
-    ctx.save();
-    platePath(ctx, x, y, w, h); ctx.clip();
-    platePath(ctx, x + (h - head) * SKEW + RAIL, y, w - RAIL, head);
-    const hg = ctx.createLinearGradient(0, y, 0, y + head);
-    hg.addColorStop(0, urgent ? 'rgba(92,22,15,0.95)' : 'rgba(62,34,15,0.92)');
-    hg.addColorStop(1, 'rgba(12,8,8,0.55)');
-    ctx.fillStyle = hg; ctx.fill();
-    ctx.restore();
-    ctx.beginPath();
-    ctx.moveTo(lx(y + head) + RAIL, y + head - 0.5);
-    ctx.lineTo(lx(y + head) + w, y + head - 0.5);
-    ctx.strokeStyle = `rgba(255,150,100,${0.35 + p * 0.35})`; ctx.lineWidth = 1;
-    ctx.stroke();
-
-    label(ctx, cap, lx(y + head - 6) + RAIL + GR.PAD, y + head - 6, 9.5,
-      over ? 'rgba(255,140,118,0.98)' : 'rgba(255,204,164,0.94)', { tracking: 0.3 });
-    if (ref) {
-      label(ctx, ref, lx(y + head - 6) + w - GR.PAD, y + head - 6, 9.5,
-        'rgba(196,214,232,0.75)', { align: 'right', tracking: 0.1 });
-    }
-
     // inset glass window for the digits
     const wy = y + head + 4, wh = h - head - 9, wx = lx(wy + wh) + RAIL + 6;
     const ww = w - RAIL - 18;
-    platePath(ctx, wx, wy, ww, wh);
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fill();
-    ctx.save();
-    platePath(ctx, wx, wy, ww, wh); ctx.clip();
-    platePath(ctx, wx, wy, ww, wh);
-    ctx.shadowBlur = 7; ctx.shadowColor = 'rgba(0,0,0,0.9)';
-    ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineWidth = 3; ctx.stroke();
-    ctx.restore();
-    platePath(ctx, wx, wy, ww, wh);
-    ctx.strokeStyle = `rgba(255,140,90,${0.20 + p * 0.30})`; ctx.lineWidth = 1; ctx.stroke();
 
-    drawSevenSeg(ctx, txt, {
+    // The plate is the same art from frame to frame unless the pulse is running, and the pulse only
+    // runs during the countdown, inside the last ten seconds of the target, or once you are over it.
+    // Rather than key the cache on a continuously-varying pulse — a cache that repaints every frame
+    // costs more than it saves — the plate is simply drawn live while it is pulsing.
+    const paintPlate = (c) => {
+      panel(c, x, y, w, h, {
+        fill: ['rgba(21,12,12,0.94)', 'rgba(3,4,7,0.93)'],
+        edge: `rgba(255,110,70,${0.30 + p * 0.5})`, accent: col, glow: 9 + p * 24,
+      });
+
+      // caption deck across the top, tinted so it separates from the digit window below
+      c.save();
+      platePath(c, x, y, w, h); c.clip();
+      platePath(c, x + (h - head) * SKEW + RAIL, y, w - RAIL, head);
+      const hg = c.createLinearGradient(0, y, 0, y + head);
+      hg.addColorStop(0, urgent ? 'rgba(92,22,15,0.95)' : 'rgba(62,34,15,0.92)');
+      hg.addColorStop(1, 'rgba(12,8,8,0.55)');
+      c.fillStyle = hg; c.fill();
+      c.restore();
+      c.beginPath();
+      c.moveTo(lx(y + head) + RAIL, y + head - 0.5);
+      c.lineTo(lx(y + head) + w, y + head - 0.5);
+      c.strokeStyle = `rgba(255,150,100,${0.35 + p * 0.35})`; c.lineWidth = 1;
+      c.stroke();
+
+      label(c, cap, lx(y + head - 6) + RAIL + GR.PAD, y + head - 6, 9.5,
+        over ? 'rgba(255,140,118,0.98)' : 'rgba(255,204,164,0.94)', { tracking: 0.3 });
+      if (ref) {
+        label(c, ref, lx(y + head - 6) + w - GR.PAD, y + head - 6, 9.5,
+          'rgba(196,214,232,0.75)', { align: 'right', tracking: 0.1 });
+      }
+
+      platePath(c, wx, wy, ww, wh);
+      c.fillStyle = 'rgba(0,0,0,0.55)'; c.fill();
+      c.save();
+      platePath(c, wx, wy, ww, wh); c.clip();
+      platePath(c, wx, wy, ww, wh);
+      c.shadowBlur = 7; c.shadowColor = 'rgba(0,0,0,0.9)';
+      c.strokeStyle = 'rgba(0,0,0,0.85)'; c.lineWidth = 3; c.stroke();
+      c.restore();
+      platePath(c, wx, wy, ww, wh);
+      c.strokeStyle = `rgba(255,140,90,${0.20 + p * 0.30})`; c.lineWidth = 1; c.stroke();
+    };
+    if (p > 0.02) paintPlate(ctx);
+    else {
+      const P = 34;
+      this._patch(ctx, 'clock', x - P, y - P, w + h * SKEW + P * 2, h + P * 2,
+        `${cap}|${ref}|${urgent}|${over}|${col}|${x}|${y}|${w}`, paintPlate);
+    }
+
+    // Quantised so the pulse cannot thrash the sprite cache: a 3 px step on a 12–30 px halo is
+    // invisible behind digits this bright, and the plate's rail carries the pulse anyway. p === 0
+    // lands exactly on the unpulsed 12, which is the state the clock spends most of a race in.
+    this._seg(ctx, txt, {
       x: wx + ww / 2 - 1, y: wy + wh - 6, size: 27, color: col, align: 'center',
-      glow: 12 + p * 18, italic: 0.12, dim: 0.11, dimColor: 'rgba(110,44,30,1)',
+      glow: 12 + Math.round(p * 6) * 3, italic: 0.12, dim: 0.11, dimColor: 'rgba(110,44,30,1)',
     });
 
     // record-progress rail along the foot of the plate: how much of the target time is spent
@@ -747,18 +1018,22 @@ export class HUD {
     const yw = 254, yTop = cy + R * 0.74;
     const yh = barY - yTop + 8;
     const yx = cx - yw / 2 - yh * SKEW * 0.5;
-    panel(ctx, yx, yTop, yw, yh, {
-      fill: ['rgba(14,19,27,0.86)', 'rgba(6,9,14,0.9)'],
-      edge: 'rgba(150,190,220,0.18)', accent: null, shadow: 0.4,
-    });
-    // bolt heads either side, at the same inset as the strip's gear chip
-    for (const sx of [-1, 1]) {
-      const bxp = cx + sx * (yw * 0.5 - 13) - yh * SKEW * 0.18, byp = yTop + 13;
-      ctx.beginPath(); ctx.arc(bxp, byp, 3.2, 0, TAU);
-      const bg = ctx.createLinearGradient(bxp - 3, byp - 3, bxp + 3, byp + 3);
-      bg.addColorStop(0, 'rgba(190,208,224,0.85)'); bg.addColorStop(1, 'rgba(40,50,62,0.9)');
-      ctx.fillStyle = bg; ctx.fill();
-    }
+    const P = 30;
+    this._patch(ctx, 'yoke', yx - P, yTop - P, yw + yh * SKEW + P * 2, yh + P * 2,
+      `${yx}|${yTop}|${yw}|${yh}`, (c) => {
+        panel(c, yx, yTop, yw, yh, {
+          fill: ['rgba(14,19,27,0.86)', 'rgba(6,9,14,0.9)'],
+          edge: 'rgba(150,190,220,0.18)', accent: null, shadow: 0.4,
+        });
+        // bolt heads either side, at the same inset as the strip's gear chip
+        for (const sx of [-1, 1]) {
+          const bxp = cx + sx * (yw * 0.5 - 13) - yh * SKEW * 0.18, byp = yTop + 13;
+          c.beginPath(); c.arc(bxp, byp, 3.2, 0, TAU);
+          const bg = c.createLinearGradient(bxp - 3, byp - 3, bxp + 3, byp + 3);
+          bg.addColorStop(0, 'rgba(190,208,224,0.85)'); bg.addColorStop(1, 'rgba(40,50,62,0.9)');
+          c.fillStyle = bg; c.fill();
+        }
+      });
 
     this._drawSpeedo(ctx, s, cx, cy, R);
     this._drawNitro(ctx, s, barX, barY, barW, barH);
@@ -774,87 +1049,95 @@ export class HUD {
     const angOf = (v) => a0 + (a1 - a0) * clamp(v / MAX, 0, 1.02);
     const boost = this.boostPulse;
 
+    const AR = R * 0.845, AW = R * 0.062;
+    const O = { ox: cx, oy: cy };
+
     ctx.save();
     ctx.translate(cx, cy);
 
-    scrim(ctx, 0, 0, R * 1.55, 0.55);
+    // ---- the dial as a manufactured object: scrim, bezel, knurling, face, hatch, gloss and the
+    // two fixed arcs. None of it has ever changed between frames; it is the single largest run of
+    // static art in the HUD (a 60-cut knurl, a 96-line brushed hatch and a glowing redline arc).
+    this._patch(ctx, 'dialFace', -R * 1.6, -R * 1.6, R * 3.2, R * 3.2, `${R}`, (c) => {
+      scrim(c, 0, 0, R * 1.55, 0.55);
 
-    // ---- bezel: metal annulus with a light source top-left
-    ctx.beginPath();
-    ctx.arc(0, 0, R, 0, TAU);
-    ctx.arc(0, 0, R * 0.90, 0, TAU, true);
-    const rim = ctx.createLinearGradient(-R * 0.7, -R, R * 0.7, R);
-    rim.addColorStop(0, '#b9c9d8'); rim.addColorStop(0.16, '#5d6e7f');
-    rim.addColorStop(0.30, '#1d2732');
-    rim.addColorStop(0.55, '#5a6c7e'); rim.addColorStop(0.80, '#131a22');
-    rim.addColorStop(1, '#46545f');
-    ctx.fillStyle = rim; ctx.fill();
+      // bezel: metal annulus with a light source top-left
+      c.beginPath();
+      c.arc(0, 0, R, 0, TAU);
+      c.arc(0, 0, R * 0.90, 0, TAU, true);
+      const rim = c.createLinearGradient(-R * 0.7, -R, R * 0.7, R);
+      rim.addColorStop(0, '#b9c9d8'); rim.addColorStop(0.16, '#5d6e7f');
+      rim.addColorStop(0.30, '#1d2732');
+      rim.addColorStop(0.55, '#5a6c7e'); rim.addColorStop(0.80, '#131a22');
+      rim.addColorStop(1, '#46545f');
+      c.fillStyle = rim; c.fill();
 
-    ctx.beginPath(); ctx.arc(0, 0, R - 0.6, 0, TAU);
-    ctx.strokeStyle = 'rgba(226,240,250,0.30)'; ctx.lineWidth = 1.2; ctx.stroke();
+      c.beginPath(); c.arc(0, 0, R - 0.6, 0, TAU);
+      c.strokeStyle = 'rgba(226,240,250,0.30)'; c.lineWidth = 1.2; c.stroke();
 
-    // knurling on the bezel — 60 fine cuts, brighter where the light falls
-    ctx.save();
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 60; i++) {
-      const a = (i / 60) * TAU;
-      const lit = 0.06 + 0.16 * Math.max(0, Math.cos(a + 2.4));
-      ctx.strokeStyle = `rgba(235,246,255,${lit})`;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * (R - 1.5), Math.sin(a) * (R - 1.5));
-      ctx.lineTo(Math.cos(a) * (R * 0.915), Math.sin(a) * (R * 0.915));
-      ctx.stroke();
-    }
-    ctx.restore();
+      // knurling on the bezel — 60 fine cuts, brighter where the light falls
+      c.save();
+      c.lineWidth = 1;
+      for (let i = 0; i < 60; i++) {
+        const a = (i / 60) * TAU;
+        const lit = 0.06 + 0.16 * Math.max(0, Math.cos(a + 2.4));
+        c.strokeStyle = `rgba(235,246,255,${lit})`;
+        c.beginPath();
+        c.moveTo(Math.cos(a) * (R - 1.5), Math.sin(a) * (R - 1.5));
+        c.lineTo(Math.cos(a) * (R * 0.915), Math.sin(a) * (R * 0.915));
+        c.stroke();
+      }
+      c.restore();
 
-    // ---- dial face
-    ctx.beginPath(); ctx.arc(0, 0, R * 0.90, 0, TAU);
-    const face = ctx.createRadialGradient(-R * 0.32, -R * 0.42, R * 0.05, 0, 0, R * 0.98);
-    face.addColorStop(0, 'rgba(30,44,60,0.95)');
-    face.addColorStop(0.62, 'rgba(11,17,26,0.94)');
-    face.addColorStop(1, 'rgba(3,5,9,0.97)');
-    ctx.fillStyle = face; ctx.fill();
+      // dial face
+      c.beginPath(); c.arc(0, 0, R * 0.90, 0, TAU);
+      const face = c.createRadialGradient(-R * 0.32, -R * 0.42, R * 0.05, 0, 0, R * 0.98);
+      face.addColorStop(0, 'rgba(30,44,60,0.95)');
+      face.addColorStop(0.62, 'rgba(11,17,26,0.94)');
+      face.addColorStop(1, 'rgba(3,5,9,0.97)');
+      c.fillStyle = face; c.fill();
 
-    // brushed radial hatch on the face — the thing that stops it reading as flat vector fill
-    ctx.save();
-    ctx.beginPath(); ctx.arc(0, 0, R * 0.90, 0, TAU); ctx.clip();
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 96; i++) {
-      const a = (i / 96) * TAU;
-      ctx.strokeStyle = `rgba(150,190,220,${0.028 + 0.040 * ((i * 7) % 5) / 4})`;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * R * 0.12, Math.sin(a) * R * 0.12);
-      ctx.lineTo(Math.cos(a) * R * 0.90, Math.sin(a) * R * 0.90);
-      ctx.stroke();
-    }
-    ctx.strokeStyle = 'rgba(150,190,220,0.07)';
-    for (const rr of [0.30, 0.46, 0.62]) {
-      ctx.beginPath(); ctx.arc(0, 0, R * rr, 0, TAU); ctx.stroke();
-    }
-    ctx.restore();
+      // brushed radial hatch on the face — the thing that stops it reading as flat vector fill
+      c.save();
+      c.beginPath(); c.arc(0, 0, R * 0.90, 0, TAU); c.clip();
+      c.lineWidth = 1;
+      for (let i = 0; i < 96; i++) {
+        const a = (i / 96) * TAU;
+        c.strokeStyle = `rgba(150,190,220,${0.028 + 0.040 * ((i * 7) % 5) / 4})`;
+        c.beginPath();
+        c.moveTo(Math.cos(a) * R * 0.12, Math.sin(a) * R * 0.12);
+        c.lineTo(Math.cos(a) * R * 0.90, Math.sin(a) * R * 0.90);
+        c.stroke();
+      }
+      c.strokeStyle = 'rgba(150,190,220,0.07)';
+      for (const rr of [0.30, 0.46, 0.62]) {
+        c.beginPath(); c.arc(0, 0, R * rr, 0, TAU); c.stroke();
+      }
+      c.restore();
 
-    ctx.save();
-    ctx.beginPath(); ctx.arc(0, 0, R * 0.90, 0, TAU); ctx.clip();
-    const gl = ctx.createLinearGradient(0, -R, 0, R * 0.2);
-    gl.addColorStop(0, 'rgba(255,255,255,0.12)');
-    gl.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = gl;
-    ctx.beginPath(); ctx.ellipse(-R * 0.22, -R * 0.38, R * 0.70, R * 0.48, -0.42, 0, TAU); ctx.fill();
-    ctx.restore();
+      c.save();
+      c.beginPath(); c.arc(0, 0, R * 0.90, 0, TAU); c.clip();
+      const gl = c.createLinearGradient(0, -R, 0, R * 0.2);
+      gl.addColorStop(0, 'rgba(255,255,255,0.12)');
+      gl.addColorStop(1, 'rgba(255,255,255,0)');
+      c.fillStyle = gl;
+      c.beginPath(); c.ellipse(-R * 0.22, -R * 0.38, R * 0.70, R * 0.48, -0.42, 0, TAU); c.fill();
+      c.restore();
 
-    ctx.beginPath(); ctx.arc(0, 0, R * 0.90, 0, TAU);
-    ctx.strokeStyle = 'rgba(150,200,225,0.22)'; ctx.lineWidth = 1.2; ctx.stroke();
+      c.beginPath(); c.arc(0, 0, R * 0.90, 0, TAU);
+      c.strokeStyle = 'rgba(150,200,225,0.22)'; c.lineWidth = 1.2; c.stroke();
 
-    // ---- arcs: track, redline, live speed fill
-    const AR = R * 0.845, AW = R * 0.062;
+      // arcs: track and redline. The live speed fill goes over these, so it stays outside.
+      c.lineCap = 'butt';
+      c.beginPath(); c.arc(0, 0, AR, a0, a1);
+      c.strokeStyle = 'rgba(255,255,255,0.07)'; c.lineWidth = AW; c.stroke();
+
+      c.beginPath(); c.arc(0, 0, AR, angOf(RED0), a1);
+      c.strokeStyle = 'rgba(255,46,46,0.90)'; c.lineWidth = AW;
+      c.shadowBlur = 12; c.shadowColor = 'rgba(255,40,40,0.8)';
+      c.stroke(); c.shadowBlur = 0;
+    }, O);
     ctx.lineCap = 'butt';
-    ctx.beginPath(); ctx.arc(0, 0, AR, a0, a1);
-    ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = AW; ctx.stroke();
-
-    ctx.beginPath(); ctx.arc(0, 0, AR, angOf(RED0), a1);
-    ctx.strokeStyle = 'rgba(255,46,46,0.90)'; ctx.lineWidth = AW;
-    ctx.shadowBlur = 12; ctx.shadowColor = 'rgba(255,40,40,0.8)';
-    ctx.stroke(); ctx.shadowBlur = 0;
 
     const nAng = a0 + (a1 - a0) * clamp(this.needle, 0, 1.02);
     if (this.needle > 0.005) {
@@ -876,29 +1159,33 @@ export class HUD {
     // ---- tick hierarchy: minor every 10, major every 20, numeral every 40.
     // The numeral row sits at NUM_R, chosen so even a three-figure numeral's corner stays inside
     // TICK_R: NUM_R + halfDiagonal(numeral) < TICK_R. No stroke can cross a figure at any angle.
+    // The speed fill's halo washes inward across the tick band, and the original draws the ticks
+    // over it — so this patch has to be blitted after the live arc above, not folded into the face.
     const TICK_R = R * 0.700, NUM_R = R * 0.552, NUM_S = R * 0.098;
-    for (let v = 0; v <= MAX; v += 10) {
-      const a = angOf(v);
-      const major = v % 20 === 0;
-      const hot = v >= RED0;
-      const r1 = R * 0.795, r0 = major ? TICK_R : R * 0.742;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
-      ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
-      ctx.strokeStyle = hot
-        ? (major ? 'rgba(255,124,112,0.98)' : 'rgba(255,124,112,0.55)')
-        : (major ? 'rgba(232,246,253,0.95)' : 'rgba(180,206,225,0.42)');
-      ctx.lineWidth = major ? R * 0.026 : R * 0.012;
-      ctx.stroke();
-    }
-    for (let v = 0; v <= MAX; v += 40) {
-      const a = angOf(v), hot = v >= RED0;
-      drawText(ctx, String(v), {
-        x: Math.cos(a) * NUM_R, y: Math.sin(a) * NUM_R + NUM_S * 0.46, size: NUM_S, weight: 0.205,
-        align: 'center', color: hot ? 'rgba(255,158,146,0.95)' : 'rgba(222,238,250,0.90)',
-        tracking: 0.02, shadow: { color: 'rgba(0,0,0,0.75)', dy: NUM_S * 0.10, blur: 4 },
-      });
-    }
+    this._patch(ctx, 'dialTicks', -R, -R, R * 2, R * 2, `${R}`, (c) => {
+      for (let v = 0; v <= MAX; v += 10) {
+        const a = angOf(v);
+        const major = v % 20 === 0;
+        const hot = v >= RED0;
+        const r1 = R * 0.795, r0 = major ? TICK_R : R * 0.742;
+        c.beginPath();
+        c.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
+        c.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
+        c.strokeStyle = hot
+          ? (major ? 'rgba(255,124,112,0.98)' : 'rgba(255,124,112,0.55)')
+          : (major ? 'rgba(232,246,253,0.95)' : 'rgba(180,206,225,0.42)');
+        c.lineWidth = major ? R * 0.026 : R * 0.012;
+        c.stroke();
+      }
+      for (let v = 0; v <= MAX; v += 40) {
+        const a = angOf(v), hot = v >= RED0;
+        drawText(c, String(v), {
+          x: Math.cos(a) * NUM_R, y: Math.sin(a) * NUM_R + NUM_S * 0.46, size: NUM_S, weight: 0.205,
+          align: 'center', color: hot ? 'rgba(255,158,146,0.95)' : 'rgba(222,238,250,0.90)',
+          tracking: 0.02, shadow: { color: 'rgba(0,0,0,0.75)', dy: NUM_S * 0.10, blur: 4 },
+        });
+      }
+    }, O);
 
     // ---- needle with weight: counterweight tail, taper, shadow
     ctx.save();
@@ -925,26 +1212,29 @@ export class HUD {
     ctx.fillStyle = '#c8332a'; ctx.fill();
     ctx.restore();
 
-    // ---- hub
-    ctx.beginPath(); ctx.arc(0, 0, R * 0.105, 0, TAU);
-    const hub = ctx.createLinearGradient(-R * 0.1, -R * 0.1, R * 0.1, R * 0.1);
-    hub.addColorStop(0, '#e2ecf5'); hub.addColorStop(0.5, '#7d8b99'); hub.addColorStop(1, '#2b343e');
-    ctx.fillStyle = hub; ctx.fill();
-    ctx.beginPath(); ctx.arc(0, 0, R * 0.105, 0, TAU);
-    ctx.strokeStyle = 'rgba(10,14,20,0.9)'; ctx.lineWidth = 1.4; ctx.stroke();
-    ctx.beginPath(); ctx.arc(0, 0, R * 0.042, 0, TAU);
-    ctx.fillStyle = '#1a2129'; ctx.fill();
-
-    // ---- readout: it owns the open bottom of the dial, dropped clear of the 0 / 240 numerals
+    // ---- hub, and the scrim the readout sits on. Both are painted over the needle, so they are a
+    // patch of their own rather than part of the dial face.
     const mphTxt = String(Math.round(mph));
-    ctx.save();
-    ctx.beginPath();
-    ctx.ellipse(0, R * 0.46, R * 0.62, R * 0.36, 0, 0, TAU);
-    const rb = ctx.createRadialGradient(0, R * 0.46, 0, 0, R * 0.46, R * 0.62);
-    rb.addColorStop(0, 'rgba(2,5,9,0.86)'); rb.addColorStop(0.55, 'rgba(2,5,9,0.55)');
-    rb.addColorStop(1, 'rgba(2,5,9,0)');
-    ctx.fillStyle = rb; ctx.fill();
-    ctx.restore();
+    this._patch(ctx, 'dialHub', -R * 0.7, -R * 0.2, R * 1.4, R * 1.1, `${R}`, (c) => {
+      c.beginPath(); c.arc(0, 0, R * 0.105, 0, TAU);
+      const hub = c.createLinearGradient(-R * 0.1, -R * 0.1, R * 0.1, R * 0.1);
+      hub.addColorStop(0, '#e2ecf5'); hub.addColorStop(0.5, '#7d8b99'); hub.addColorStop(1, '#2b343e');
+      c.fillStyle = hub; c.fill();
+      c.beginPath(); c.arc(0, 0, R * 0.105, 0, TAU);
+      c.strokeStyle = 'rgba(10,14,20,0.9)'; c.lineWidth = 1.4; c.stroke();
+      c.beginPath(); c.arc(0, 0, R * 0.042, 0, TAU);
+      c.fillStyle = '#1a2129'; c.fill();
+
+      // readout backing: it owns the open bottom of the dial, dropped clear of the 0 / 240 numerals
+      c.save();
+      c.beginPath();
+      c.ellipse(0, R * 0.46, R * 0.62, R * 0.36, 0, 0, TAU);
+      const rb = c.createRadialGradient(0, R * 0.46, 0, 0, R * 0.46, R * 0.62);
+      rb.addColorStop(0, 'rgba(2,5,9,0.86)'); rb.addColorStop(0.55, 'rgba(2,5,9,0.55)');
+      rb.addColorStop(1, 'rgba(2,5,9,0)');
+      c.fillStyle = rb; c.fill();
+      c.restore();
+    }, O);
 
     drawText(ctx, mphTxt, {
       x: 0, y: R * 0.520, size: R * 0.300, weight: 0.215, italic: 0.06, align: 'center',
@@ -953,12 +1243,15 @@ export class HUD {
       shadow: { color: 'rgba(0,0,0,0.6)', dy: R * 0.018, blur: 6 },
       glow: boost > 0.05 ? { color: ORANGE, blur: 22 * boost } : null,
     });
-    // hairline rule under the number, then the unit — a caption, not a competing readout
-    ctx.beginPath();
-    ctx.moveTo(-R * 0.155, R * 0.585); ctx.lineTo(R * 0.155, R * 0.585);
-    ctx.strokeStyle = 'rgba(150,196,225,0.35)'; ctx.lineWidth = 1;
-    ctx.stroke();
-    label(ctx, 'MPH', 0, R * 0.700, R * 0.098, 'rgba(190,214,236,0.95)', { align: 'center', tracking: 0.38 });
+    // hairline rule under the number, then the unit — a caption, not a competing readout. Under
+    // nitrous the number's halo reaches down across both, and the original paints them over it.
+    this._patch(ctx, 'dialUnit', -R * 0.3, R * 0.5, R * 0.6, R * 0.32, `${R}`, (c) => {
+      c.beginPath();
+      c.moveTo(-R * 0.155, R * 0.585); c.lineTo(R * 0.155, R * 0.585);
+      c.strokeStyle = 'rgba(150,196,225,0.35)'; c.lineWidth = 1;
+      c.stroke();
+      label(c, 'MPH', 0, R * 0.700, R * 0.098, 'rgba(190,214,236,0.95)', { align: 'center', tracking: 0.38 });
+    }, O);
 
     // redline warning: the whole rim flushes when the engine is in the red
     if (mph >= RED0) {
@@ -981,74 +1274,96 @@ export class HUD {
     const pulse = 0.5 + 0.5 * Math.sin(this.beat * 12);
     const lx = (yy) => x + (h - (yy - y)) * SKEW;
 
-    panel(ctx, x, y, w, h, {
-      fill: active ? ['rgba(60,27,4,0.94)', 'rgba(24,10,2,0.92)'] : ['rgba(15,20,29,0.91)', 'rgba(5,8,13,0.88)'],
-      edge: active ? `rgba(255,180,60,${0.55 + 0.35 * pulse})` : 'rgba(150,180,205,0.28)',
-      accent: active ? AMBER : CYAN, glow: active ? 14 + 12 * pulse : 7,
-    });
-
-    // gear chip — its own inset parallelogram on the leading edge of the strip
     const gh = h - 18, gy = y + 9, gw = 50;
     const gx = lx(gy + gh) + RAIL + 9;
-    platePath(ctx, gx, gy, gw, gh, SKEW);
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fill();
-    platePath(ctx, gx, gy, gw, gh, SKEW);
-    ctx.strokeStyle = active ? 'rgba(255,180,60,0.7)' : 'rgba(160,200,225,0.35)';
-    ctx.lineWidth = 1; ctx.stroke();
-    label(ctx, 'GEAR', gx + gw * 0.5 + gh * SKEW * 0.4, gy + 14, 8.5, 'rgba(166,196,218,0.9)',
-      { tracking: 0.2, align: 'center' });
-    drawText(ctx, String(s.gear || 1), {
-      x: gx + gw * 0.5 + 2, y: gy + gh - 7, size: 23, weight: 0.22, italic: 0.20, align: 'center',
-      color: active ? AMBER : '#dceaf6',
-    });
-
-    // heading (display italic) + discrete tanks
     const hb = y + 26;
     const tx = lx(hb) + RAIL + 74;
-    drawText(ctx, 'NITRO', {
-      x: tx, y: hb, size: 15, weight: 0.215, italic: 0.22,
-      color: active ? '#ffe9b8' : '#cfe0ef', tracking: 0.10,
-      glow: active ? { color: ORANGE, blur: 14 } : null,
-    });
-    for (let i = 0; i < 3; i++) {
-      const py = y + 12, ph = 15;
-      const px = tx + 78 + i * 20;
-      const has = i < tanks;
-      const spend = !has && i === tanks && this.tankFlash > 0.02;
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(px, py + ph); ctx.lineTo(px + 8, py + ph / 2); ctx.lineTo(px, py);
-      ctx.lineTo(px + 6, py); ctx.lineTo(px + 14, py + ph / 2); ctx.lineTo(px + 6, py + ph);
-      ctx.closePath();
-      if (has) {
-        ctx.fillStyle = active ? '#ffd77a' : AMBER;
-        ctx.shadowBlur = 10; ctx.shadowColor = ORANGE;
-      } else {
-        ctx.fillStyle = spend ? `rgba(255,120,40,${this.tankFlash})` : 'rgba(255,255,255,0.14)';
-      }
-      ctx.fill();
-      ctx.restore();
+    const bh = 17, by = y + h - 26;
+    const bx = lx(by + bh) + RAIL + 74, bw = w - 74 - RAIL - GR.PAD;
+    const spendIdx = this.tankFlash > 0.02 ? tanks : -1;
+
+    // While the strip is firing, its edge and its rail glow breathe on a 12 rad/s sine — but the
+    // drop shadow, the body and the inner shadow underneath them do not. Those are the two blurred
+    // ops; the edge is an unblurred stroke and the rail is one more. So the plate is baked without
+    // its edge and rail and only those two are re-drawn live, which keeps a firing nitro strip at
+    // one blurred op a frame instead of three. Idle, the whole thing is fixed art.
+    const P = 34;
+    this._patch(ctx, 'nitroPlate', x - P, y - P, w + h * SKEW + P * 2, h + P * 2, `${active}|${x}|${y}|${w}|${h}`,
+      (c) => panel(c, x, y, w, h, {
+        fill: active ? ['rgba(60,27,4,0.94)', 'rgba(24,10,2,0.92)'] : ['rgba(15,20,29,0.91)', 'rgba(5,8,13,0.88)'],
+        // idle, the edge and rail are fixed too and go straight into the patch
+        edge: active ? null : 'rgba(150,180,205,0.28)',
+        accent: active ? null : CYAN, glow: 7,
+      }));
+    if (active) {
+      platePath(ctx, x, y, w, h);
+      ctx.strokeStyle = `rgba(255,180,60,${0.55 + 0.35 * pulse})`;
+      ctx.lineWidth = 1.2; ctx.stroke();
+      railOn(ctx, x, y, h, AMBER, 14 + 12 * pulse);
     }
+
+    this._patch(ctx, 'nitroFace', x - 24, y - 24, w + h * SKEW + 48, h + 48,
+      `${active}|${tanks}|${s.gear}|${spendIdx}|${this.tankFlash > 0.02 ? Math.round(this.tankFlash * 12) : 0}|${x}|${y}|${w}`, (c) => {
+        // gear chip — its own inset parallelogram on the leading edge of the strip
+        platePath(c, gx, gy, gw, gh, SKEW);
+        c.fillStyle = 'rgba(0,0,0,0.5)'; c.fill();
+        platePath(c, gx, gy, gw, gh, SKEW);
+        c.strokeStyle = active ? 'rgba(255,180,60,0.7)' : 'rgba(160,200,225,0.35)';
+        c.lineWidth = 1; c.stroke();
+        label(c, 'GEAR', gx + gw * 0.5 + gh * SKEW * 0.4, gy + 14, 8.5, 'rgba(166,196,218,0.9)',
+          { tracking: 0.2, align: 'center' });
+        drawText(c, String(s.gear || 1), {
+          x: gx + gw * 0.5 + 2, y: gy + gh - 7, size: 23, weight: 0.22, italic: 0.20, align: 'center',
+          color: active ? AMBER : '#dceaf6',
+        });
+
+        // heading (display italic) + discrete tanks
+        drawText(c, 'NITRO', {
+          x: tx, y: hb, size: 15, weight: 0.215, italic: 0.22,
+          color: active ? '#ffe9b8' : '#cfe0ef', tracking: 0.10,
+          glow: active ? { color: ORANGE, blur: 14 } : null,
+        });
+        for (let i = 0; i < 3; i++) {
+          const py = y + 12, ph = 15;
+          const px = tx + 78 + i * 20;
+          const has = i < tanks;
+          const spend = !has && i === tanks && this.tankFlash > 0.02;
+          c.save();
+          c.beginPath();
+          c.moveTo(px, py + ph); c.lineTo(px + 8, py + ph / 2); c.lineTo(px, py);
+          c.lineTo(px + 6, py); c.lineTo(px + 14, py + ph / 2); c.lineTo(px + 6, py + ph);
+          c.closePath();
+          if (has) {
+            c.fillStyle = active ? '#ffd77a' : AMBER;
+            c.shadowBlur = 10; c.shadowColor = ORANGE;
+          } else {
+            c.fillStyle = spend ? `rgba(255,120,40,${this.tankFlash})` : 'rgba(255,255,255,0.14)';
+          }
+          c.fill();
+          c.restore();
+        }
+
+        // charge bar channel, and the six empty cells drawn first so you can read how much charge
+        // is MISSING. Its right end lands on the same w-PAD margin as the caption above it,
+        // measured at its own y so the shear lines up.
+        platePath(c, bx, by, bw, bh, SKEW);
+        c.fillStyle = 'rgba(0,0,0,0.55)'; c.fill();
+        c.save();
+        c.strokeStyle = 'rgba(150,190,215,0.16)'; c.lineWidth = 1;
+        for (let i = 1; i < 6; i++) {
+          const px = bx + (bw / 6) * i;
+          c.beginPath();
+          c.moveTo(px + bh * SKEW, by + 1); c.lineTo(px, by + bh - 1);
+          c.stroke();
+        }
+        c.restore();
+      });
+
     label(ctx, active ? 'FIRING' : 'CHARGE', lx(hb) + w - GR.PAD, hb, 9,
       active ? `rgba(255,232,178,${0.6 + 0.4 * pulse})` : 'rgba(160,190,212,0.85)',
       { align: 'right', tracking: 0.24 });
 
-    // charge bar — drains while boosting, creeps back afterwards. Its right end lands on the same
-    // w-PAD margin as the CHARGE caption above it, measured at its own y so the shear lines up.
-    const bh = 17, by = y + h - 26;
-    const bx = lx(by + bh) + RAIL + 74, bw = w - 74 - RAIL - GR.PAD;
-    platePath(ctx, bx, by, bw, bh, SKEW);
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fill();
-    // the six empty cells are drawn first, so you can read how much charge is MISSING
-    ctx.save();
-    ctx.strokeStyle = 'rgba(150,190,215,0.16)'; ctx.lineWidth = 1;
-    for (let i = 1; i < 6; i++) {
-      const px = bx + (bw / 6) * i;
-      ctx.beginPath();
-      ctx.moveTo(px + bh * SKEW, by + 1); ctx.lineTo(px, by + bh - 1);
-      ctx.stroke();
-    }
-    ctx.restore();
+    // charge bar — drains while boosting, creeps back afterwards
     const fw = (bw - 3) * clamp(this.charge, 0, 1);
     if (fw > 1.5) {
       ctx.save();
@@ -1062,20 +1377,26 @@ export class HUD {
       ctx.shadowBlur = active ? 16 : 7; ctx.shadowColor = active ? ORANGE : CYAN;
       ctx.fill();
       ctx.restore();
-      // segment notches, cut on the same shear, so the bar reads as hardware
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-      ctx.strokeStyle = 'rgba(0,0,0,0.9)'; ctx.lineWidth = 1.4;
-      for (let i = 1; i < 6; i++) {
-        const px = bx + (bw / 6) * i;
-        ctx.beginPath();
-        ctx.moveTo(px + bh * SKEW, by); ctx.lineTo(px, by + bh);
-        ctx.stroke();
-      }
-      ctx.restore();
     }
-    platePath(ctx, bx, by, bw, bh, SKEW);
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1; ctx.stroke();
+    // notches and bezel are cut over the fill, so they cannot be baked with the channel above
+    this._patch(ctx, 'nitroMarks', bx - 5, by - 5, bw + bh * SKEW + 10, bh + 10,
+      `${fw > 1.5}|${bx}|${by}|${bw}`, (c) => {
+        if (fw > 1.5) {
+          // segment notches, cut on the same shear, so the bar reads as hardware
+          c.save();
+          c.globalAlpha = 0.35;
+          c.strokeStyle = 'rgba(0,0,0,0.9)'; c.lineWidth = 1.4;
+          for (let i = 1; i < 6; i++) {
+            const px = bx + (bw / 6) * i;
+            c.beginPath();
+            c.moveTo(px + bh * SKEW, by); c.lineTo(px, by + bh);
+            c.stroke();
+          }
+          c.restore();
+        }
+        platePath(c, bx, by, bw, bh, SKEW);
+        c.strokeStyle = 'rgba(255,255,255,0.18)'; c.lineWidth = 1; c.stroke();
+      });
   }
 
   _drawDrift(ctx, s, x, yBottom, w, h) {
@@ -1084,38 +1405,54 @@ export class HUD {
     const d = clamp(s.drift || 0, 0, 1);
     const y = yBottom - h;
     const lx = (yy) => x + (h - (yy - y)) * SKEW;
+    const ty = (1 - smoothstep(0, 1, a)) * 14;
     ctx.save();
     ctx.globalAlpha = smoothstep(0, 0.5, a);
-    ctx.translate(0, (1 - smoothstep(0, 1, a)) * 14);
+    ctx.translate(0, ty);
 
-    panel(ctx, x, y, w, h, {
-      fill: ['rgba(48,27,6,0.91)', 'rgba(10,8,6,0.88)'],
-      edge: 'rgba(255,190,80,0.45)', accent: AMBER, glow: 13,
+    const b1 = y + 26, b2 = y + 43;
+    const bh = 9, by = y + h - 14;
+    const bx = lx(by + bh) + RAIL + GR.PAD + 14, bw = w - RAIL - GR.PAD * 2 - 14;
+    const P = 30;
+
+    // While the panel is sliding and fading in, it is drawn live. Compositing a cached layer under
+    // a global alpha is GROUP opacity — the whole plate fades as one flat image — whereas the
+    // original fades each of its ten overlapping translucent draws individually, and where they
+    // overlap the two do not agree. Once the panel has settled at full opacity the two are the same
+    // thing again, and that is where it spends nearly all of its time on screen.
+    const settled = a > 0.995;
+    const via = (id, bx2, by2, bw2, bh2, key, paint) => (settled
+      ? this._patch(ctx, id, bx2, by2, bw2, bh2, key, paint, { ty })
+      : paint(ctx));
+
+    // Plate, headings, labels and the empty meter — nothing here reacts to the drift, so it is one
+    // patch. The score, the angle and the meter fill are the only things that move.
+    via('drift', x - P, y - P, w + h * SKEW + P * 2, h + P * 2, `${x}|${y}|${w}|${h}`, (c) => {
+      panel(c, x, y, w, h, {
+        fill: ['rgba(48,27,6,0.91)', 'rgba(10,8,6,0.88)'],
+        edge: 'rgba(255,190,80,0.45)', accent: AMBER, glow: 13,
+      });
+      // deck 1 — heading (display italic); the live score lands beside it
+      chevrons(c, lx(y + h * 0.5) + RAIL + 6, y + 9, 2, 5, 13, AMBER, 0.5);
+      drawText(c, 'DRIFT', {
+        x: lx(b1) + RAIL + GR.PAD + 14, y: b1, size: 18, weight: 0.22, italic: 0.24,
+        color: '#ffd54a', glow: { color: '#ff8a1e', blur: 16 }, tracking: 0.16,
+      });
+      // deck 2 — label in the geometric face, on its own row
+      label(c, 'ANGLE', lx(b2) + RAIL + GR.PAD + 14, b2, 9, 'rgba(255,214,150,0.85)', { tracking: 0.26 });
+      // deck 3 — the meter's empty channel, beneath its label
+      platePath(c, bx, by, bw, bh, SKEW);
+      c.fillStyle = 'rgba(0,0,0,0.6)'; c.fill();
     });
-    // deck 1 — heading (display italic) + live score
-    const b1 = y + 26;
-    chevrons(ctx, lx(y + h * 0.5) + RAIL + 6, y + 9, 2, 5, 13, AMBER, 0.5);
-    drawText(ctx, 'DRIFT', {
-      x: lx(b1) + RAIL + GR.PAD + 14, y: b1, size: 18, weight: 0.22, italic: 0.24,
-      color: '#ffd54a', glow: { color: '#ff8a1e', blur: 16 }, tracking: 0.16,
-    });
+
     drawText(ctx, String(Math.round(this.driftScore)), {
       x: lx(b1 + 2) + w - GR.PAD, y: b1 + 2, size: 24, weight: 0.215, italic: 0.20, align: 'right',
       color: '#ffffff', sheen: true, glow: { color: '#ff8a1e', blur: 12 },
     });
-
-    // deck 2 — labels in the geometric face, on their own row
-    const b2 = y + 43;
-    label(ctx, 'ANGLE', lx(b2) + RAIL + GR.PAD + 14, b2, 9, 'rgba(255,214,150,0.85)', { tracking: 0.26 });
     // the simulated slip angle when main.js supplies it — never a number derived from the bar
     label(ctx, `${Math.round(s.slipDeg ?? d * 42)}°`, lx(b2) + w - GR.PAD, b2, 10.5,
       'rgba(255,230,184,0.92)', { align: 'right', tracking: 0.04 });
 
-    // deck 3 — the meter, full width beneath its label
-    const bh = 9, by = y + h - 14;
-    const bx = lx(by + bh) + RAIL + GR.PAD + 14, bw = w - RAIL - GR.PAD * 2 - 14;
-    platePath(ctx, bx, by, bw, bh, SKEW);
-    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fill();
     ctx.save();
     platePath(ctx, bx + 1, by + 1, bw - 2, bh - 2, SKEW);
     ctx.clip();
@@ -1125,18 +1462,20 @@ export class HUD {
     ctx.fillStyle = g; ctx.shadowBlur = 12; ctx.shadowColor = '#ff8a1e';
     ctx.fill();
     ctx.restore();
-    // quarter marks so the meter reads as calibrated hardware
-    ctx.save();
-    ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1.2;
-    for (let i = 1; i < 4; i++) {
-      const px = bx + (bw / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(px + bh * SKEW, by); ctx.lineTo(px, by + bh);
-      ctx.stroke();
-    }
-    ctx.restore();
-    platePath(ctx, bx, by, bw, bh, SKEW);
-    ctx.strokeStyle = 'rgba(255,220,160,0.38)'; ctx.lineWidth = 1; ctx.stroke();
+    // quarter marks and the bezel go OVER the fill, so they cannot join the patch above
+    via('driftMarks', bx - 4, by - 4, bw + bh * SKEW + 8, bh + 8, `${bx}|${by}|${bw}`, (c) => {
+      c.save();
+      c.strokeStyle = 'rgba(0,0,0,0.55)'; c.lineWidth = 1.2;
+      for (let i = 1; i < 4; i++) {
+        const px = bx + (bw / 4) * i;
+        c.beginPath();
+        c.moveTo(px + bh * SKEW, by); c.lineTo(px, by + bh);
+        c.stroke();
+      }
+      c.restore();
+      platePath(c, bx, by, bw, bh, SKEW);
+      c.strokeStyle = 'rgba(255,220,160,0.38)'; c.lineWidth = 1; c.stroke();
+    });
     ctx.restore();
   }
 

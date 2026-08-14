@@ -63,21 +63,37 @@ async function main() {
       const top = Math.max(...accel.map((t) => t.mph));
       check(`${car}: responds to throttle`, top > 25, `${top.toFixed(0)} mph`);
 
-      // steering both directions
+      // Steering, measured SYMMETRICALLY. The old version gave the right turn 45 frames and the
+      // left turn 90 frames, and measured the left turn from an already-yawing state — so the two
+      // numbers were not comparable and it could not distinguish "symmetric" from "merely not
+      // zero". It passed a build in which the muscle car turned right at Δyaw +0.455 and left at
+      // -0.039. Each direction now gets an identical run from an identical settled straight state.
       const steerTest = await h.page.evaluate(() => {
         const G = window.__GAME;
-        G.step(120, { throttle: 1 });
-        const y0 = G.game.body.yaw;
-        G.step(45, { throttle: 1, steer: 1 });
-        const y1 = G.game.body.yaw;
-        G.step(90, { throttle: 1, steer: -1 });
-        const y2 = G.game.body.yaw;
-        return { y0, y1, y2 };
+        // Both directions must start from the SAME point on the SAME piece of road, or track
+        // curvature contaminates the comparison — the second run would otherwise begin wherever
+        // the first one ended, which is a different corner.
+        const t = G.game.city.track;
+        const s = t.at(0.02);
+        const p0 = s.pos.clone();
+        const yaw0 = Math.atan2(s.tan.x, s.tan.z);
+        const runLock = (dir) => {
+          G.game.body.reset(p0.clone(), yaw0);
+          G.step(90, { throttle: 1 });              // settle straight, identical both times
+          const y0 = G.game.body.yaw;
+          G.step(50, { throttle: 1, steer: dir });  // identical duration both directions
+          return G.game.body.yaw - y0;
+        };
+        return { right: runLock(1), left: runLock(-1) };
       });
-      const rightTurn = steerTest.y1 - steerTest.y0;
-      const leftTurn = steerTest.y2 - steerTest.y1;
-      check(`${car}: steers right`, Math.abs(rightTurn) > 0.05, `Δyaw ${rightTurn.toFixed(3)}`);
-      check(`${car}: steers left`, Math.sign(leftTurn) !== Math.sign(rightTurn) && Math.abs(leftTurn) > 0.05, `Δyaw ${leftTurn.toFixed(3)}`);
+      const rightTurn = steerTest.right;
+      const leftTurn = steerTest.left;
+      const symmetry = Math.min(Math.abs(rightTurn), Math.abs(leftTurn)) /
+                       Math.max(Math.abs(rightTurn), Math.abs(leftTurn), 1e-6);
+      check(`${car}: steers right`, rightTurn > 0.05, `Δyaw ${rightTurn.toFixed(3)}`);
+      check(`${car}: steers left`, leftTurn < -0.05, `Δyaw ${leftTurn.toFixed(3)}`);
+      check(`${car}: steering is symmetric`, symmetry > 0.6,
+        `L ${leftTurn.toFixed(3)} vs R ${rightTurn.toFixed(3)} — ratio ${symmetry.toFixed(2)}`);
 
       // brakes
       const brakeTest = await h.page.evaluate(() => {
@@ -95,7 +111,17 @@ async function main() {
       const maxDrift = Math.max(...drift.map((t) => t.drift));
       const endSlip = Math.abs(drift[drift.length - 1].slipDeg);
       check(`${car}: can drift`, maxDrift > 0.35 && maxSlip > 8, `slip ${maxSlip.toFixed(1)}° drift ${maxDrift.toFixed(2)}`);
-      check(`${car}: recovers from drift (no spin-out)`, maxSlip < 88, `peak slip ${maxSlip.toFixed(1)}°, end ${endSlip.toFixed(1)}°`);
+      // This asserted only `maxSlip < 88` and never looked at endSlip, which it computed and
+      // printed. It therefore passed the muscle car at "peak slip 35.9°, end 35.8°" — a car ending
+      // at its peak angle, i.e. a permanent latch, which is exactly the failure the model is meant
+      // to prevent. Drive the car straight after the slide and require it to actually come back.
+      const recovered = await h.page.evaluate(() => {
+        const G = window.__GAME;
+        G.step(90, { throttle: 0.6, steer: 0 });    // hands off, let the tyres sort it out
+        return Math.abs(G.game.body.slip * 57.2958);
+      });
+      check(`${car}: recovers from drift (no spin-out)`, maxSlip < 88 && recovered < 12,
+        `peak ${maxSlip.toFixed(1)}°, capture end ${endSlip.toFixed(1)}°, after 1.5s straight ${recovered.toFixed(1)}°`);
 
       // nitrous actually fires and adds speed
       const nitro = await h.page.evaluate(() => {

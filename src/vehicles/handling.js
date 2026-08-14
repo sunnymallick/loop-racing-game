@@ -62,6 +62,12 @@
  *   driftHold   1/s of bounded torque holding the yaw rate at the value that SUSTAINS whatever
  *               angle the car currently has — the tiny corrections a real driver makes and a
  *               keyboard cannot. It damps the balance; it never names an angle.
+ *               KEEP IT SLOWER THAN THE TYRES. Its time constant is 1/driftHold, and the axles'
+ *               own is a few tenths of a second: past ~20 it stops being a trim and becomes the
+ *               slip-angle servo §2 of physics.js exists to have got rid of, because it freezes
+ *               whatever angle the car had when the drift state engaged. The muscle car ran 45
+ *               (τ = 22 ms) and the consequence was measurable — 1.5 s of full opposite lock at
+ *               170 mph moved its heading by 0.039 rad, i.e. the car did not steer.
  *   scrub       speed lost to a sliding rear tyre · driftOn/driftFull degrees over which the
  *               visual/FX drift state ramps (smoke, skid marks, camera swing, HUD)
  *   driftRise/driftFall  how fast that state commits and lets go
@@ -140,8 +146,8 @@ export const HANDLING = {
     weightFront: 0.56, yawInertia: 1.62, yawDamp: 0.72, yawMax: 2.45,
     steerMax: 0.52, steerRate: 12, steerFalloff: 0.026, steerFloor: 0.48,
     downforce: 0.10, loadShift: 0.40,
-    powerOversteer: 0.86, hbGrip: 0.18, driftGrip: 0.17, slipMax: 41, slideTraction: 0.22,
-    escGrip: 0.80, escLead: 0.14, driftFade: 0.70, driftBite: 0.10, driftHold: 45, assistDamp: 0.15, scrub: 0.40, driftG: 11.4,
+    powerOversteer: 0.86, hbGrip: 0.18, driftGrip: 0.22, slipMax: 36, slideTraction: 0.22,
+    escGrip: 0.80, escLead: 0.14, driftFade: 0.70, driftBite: 0.10, driftHold: 15, assistDamp: 0.15, scrub: 0.40, driftG: 11.4,
     driftOn: 7, driftFull: 26, driftRise: 7.0, driftFall: 2.8,
     rollStiff: 0.52, rollPerG: 6.2, pitchPerG: 4.4,
     rollMax: 12.5 * D, pitchMax: 7.0 * D, suspFreq: 1.12, suspDamp: 0.44,

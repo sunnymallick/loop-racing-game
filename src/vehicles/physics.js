@@ -170,6 +170,9 @@ export class VehicleBody {
 
     const boost = env.boost ?? 0;
     this.boost = boost;
+    // The nitrous ceiling. `boost` is the spool AUTHORITY (Nitrous.ramp, 0..1) and it is the only
+    // thing that lifts the ceiling, so the ignition surge can shove the car at the wall but never
+    // through it — the extra speed arrives as the spool arrives, per class.
     const vMax = lerp(p.topSpeed, p.topSpeed * (env.topSpeedMul ?? 1.3), boost);
     const norm = clamp(absV / p.topSpeed, 0, 1.35);
     const massN = p.mass / 1400;
@@ -199,15 +202,26 @@ export class VehicleBody {
     // Engine force, then the longitudinal traction limit. Torque the tyres can't take becomes
     // wheelspin: it barely moves the car, but it lights up the rears and steps the tail out.
     let engine = throttle * p.power * torque * ratio * clutch;
+    // The rear tyres' own longitudinal budget: what the rubber can take, before any slide.
+    const gripCap = p.traction * massN * surfaceGrip * (1 + p.downforce * norm * norm * 0.6);
     // Combined slip: a rear tyre already sliding sideways has far less grip left to put power
     // down with, so it spins up. That is the feedback that SUSTAINS a power slide — the throttle
     // keeps the rears lit, the lit rears keep the tail out — and it is why wheelSlip (and with it
     // the tyre smoke) stays high through a drift instead of only at launch.
-    const tractionCap = p.traction * massN * surfaceGrip * (1 + p.downforce * norm * norm * 0.6)
-      * lerp(1, p.slideTraction, this.rearSlide);
+    const tractionCap = gripCap * lerp(1, p.slideTraction, this.rearSlide);
     // How hard the engine is leaning on the rear contact patches, 0..1+. This is the number the
     // friction circle spends: a rear axle already using its grip to push cannot also corner.
-    const rearLoad = clamp(engine / Math.max(1e-3, tractionCap), 0, 1.8);
+    //
+    // It is measured against `gripCap`, the tyre's OWN budget — never against `tractionCap`, which
+    // the slide has already cut. Dividing by the cut capacity counts the same slide twice and
+    // closes a loop with no negative branch: sliding cuts the cap, the unchanged engine force then
+    // looks 4x overloaded, the friction circle reports no lateral grip left, `rearCut` falls to the
+    // `driftGrip` floor and stays there — so the slide can never end while the throttle is in. That
+    // latch is what left the muscle car pinned at ~19 deg of slip at 170 mph with 0.2 g of lateral
+    // force, answering neither hand on the wheel (delta-yaw -0.039 on a second and a half of full
+    // opposite lock). The sliding tyre's real grip loss is `kinetic` below, keyed off its own slip
+    // angle, which is a curve the car can drive back out of.
+    const rearLoad = clamp(engine / Math.max(1e-3, gripCap), 0, 1.8);
     if (engine > tractionCap) {
       const excess = clamp(engine / tractionCap - 1, 0, 2.5);
       this.wheelSlip = lerp(this.wheelSlip, clamp(excess * 0.85, 0, 1), 1 - Math.exp(-18 * dt));
@@ -216,7 +230,15 @@ export class VehicleBody {
       this.wheelSlip = lerp(this.wheelSlip, 0, 1 - Math.exp(-9 * dt));
     }
 
-    let drive = engine + boost * (env.boostThrust ?? 0);
+    // NITROUS THRUST. `env.boostThrust` is a FORCE and it already carries the class's spool curve
+    // and its ignition overshoot (Nitrous.thrust = (ramp + surge·k)·thrust·30). Multiplying it by
+    // `boost` — which is that same `ramp` — applied the spool twice and gated the ignition punch
+    // behind a spool that by definition has not happened yet: 0.4 s into an SUV boost (ramp 0.10)
+    // the table asks for 38 units of thrust and the model delivered 0.4, and the surge, the part
+    // §6.3 scores as the payoff, contributed nothing at all at the moment of ignition. Steady state
+    // was unaffected (ramp = 1), which is why this only ever showed up as "the boost does nothing
+    // for the first second" — the window a boost is actually judged in.
+    let drive = engine + (env.boostThrust ?? 0);
 
     if (brakeIn > 0) {
       // Braking gains with speed (drag + downforce) and only partly with surface: locking up on
@@ -237,13 +259,21 @@ export class VehicleBody {
     // Barrier contact: refuse to drive into a wall. Round 1 pinned the car against a barrier at
     // 85 mph forever because the engine kept pushing into it and main.js kept clamping it back.
     this.wallT = Math.max(0, this.wallT - dt);
+    let wallInto = 0;
     if (this.wallT > 0) {
-      const into = clamp(-this.wallN.dot(fwd), 0, 1);
-      if (drive > 0) drive *= 1 - into * 0.92;
-      drive -= into * absV * 1.6;                                    // scraping costs speed
+      wallInto = clamp(-this.wallN.dot(fwd), 0, 1);
+      if (drive > 0) drive *= 1 - wallInto * 0.92;
     }
 
     vLong += (drive / massN) * dt;
+    // Scraping costs speed — but a rubbing barrier is FRICTION, and friction cannot drive a car.
+    // This used to be `drive -= into · |v| · 1.6`, an unbounded force subtracted from the same
+    // accumulator the engine and the nitrous push with, so a car sitting nose-in against a wall
+    // with the throttle pinned and the boost lit ACCELERATED BACKWARDS out of it — the muscle car
+    // went 9.0 → −8.5 m/s in 1.2 s of full nitrous, which is where "nitrous does not add speed"
+    // comes from once the harness has parked a car in a barrier. Same calibration, applied as a
+    // proportional speed loss instead: it can rub the car to a standstill and never past it.
+    if (wallInto > 0) vLong -= vLong * clamp(wallInto * 1.6 * dt / massN, 0, 1);
     if (vLong > vMax) vLong = lerp(vLong, vMax, 1 - Math.exp(-8 * dt));
     if (vLong < -p.reverseMax) vLong = -p.reverseMax;
 
@@ -275,7 +305,21 @@ export class VehicleBody {
     // lock buy angle; letting everything go hands the car back to the assist, which straightens it.
     // Filtered on a ~0.15 s hand-speed constant: a driver's commitment is a continuous quantity,
     // and anything downstream of it (rear grip → squeal, smoke, FX) must not be able to step.
-    const commitRaw = clamp(hb * 0.9 + into * 0.75 + counter * 0.95 + throttle * 0.30, 0, 1);
+    //
+    // BUT: opposite lock is credit for BALANCING a slide, and balancing means the driver still has
+    // lock in hand — more wrist gives more angle, less gives less, and the car answers. At the stop
+    // nothing answers. The wheel is as far round as it goes, αf = β − δ is whatever the slide
+    // leaves it, and the angle is the car's decision, not the driver's. Crediting that as maximum
+    // commitment inverted the whole assist: the harder you tried to straighten the car, the wider
+    // the angle its ESC tolerated (muscle: `allow` 41°), the less rear grip it handed back, and the
+    // longer the slide lasted. On a track that is a car that will not turn — the muscle car
+    // answered 1.5 s of full opposite lock at 170 mph with Δyaw −0.039 rad, and in free space it
+    // settled into a 27° drift it would have held for ever. So the counter-steer credit fades out
+    // over the last fifth of the available lock: a drifter balancing the car on half a turn is
+    // untouched (that is §6.2's "held with counter-steer"), a driver pinned against the stop is
+    // asking to come back and gets the rear axle handed back to them.
+    const lockLeft = 1 - smoothstep(0.80, 1.0, Math.abs(this.steerAngle) / Math.max(0.02, steerLimit));
+    const commitRaw = clamp(hb * 0.9 + into * 0.75 + counter * 0.95 * lockLeft + throttle * 0.30, 0, 1);
     this.commit = lerp(this.commit, commitRaw, 1 - Math.exp(-7 * dt));
     const allow = p.slipMax * DEG2RAD * lerp(0.30, 1.0, this.commit);
     this.slipAllow = allow;
@@ -373,8 +417,19 @@ export class VehicleBody {
       // would be positive feedback — that was the round-1 "angle attractor" failure in disguise.)
       // Gated on being genuinely sideways, not on a fraction of the limit: normal cornering runs
       // a few degrees of slip and must stay unassisted.
+      //
+      // ONE-SIDED. `slipRate` is a signed derivative, so a plain damper also fires as the angle
+      // COLLAPSES — and there it winds lock back INTO the slide, i.e. it takes away part of the
+      // driver's opposite lock exactly while they are trying to straighten the car. That is
+      // invisible in normal cornering and fatal at a big angle, because the front slip angle the
+      // driver is left with is the DIFFERENCE αf = β − δ of two nearly equal numbers: mid-recovery
+      // the muscle car ran β = −19.5° against δ = −19.7°, and the 1.4° the damper handed back was
+      // 100% of αf — the front tyres went to zero slip angle and the car answered neither hand.
+      // The comment above is the intent: lock goes on while the angle opens and comes OFF as it
+      // comes back. Off means to zero, never through it.
       const near = smoothstep(0.13, 0.30, Math.abs(slipS));
       let assist = slipRate * p.assistDamp * near;
+      if (assist * slipS < 0) assist = 0;                 // never lock back into a collapsing slide
       assist = clamp(assist, -p.steerMax * 1.6, p.steerMax * 1.6);
       const delta = clamp(this.steerAngle + assist, -p.steerMax * 2.2, p.steerMax * 2.2);
 
@@ -570,7 +625,15 @@ export class VehicleBody {
     const vn = this.vel.dot(normal);
     if (vn >= 0) return 0;
     const strength = clamp(-vn / 26, 0, 1);
-    this.vel.addScaledVector(normal, -vn * (1 + restitution));
+    // Restitution FALLS with closing speed. A light tap bounces off a barrier; a square hit at
+    // 85 mph deforms and stops. As a constant it did the opposite — the harder you hit, the harder
+    // you were thrown back — so a head-on barrier hit catapulted the car backwards at 28% of its
+    // impact speed (measured: the muscle car left a 37 m/s hit travelling 10 m/s in REVERSE, which
+    // reads on the HUD as −27 mph with the throttle and the nitrous both pinned). That is the worst
+    // possible answer to §6.2's "recovery and controllability after a hit", and it is what turns one
+    // clumsy corner into a crash loop the player cannot drive out of.
+    const rest = restitution * (1 - strength * 0.85);
+    this.vel.addScaledVector(normal, -vn * (1 + rest));
     // Scrub along the wall. Deliberately gentle: §6.2 scores recovery and controllability after a
     // hit, and a barrier that takes two thirds of your speed for one clumsy corner is the fastest
     // way to make a race feel unrecoverable. You lose the component INTO the wall, and slide on.
