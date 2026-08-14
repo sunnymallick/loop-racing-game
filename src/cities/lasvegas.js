@@ -60,7 +60,7 @@ function mat(key, make) {
   return v;
 }
 
-function prep(src) {
+function prep(src, tint = null) {
   const g = src.index ? src.toNonIndexed() : src.clone();
   for (const k of Object.keys(g.attributes)) {
     if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k);
@@ -68,6 +68,24 @@ function prep(src) {
   if (!g.attributes.normal) g.computeVertexNormals();
   if (!g.attributes.uv) {
     g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+  }
+  if (tint) {
+    // RGBA, four components on purpose. three multiplies a 4-component vertex colour into
+    // `diffuseColor` whole — `.rgb` against material.color and `.a` against material.opacity —
+    // at the very top of the fragment shader, so a batched mesh reaches fog, tone mapping and
+    // the blend equation carrying byte-identical values to the per-hue material it replaced.
+    // Folding the opacity into the colour instead would be a different picture the moment fog
+    // is on: fog mixes toward the fog colour BEFORE alpha is applied.
+    //
+    // The components are LINEAR: THREE.Color has already decoded the sRGB string, and a vertex
+    // colour is consumed in the renderer's working space with no further conversion.
+    const n = g.attributes.position.count;
+    const a = new Float32Array(n * 4);
+    const { c, a: alpha } = tint;
+    for (let i = 0; i < n; i++) {
+      a[i * 4] = c.r; a[i * 4 + 1] = c.g; a[i * 4 + 2] = c.b; a[i * 4 + 3] = alpha;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(a, 4));
   }
   g.morphAttributes = {};
   g.clearGroups();
@@ -78,22 +96,31 @@ function prep(src) {
 class B {
   constructor(material, { cast = false, receive = false } = {}) {
     this.material = material; this.cast = cast; this.receive = receive; this.geos = [];
+    /** Bulb-chase phase, baked into the u of everything this batch collects (see chaseBatch). */
+    this.uPhase = 0;
+  }
+  _push(g) {
+    if (this.uPhase) {
+      const uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) + this.uPhase);
+      uv.needsUpdate = true;
+    }
+    this.geos.push(g);
+    return this;
   }
   add(geo, x = 0, y = 0, z = 0, ry = 0, o = {}) {
-    const g = prep(geo);
+    const g = prep(geo, o.tint);
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(o.rx || 0, ry, o.rz || 0));
     g.applyMatrix4(new THREE.Matrix4().compose(
       new THREE.Vector3(x, y, z), q, new THREE.Vector3(o.sx ?? 1, o.sy ?? 1, o.sz ?? 1),
     ));
-    this.geos.push(g);
-    return this;
+    return this._push(g);
   }
   /** add() with an explicit matrix, for anything aimed along an arbitrary axis. */
-  addM(geo, m) {
-    const g = prep(geo);
+  addM(geo, m, tint = null) {
+    const g = prep(geo, tint);
     g.applyMatrix4(m);
-    this.geos.push(g);
-    return this;
+    return this._push(g);
   }
   into(parent) {
     if (!this.geos.length) return null;
@@ -105,12 +132,113 @@ class B {
   }
 }
 
+// ---------------------------------------------------------------- material families
+//
+// Two meshes can only be drawn in ONE call if they share a material INSTANCE, and round 2 handed
+// out a separate one per hue, per halo opacity, per bulb-chase phase and per sign face: 172
+// materials across 571 landmark meshes, which is 172 x (however many chunks they span) draw calls
+// no amount of merging can collapse.
+//
+// A "family" is one material whose per-object colour and opacity live in an RGBA vertex-colour
+// attribute instead of in `material.color` / `material.opacity`. That is an exact identity rather
+// than an approximation, because three applies both at the very top of the fragment shader:
+//
+//   diffuseColor = vec4( diffuse, opacity );   diffuseColor *= vColor;
+//
+// so a white material with vColor = (tint, k) hands fog, tone mapping and the blend equation the
+// same numbers a dedicated `color: tint, opacity: k` material would have. (Folding k into the
+// colour instead is NOT the same picture: fog mixes toward the fog colour before alpha applies,
+// which multiplies the fog term by 1/k.)
+//
+// Materials are still created per hue exactly as before and still carry the right colour, so a
+// mesh the collapse pass never reaches (anything `noMerge`) renders identically on its own. The
+// tag is only an instruction to `vcCollapse()`, which runs once at the end of landmarks().
+const VC_STEEL = 'steel', VC_TUBE = 'tube', VC_SOFT = 'soft', VC_CHASE = 'chase';
+
+const vcTint = (color, alpha = 1) => ({ c: new THREE.Color(color), a: alpha });
+
+function vcTag(m, family, color, alpha = 1) {
+  m.userData.vc = { family, tint: vcTint(color, alpha) };
+  return m;
+}
+
+function vcFamilyMaterial(family) {
+  return mat(`vc|${family}`, () => {
+    if (family === VC_STEEL) {
+      return new THREE.MeshStandardMaterial({
+        vertexColors: true, metalness: 0.75, roughness: 0.45, envMapIntensity: 1.2,
+      });
+    }
+    if (family === VC_TUBE) return new THREE.MeshBasicMaterial({ vertexColors: true });
+    if (family === VC_SOFT) {
+      return new THREE.MeshBasicMaterial({
+        map: softTexture(), vertexColors: true, transparent: true, opacity: 1,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: true,
+      });
+    }
+    return new THREE.MeshBasicMaterial({
+      map: chaseTexture(), vertexColors: true, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+  });
+}
+
+/**
+ * The one pass that turns "a material per hue" into "a material per family". Every mesh whose
+ * material carries a `vc` tag is lifted out of the graph, its tint baked into a vertex-colour
+ * attribute, and the lot merged into one mesh per (family, ~240 m cell, shadow flags) — so the
+ * sixty-eight pylons down the Strip submit four buffers per cell instead of six hundred meshes.
+ *
+ * The results are flagged `noMerge` because the kit's own chunk merge normalises geometry down to
+ * position/normal/uv and would throw the colours away. Cells keep frustum culling meaningful.
+ */
+function vcCollapse(out, chunk = 240) {
+  const doomed = [];
+  for (const root of out) {
+    if (!root || !root.isObject3D) continue;
+    root.updateMatrixWorld(true);
+    root.traverse((o) => {
+      if (!o.isMesh || o.isInstancedMesh || o.userData.noMerge) return;
+      if (o.material && !Array.isArray(o.material) && o.material.userData.vc) doomed.push(o);
+    });
+  }
+  if (!doomed.length) return;
+  const buckets = new Map();
+  const p = new THREE.Vector3();
+  for (const o of doomed) {
+    const vc = o.material.userData.vc;
+    p.setFromMatrixPosition(o.matrixWorld);
+    const key = `${vc.family}|${o.castShadow ? 1 : 0}${o.receiveShadow ? 1 : 0}`
+      + `|${Math.floor(p.x / chunk)}|${Math.floor(p.z / chunk)}`;
+    let b = buckets.get(key);
+    if (!b) {
+      b = new B(vcFamilyMaterial(vc.family), { cast: o.castShadow, receive: o.receiveShadow });
+      buckets.set(key, b);
+    }
+    b.addM(o.geometry, o.matrixWorld, vc.tint);
+    o.removeFromParent();
+  }
+  // some of the doomed were top-level entries in `out` (the shortcut light pools, the alley
+  // coves); drop those or they would be re-added to the scene as empty husks.
+  const gone = new Set(doomed);
+  for (let i = out.length - 1; i >= 0; i--) if (gone.has(out[i])) out.splice(i, 1);
+  const holder = new THREE.Group();
+  for (const b of buckets.values()) {
+    const m = b.into(holder);
+    if (!m) continue;
+    m.userData.noMerge = true;
+    out.push(m);
+  }
+}
+
 const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
 const cyl = (r0, r1, h, n = 8, open = false) => new THREE.CylinderGeometry(r0, r1, h, n, 1, open);
 
 /** A neon tube: unlit, saturated, always over the bloom threshold. */
 function tube(color) {
-  return mat(`tube|${color}`, () => new THREE.MeshBasicMaterial({ color: new THREE.Color(color) }));
+  return mat(`tube|${color}`, () => vcTag(
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(color) }), VC_TUBE, color,
+  ));
 }
 /** Shared soft radial falloff — the alpha every glow, halo and light pool in this city uses. */
 function softTexture() {
@@ -130,10 +258,10 @@ function softTexture() {
 
 /** The soft additive halo that hangs in the air in front of a tube. */
 function halo(color, opacity = 0.20) {
-  return mat(`halo|${color}|${opacity}`, () => new THREE.MeshBasicMaterial({
+  return mat(`halo|${color}|${opacity}`, () => vcTag(new THREE.MeshBasicMaterial({
     map: softTexture(), color: new THREE.Color(color), transparent: true, opacity,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: true,
-  }));
+  }), VC_SOFT, color, opacity));
 }
 /**
  * The pool of light a sign throws on the pavement, as an additive decal rather than a real
@@ -142,10 +270,10 @@ function halo(color, opacity = 0.20) {
  * runs on.
  */
 function spillMaterial(color) {
-  return mat(`spill|${color}`, () => new THREE.MeshBasicMaterial({
+  return mat(`spill|${color}`, () => vcTag(new THREE.MeshBasicMaterial({
     map: softTexture(), color: new THREE.Color(color), transparent: true, opacity: 0.85,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
-  }));
+  }), VC_SOFT, color, 0.85));
 }
 
 /**
@@ -254,11 +382,14 @@ function reflTexture(variant) {
   });
 }
 
+// Hue and brightness ride in the vertex colours, so the whole system is ONE material per streak
+// profile rather than one per (hue, profile, tier) — which was forty-four materials, and therefore
+// forty-four un-cullable draw calls on every single frame of the race.
 const REFL_TIER = [0.55, 0.34, 0.20, 0.12];
-function reflMaterial(color, variant = 0, tier = 0) {
-  return mat(`lv-reflm|${color}|${variant}|${tier}`, () => new THREE.MeshBasicMaterial({
-    map: reflTexture(variant), color: new THREE.Color(color),
-    transparent: true, opacity: REFL_TIER[tier], blending: THREE.AdditiveBlending,
+function reflMaterial(variant = 0) {
+  return mat(`lv-reflm|${variant}`, () => new THREE.MeshBasicMaterial({
+    map: reflTexture(variant), vertexColors: true,
+    transparent: true, opacity: 1, blending: THREE.AdditiveBlending,
     depthWrite: false, fog: false, side: THREE.DoubleSide,
   }));
 }
@@ -331,13 +462,15 @@ function reflBranchRibbon(b, {
   return g;
 }
 
-/** Queue one streak against its material. */
+const _IDENTITY = new THREE.Matrix4();
+/** Queue one streak against its material, hue and brightness in its vertex colours. */
 function reflect(track, o) {
-  const m = reflMaterial(o.color, o.variant ?? 0, o.tier ?? 0);
+  const m = reflMaterial(o.variant ?? 0);
   if (!REFL_BANK) REFL_BANK = new Map();
   let b = REFL_BANK.get(m);
   if (!b) { b = new B(m); REFL_BANK.set(m, b); }
-  b.add(o.branch ? reflBranchRibbon(o.branch, o) : reflRibbon(track, o));
+  b.addM(o.branch ? reflBranchRibbon(o.branch, o) : reflRibbon(track, o),
+    _IDENTITY, vcTint(o.color, REFL_TIER[o.tier ?? 0]));
 }
 
 /** Collapse the queue: one mesh per material, kept out of the chunk merge so renderOrder holds. */
@@ -356,9 +489,9 @@ function reflFlush(out) {
 }
 
 function steel(tint = '#231c30') {
-  return mat(`steel|${tint}`, () => new THREE.MeshStandardMaterial({
+  return mat(`steel|${tint}`, () => vcTag(new THREE.MeshStandardMaterial({
     color: new THREE.Color(tint), metalness: 0.75, roughness: 0.45, envMapIntensity: 1.2,
-  }));
+  }), VC_STEEL, tint));
 }
 function emissive(color, intensity = 2.4, rough = 0.4) {
   return mat(`em|${color}|${intensity}`, () => new THREE.MeshStandardMaterial({
@@ -373,8 +506,8 @@ function emissive(color, intensity = 2.4, rough = 0.4) {
  * per hue, `map.offset.x` animated. Every chase strip in the city that shares a hue shares the
  * material, so the whole Strip flickers for three draw calls and no per-frame geometry work.
  */
-function chaseMaterial(color, phase = 0) {
-  return mat(`chase|${color}|${phase}`, () => {
+function chaseTexture() {
+  return mat('chase-tex', () => {
     const { c, ctx } = canvas(96, 12);
     ctx.clearRect(0, 0, 96, 12);
     for (let i = 0; i < 8; i++) {
@@ -387,14 +520,26 @@ function chaseMaterial(color, phase = 0) {
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, 6, 6.5, 0, 7); ctx.fill();
     }
     const t = toTexture(c, { srgb: true, wrap: THREE.RepeatWrapping });
-    t.offset.x = phase;
-    const m = new THREE.MeshBasicMaterial({
-      map: t, color: new THREE.Color(color), transparent: true,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    });
-    ANIMS.push((time) => { t.offset.x = phase + time * 0.62; });
-    return m;
+    ANIMS.push((time) => { t.offset.x = time * 0.62; });
+    return t;
   });
+}
+function chaseMaterial(color) {
+  return mat(`chase|${color}`, () => vcTag(new THREE.MeshBasicMaterial({
+    map: chaseTexture(), color: new THREE.Color(color), transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  }), VC_CHASE, color));
+}
+/**
+ * A collector for chase strips at one bulb phase. The phase used to be a per-material
+ * `map.offset.x`, which meant a material per (hue, phase) and ninety-seven un-batchable meshes;
+ * it is the same picture written into the u of the geometry, so every chase strip in the city can
+ * now share one scrolling texture — and, after vcCollapse(), one material.
+ */
+function chaseBatch(color, phase = 0) {
+  const b = new B(chaseMaterial(color));
+  b.uPhase = phase;
+  return b;
 }
 
 /** A run of chase bulbs `len` metres long lying in the XY plane, centred on the origin. */
@@ -521,11 +666,7 @@ function signFace({
     }
   }
   grain(ctx, w, h, 4, rng);
-  const tex = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
-  return new THREE.MeshStandardMaterial({
-    map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 2.5,
-    roughness: 0.5, metalness: 0.1, side: THREE.FrontSide,
-  });
+  return c;
 }
 
 /**
@@ -537,21 +678,116 @@ function signFace({
 // third of a second of glow-blurred text rendering; twenty-four shared between sixty-eight signs
 // is not, and because the pool index advances by one per sign the same face never appears twice
 // inside ~900 m of road — nowhere near the "visible regular interval" §7 caps at 66.
+//
+// The whole pool then goes into ONE ATLAS, because a pool of thirty-four TEXTURES is still a pool
+// of thirty-four materials, and two pylons a hundred metres apart with different faces could not
+// share a draw call: measured, 119 of the 571 landmark meshes were sign boards. Packed into a
+// single sheet they are one material, and the kit's chunk merge folds every board in a cell into
+// one buffer. Same pixels, and the same number of them.
+//
+// The one thing an atlas can get wrong is the mip chain, because a coarse level averages across
+// cell boundaries and one sign's neon border bleeds into its neighbour's. Two defences: every cell
+// is laid out on a 16 px grid, so mip levels 0-4 (down to a 24 px sign, well past the point where
+// a board is legible) fall exactly on cell edges; and each cell is surrounded by a 16 px gutter of
+// its OWN replicated edge pixels — the same thing `ClampToEdgeWrapping` was doing for the separate
+// textures — so the little that does bleed is the sign's own colour rather than the one next door.
 const FACE_ASPECT = [1.42, 1.80, 2.30];
-function tallFace(i) {
-  const k = ((i % 24) + 24) % 24;
-  return mat(`face-t|${k}`, () => signFace({
-    w: 384, h: Math.round(384 * FACE_ASPECT[k % 3]),
-    text: WORDS[(k * 5 + 3) % WORDS.length], sub: SUBS[(k * 7 + 2) % SUBS.length],
-    color: HUES[k % 3], accent: HUES[(k + 1) % 3], seed: k * 31 + 5, vertical: true,
-  }));
+const FACE_PAD = 16;
+const FACE_GRID = 16;
+const up16 = (n) => Math.ceil(n / FACE_GRID) * FACE_GRID;
+let FACE_ATLAS = null;
+
+/** Blit `fc` at (x,y) with a PAD-wide skirt of its own edge pixels — an in-atlas clamp-to-edge. */
+function blitClamped(ctx, fc, x, y) {
+  const w = fc.width, h = fc.height, P = FACE_PAD;
+  ctx.drawImage(fc, x, y, w, h);
+  ctx.drawImage(fc, 0, 0, 1, h, x - P, y, P, h);                 // left
+  ctx.drawImage(fc, w - 1, 0, 1, h, x + w, y, P, h);             // right
+  ctx.drawImage(fc, 0, 0, w, 1, x, y - P, w, P);                 // top
+  ctx.drawImage(fc, 0, h - 1, w, 1, x, y + h, w, P);             // bottom
+  ctx.drawImage(fc, 0, 0, 1, 1, x - P, y - P, P, P);             // corners
+  ctx.drawImage(fc, w - 1, 0, 1, 1, x + w, y - P, P, P);
+  ctx.drawImage(fc, 0, h - 1, 1, 1, x - P, y + h, P, P);
+  ctx.drawImage(fc, w - 1, h - 1, 1, 1, x + w, y + h, P, P);
 }
-function wideFace(i) {
-  const k = ((i % 10) + 10) % 10;
-  return mat(`face-w|${k}`, () => signFace({
-    w: 512, h: 216, text: WORDS[(k * 9 + 1) % WORDS.length], sub: SUBS[(k * 3 + 5) % SUBS.length],
-    color: HUES[(k + 1) % 3], accent: HUES[(k + 2) % 3], seed: k * 17 + 9, vertical: false,
-  }));
+
+function faceAtlas() {
+  if (FACE_ATLAS) return FACE_ATLAS;
+  const rows = [];
+  // three rows of eight vertical pylon boards, grouped by aspect so a row has one cell height...
+  for (let r = 0; r < 3; r++) {
+    const cw = 384, ch = Math.round(384 * FACE_ASPECT[r]);
+    const cells = [];
+    for (let i = 0; i < 8; i++) cells.push({ kind: 't', k: r + i * 3, cw, ch });
+    rows.push({ cw, ch, cells });
+  }
+  // ...then the wide marquee boards, six and four.
+  for (const [n, k0] of [[6, 0], [4, 6]]) {
+    const cells = [];
+    for (let i = 0; i < n; i++) cells.push({ kind: 'w', k: k0 + i, cw: 512, ch: 216 });
+    rows.push({ cw: 512, ch: 216, cells });
+  }
+  // step to the next cell on a 16 px grid, so a tile's origin survives four mip halvings intact
+  let W = 0, H = 0;
+  for (const row of rows) {
+    row.stepX = up16(row.cw + FACE_PAD * 2);
+    row.stepY = up16(row.ch + FACE_PAD * 2);
+    W = Math.max(W, row.cells.length * row.stepX);
+    H += row.stepY;
+  }
+  const { c, ctx } = canvas(W, H);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const tall = [], wide = [];
+  let y = 0;
+  for (const row of rows) {
+    let x = 0;
+    for (const cell of row.cells) {
+      const k = cell.k;
+      const fc = cell.kind === 't'
+        ? signFace({
+          w: 384, h: Math.round(384 * FACE_ASPECT[k % 3]),
+          text: WORDS[(k * 5 + 3) % WORDS.length], sub: SUBS[(k * 7 + 2) % SUBS.length],
+          color: HUES[k % 3], accent: HUES[(k + 1) % 3], seed: k * 31 + 5, vertical: true,
+        })
+        : signFace({
+          w: 512, h: 216, text: WORDS[(k * 9 + 1) % WORDS.length],
+          sub: SUBS[(k * 3 + 5) % SUBS.length],
+          color: HUES[(k + 1) % 3], accent: HUES[(k + 2) % 3], seed: k * 17 + 9, vertical: false,
+        });
+      const px = x + FACE_PAD, py = y + FACE_PAD;
+      blitClamped(ctx, fc, px, py);
+      const tile = {
+        u0: px / W, us: cell.cw / W, v0: 1 - (py + cell.ch) / H, vs: cell.ch / H,
+        aspect: cell.ch / cell.cw,
+      };
+      (cell.kind === 't' ? tall : wide)[k] = tile;
+      x += row.stepX;
+    }
+    y += row.stepY;
+  }
+  const tex = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  FACE_ATLAS = {
+    material: new THREE.MeshStandardMaterial({
+      map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 2.5,
+      roughness: 0.5, metalness: 0.1, side: THREE.FrontSide,
+    }),
+    tall, wide,
+  };
+  return FACE_ATLAS;
+}
+
+const tallFace = (i) => faceAtlas().tall[((i % 24) + 24) % 24];
+const wideFace = (i) => faceAtlas().wide[((i % 10) + 10) % 10];
+
+/** A sign board `w` x `h` metres showing one tile of the atlas. */
+function faceMesh(w, h, tile) {
+  const g = new THREE.PlaneGeometry(w, h);
+  const uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, tile.u0 + uv.getX(i) * tile.us, tile.v0 + uv.getY(i) * tile.vs);
+  }
+  uv.needsUpdate = true;
+  return new THREE.Mesh(g, faceAtlas().material);
 }
 
 function neonPylon({ h = 22, bw = 8, seed = 1, index = 0, hue = 0, crown = 0 }) {
@@ -570,7 +806,7 @@ function neonPylon({ h = 22, bw = 8, seed = 1, index = 0, hue = 0, crown = 0 }) 
   const st = new B(steel(), { cast: false });
   const tb = new B(tube(third));
   const hb = new B(halo(color, 0.10));
-  const cb = new B(chaseMaterial(accent, (seed % 5) / 5));
+  const cb = chaseBatch(accent, (seed % 5) / 5);
 
   // mast: two legs with lattice bracing, standing on a plinth
   const legX = bwEff * 0.30;
@@ -585,7 +821,7 @@ function neonPylon({ h = 22, bw = 8, seed = 1, index = 0, hue = 0, crown = 0 }) 
 
   // cabinet: a front and a back face so the sign reads from either direction, plus a frame
   for (const s of [1, -1]) {
-    const p = new THREE.Mesh(new THREE.PlaneGeometry(bwEff, bh), face);
+    const p = faceMesh(bwEff, bh, face);
     p.position.set(0, midY, s * 0.42);
     p.rotation.y = s > 0 ? 0 : Math.PI;
     g.add(p);
@@ -647,11 +883,11 @@ function bladeSign({ h = 9, w = 11, seed = 1, index = 0, hue = 0 }) {
   const g = new THREE.Group();
   const color = HUES[hue % 3];
   const st = new B(steel('#1c1526'));
-  const cb = new B(chaseMaterial(color, (seed % 3) / 3));
+  const cb = chaseBatch(color, (seed % 3) / 3);
   const bh = w * 0.4219;                       // matches the pooled 512x216 face exactly
   const face = wideFace(index);
   for (const s of [1, -1]) {
-    const p = new THREE.Mesh(new THREE.PlaneGeometry(w, bh), face);
+    const p = faceMesh(w, bh, face);
     p.position.set(0, h, s * 0.3);
     p.rotation.y = s > 0 ? 0 : Math.PI;
     g.add(p);
@@ -755,7 +991,7 @@ function glassPyramidLV({ h = 185, base = 250, seed = 3 }) {
   // --- the four corner arrises, aimed exactly along the real edges ---
   {
     const eb = new B(emissive(GOLD, 3.4));
-    const cb = new B(chaseMaterial(GOLD, 0.2));
+    const cb = chaseBatch(GOLD, 0.2);
     const up = new THREE.Vector3(0, 1, 0);
     const L = Math.hypot(h, R);
     for (let k = 0; k < 4; k++) {
@@ -831,7 +1067,7 @@ function eiffelReplica({ h = 155, seed = 5 }) {
   const rng = new RNG(seed);
   const st = new B(steel('#2a2030'), { cast: true });
   const glow = new B(emissive(GOLD, 3.0), { cast: false });
-  const cb = new B(chaseMaterial(GOLD, 0.0));
+  const cb = chaseBatch(GOLD, 0.0);
   const hb = new B(halo(GOLD, 0.10));
 
   const R = h * 0.215;                                  // half-footprint
@@ -987,7 +1223,7 @@ function fountainLake({ len = 150, wid = 66, seed = 9 }) {
   }));
   const sb = new B(stone, { cast: true, receive: true });
   const gb = new B(emissive(GOLD, 2.2), { cast: false });
-  const cb = new B(chaseMaterial(GOLD, 0.4));
+  const cb = chaseBatch(GOLD, 0.4);
   for (const [dx, dz, l, ry] of [
     [0, 1, len + 6, 0], [0, -1, len + 6, 0],
     [1, 0, wid + 6, Math.PI / 2], [-1, 0, wid + 6, Math.PI / 2],
@@ -1008,8 +1244,10 @@ function fountainLake({ len = 150, wid = 66, seed = 9 }) {
   }
 
   // --- jets ---
-  // Origin at the base so an animated scale.y grows the plume upward. Marked noMerge so
-  // mergeStatic reparents them intact and the animation survives.
+  // Origin at the base so an animated scale.y grows the plume upward. One InstancedMesh rather
+  // than fifteen meshes: the plumes differ only in position, radius and height, which is exactly
+  // what an instance matrix carries, and additive blending does not care what order they land in.
+  // Marked noMerge so mergeStatic reparents it intact and the animation survives.
   // The plume dissolves upward: a vertical alpha ramp on the cone, so a jet ends in spray
   // instead of in a hard flat cone lid. (Round 1 read as a picket fence of glowing sticks.)
   const jetMat = mat('vegas-jet', () => {
@@ -1030,29 +1268,34 @@ function fountainLake({ len = 150, wid = 66, seed = 9 }) {
   });
   const jets = [];
   const N = 15;
+  const jetGeo = cyl(0.55, 1, 1, 9, true);          // unit cone; radius rides in the instance
+  jetGeo.translate(0, 0.5, 0);
+  const jetIM = new THREE.InstancedMesh(jetGeo, jetMat, N);
+  jetIM.userData.noMerge = true;
+  const jetM = new THREE.Matrix4();
   for (let i = 0; i < N; i++) {
     const t = i / (N - 1);
     const x = (t - 0.5) * len * 0.84;
     const z = Math.sin(t * Math.PI) * wid * 0.18 * (i % 2 ? 1 : -1);
     const big = Math.abs(t - 0.5) < 0.09;
     const r = big ? 1.7 : 0.95;
-    const geo = cyl(r * 0.55, r, 1, 9, true);
-    geo.translate(0, 0.5, 0);
-    const m = new THREE.Mesh(geo, jetMat);
-    m.position.set(x, 0.4, z);
-    m.userData.noMerge = true;
     const hgt = big ? 30 : 15 + (i % 4) * 2.4;
-    m.scale.set(1, hgt, 1);
-    g.add(m);
-    jets.push({ m, phase: t * 6.4 + (i % 3) * 1.1, base: hgt });
+    jetM.makeScale(r, hgt, r).setPosition(x, 0.4, z);
+    jetIM.setMatrixAt(i, jetM);
+    jets.push({ i, x, z, r, phase: t * 6.4 + (i % 3) * 1.1, base: hgt });
     // uplight in the water under each jet
     gb.add(new THREE.CircleGeometry(r * 2.6, 12), x, 0.42, z, 0, { rx: -Math.PI / 2 });
   }
+  jetIM.instanceMatrix.needsUpdate = true;
+  jetIM.computeBoundingSphere();     // taken at full height, so the plumes only ever shrink into it
+  g.add(jetIM);
   ANIMS.push((time) => {
     for (const j of jets) {
       const s = 0.5 + 0.5 * Math.sin(time * 1.35 + j.phase);
-      j.m.scale.y = j.base * (0.28 + 0.72 * s * s);
+      jetM.makeScale(j.r, j.base * (0.28 + 0.72 * s * s), j.r).setPosition(j.x, 0.4, j.z);
+      jetIM.setMatrixAt(j.i, jetM);
     }
+    jetIM.instanceMatrix.needsUpdate = true;
     jetMat.opacity = 0.28 + 0.10 * Math.sin(time * 2.1);
   });
 
@@ -1802,7 +2045,7 @@ export const def = {
         const g = new THREE.Group();
         const tb = new B(tube(col));
         const hb = new B(halo(col, 0.11));
-        const cb = new B(chaseMaterial(col, i / 3));
+        const cb = chaseBatch(col, i / 3);
         const st = new B(steel('#1e1828'));
         const W = b.halfWidth * 2.1;
         // a squared neon portal
@@ -1923,6 +2166,8 @@ export const def = {
       for (const h of heroes) reflect(track, h);
     }
 
+    // One material per family, chunked, before the kit's own merge sees any of it.
+    vcCollapse(out);
     reflFlush(out);
     return out;
   },
@@ -1933,6 +2178,7 @@ export function build(opts) {
   ANIMS = [];
   SITE = null;
   REFL_BANK = null;
+  FACE_ATLAS = null;
   const anims = ANIMS;
   const city = buildCity(def, { ...opts, night: true });
   const base = city.update;

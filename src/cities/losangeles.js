@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildCity, palmTree } from './kit.js';
 import { preGamma } from './track.js';
 import { drawText } from '../core/font.js';
@@ -110,6 +111,109 @@ function arcRun(cx, cz, rad, a0, a1, y0, y1, n, bank = 0) {
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------- draw-call plumbing
+
+/** Reduce a geometry to position/normal/uv so anything can be merged with anything. */
+function stripGeo(src) {
+  const g = src.index ? src.toNonIndexed() : src.clone();
+  for (const k of Object.keys(g.attributes)) {
+    if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k);
+  }
+  if (!g.attributes.normal) g.computeVertexNormals();
+  if (!g.attributes.uv) {
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+  }
+  g.morphAttributes = {};
+  g.clearGroups();
+  return g;
+}
+
+/**
+ * WORLD-SPACE MERGE COLLECTOR.
+ *
+ * Every landmark below is still placed exactly the way it always was — build a mesh, set its
+ * position and rotation — but it goes into this collector instead of straight into the scene, and
+ * comes back out as ONE buffer per (material, shadow flags, chunk cell). The channel's 417-piece
+ * chain-link fence, the 78 K-rail units and the 300-palm avenue are each a handful of buffers by
+ * the time the renderer sees them.
+ *
+ * Two things this deliberately does NOT do:
+ *
+ *  - It does not merge the whole city into one buffer. Frustum culling can only throw away things
+ *    that are separate objects, so the default cell is 300 m — roughly half the boulevard — and a
+ *    self-contained cluster that is always wholly on screen or wholly off it (downtown, 760 m out)
+ *    asks for `chunk: 0` and becomes one object.
+ *  - It does not touch anything flagged `userData.noMerge`. Those keep their world pose and pass
+ *    through untouched, which is how the double-sided freeway guide sign survives.
+ *
+ * `remap` swaps a mesh's material as it is collected and bakes the material colour it replaces
+ * into a vertex-colour attribute. That is what lets the palm fronds and the coconuts — two flat
+ * colours, no maps, identical shadow flags — share one material and one draw call. Vertex colours
+ * are consumed in the renderer's working (linear) space, which is precisely what `Color.r/g/b`
+ * already holds after sRGB decode, so the tint is identical to the material colour it stands in
+ * for rather than merely close.
+ */
+class Merger {
+  constructor(chunk = 300) {
+    this.chunk = chunk;
+    this.items = [];
+    this.buckets = new Map();
+  }
+
+  /** Collect a mesh or a whole group. Transforms are read at flush(), so callers may set them after. */
+  take(obj, opts = null) { this.items.push({ obj, opts }); return obj; }
+
+  _add(geo, matrix, material, cast, receive, chunk, color) {
+    const g = stripGeo(geo);
+    g.applyMatrix4(matrix);
+    if (color) {
+      const n = g.attributes.position.count;
+      const a = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) { a[i * 3] = color.r; a[i * 3 + 1] = color.g; a[i * 3 + 2] = color.b; }
+      g.setAttribute('color', new THREE.BufferAttribute(a, 3));
+    }
+    const cx = chunk > 0 ? Math.floor(matrix.elements[12] / chunk) : 0;
+    const cz = chunk > 0 ? Math.floor(matrix.elements[14] / chunk) : 0;
+    const key = `${material.id}|${cast ? 1 : 0}${receive ? 1 : 0}|${cx}|${cz}`;
+    let b = this.buckets.get(key);
+    if (!b) { b = { material, cast, receive, geos: [] }; this.buckets.set(key, b); }
+    b.geos.push(g);
+  }
+
+  /** Emit the finished buffers into `out`. Call once, at the end of landmarks(). */
+  flush(out) {
+    const keep = [];
+    for (const it of this.items) {
+      it.obj.updateMatrixWorld(true);
+      const chunk = it.opts?.chunk ?? this.chunk;
+      const remap = it.opts?.remap || null;
+      it.obj.traverse((o) => {
+        if (!o.isMesh || !o.material || Array.isArray(o.material)) return;
+        if (o.userData.noMerge) { keep.push(o); return; }
+        const sub = remap ? remap(o) : null;
+        this._add(o.geometry, o.matrixWorld, sub?.material || o.material,
+          o.castShadow, o.receiveShadow, chunk, sub?.color || null);
+      });
+    }
+    for (const o of keep) {
+      o.matrix.copy(o.matrixWorld);
+      o.matrix.decompose(o.position, o.quaternion, o.scale);
+      out.push(o);
+    }
+    for (const b of this.buckets.values()) {
+      const geo = b.geos.length === 1 ? b.geos[0] : mergeGeometries(b.geos, false);
+      if (!geo) continue;
+      const m = new THREE.Mesh(geo, b.material);
+      m.castShadow = b.cast; m.receiveShadow = b.receive;
+      m.userData.noMerge = true;                 // already merged — buildCity must not redo it
+      out.push(m);
+    }
+    this.items.length = 0;
+    this.buckets.clear();
+    return out;
+  }
 }
 
 // ---------------------------------------------------------------- procedural materials
@@ -421,6 +525,9 @@ export const def = {
 
   landmarks({ track, rng, night }) {
     const out = [];
+    // Everything below is collected rather than added: ~1,900 little meshes come out the other end
+    // as ~120 chunked buffers. See Merger at the top of this file.
+    const M = new Merger(300);
     const R = rng.fork ? rng.fork(7) : rng;
     const HW = track.halfWidth;
 
@@ -452,7 +559,7 @@ export const def = {
     const push = (geo, mat, { cast = true, receive = true } = {}) => {
       const m = new THREE.Mesh(geo, mat);
       m.castShadow = cast; m.receiveShadow = receive;
-      out.push(m);
+      M.take(m);
       return m;
     };
 
@@ -508,25 +615,28 @@ export const def = {
         if (skipMouths && mouths.some((m) => Math.abs(s.tu - m) < 0.022)) { line.push(null); continue; }
         line.push(s.p.clone().addScaledVector(s.r, lat).setY(y0));
       }
+      // One post geometry and one unit rail, scaled to each span: 105 posts and 208 rails cost two
+      // buffers instead of 313 allocations.
+      const postGeo = new THREE.CylinderGeometry(0.08, 0.08, fh, 5);
+      postGeo.translate(0, fh / 2, 0);
+      const railGeo = new THREE.CylinderGeometry(0.05, 0.05, 1, 4);
+      railGeo.rotateZ(Math.PI / 2);
       for (let i = 0; i < line.length; i++) {
         if (!line[i]) continue;
-        const g = new THREE.CylinderGeometry(0.08, 0.08, fh, 5);
-        g.translate(0, fh / 2, 0);
-        const post = new THREE.Mesh(g, railMat);
+        const post = new THREE.Mesh(postGeo, railMat);
         post.position.copy(line[i]);
         post.castShadow = true;
-        out.push(post);
+        M.take(post);
         if (i + 1 < line.length && line[i + 1]) {
           const a = line[i], b = line[i + 1];
           const len = a.distanceTo(b);
           const yaw = Math.atan2(b.x - a.x, b.z - a.z);
           for (const ry of [fh - 0.10, fh * 0.06]) {
-            const rg = new THREE.CylinderGeometry(0.05, 0.05, len, 4);
-            rg.rotateZ(Math.PI / 2);
-            const rail = new THREE.Mesh(rg, railMat);
+            const rail = new THREE.Mesh(railGeo, railMat);
+            rail.scale.x = len;
             rail.position.copy(a).lerp(b, 0.5).setY(a.y + ry);
             rail.rotation.y = yaw + Math.PI / 2;
-            out.push(rail);
+            M.take(rail);
           }
           const mesh = new THREE.PlaneGeometry(len, fh - 0.16);
           const uvA = mesh.attributes.uv;
@@ -535,7 +645,7 @@ export const def = {
           const wire = new THREE.Mesh(mesh, linkMat);
           wire.position.copy(a).lerp(b, 0.5).setY(a.y + fh / 2 - 0.02);
           wire.rotation.y = yaw + Math.PI / 2;
-          out.push(wire);
+          M.take(wire);
         }
       }
     }
@@ -565,14 +675,14 @@ export const def = {
       // biased low on the batter — that is both where a can of paint reaches and the band of
       // wall the driver actually sees over the parapet
       onSlope(m, u, R.range(0.02, 0.62), 0.08);
-      out.push(m);
+      M.take(m);
     }
     // grime band along the toe, where the water sits
     for (let i = 0; i < 46; i++) {
       const u = lerp(CH0, CH1, (i + R.range(0.1, 0.9)) / 46);
       const m = new THREE.Mesh(new THREE.PlaneGeometry(R.range(14, 30), R.range(3, 7)), stainMat);
       onSlope(m, u, R.range(0.02, 0.16), 0.05);
-      out.push(m);
+      M.take(m);
     }
     for (let i = 0; i < 40; i++) {
       const u = lerp(CH0 + 0.008, CH1 - 0.008, R.next());
@@ -588,7 +698,7 @@ export const def = {
       } else {
         onSlope(m, u, R.range(0, 0.9), 0.06);
       }
-      out.push(m);
+      M.take(m);
     }
 
     // Storm-drain outfalls punched through the toe of the batter, each with a concrete headwall,
@@ -606,20 +716,20 @@ export const def = {
         head.position.copy(at(58.4, (rad * 2.6 + 1.6) / 2 - 0.4));
         head.rotation.y = yaw + Math.PI / 2;
         head.castShadow = true; head.receiveShadow = true;
-        out.push(head);
+        M.take(head);
         const barrel = new THREE.Mesh(new THREE.CylinderGeometry(rad, rad, 5.5, 14, 1, true), dark);
         barrel.position.copy(at(61.0, rad * 0.92));
         barrel.rotation.set(0, yaw, Math.PI / 2);
-        out.push(barrel);
+        M.take(barrel);
         const cap = new THREE.Mesh(new THREE.CircleGeometry(rad, 14), dark);
         cap.position.copy(at(63.6, rad * 0.92));
         cap.rotation.set(0, yaw + Math.PI / 2, 0);
-        out.push(cap);
+        M.take(cap);
         // the apron and the wet trail it leaves across the floor toward the invert
         const trail = new THREE.Mesh(new THREE.PlaneGeometry(rad * 2.6, 13), stainMat);
         trail.position.copy(at(52.0, -0.045));
         trail.rotation.set(-Math.PI / 2, 0, yaw + Math.PI / 2);
-        out.push(trail);
+        M.take(trail);
       }
     }
 
@@ -643,7 +753,7 @@ export const def = {
         const col = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.3, hgt, 10), structMat);
         col.position.set(p.x, hgt / 2, p.z);
         col.castShadow = true;
-        out.push(col);
+        M.take(col);
       }
     }
 
@@ -669,13 +779,13 @@ export const def = {
           const m = new THREE.Mesh(new THREE.PlaneGeometry(6.5, 1.5), chevMat);
           m.position.copy(s.pos).addScaledVector(s.right, 22.6).setY(1.35);
           m.rotation.y = Math.atan2(s.tan.x, s.tan.z) + Math.PI / 2;
-          out.push(m);
+          M.take(m);
           // the broken-off parapet stub, tipped over into the channel
           const stub = new THREE.Mesh(new THREE.BoxGeometry(1.3, 1.2, 3.4), channelMat);
           stub.position.copy(s.pos).addScaledVector(s.right, 26.5 + dz * 1.5).setY(0.5);
           stub.rotation.set(0.32 * dz, Math.atan2(s.tan.x, s.tan.z) + 0.4, 0.22);
           stub.castShadow = true;
-          out.push(stub);
+          M.take(stub);
         }
       }
     }
@@ -781,31 +891,49 @@ export const def = {
           leg.position.set(-104 + dz * 10.4 * Math.cos(1.26), 20, -46 - dz * 10.4 * Math.sin(1.26));
         }
       }
-      // traffic frozen on the decks: scale reference, and a reason for the lamps to exist
+      // Traffic frozen on the decks: scale reference, and a reason for the lamps to exist.
+      //
+      // Six paint colours used to mean six materials, and six materials scattered over five 260 m
+      // chunks meant THIRTY-SIX draw calls for thirty-four cars three metres long. One material
+      // plus `instanceColor` gets the identical six colours out of two InstancedMeshes — body and
+      // roof stay separate only because the roof does not cast a shadow and the body does.
       {
         const body = new THREE.BoxGeometry(2.0, 1.05, 4.6);
         const roof = new THREE.BoxGeometry(1.75, 0.75, 2.3);
         const cols = ['#c8c4bc', '#2f3a4c', '#a83a30', '#d8b040', '#3a4a3c', '#8c8f96'];
-        const mats = cols.map((h) => new THREE.MeshStandardMaterial({
-          color: new THREE.Color(preGamma(h)), roughness: 0.42, metalness: 0.25,
-        }));
+        const carMat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.25 });
+        const bodyM = [], roofM = [], tint = [];
+        const t3 = new THREE.Object3D();
+        stack.updateMatrix();
         for (const [st, halfW] of [[A, 12.5], [B, 10.5], [C1, 6.0], [C2, 5.6]]) {
           for (let i = 0; i < (st === A || st === B ? 13 : 4); i++) {
             const idx = Math.floor(R.range(0.08, 0.92) * (st.length - 1));
             const p = st[idx].p, r = st[idx].r;
-            const m = mats[R.int(0, mats.length - 1)];
+            const ci = R.int(0, cols.length - 1);
             const lane = R.range(-halfW + 2.6, halfW - 2.6);
-            const b = put(body, m);
-            b.position.copy(p).addScaledVector(r, lane).setY(p.y + 0.55);
-            b.rotation.y = Math.atan2(r.z, r.x) + (R.bool() ? 0 : Math.PI);
-            const t = put(roof, m, false);
-            t.position.copy(b.position).setY(p.y + 1.42);
-            t.rotation.y = b.rotation.y;
+            t3.position.copy(p).addScaledVector(r, lane).setY(p.y + 0.55);
+            t3.rotation.set(0, Math.atan2(r.z, r.x) + (R.bool() ? 0 : Math.PI), 0);
+            t3.updateMatrix();
+            bodyM.push(new THREE.Matrix4().multiplyMatrices(stack.matrix, t3.matrix));
+            t3.position.setY(p.y + 1.42);
+            t3.updateMatrix();
+            roofM.push(new THREE.Matrix4().multiplyMatrices(stack.matrix, t3.matrix));
+            tint.push(new THREE.Color(preGamma(cols[ci])));
           }
+        }
+        for (const [geo, mats, cast] of [[body, bodyM, true], [roof, roofM, false]]) {
+          const im = new THREE.InstancedMesh(geo, carMat, mats.length);
+          for (let i = 0; i < mats.length; i++) { im.setMatrixAt(i, mats[i]); im.setColorAt(i, tint[i]); }
+          im.instanceMatrix.needsUpdate = true;
+          im.instanceColor.needsUpdate = true;
+          im.castShadow = cast; im.receiveShadow = true;
+          im.userData.noMerge = true;          // an InstancedMesh must survive the merge pass
+          im.computeBoundingSphere();
+          out.push(im);
         }
       }
       for (const m of local) stack.add(m);
-      out.push(stack);
+      M.take(stack);
     }
 
     // ================================================================ 3. downtown in the smog
@@ -877,7 +1005,9 @@ export const def = {
           g.add(mast);
         }
       }
-      out.push(g);
+      // One cell, not four: the cluster is 450 m across and 760 m away, so it is either wholly in
+      // frame or wholly out of it and chunking it only costs draw calls.
+      M.take(g, { chunk: 0 });
     }
 
     // ================================================================ 4. the palm avenue
@@ -887,6 +1017,14 @@ export const def = {
     // sun) and squat date palms at street level. Nothing sits on a fixed interval.
     {
       const pcache = new Map();
+      // Three hundred palms used to be nine hundred meshes across three materials — bark, frond,
+      // coconut — and three materials is three draw calls in every chunk they touch. The frond and
+      // the coconut are both flat, mapless and identically shadowed, so they merge into ONE
+      // material carrying their colours as vertex colours; only the mapped bark stays separate.
+      const canopyMat = new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.72, side: THREE.DoubleSide,
+      });
+      const canopy = (o) => (o.material.map ? null : { material: canopyMat, color: o.material.color });
       for (const side of [-1, 1]) {
         let u = R.range(0, 0.012);
         let i = 0;
@@ -906,7 +1044,7 @@ export const def = {
           p.position.copy(s.pos).addScaledVector(s.right, side * lat).setY(inChannel ? 15.9 : 0.16);
           p.rotation.y = R.range(0, 6.28);
           p.scale.setScalar(R.range(0.94, 1.08));
-          out.push(p);
+          M.take(p, { remap: canopy });
           u += (tall ? R.range(20, 36) : R.range(13, 27)) / track.length;
           i++;
         }
@@ -919,7 +1057,7 @@ export const def = {
         const p = palmTree({ h: R.range(19, 28), seed: 900 + k, lean: R.range(0.01, 0.05), cache: pcache });
         p.position.copy(s.pos).addScaledVector(s.right, R.range(48, 74)).setY(0.1);
         p.rotation.y = R.range(0, 6.28);
-        out.push(p);
+        M.take(p, { remap: canopy });
       }
     }
 
@@ -928,43 +1066,49 @@ export const def = {
     // Concrete K-rail around the outside of the hairpin, W-beam guard rail on the long sweeper
     // home: the two pieces of road furniture that actually line a Californian road.
     {
+      // The K-rail section is swept ONCE and then placed 78 times. Sweeping it per unit was 78
+      // identical buffers built and thrown away at load; the units still get their own yaw and
+      // scale jitter, so the run is exactly as irregular as it was.
       const N = 78;
+      const krGeo = sweep(
+        straightRun(0, -2.55, 0, 2.55, 0, 0, 1),
+        [[[-0.45, 0], [0.45, 0], [0.22, 0.36], [0.26, 1.02], [-0.26, 1.02], [-0.22, 0.36]]],
+        { uvScale: 0.35, caps: true },
+      );
       for (let i = 0; i < N; i++) {
         const u = lerp(0.325, 0.445, i / (N - 1));
         const s = track.at(u);
-        const kr = push(sweep(
-          straightRun(0, -2.55, 0, 2.55, 0, 0, 1),
-          [[[-0.45, 0], [0.45, 0], [0.22, 0.36], [0.26, 1.02], [-0.26, 1.02], [-0.22, 0.36]]],
-          { uvScale: 0.35, caps: true },
-        ), channelMat);
+        const kr = push(krGeo, channelMat);
         kr.position.copy(s.pos).addScaledVector(s.right, HW + 6.6).setY(0.12);
         kr.rotation.y = Math.atan2(s.tan.x, s.tan.z) + R.range(-0.02, 0.02);
         kr.scale.setScalar(R.range(0.98, 1.03));
       }
-      const M = 58;
+      const GR = 58;
+      const postGeo = new THREE.BoxGeometry(0.18, 1.35, 0.18);
+      const beamGeo = new THREE.BoxGeometry(0.14, 0.42, 1);      // scaled to each span
       let prev = null;
-      for (let i = 0; i < M; i++) {
-        const u = lerp(0.800, 0.878, i / (M - 1));
+      for (let i = 0; i < GR; i++) {
+        const u = lerp(0.800, 0.878, i / (GR - 1));
         const s = track.at(u);
         const at = s.pos.clone().addScaledVector(s.right, HW + 5.2);
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.35, 0.18), railMat);
+        const post = new THREE.Mesh(postGeo, railMat);
         post.position.copy(at).setY(0.67);
         post.rotation.y = Math.atan2(s.tan.x, s.tan.z);
         post.castShadow = true;
-        out.push(post);
+        M.take(post);
         if (prev) {
-          const len = prev.distanceTo(at);
-          const beam = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.42, len), railMat);
+          const beam = new THREE.Mesh(beamGeo, railMat);
+          beam.scale.z = prev.distanceTo(at);
           beam.position.copy(prev).lerp(at, 0.5).setY(1.02);
           beam.rotation.y = Math.atan2(at.x - prev.x, at.z - prev.z);
           beam.castShadow = true;
-          out.push(beam);
+          M.take(beam);
         }
         prev = at;
       }
     }
 
-    return out;
+    return M.flush(out);
   },
 };
 

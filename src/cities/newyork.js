@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  buildCity, parkedCar, dumpster, scaffold, trashCan, lightPool,
+  buildCity, parkedCar, dumpster, scaffold, trashCan, lightPool, mergeGroup, PropBatch,
 } from './kit.js';
 import { roundedBox } from '../vehicles/kit.js';
 import {
@@ -130,6 +130,233 @@ function corridorDist(x, z) {
   return best;
 }
 
+// ---------------------------------------------------------------- draw-call plumbing
+/**
+ * WHY THE MATERIALS AND THE PLACEMENT LOOPS LOOK LIKE THIS.
+ *
+ * A canyon city is mostly repetition — 43 bays of elevated railway, 500 kerb units, 150 rooftop
+ * water tanks, 90 walk-ups — and until this pass every one of those was its own `THREE.Mesh` with
+ * its own material. 25 000 meshes and 200 materials is not a triangle problem, it is a SUBMISSION
+ * problem: two meshes with equal-but-separate materials cannot be batched, so the merge pass had
+ * to emit one buffer per (material x spatial chunk) and the city cost ~860 draw calls of dressing.
+ *
+ * Three mechanisms fix it, and everything below is written against them:
+ *
+ *  1. THE PALETTE (`Palette`). Every UNTEXTURED material in this city — structural steel, painted
+ *     metal, stone tints, the glass of a lit lamp — is one 16 px swatch in a single 256² texture,
+ *     and the mesh that uses it carries UVs pinned to the centre of its swatch. Albedo lives in
+ *     the colour cell, roughness and metalness in the G and B channels of a second cell, and
+ *     emissive colour x intensity in a third. Sixty materials collapse into ONE that everything
+ *     else can batch against, and the shading is unchanged: `roughness`/`metalness` are 1 so the
+ *     map value is used verbatim, and the emissive cell stores `colour * intensity / PAL_EMAX`.
+ *  2. PROTOTYPES + `InstancedMesh` (the kit's `PropBatch`). Anything placed in a loop enough times
+ *     to matter — the 43 bays of the El, the 200 slices of its track bed — is built ONCE, folded
+ *     to one mesh per material, and then placed as instance matrices.
+ *  3. FOLDING (`fold`). Anything one-off is merged by material inside a spatial chunk, so the
+ *     bridge is eight buffers rather than nine hundred meshes and frustum culling still works at
+ *     chunk granularity.
+ */
+
+const PAL_GRID = 16, PAL_CELL = 16, PAL_PX = PAL_GRID * PAL_CELL;
+/** The brightest emissive a swatch can express. Everything in this city sits under it. */
+const PAL_EMAX = 6;
+/** Scalar metalness of the matte palette material: under the engine's 0.6 "reflective" cut. */
+const PAL_MATTE_M = 0.599;
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
+class Palette {
+  constructor() {
+    this.slots = new Map();
+    this.n = 0;
+    const sheet = (fill) => {
+      const o = canvas(PAL_PX, PAL_PX);
+      o.ctx.fillStyle = fill; o.ctx.fillRect(0, 0, PAL_PX, PAL_PX);
+      return o;
+    };
+    this.alb = sheet('#000000');
+    this.rm = sheet('rgb(0,255,0)');            // G = roughness, B = metalness
+    this.emi = sheet('#000000');
+    const tex = (o, srgb) => {
+      const t = toTexture(o.c, { srgb, aniso: 1, wrap: THREE.ClampToEdgeWrapping });
+      // Nearest + no mips: every UV lands dead centre of its cell, so a swatch can never bleed
+      // into its neighbour no matter how small the triangle gets on screen.
+      t.minFilter = THREE.NearestFilter; t.magFilter = THREE.NearestFilter;
+      t.generateMipmaps = false;
+      return t;
+    };
+    this.maps = { map: tex(this.alb, true), rm: tex(this.rm, false), emi: tex(this.emi, true) };
+    // TWO materials, split on metalness, and the split is not cosmetic. `engine.applyEnvironment`
+    // classifies a material as reflective when `metalness >= 0.6` and multiplies its
+    // `envMapIntensity` by ~2.4 — so a single palette with a scalar metalness of 1 would hand
+    // every matte stone and rusted girder in the city the reflection budget of polished chrome.
+    // Matte swatches therefore live in a material whose SCALAR metalness is under the threshold
+    // (their real value is carried in the map, scaled to suit), and only genuine metals sit in the
+    // material that gets the boost — exactly the way the separate materials used to be sorted.
+    this.matte = this._mat(THREE.FrontSide, false);
+    this.metal = this._mat(THREE.FrontSide, true);
+    this.ds = { matte: null, metal: null };
+  }
+
+  _mat(side, isMetal) {
+    const m = new THREE.MeshStandardMaterial({
+      map: this.maps.map, roughnessMap: this.maps.rm, metalnessMap: this.maps.rm,
+      roughness: 1, metalness: isMetal ? 1 : PAL_MATTE_M,
+      emissiveMap: this.maps.emi, emissive: new THREE.Color(0xffffff), emissiveIntensity: PAL_EMAX,
+      envMapIntensity: isMetal ? 1.1 : 1.0, side,
+    });
+    m.name = `nyc-pal-${isMetal ? 'metal' : 'matte'}${side === THREE.DoubleSide ? '-ds' : ''}`;
+    return m;
+  }
+
+  /**
+   * A swatch reference: `{ material, u, v }`. `put()` stamps (u,v) onto the geometry it is used
+   * with, which is what makes one material able to carry sixty different surfaces.
+   */
+  ref(color, { rough = 0.8, metal = 0, glow = 0, glowColor = null, double = false } = {}) {
+    // normalised so '#282e37', 0x282e37 and a THREE.Color all land on the same swatch
+    const col = color.isColor ? color : new THREE.Color(color);
+    const gcol = glow > 0 ? (glowColor == null ? col : new THREE.Color(glowColor)) : null;
+    const key = `${col.getHexString()}|${rough}|${metal}|${glow}|${gcol ? gcol.getHexString() : ''}`;
+    let s = this.slots.get(key);
+    if (!s) {
+      const isMetal = metal >= 0.6;
+      const i = this.n % PAL_GRID, j = (this.n / PAL_GRID) | 0;
+      this.n++;
+      const x = i * PAL_CELL, y = j * PAL_CELL;
+      this.alb.ctx.fillStyle = col.getStyle();
+      this.alb.ctx.fillRect(x, y, PAL_CELL, PAL_CELL);
+      // metalness is divided by whatever scalar its material carries, so the product is exact
+      const mv = clamp01(metal / (isMetal ? 1 : PAL_MATTE_M));
+      this.rm.ctx.fillStyle = `rgb(0,${Math.round(clamp01(rough) * 255)},${Math.round(mv * 255)})`;
+      this.rm.ctx.fillRect(x, y, PAL_CELL, PAL_CELL);
+      if (glow > 0) {
+        const e = gcol.clone();
+        e.multiplyScalar(glow / PAL_EMAX);
+        e.r = clamp01(e.r); e.g = clamp01(e.g); e.b = clamp01(e.b);
+        this.emi.ctx.fillStyle = e.getStyle();
+        this.emi.ctx.fillRect(x, y, PAL_CELL, PAL_CELL);
+      }
+      for (const t of Object.values(this.maps)) t.needsUpdate = true;
+      s = {
+        pal: true, metal: isMetal, material: isMetal ? this.metal : this.matte,
+        u: (i + 0.5) / PAL_GRID, v: 1 - (j + 0.5) / PAL_GRID,
+      };
+      this.slots.set(key, s);
+    }
+    if (!double) return s;
+    let d = this.slots.get(`${key}|DS`);
+    if (!d) {
+      const which = s.metal ? 'metal' : 'matte';
+      if (!this.ds[which]) this.ds[which] = this._mat(THREE.DoubleSide, s.metal);
+      d = { pal: true, metal: s.metal, material: this.ds[which], u: s.u, v: s.v };
+      this.slots.set(`${key}|DS`, d);
+    }
+    return d;
+  }
+}
+
+/** The per-build palette. Lives in the material cache, so it is disposed with the city. */
+const palette = (M) => M('__palette', () => new Palette());
+
+/** Pin every vertex of `geo` to one palette swatch. */
+function stampUV(geo, u, v) {
+  const n = geo.attributes.position.count;
+  const arr = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) { arr[i * 2] = u; arr[i * 2 + 1] = v; }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(arr, 2));
+  return geo;
+}
+
+/**
+ * Turn a palette swatch or an atlas cell into a real material, writing the UVs it needs onto the
+ * geometry it was handed. Anything that is already a THREE material passes straight through.
+ */
+function resolve(material, geo) {
+  if (!material) return material;
+  if (material.pal) { stampUV(geo, material.u, material.v); return material.material; }
+  if (material.atlas) { atlasUV(geo, material); return material.material; }
+  return material;
+}
+
+/**
+ * TEXTURE ATLAS for the small lettered things — shop fascias, street blades, station names.
+ * Sixty hand-drawn signs used to be sixty materials; here they are sixty cells of one canvas and
+ * the geometry's UVs are remapped into its cell by `atlasUV`.
+ */
+class Atlas {
+  constructor({
+    cw, ch, cols, rows, emissive = 0, emissiveColor = 0xffffff, roughness = 0.5, metalness = 0.1,
+    double = false, basic = null,
+  }) {
+    this.cw = cw; this.ch = ch; this.cols = cols; this.rows = rows;
+    this.W = cw * cols; this.H = ch * rows;
+    const o = canvas(this.W, this.H);
+    this.ctx = o.ctx;
+    if (!basic) { this.ctx.fillStyle = '#000'; this.ctx.fillRect(0, 0, this.W, this.H); }
+    this.tex = toTexture(o.c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+    this.material = basic
+      ? new THREE.MeshBasicMaterial({ map: this.tex, ...basic })
+      : new THREE.MeshStandardMaterial({
+        map: this.tex,
+        emissiveMap: emissive > 0 ? this.tex : null,
+        emissive: new THREE.Color(emissiveColor), emissiveIntensity: emissive,
+        roughness, metalness, side: double ? THREE.DoubleSide : THREE.FrontSide,
+      });
+    this.cells = new Map();
+    this.n = 0;
+  }
+
+  /** Allocate (or find) a cell, running `draw(ctx, w, h)` in its own translated space. */
+  cell(key, draw) {
+    let c = this.cells.get(key);
+    if (c) return c;
+    // A full atlas reuses a cell rather than drawing outside itself: the caller gets a sign that
+    // is not the one it asked for, which is a far better failure than a corrupted sheet.
+    if (this.n >= this.cols * this.rows) return [...this.cells.values()][key.length % this.cells.size];
+    const i = this.n % this.cols, j = (this.n / this.cols) | 0;
+    this.n++;
+    const x = i * this.cw, y = j * this.ch;
+    // Drawn on its own canvas and blitted in, not into a translated context: `grain()` and every
+    // other generator in textures.js works through getImageData, which ignores the transform.
+    const o = canvas(this.cw, this.ch);
+    draw(o.ctx, this.cw, this.ch);
+    this.ctx.drawImage(o.c, x, y);
+    this.tex.needsUpdate = true;
+    // Half a texel in from each edge: the atlas keeps its mip chain, and this is what stops a
+    // neighbouring cell bleeding into a sign that has shrunk to twenty pixels up the street.
+    const px = 0.5 / this.W, py = 0.5 / this.H;
+    c = {
+      atlas: true,
+      u0: x / this.W + px, du: this.cw / this.W - px * 2,
+      v0: 1 - (y + this.ch) / this.H + py, dv: this.ch / this.H - py * 2,
+      material: this.material,
+    };
+    this.cells.set(key, c);
+    return c;
+  }
+}
+
+/** Remap a geometry's 0..1 UVs into one atlas cell. */
+function atlasUV(geo, cell) {
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, cell.u0 + uv.getX(i) * cell.du, cell.v0 + uv.getY(i) * cell.dv);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+
+/**
+ * Collapse a finished group: one mesh per material inside each `chunk` metre cell, and marked so
+ * the kit's own merge pass leaves it alone. Small chunks keep frustum culling useful; 1e9 puts a
+ * whole compact structure (a bridge, a station) into one buffer per material.
+ */
+function fold(group, chunk = 1e9) {
+  mergeGroup(group, chunk);
+  group.traverse((o) => { if (o.isMesh) o.userData.noMerge = true; });
+  return group;
+}
+
 // ---------------------------------------------------------------- small shared helpers
 
 /** Per-build material cache: everything is disposed with the city group, so nothing is global. */
@@ -166,9 +393,12 @@ function boxWalls(group, material, { w, d, h, y, u0 = 0, v0 = 0, bay = 3.2, floo
 
 const box = (w, h, d, r = 0) => (r > 0 ? roundedBox(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d));
 
-/** add(group, geo, material, x,y,z, ry) */
+/** `new THREE.Mesh` that understands palette references. */
+const mesh = (geo, material) => new THREE.Mesh(geo, resolve(material, geo));
+
+/** add(group, geo, material, x,y,z, ry) — `material` may be a palette reference. */
 function put(group, geo, material, x = 0, y = 0, z = 0, ry = 0, opts = {}) {
-  const m = new THREE.Mesh(geo, material);
+  const m = new THREE.Mesh(geo, resolve(material, geo));
   m.position.set(x, y, z);
   m.rotation.set(opts.rx || 0, ry, opts.rz || 0);
   if (opts.scale) m.scale.setScalar(opts.scale);
@@ -184,12 +414,18 @@ function put(group, geo, material, x = 0, y = 0, z = 0, ry = 0, opts = {}) {
  * Steel. `glow` seeds a dim self-lit term with the colour of the city's own sodium spill: the
  * underside of an elevated railway faces the ground, so a hemisphere rig gives it the GROUND
  * colour and it goes black — which is exactly what happened to the first pass of the El.
+ *
+ * Every one of these is a swatch in the shared palette, not a material of its own (see `Palette`):
+ * the El, the bridge, the fire escapes and the kerb ironwork all batch together as a result.
  */
 function steelMat(M, key, color, { rough = 0.48, metal = 0.72, glow = 0 } = {}) {
-  return M(`steel|${key}|${glow}`, () => new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color), roughness: rough, metalness: metal, envMapIntensity: 1.1,
-    emissive: new THREE.Color(0x2e3a52), emissiveIntensity: glow,
-  }));
+  void key;
+  return palette(M).ref(color, { rough, metal, glow, glowColor: '#2e3a52' });
+}
+
+/** A plain painted/matte surface — also a palette swatch. */
+function flatMat(M, color, { rough = 0.8, metal = 0, glow = 0, glowColor = null, double = false } = {}) {
+  return palette(M).ref(color, { rough, metal, glow, glowColor, double });
 }
 
 function stoneMat(M, key, color, rough = 0.86, glow = 0) {
@@ -228,11 +464,10 @@ function stoneMat(M, key, color, rough = 0.86, glow = 0) {
   });
 }
 
+/** Lamp glass and lit trim: colour plus its own emissive, again as one palette swatch. */
 function glowMat(M, key, color, intensity) {
-  return M(`glow|${key}`, () => new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color), emissive: new THREE.Color(color),
-    emissiveIntensity: intensity, roughness: 0.4, metalness: 0,
-  }));
+  void key;
+  return palette(M).ref(color, { rough: 0.4, metal: 0, glow: intensity, glowColor: color });
 }
 
 /**
@@ -314,9 +549,16 @@ function facadeMat(M, {
  * The El. Columns on both kerbs, plate girders and ties overhead, the whole thing following the
  * street through the corner. Nothing here casts a shadow: the tie spacing is finer than one
  * shadow-map texel at this range and the stipple that produces reads as acne.
+ *
+ * PERFORMANCE. This used to be ~3 800 individual meshes — 43 bays of column, portal, lattice and
+ * lamp, plus 200 samples of girder, tie and running rail — and it was the single biggest source of
+ * geometry in the city. Every one of those is now an INSTANCE of one of six prototypes: a bay is
+ * built once at the origin, folded to one buffer per material, and placed by matrix. Same steel,
+ * same lamps, same 46 000 triangles, eight draw calls.
  */
 function elevatedRail(track, M, { u0, u1, night, lateral = 15.8, deck = 10.2, clear = () => true }) {
   const g = new THREE.Group();
+  const B = new PropBatch(g, { chunk: 0, minInstances: 4 });
   const steel = steelMat(M, 'el', '#3c434e', { rough: 0.52, metal: 0.68, glow: night ? 0.32 : 0 });
   const dark = steelMat(M, 'el-dark', '#282e37', { rough: 0.62, metal: 0.55, glow: night ? 0.26 : 0 });
   const rust = steelMat(M, 'el-rust', '#59473b', { rough: 0.85, metal: 0.25, glow: night ? 0.26 : 0 });
@@ -332,6 +574,76 @@ function elevatedRail(track, M, { u0, u1, night, lateral = 15.8, deck = 10.2, cl
   const bays = Math.round(len / 11.5);
   const du = span / bays;
 
+  const step = len / Math.round(len / 2.4) + 0.25;
+  const rail = steelMat(M, 'el-rail', '#8b939c', { rough: 0.3, metal: 0.9, glow: night ? 0.35 : 0 });
+  const glows = new THREE.Group();                  // every additive glow quad, merged at the end
+
+  // ---- the prototypes. Each is built at the origin with local +Z down the track and local +X on
+  // `s.right`, which is exactly the frame `rotation.y = atan2(tan.x, tan.z)` puts an object into.
+  /** One column, on the kerb it stands on (variant 0 = left of travel, 1 = right). */
+  const column = (v) => {
+    const side = v === 0 ? 1 : -1;
+    const p = new THREE.Group();
+    // a heavy riveted box section on a splayed base, with a capital under the girder
+    put(p, box(1.05, deck, 0.86), steel, 0, deck / 2, 0, 0, opt);
+    put(p, box(0.55, deck * 0.86, 1.5), dark, 0, deck * 0.5, 0, 0, opt);          // web plate
+    put(p, box(1.7, 0.65, 1.4), dark, 0, 0.32, 0, 0, opt);
+    put(p, box(1.5, 0.45, 1.25), rust, 0, deck - 0.22, 0, 0, opt);
+    // knee braces. `s.right` is tan x up, which is the LEFT of travel, so the world offset
+    // `-s.right * side` lands on local +X * side.
+    for (const k of [-1, 1]) {
+      const b = put(p, box(0.34, 3.4, 0.30), steel, side * 1.1, deck - 1.6, 0, 0, opt);
+      b.rotateZ(k * 0.66 * side);
+    }
+    return fold(p);
+  };
+  /** The portal over the carriageway, its lattice web, and the lamp hung under it. */
+  const portal = () => {
+    const p = new THREE.Group();
+    put(p, box(lateral * 2 + 2.0, 1.35, 0.85), steel, 0, deck + 0.6, 0, Math.PI / 2, opt);
+    put(p, box(lateral * 2 + 2.4, 0.35, 1.2), dark, 0, deck + 1.35, 0, Math.PI / 2, opt);
+    for (let k = -4; k <= 4; k++) {                    // lattice, so the underside is not a slab
+      const b = put(p, box(0.26, 1.9, 0.20), dark, k * 3.4, deck - 0.45, 0, Math.PI / 2, opt);
+      b.rotateZ((k % 2 ? 1 : -1) * 0.7);
+    }
+    // The warm ladder of light under the El is the whole point of it: a lamp EVERY bay, hung on a
+    // short drop. (The glow quads themselves are NOT part of this prototype — see `glows` below.)
+    if (night) {
+      put(p, box(0.10, 0.55, 0.10), dark, 0, deck - 0.32, 0, 0, { cast: false });
+      put(p, new THREE.SphereGeometry(0.40, 10, 7), lamp, 0, deck - 0.85, 0, 0, { cast: false });
+      put(p, new THREE.CylinderGeometry(0.62, 0.30, 0.30, 10), dark, 0, deck - 0.55, 0, 0, { cast: false });
+    }
+    return fold(p);
+  };
+  /** One 2.4 m slice of track bed: floor beam, deck plate, both plate girders, four rails. */
+  const bed = () => {
+    const p = new THREE.Group();
+    // Underside first: the ladder of transverse floor beams is what you actually look at from a
+    // car, and a smooth soffit is what made the first pass read as a monorail.
+    put(p, box(15.6, 0.55, 0.62), dark, 0, deck + 0.75, 0, Math.PI / 2, opt);
+    // deck plate above the beams: a continuous ceiling so no sky shows through the rail bed
+    put(p, box(14.8, 0.40, step), dark, 0, deck + 1.35, 0, 0, opt);
+    for (const off of [-7.5, 7.5]) {
+      put(p, box(0.60, 2.6, step), steel, off, deck + 1.6, 0, 0, opt);            // plate girder
+      put(p, box(1.30, 0.38, step), dark, off, deck + 3.05, 0, 0, opt);           // top flange
+      put(p, box(1.25, 0.34, step), dark, off, deck + 0.42, 0, 0, opt);           // bottom flange
+    }
+    for (const off of [-4.3, -2.9, 2.9, 4.3]) {                                   // running rails
+      put(p, box(0.16, 0.22, step), rail, off, deck + 3.55, 0, 0, opt);
+    }
+    return fold(p);
+  };
+  const outriggers = () => {
+    const p = new THREE.Group();
+    for (const off of [-7.5, 7.5]) put(p, box(2.2, 0.28, 0.30), rust, off, deck + 3.3, 0, Math.PI / 2, opt);
+    return fold(p);
+  };
+  const sleeper = () => {
+    const p = new THREE.Group();
+    put(p, box(14.8, 0.32, 0.66), rust, 0, deck + 3.3, 0, Math.PI / 2, opt);
+    return fold(p);
+  };
+
   for (let i = 0; i <= bays; i++) {
     const u = u0 + i * du;
     const s = track.at(u);
@@ -341,43 +653,20 @@ function elevatedRail(track, M, { u0, u1, night, lateral = 15.8, deck = 10.2, cl
       // A shortcut peeling off the carriageway runs straight through the column line, so the El
       // spans the alley mouths instead of standing in them.
       if (!clear(p, 9)) continue;
-      // column: a heavy riveted box section on a splayed base, with a capital under the girder
-      put(g, box(1.05, deck, 0.86), steel, p.x, deck / 2, p.z, yaw, opt);
-      put(g, box(0.55, deck * 0.86, 1.5), dark, p.x, deck * 0.5, p.z, yaw, opt);   // web plate
-      put(g, box(1.7, 0.65, 1.4), dark, p.x, 0.32, p.z, yaw, opt);
-      put(g, box(1.5, 0.45, 1.25), rust, p.x, deck - 0.22, p.z, yaw, opt);
-      // knee braces up to the cross girder
-      for (const k of [-1, 1]) {
-        const b = put(g, box(0.34, 3.4, 0.30), steel,
-          p.x - s.right.x * side * 1.1, deck - 1.6, p.z - s.right.z * side * 1.1, yaw, opt);
-        b.rotateZ(k * 0.66 * side);
-      }
+      B.add('el-col', column, { pos: p, rotY: yaw, variant: side > 0 ? 0 : 1, variants: 2 });
     }
-    // portal cross girder over the carriageway
-    const c = s.pos.clone();
-    put(g, box(lateral * 2 + 2.0, 1.35, 0.85), steel, c.x, deck + 0.6, c.z, yaw + Math.PI / 2, opt);
-    put(g, box(lateral * 2 + 2.4, 0.35, 1.2), dark, c.x, deck + 1.35, c.z, yaw + Math.PI / 2, opt);
-    // lattice web under it, so the underside is not a flat slab
-    for (let k = -4; k <= 4; k++) {
-      const b = put(g, box(0.26, 1.9, 0.20), dark,
-        c.x + s.right.x * k * 3.4, deck - 0.45, c.z + s.right.z * k * 3.4, yaw + Math.PI / 2, opt);
-      b.rotateZ((k % 2 ? 1 : -1) * 0.7);
-    }
-    // The warm ladder of light under the El is the whole point of it: a lamp EVERY bay, hung on a
-    // short drop, with a soft pool on the girder soffit above and one on the road below.
+    B.add('el-portal', portal, { pos: s.pos, rotY: yaw });
+    // The soft pool on the road below and the one thrown up onto the girder soffit. These are
+    // additive quads whose plane depends on the exact Euler composition, so they are placed in
+    // world space exactly as before and merged rather than instanced: one draw call, same pixels.
     if (night) {
-      put(g, box(0.10, 0.55, 0.10), dark, c.x, deck - 0.32, c.z, 0, { cast: false });
-      put(g, new THREE.SphereGeometry(0.40, 10, 7), lamp, c.x, deck - 0.85, c.z, 0, { cast: false });
-      put(g, new THREE.CylinderGeometry(0.62, 0.30, 0.30, 10), dark, c.x, deck - 0.55, c.z, 0, { cast: false });
-      const h = put(g, new THREE.PlaneGeometry(11, 11), halo, c.x, deck - 1.25, c.z, 0,
+      const h = put(glows, new THREE.PlaneGeometry(11, 11), halo, s.pos.x, deck - 1.25, s.pos.z, 0,
         { rx: -Math.PI / 2, cast: false, receive: false });
       h.renderOrder = 3;
-      h.userData.noMerge = true;
       if (i % 2 === 1) {
-        const up = put(g, new THREE.PlaneGeometry(13, 9), halo, c.x, deck + 0.42, c.z, yaw,
+        const up = put(glows, new THREE.PlaneGeometry(13, 9), halo, s.pos.x, deck + 0.42, s.pos.z, yaw,
           { rx: Math.PI / 2, cast: false, receive: false });
         up.renderOrder = 3;
-        up.userData.noMerge = true;
       }
     }
   }
@@ -385,33 +674,16 @@ function elevatedRail(track, M, { u0, u1, night, lateral = 15.8, deck = 10.2, cl
   // longitudinal plate girders + running rails + ties, sampled finely so they follow the curve
   const fine = Math.round(len / 2.4);
   for (let i = 0; i < fine; i++) {
-    const u = u0 + (i + 0.5) * (span / fine);
-    const s = track.at(u);
+    const s = track.at(u0 + (i + 0.5) * (span / fine));
     const yaw = Math.atan2(s.tan.x, s.tan.z);
-    const step = len / fine + 0.25;
-    // Underside first: the ladder of transverse floor beams is what you actually look at from a
-    // car, and a smooth soffit is what made the first pass read as a monorail.
-    put(g, box(15.6, 0.55, 0.62), dark, s.pos.x, deck + 0.75, s.pos.z, yaw + Math.PI / 2, opt);
-    // deck plate above the beams: a continuous ceiling so no sky shows through the rail bed
-    put(g, box(14.8, 0.40, step), dark, s.pos.x, deck + 1.35, s.pos.z, yaw, opt);
-    for (const off of [-7.5, 7.5]) {
-      const p = s.pos.clone().addScaledVector(s.right, off);
-      put(g, box(0.60, 2.6, step), steel, p.x, deck + 1.6, p.z, yaw, opt);        // plate girder
-      put(g, box(1.30, 0.38, step), dark, p.x, deck + 3.05, p.z, yaw, opt);       // top flange
-      put(g, box(1.25, 0.34, step), dark, p.x, deck + 0.42, p.z, yaw, opt);       // bottom flange
-      if (i % 3 === 0) {                                                          // outrigger
-        put(g, box(2.2, 0.28, 0.30), rust, p.x, deck + 3.3, p.z, yaw + Math.PI / 2, opt);
-      }
-    }
-    if (i % 2 === 0) {                                                            // sleepers
-      put(g, box(14.8, 0.32, 0.66), rust, s.pos.x, deck + 3.3, s.pos.z, yaw + Math.PI / 2, opt);
-    }
-    for (const off of [-4.3, -2.9, 2.9, 4.3]) {                                   // rails
-      const p = s.pos.clone().addScaledVector(s.right, off);
-      put(g, box(0.16, 0.22, step), steelMat(M, 'el-rail', '#8b939c', { rough: 0.3, metal: 0.9, glow: night ? 0.35 : 0 }),
-        p.x, deck + 3.55, p.z, yaw, opt);
-    }
+    B.add('el-bed', bed, { pos: s.pos, rotY: yaw });
+    if (i % 3 === 0) B.add('el-outrig', outriggers, { pos: s.pos, rotY: yaw });
+    if (i % 2 === 0) B.add('el-sleeper', sleeper, { pos: s.pos, rotY: yaw });
   }
+  B.flush();
+  fold(glows);
+  glows.traverse((o) => { if (o.isMesh) o.renderOrder = 3; });
+  g.add(glows);
   return g;
 }
 
@@ -429,30 +701,41 @@ function crossRail(M, { night, len = 150, deck = 10.6 }) {
   const lamp = glowMat(M, 'el-lamp', '#ffd9a2', night ? 4.2 : 0.5);
   const opt = { cast: false, receive: true };
 
-  for (let x = -len / 2; x <= len / 2 + 0.1; x += 2.4) {
-    put(g, box(2.5, 0.5, 15.6), dark, x, deck + 0.75, 0, 0, opt);            // floor beam
-    put(g, box(2.5, 0.4, 14.8), dark, x, deck + 1.35, 0, 0, opt);            // deck plate
+  const rail = steelMat(M, 'el-rail', '#8b939c', { rough: 0.3, metal: 0.9, glow: night ? 0.35 : 0 });
+  const B = new PropBatch(g, { chunk: 0, minInstances: 4 });
+
+  // one 2.4 m slice of the crossing deck, instanced the length of the span
+  const slice = () => {
+    const p = new THREE.Group();
+    put(p, box(2.5, 0.5, 15.6), dark, 0, deck + 0.75, 0, 0, opt);            // floor beam
+    put(p, box(2.5, 0.4, 14.8), dark, 0, deck + 1.35, 0, 0, opt);            // deck plate
     for (const z of [-7.5, 7.5]) {
-      put(g, box(2.5, 2.6, 0.60), steel, x, deck + 1.6, z, 0, opt);
-      put(g, box(2.5, 0.38, 1.30), dark, x, deck + 3.05, z, 0, opt);
-      put(g, box(2.5, 0.34, 1.25), dark, x, deck + 0.42, z, 0, opt);
+      put(p, box(2.5, 2.6, 0.60), steel, 0, deck + 1.6, z, 0, opt);
+      put(p, box(2.5, 0.38, 1.30), dark, 0, deck + 3.05, z, 0, opt);
+      put(p, box(2.5, 0.34, 1.25), dark, 0, deck + 0.42, z, 0, opt);
     }
-    put(g, box(0.66, 0.32, 14.8), rust, x, deck + 3.3, 0, 0, opt);           // sleeper
+    put(p, box(0.66, 0.32, 14.8), rust, 0, deck + 3.3, 0, 0, opt);           // sleeper
     for (const z of [-4.3, -2.9, 2.9, 4.3]) {
-      put(g, box(2.5, 0.22, 0.16), steelMat(M, 'el-rail', '#8b939c', { rough: 0.3, metal: 0.9, glow: night ? 0.35 : 0 }),
-        x, deck + 3.55, z, 0, opt);
+      put(p, box(2.5, 0.22, 0.16), rail, 0, deck + 3.55, z, 0, opt);
     }
-  }
-  // columns: clear of the carriageway, then marching away into the block on both sides
-  for (const x of [-58, -40, -22, 22, 40, 58]) {
+    return fold(p);
+  };
+  // ...and one bent: two columns, the portal beam over them and the lamp under it
+  const bent = () => {
+    const p = new THREE.Group();
     for (const z of [-6.6, 6.6]) {
-      put(g, box(0.86, deck, 1.05), steel, x, deck / 2, z, 0, opt);
-      put(g, box(1.4, 0.65, 1.7), dark, x, 0.32, z, 0, opt);
-      put(g, box(1.25, 0.45, 1.5), rust, x, deck - 0.22, z, 0, opt);
+      put(p, box(0.86, deck, 1.05), steel, 0, deck / 2, z, 0, opt);
+      put(p, box(1.4, 0.65, 1.7), dark, 0, 0.32, z, 0, opt);
+      put(p, box(1.25, 0.45, 1.5), rust, 0, deck - 0.22, z, 0, opt);
     }
-    put(g, box(0.85, 1.35, 15.6), steel, x, deck + 0.6, 0, 0, opt);          // portal beam
-    if (night) put(g, new THREE.SphereGeometry(0.34, 8, 6), lamp, x, deck - 0.75, 0, 0, { cast: false });
-  }
+    put(p, box(0.85, 1.35, 15.6), steel, 0, deck + 0.6, 0, 0, opt);          // portal beam
+    if (night) put(p, new THREE.SphereGeometry(0.34, 8, 6), lamp, 0, deck - 0.75, 0, 0, { cast: false });
+    return fold(p);
+  };
+  for (let x = -len / 2; x <= len / 2 + 0.1; x += 2.4) B.add('xr-slice', slice, { pos: { x, y: 0, z: 0 } });
+  // columns: clear of the carriageway, then marching away into the block on both sides
+  for (const x of [-58, -40, -22, 22, 40, 58]) B.add('xr-bent', bent, { pos: { x, y: 0, z: 0 } });
+  B.flush();
   // a two-car train standing on it, half of it out over the street
   const M2 = trainMats(M, night);
   for (let k = 0; k < 2; k++) {
@@ -471,14 +754,9 @@ function crossRail(M, { night, len = 150, deck = 10.6 }) {
 
 /** Rolling-stock materials, shared by both elevated lines. */
 function trainMats(M, night) {
-  const shell = M('train-shell', () => new THREE.MeshStandardMaterial({
-    color: 0x7b838d, roughness: 0.46, metalness: 0.55, envMapIntensity: 0.9,
-  }));
+  const shell = flatMat(M, '#7b838d', { rough: 0.46, metal: 0.55 });
   const skirt = steelMat(M, 'train-skirt', '#2a2f36', { rough: 0.7, metal: 0.4, glow: night ? 0.4 : 0 });
-  const stripe = M('train-stripe', () => new THREE.MeshStandardMaterial({
-    color: 0xc0342c, roughness: 0.5, metalness: 0.2,
-    emissive: new THREE.Color(0xc0342c), emissiveIntensity: night ? 0.35 : 0,
-  }));
+  const stripe = flatMat(M, '#c0342c', { rough: 0.5, metal: 0.2, glow: night ? 0.35 : 0 });
   const win = M('train-win', () => {
     const { c, ctx } = canvas(256, 64);
     ctx.fillStyle = '#0d1219'; ctx.fillRect(0, 0, 256, 64);
@@ -676,9 +954,8 @@ function decoSpire(M, { night, h = 347 }) {
     put(g, new THREE.CylinderGeometry(3.4 - i * 0.9, 3.9 - i * 0.9, 1.4, 12), band,
       0, ny + 3 + i * (NEEDLE * 0.16), 0, 0, { cast: false });
   }
-  const beacon = new THREE.Mesh(new THREE.SphereGeometry(2.0, 8, 6), glowMat(M, 'beacon', '#ff3a26', 4.2));
+  const beacon = mesh(new THREE.SphereGeometry(2.0, 8, 6), glowMat(M, 'beacon', '#ff3a26', 4.2));
   beacon.position.y = ny + NEEDLE * 1.02;
-  beacon.userData.noMerge = true;
   g.add(beacon);
   void rTop;
   if (night) {
@@ -720,9 +997,8 @@ function decoTower(M, { night, h = 210, w = 50 }) {
   }
   put(g, new THREE.CylinderGeometry(1.0, 2.2, 34, 10), steelMat(M, 'mast', '#a8b0ba', { rough: 0.3, metal: 0.9 }),
     0, y + 32, 0);
-  const beacon = new THREE.Mesh(new THREE.SphereGeometry(1.0, 8, 6), glowMat(M, 'beacon', '#ff3a26', 5.0));
+  const beacon = mesh(new THREE.SphereGeometry(1.0, 8, 6), glowMat(M, 'beacon', '#ff3a26', 5.0));
   beacon.position.y = y + 50;
-  beacon.userData.noMerge = true;
   g.add(beacon);
   return g;
 }
@@ -823,7 +1099,7 @@ function suspension(M, { night, span = 230, deckY = 34, towerH = 118, deckLen = 
       const p1 = new THREE.Vector3(x1, Math.abs(x1) >= span / 2 - 1 ? towerH - 3 : deckY + 14, z);
       const cm = new THREE.Vector3((x0 + x1) / 2, sag, z);
       const curve = new THREE.QuadraticBezierCurve3(p0, cm, p1);
-      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 22, 0.62, 6, false), cable);
+      const tube = mesh(new THREE.TubeGeometry(curve, 22, 0.62, 6, false), cable);
       tube.castShadow = false;
       g.add(tube);
       for (let i = 1; i < 20; i++) {
@@ -873,18 +1149,19 @@ function taxi(M, { seed = 1, night = true, roofLight = true }) {
   const glass = M('cab-glass', () => new THREE.MeshStandardMaterial({
     color: 0x10161f, roughness: 0.08, metalness: 0.7, envMapIntensity: 1.6,
   }));
-  const trim = M('cab-trim', () => new THREE.MeshStandardMaterial({ color: 0x181c22, roughness: 0.7 }));
-  const tyre = M('cab-tyre', () => new THREE.MeshStandardMaterial({ color: 0x0f1113, roughness: 0.95 }));
-  const chrome = M('cab-chrome', () => new THREE.MeshStandardMaterial({ color: 0x9aa2ac, roughness: 0.24, metalness: 0.9 }));
-  // keyed on the roof light so a street has both "for hire" and occupied cabs in it
-  const sign = M(`cab-sign|${roofLight}`, () => {
-    const { c, ctx } = canvas(128, 32);
+  const trim = flatMat(M, 0x181c22, { rough: 0.7 });
+  const tyre = flatMat(M, 0x0f1113, { rough: 0.95 });
+  const chrome = flatMat(M, 0x9aa2ac, { rough: 0.24, metal: 0.9 });
+  // Two cells of one sheet, so a street has both "for hire" and occupied cabs in it without
+  // costing two materials: the dark cell IS the unlit sign rather than the same art turned down.
+  const signAtlas = M('atlas|cabsign', () => new Atlas({
+    cw: 128, ch: 32, cols: 1, rows: 2, emissive: night ? 2.6 : 0.25, roughness: 0.5, metalness: 0,
+  }));
+  const sign = signAtlas.cell(roofLight ? 'on' : 'off', (ctx) => {
     ctx.fillStyle = '#1a1206'; ctx.fillRect(0, 0, 128, 32);
-    drawText(ctx, 'TAXI', { x: 64, y: 25, size: 22, weight: 0.2, align: 'center', color: '#ffd66a', tracking: 0.12 });
-    const t = toTexture(c, { srgb: true });
-    return new THREE.MeshStandardMaterial({
-      map: t, emissiveMap: t, emissive: new THREE.Color(0xffffff),
-      emissiveIntensity: night && roofLight ? 2.6 : 0.25, roughness: 0.5,
+    drawText(ctx, 'TAXI', {
+      x: 64, y: 25, size: 22, weight: 0.2, align: 'center',
+      color: roofLight ? '#ffd66a' : '#4a3a18', tracking: 0.12,
     });
   });
   const tail = glowMat(M, 'cab-tail', '#ff2a1e', night ? 1.4 : 0.3);
@@ -934,10 +1211,9 @@ function steamPlume(M, { seed = 1, h = 11, r = 4.2, opacity = 0.26 }) {
     q.position.y = h * 0.48;
     q.rotation.y = (i / 3) * Math.PI;
     q.castShadow = false; q.receiveShadow = false;
-    q.userData.noMerge = true;
     g.add(q);
   }
-  const glow = new THREE.Mesh(
+  const glow = mesh(
     new THREE.PlaneGeometry(r * 1.3, r * 1.3),
     M('steam-glow', () => new THREE.MeshBasicMaterial({
       map: sprite({ size: 128, shape: 'glow', color: '#ffc98a', seed: 3 }),
@@ -946,7 +1222,6 @@ function steamPlume(M, { seed = 1, h = 11, r = 4.2, opacity = 0.26 }) {
   );
   glow.rotation.x = -Math.PI / 2;
   glow.position.y = 0.08;
-  glow.userData.noMerge = true;
   g.add(glow);
   return g;
 }
@@ -979,10 +1254,8 @@ function steamStack(M, { seed = 1, night = true }) {
 function subwayEntrance(M, { night = true }) {
   const g = new THREE.Group();
   const rail = steelMat(M, 'sub-rail', '#1e2228', { rough: 0.6, metal: 0.5 });
-  const dark = M('sub-void', () => new THREE.MeshStandardMaterial({ color: 0x0a0d12, roughness: 1 }));
-  const tile = M('sub-tile', () => new THREE.MeshStandardMaterial({
-    color: 0xd8d2c4, roughness: 0.55, emissive: new THREE.Color(0xffe0b0), emissiveIntensity: night ? 0.5 : 0,
-  }));
+  const dark = flatMat(M, 0x0a0d12, { rough: 1 });
+  const tile = flatMat(M, 0xd8d2c4, { rough: 0.55, glow: night ? 0.5 : 0, glowColor: 0xffe0b0 });
   const globe = glowMat(M, 'sub-globe', '#4fd07a', night ? 4.0 : 0.5);
   put(g, new THREE.PlaneGeometry(3.4, 5.4), dark, 0, 0.06, 0, 0, { rx: -Math.PI / 2, cast: false });
   for (let i = 0; i < 5; i++) {                       // steps disappearing into the ground
@@ -996,9 +1269,8 @@ function subwayEntrance(M, { night = true }) {
     }
   }
   put(g, new THREE.CylinderGeometry(0.09, 0.11, 3.2, 8), rail, 1.9, 1.6, 2.5, 0, { cast: false });
-  const gl = new THREE.Mesh(new THREE.SphereGeometry(0.34, 12, 10), globe);
+  const gl = mesh(new THREE.SphereGeometry(0.34, 12, 10), globe);
   gl.position.set(1.9, 3.4, 2.5);
-  gl.userData.noMerge = true;
   g.add(gl);
   return g;
 }
@@ -1007,8 +1279,8 @@ function subwayEntrance(M, { night = true }) {
 function bareTree(M, { seed = 1, h = 9 }) {
   const g = new THREE.Group();
   const rng = new RNG(seed * 7 + 3);
-  const bark = M('bark', () => new THREE.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.98 }));
-  const twig = M('twig', () => new THREE.MeshStandardMaterial({ color: 0x3d352f, roughness: 1 }));
+  const bark = flatMat(M, 0x4a4038, { rough: 0.98 });
+  const twig = flatMat(M, 0x3d352f, { rough: 1 });
   put(g, new THREE.CylinderGeometry(0.16, 0.30, h * 0.55, 7), bark, 0, h * 0.275, 0, 0, { receive: false });
   const forks = rng.int(4, 6);
   for (let i = 0; i < forks; i++) {
@@ -1171,12 +1443,23 @@ function brickFacade(M, { key, seed, brick: brickCol, mortar, lit, stone, litRat
   });
 }
 
-/** Storefront glass: a lit interior with shelves, a counter and a doorway. */
-function shopMat(M, { key, seed, night, warm = '#ffcf8c' }) {
-  return M(`shop|${key}`, () => {
+/**
+ * Storefront glass: a lit interior with shelves, a counter and a doorway.
+ *
+ * Four interiors, four warm tints, ONE sheet. This used to be a 1024x320 material per (scheme,
+ * seed) pair — twenty of them down one street, none able to batch with any other.
+ */
+const SHOP_WARM = ['#ffcf8c', '#ffc57a', '#ffdcaa', '#ffe2b6'];
+function shopMat(M, { seed, night }) {
+  const atlas = M('atlas|shop', () => new Atlas({
+    cw: 1024, ch: 320, cols: 1, rows: 4,
+    emissive: night ? 0.95 : 0.12, roughness: 0.34, metalness: 0.25,
+  }));
+  const v = ((seed % 4) + 4) % 4;
+  return atlas.cell(`${v}`, (ctx) => {
     const W = 1024, H = 320;
-    const { c, ctx } = canvas(W, H);
-    const rng = new RNG(seed * 53 + 3);
+    const warm = SHOP_WARM[v];
+    const rng = new RNG((v + 1) * 53 + 3);
     ctx.fillStyle = night ? '#241809' : '#141922'; ctx.fillRect(0, 0, W, H);
     if (night) {
       const L = sColor(warm);
@@ -1227,18 +1510,20 @@ function shopMat(M, { key, seed, night, warm = '#ffcf8c' }) {
       ctx.fillRect(rng.range(30, W - 120), rng.range(58, 130), rng.range(60, 110), rng.range(16, 28));
     }
     grain(ctx, W, H, 5, rng);
-    const t = toTexture(c, { srgb: true });
-    return new THREE.MeshStandardMaterial({
-      map: t, emissiveMap: t, emissive: new THREE.Color(0xffffff),
-      emissiveIntensity: night ? 0.95 : 0.12, roughness: 0.34, metalness: 0.25,
-    });
   });
 }
 
-/** A hand-painted shopfront fascia — the neon or vinyl sign over a bodega. */
+/**
+ * A hand-painted shopfront fascia — the neon or vinyl sign over a bodega. Twelve legends in five
+ * colours used to mean up to sixty separate materials down one street; they are now sixty cells of
+ * a single atlas sheet, and every shopfront in the city batches into one buffer.
+ */
 function shopSignMat(M, { text, color, night }) {
-  return M(`shopsign|${text}|${color}`, () => {
-    const { c, ctx } = canvas(256, 64);
+  const atlas = M('atlas|shopsign', () => new Atlas({
+    cw: 256, ch: 64, cols: 4, rows: 20,
+    emissive: night ? 2.5 : 0.2, roughness: 0.5, metalness: 0.1,
+  }));
+  return atlas.cell(`${text}|${color}`, (ctx) => {
     ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, 256, 64);
     ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.strokeRect(4, 4, 248, 56);
     const size = Math.min(38, 300 / Math.max(4, text.length));
@@ -1246,26 +1531,20 @@ function shopSignMat(M, { text, color, night }) {
       x: 128, y: 46, size, align: 'center', color, tracking: 0.12,
       glow: { color, blur: 12 },
     });
-    const t = toTexture(c, { srgb: true });
-    return new THREE.MeshStandardMaterial({
-      map: t, emissiveMap: t, emissive: new THREE.Color(0xffffff),
-      emissiveIntensity: night ? 2.5 : 0.2, roughness: 0.5, metalness: 0.1,
-    });
   });
 }
 
-/** Striped canvas awning cloth. */
+/** Striped canvas awning cloth — one cell per colour in a shared sheet. */
 function awningMat(M, color) {
-  return M(`awning|${color}`, () => {
-    const { c, ctx } = canvas(128, 32);
+  const atlas = M('atlas|awning', () => new Atlas({
+    cw: 128, ch: 32, cols: 1, rows: 8, roughness: 0.85, metalness: 0.0, double: true,
+  }));
+  return atlas.cell(color, (ctx) => {
     for (let i = 0; i < 8; i++) {
       ctx.fillStyle = i % 2 ? '#e8e2d4' : color;
       ctx.fillRect(i * 16, 0, 16, 32);
     }
     grain(ctx, 128, 32, 8, new RNG(6));
-    return new THREE.MeshStandardMaterial({
-      map: toTexture(c, { srgb: true }), roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
-    });
   });
 }
 
@@ -1299,10 +1578,7 @@ function waterTower(M, { seed = 1, scale = 1, night = true }) {
     });
   });
   const steel = steelMat(M, 'wtsteel', '#33383f', { rough: 0.72, metal: 0.5, glow: night ? 0.3 : 0 });
-  const roof = M('wtroof', () => new THREE.MeshStandardMaterial({
-    color: 0x4a3a2a, roughness: 0.9, metalness: 0.05,
-    emissive: new THREE.Color(0x8fa8cc), emissiveIntensity: night ? 0.14 : 0,
-  }));
+  const roof = flatMat(M, 0x4a3a2a, { rough: 0.9, metal: 0.05, glow: night ? 0.14 : 0, glowColor: 0x8fa8cc });
   const R = 1.75 * scale, TH = 4.3 * scale, LEG = 3.6 * scale;
   const opt = { cast: true, receive: false };
   // splayed legs + cross bracing
@@ -1395,13 +1671,10 @@ function tenement(M, C, {
     key: sc.key, seed: 11 + scheme * 7, brick: sc.brick, mortar: sc.mortar,
     lit: sc.lit, stone: sc.stone, litRatio: 0.44, night,
   });
-  const trim = M(`ten-trim|${scheme}`, () => new THREE.MeshStandardMaterial({
-    color: new THREE.Color(sc.stone).multiplyScalar(0.62), roughness: 0.88, metalness: 0.05,
-    emissive: new THREE.Color(0x7d97bd), emissiveIntensity: night ? 0.16 : 0,
-  }));
-  const dark = M('ten-base', () => new THREE.MeshStandardMaterial({
-    color: 0x24262c, roughness: 0.8, metalness: 0.15,
-  }));
+  const trim = flatMat(M, new THREE.Color(sc.stone).multiplyScalar(0.62), {
+    rough: 0.88, metal: 0.05, glow: night ? 0.16 : 0, glowColor: 0x7d97bd,
+  });
+  const dark = flatMat(M, 0x24262c, { rough: 0.8, metal: 0.15 });
 
   // ---- shaft: four walls out of one facade tile, offset so no two buildings share a window map
   const uR = w / 19.2, vR = h / 18, dR = d / 19.2;
@@ -1431,7 +1704,7 @@ function tenement(M, C, {
 
   // ---- storefront under the first floor
   if (shop) {
-    const glass = shopMat(M, { key: `${scheme}|${seed % 4}`, seed: seed + scheme, night, warm: sc.lit });
+    const glass = shopMat(M, { seed: seed + scheme, night });
     put(g, box(w, 3.9, 0.5), dark, 0, 1.95, d / 2 + 0.14, 0, { cast: false });
     put(g, new THREE.PlaneGeometry(w * 0.86, 2.5), glass, 0, 2.05, d / 2 + 0.42, 0, { cast: false });
     put(g, box(w + 0.5, 0.5, 0.8), trim, 0, 4.15, d / 2 + 0.3, 0, { cast: false });
@@ -1479,41 +1752,34 @@ function tenement(M, C, {
 function streetBlade(M, { text = 'W 42 ST', cross = '8 AVE', night = true, seed = 1 }) {
   const g = new THREE.Group();
   const post = steelMat(M, 'blade-post', '#2b3038', { rough: 0.6, metal: 0.55, glow: night ? 0.3 : 0 });
-  const blade = (t) => M(`blade|${t}`, () => {
-    const { c, ctx } = canvas(256, 64);
+  // Twelve street names and the ONE WAY arrow, all cells of one sheet: fifty-two corner signs
+  // used to carry thirteen materials between them and now carry one.
+  const atlas = M('atlas|blade', () => new Atlas({
+    cw: 256, ch: 64, cols: 4, rows: 4,
+    emissive: night ? 0.55 : 0.1, roughness: 0.6, metalness: 0.2, double: true,
+  }));
+  const blade = (t) => atlas.cell(t, (ctx) => {
     ctx.fillStyle = '#0f5c3a'; ctx.fillRect(0, 0, 256, 64);
     ctx.strokeStyle = '#f2f4f0'; ctx.lineWidth = 3.5; ctx.strokeRect(5, 5, 246, 54);
     const size = Math.min(34, 340 / Math.max(5, t.length));
     drawText(ctx, t, { x: 128, y: 44, size, align: 'center', color: '#f4f6f2', tracking: 0.10, face: 'geo' });
     grain(ctx, 256, 64, 4, new RNG(t.length + 3));
-    const tex = toTexture(c, { srgb: true });
-    return new THREE.MeshStandardMaterial({
-      map: tex, emissiveMap: tex, emissive: new THREE.Color(0xffffff),
-      emissiveIntensity: night ? 0.55 : 0.1, roughness: 0.6, metalness: 0.2,
-      side: THREE.DoubleSide,
-    });
   });
-  const oneWay = M('oneway', () => {
-    const { c, ctx } = canvas(256, 64);
+  const oneWay = atlas.cell('\u0000oneway', (ctx) => {
     ctx.fillStyle = '#0e1116'; ctx.fillRect(0, 0, 256, 64);
     ctx.fillStyle = '#eef1ee';
     ctx.beginPath(); ctx.moveTo(232, 32); ctx.lineTo(196, 12); ctx.lineTo(196, 52); ctx.closePath(); ctx.fill();
     ctx.fillRect(30, 26, 168, 12);
     drawText(ctx, 'ONE WAY', { x: 96, y: 24, size: 17, align: 'center', color: '#0e1116', tracking: 0.1, face: 'geo' });
-    const tex = toTexture(c, { srgb: true });
-    return new THREE.MeshStandardMaterial({
-      map: tex, emissiveMap: tex, emissive: new THREE.Color(0xffffff),
-      emissiveIntensity: night ? 0.45 : 0.1, roughness: 0.6, side: THREE.DoubleSide,
-    });
   });
   put(g, new THREE.CylinderGeometry(0.075, 0.09, 4.2, 8), post, 0, 2.1, 0, 0, { cast: false });
-  const a = new THREE.Mesh(new THREE.PlaneGeometry(2.15, 0.54), blade(text));
+  const a = mesh(new THREE.PlaneGeometry(2.15, 0.54), blade(text));
   a.position.set(0.95, 3.9, 0); a.castShadow = false;
   g.add(a);
-  const b = new THREE.Mesh(new THREE.PlaneGeometry(1.75, 0.54), blade(cross));
+  const b = mesh(new THREE.PlaneGeometry(1.75, 0.54), blade(cross));
   b.position.set(0, 3.35, 0.78); b.rotation.y = Math.PI / 2; b.castShadow = false;
   g.add(b);
-  const o = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.38), oneWay);
+  const o = mesh(new THREE.PlaneGeometry(1.5, 0.38), oneWay);
   o.position.set(0.62, 2.62, 0); o.castShadow = false;
   g.add(o);
   void seed;
@@ -1533,8 +1799,11 @@ function nycBarricade(M, { kind = 'jersey', seed = 1, len = 4, phase = 0, night 
   // local +Z runs ALONG the kerb (buildCity and this file both yaw kerb props by atan2(tan.x,tan.z))
   if (kind === 'sawhorse') {
     // the blue NYPD wooden barricade
-    const planks = M(`saw|${phase % 3}`, () => {
-      const { c, ctx } = canvas(256, 32);
+    const atlas = M('atlas|saw', () => new Atlas({
+      cw: 256, ch: 32, cols: 1, rows: 3,
+      emissive: night ? 0.18 : 0.05, roughness: 0.72, metalness: 0.05,
+    }));
+    const planks = atlas.cell(`${phase % 3}`, (ctx) => {
       const r2 = new RNG(phase * 13 + 5);
       ctx.fillStyle = '#1b3f78'; ctx.fillRect(0, 0, 256, 32);
       ctx.fillStyle = '#c2c9d2'; ctx.fillRect(0, 5, 256, 22);
@@ -1542,13 +1811,8 @@ function nycBarricade(M, { kind = 'jersey', seed = 1, len = 4, phase = 0, night 
         x: 128 + phase * 21 - 42, y: 23, size: 16, align: 'center', color: '#1b3f78', tracking: 0.10, face: 'geo',
       });
       grain(ctx, 256, 32, 7, r2);
-      const t = toTexture(c, { srgb: true });
-      return new THREE.MeshStandardMaterial({
-        map: t, emissiveMap: t, emissive: new THREE.Color(0xffffff),
-        emissiveIntensity: night ? 0.18 : 0.05, roughness: 0.72, metalness: 0.05,
-      });
     });
-    const leg = M('saw-leg', () => new THREE.MeshStandardMaterial({ color: 0x25406b, roughness: 0.8 }));
+    const leg = flatMat(M, 0x25406b, { rough: 0.8 });
     put(g, box(0.09, 0.34, len), planks, 0, 1.00, 0, 0, opt);
     put(g, box(0.08, 0.13, len * 0.98), leg, 0, 0.60, 0, 0, opt);
     for (const sz of [-1, 1]) {
@@ -1560,8 +1824,8 @@ function nycBarricade(M, { kind = 'jersey', seed = 1, len = 4, phase = 0, night 
     }
   } else if (kind === 'plywood') {
     // a construction hoarding, low enough to see over: blue plywood with fly-posters
-    const ply = M(`ply|${phase % 3}`, () => {
-      const { c, ctx } = canvas(256, 128);
+    const atlas = M('atlas|ply', () => new Atlas({ cw: 256, ch: 128, cols: 1, rows: 3, roughness: 0.9 }));
+    const ply = atlas.cell(`${phase % 3}`, (ctx) => {
       const r2 = new RNG(phase * 7 + 2);
       ctx.fillStyle = '#20406e'; ctx.fillRect(0, 0, 256, 128);
       for (let i = 0; i < 8; i++) { ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.fillRect(i * 32, 0, 2, 128); }
@@ -1574,7 +1838,6 @@ function nycBarricade(M, { kind = 'jersey', seed = 1, len = 4, phase = 0, night 
       }
       ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fillRect(0, 3, 256, 3);
       grain(ctx, 256, 128, 10, r2);
-      return new THREE.MeshStandardMaterial({ map: toTexture(c, { srgb: true }), roughness: 0.9 });
     });
     put(g, box(0.12, 1.35, len), ply, 0, 0.68, 0, 0, opt);
     put(g, box(0.30, 0.13, len), steelMat(M, 'ply-cap', '#2a2f36', { rough: 0.7, metal: 0.5 }), 0, 1.40, 0, 0, opt);
@@ -1587,13 +1850,15 @@ function nycBarricade(M, { kind = 'jersey', seed = 1, len = 4, phase = 0, night 
     const st = steelMat(M, 'plate', '#4a4f57', { rough: 0.42, metal: 0.85, glow: night ? 0.28 : 0 });
     put(g, box(1.5, 0.16, len), st, 0, 0.32, 0, rng.range(-0.05, 0.05), opt);
     put(g, box(1.4, 0.16, len * 0.9), st, 0.15, 0.50, 0.2, rng.range(-0.08, 0.08), opt);
-    put(g, new THREE.CylinderGeometry(0.42, 0.42, 1.5, 10), M('drum', () => new THREE.MeshStandardMaterial({
-      color: 0xb0522a, roughness: 0.85, metalness: 0.25,
-    })), 0.2, 0.75, -len * 0.34, 0, opt);
+    put(g, new THREE.CylinderGeometry(0.42, 0.42, 1.5, 10), flatMat(M, 0xb0522a, { rough: 0.85, metal: 0.25 }),
+      0.2, 0.75, -len * 0.34, 0, opt);
   } else {
     // a striped concrete unit, with the stripe phase rolled per segment so no two in a run line up
-    const stripe = M(`jersey|${phase % 5}`, () => {
-      const { c, ctx } = canvas(256, 64);
+    const atlas = M('atlas|jersey', () => new Atlas({
+      cw: 256, ch: 64, cols: 1, rows: 5,
+      emissive: night ? 0.18 : 0, emissiveColor: 0x8fa8cc, roughness: 0.82, metalness: 0.05,
+    }));
+    const stripe = atlas.cell(`${phase % 5}`, (ctx) => {
       const off = (phase % 5) * 51;
       for (let i = -1; i < 7; i++) {
         ctx.fillStyle = i % 2 ? '#d8d2c6' : '#c03a2c';
@@ -1601,17 +1866,8 @@ function nycBarricade(M, { kind = 'jersey', seed = 1, len = 4, phase = 0, night 
       }
       ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(0, 52, 256, 12);
       grain(ctx, 256, 64, 12, new RNG(phase * 11 + 3));
-      const t = toTexture(c, { srgb: true });
-      return new THREE.MeshStandardMaterial({
-        map: t, roughness: 0.82, metalness: 0.05,
-        emissiveMap: t, emissive: new THREE.Color(0x8fa8cc),
-        emissiveIntensity: night ? 0.18 : 0,
-      });
     });
-    const grey = M('jersey-grey', () => new THREE.MeshStandardMaterial({
-      color: 0x8a8781, roughness: 0.9,
-      emissive: new THREE.Color(0x8fa8cc), emissiveIntensity: night ? 0.16 : 0,
-    }));
+    const grey = flatMat(M, 0x8a8781, { rough: 0.9, glow: night ? 0.16 : 0, glowColor: 0x8fa8cc });
     put(g, box(0.62, 0.42, len), stripe, 0, 0.21, 0, 0, opt);
     put(g, box(0.36, 0.56, len), stripe, 0, 0.70, 0, 0, opt);
     put(g, box(0.30, 0.11, len * 0.995), grey, 0, 1.03, 0, 0, opt);
@@ -1688,10 +1944,8 @@ function elStation(track, M, { u, night, deck = 10.2, len = 62 }) {
   for (const sx of [-1, 1]) {
     const px = sx * 11.2;
     put(g, box(5.6, 0.5, len), dark, px, PY - 0.25, 0, 0, opt);          // platform deck
-    put(g, box(5.6, 0.14, len), M('stn-plat', () => new THREE.MeshStandardMaterial({
-      color: 0x6e6a64, roughness: 0.92,
-      emissive: new THREE.Color(0x8fa8cc), emissiveIntensity: night ? 0.2 : 0,
-    })), px, PY + 0.06, 0, 0, opt);
+    put(g, box(5.6, 0.14, len), flatMat(M, 0x6e6a64, { rough: 0.92, glow: night ? 0.2 : 0, glowColor: 0x8fa8cc }),
+      px, PY + 0.06, 0, 0, opt);
     put(g, box(0.35, 1.05, len), dark, px + sx * 2.7, PY + 0.6, 0, 0, opt);   // outer railing
     for (let i = -6; i <= 6; i++) {
       put(g, box(0.2, 3.1, 0.2), steel, px + sx * 2.4, PY + 1.6, i * (len / 13), 0, opt);
@@ -1706,7 +1960,7 @@ function elStation(track, M, { u, night, deck = 10.2, len = 62 }) {
     for (let i = -3; i <= 3; i++) {
       put(g, new THREE.SphereGeometry(0.28, 8, 6), lamp, px, cy - 0.55, i * (len / 7), 0, { cast: false });
       if (i % 2 === 0) {
-        const nb = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.62), nameMat);
+        const nb = mesh(new THREE.PlaneGeometry(2.4, 0.62), nameMat);
         nb.position.set(px - sx * 1.6, cy - 1.1, i * (len / 7));
         nb.rotation.y = Math.PI / 2;
         nb.castShadow = false;
@@ -1745,18 +1999,17 @@ function elStation(track, M, { u, night, deck = 10.2, len = 62 }) {
     }
     put(g, box(4.4, 3.4, 4.0), wall, px + sx * 12.6, 1.7, zStair, 0, opt);
     put(g, box(5.2, 0.4, 4.8), rust, px + sx * 12.6, 3.6, zStair, 0, opt);
-    const eb = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.86), nameMat);
+    const eb = mesh(new THREE.PlaneGeometry(3.2, 0.86), nameMat);
     eb.position.set(px + sx * (12.6 - 2.3), 2.8, zStair - 0.1);
     eb.rotation.y = -sx * Math.PI / 2;
     eb.castShadow = false;
     g.add(eb);
     put(g, new THREE.SphereGeometry(0.34, 8, 6), lamp, px + sx * 10.4, 3.3, zStair, 0, { cast: false });
     // and the green globe on its post at the foot of the stair
-    const globe = new THREE.Mesh(
+    const globe = mesh(
       new THREE.SphereGeometry(0.36, 12, 10), glowMat(M, 'sub-globe', '#4fd07a', night ? 3.6 : 0.5),
     );
     globe.position.set(px + sx * 14.6, 3.4, zStair + 2.4);
-    globe.userData.noMerge = true;
     g.add(globe);
     put(g, new THREE.CylinderGeometry(0.09, 0.11, 3.4, 8), steel,
       px + sx * 14.6, 1.7, zStair + 2.4, 0, { cast: false });
@@ -1766,7 +2019,7 @@ function elStation(track, M, { u, night, deck = 10.2, len = 62 }) {
   // green-and-white station name is the one piece of a New York El that a driver actually sees,
   // and it is dead centre of the chase frame.
   for (const z of [-len * 0.30, len * 0.06, len * 0.40]) {
-    const blade = new THREE.Mesh(new THREE.PlaneGeometry(11.5, 2.6), nameMat);
+    const blade = mesh(new THREE.PlaneGeometry(11.5, 2.6), nameMat);
     blade.position.set(0, deck - 1.9, z);
     blade.castShadow = false;
     g.add(blade);
@@ -1956,12 +2209,34 @@ export const def = {
     const M = cacheOf(C);
     const rng = new RNG(4041);
 
+    /**
+     * DRAW-CALL BANDS. Everything below goes into one of these groups rather than straight into
+     * the scene, and each is merged per material inside a spatial cell at the end (`fold`). The
+     * cell size is the trade: the canyon wall and the kerb line sit ON the camera and are chunked
+     * at 300 m so frustum culling still throws half of them away, while a compact structure or a
+     * band that is only ever seen whole (the bridge, the far district) collapses into one buffer
+     * per material.
+     */
+    const BAND = {
+      el: [new THREE.Group(), 1e9],          // the elevated railway, its station and its train
+      towers: [new THREE.Group(), 1e9],      // the hero spire and the deco masses behind it
+      district: [new THREE.Group(), 1e9],    // the plain of rooftops up the avenue
+      midband: [new THREE.Group(), 1e9],     // the 100-320 m band round the rest of the lap
+      water: [new THREE.Group(), 1e9],       // river, bulkhead, bridge, pier sheds
+      park: [new THREE.Group(), 1e9],        // park wall, railings, bare trees
+      walls: [new THREE.Group(), 520],       // THE CANYON WALL: walk-ups and their back row
+      street: [new THREE.Group(), 520],      // kerb line, cabs, signage, steam, furniture
+    };
+    const el = BAND.el[0], towers = BAND.towers[0], district = BAND.district[0];
+    const midband = BAND.midband[0], water = BAND.water[0], park = BAND.park[0];
+    const walls = BAND.walls[0], street = BAND.street[0];
+
     /** Place `o` at track position u, `lat` metres to the right of the centreline. */
-    const place = (o, u, lat = 0, y = 0, yawOff = 0) => {
+    const place = (o, u, lat = 0, y = 0, yawOff = 0, into = street) => {
       const s = track.at(u);
       o.position.copy(s.pos).addScaledVector(s.right, lat).setY(s.pos.y + y);
       o.rotation.y = Math.atan2(s.tan.x, s.tan.z) + yawOff;
-      out.push(o);
+      into.add(o);
       return o;
     };
     /** World yaw that maps an object's local +X onto world direction (dx,dz). */
@@ -1982,8 +2257,8 @@ export const def = {
     };
 
     // ---------------------------------------------------------------- 1. the elevated railway
-    out.push(elevatedRail(track, M, { u0: U_EL0, u1: U_EL1, night, clear }));
-    out.push(elTrain(track, M, { u: U_TRAIN, night }));
+    el.add(elevatedRail(track, M, { u0: U_EL0, u1: U_EL1, night, clear }));
+    el.add(elTrain(track, M, { u: U_TRAIN, night }));
 
     // The ladder of light the El throws down onto the carriageway. Only on the straight part of
     // the run: these are flat quads, and a flat quad on a banked corner sinks into the tarmac.
@@ -1994,7 +2269,7 @@ export const def = {
       grp.position.copy(s.pos).setY(s.pos.y + 0.055);
       grp.rotation.y = Math.atan2(s.tan.x, s.tan.z);
       grp.add(lightPool({ r: 7.6, color: '#ffcf90', cache: C, strength: 1.7, elong: 1.45 }));
-      out.push(grp);
+      el.add(grp);
     }
 
     // ...and the cross-town line over the avenue, 120 m up the road from the landmark camera
@@ -2003,7 +2278,7 @@ export const def = {
       const cr = crossRail(M, { night });
       cr.position.copy(s.pos).setY(0);
       cr.rotation.y = yawForX(s.right.x, s.right.z);
-      out.push(cr);
+      el.add(cr);
     }
 
     // ---------------------------------------------------------------- 2. the art-deco spire
@@ -2019,22 +2294,22 @@ export const def = {
     const spire = decoSpire(M, { night });
     spire.position.copy(spirePos);
     spire.rotation.y = 0.34;
-    out.push(spire);
+    towers.add(spire);
 
     // Two more deco masses, deliberately BEHIND and to the side of the hero so they layer it
     // rather than compete with it.
     const t2 = decoTower(M, { night, h: 235, w: 52 });
     t2.position.set(spirePos.x + 195, 0, spirePos.z + 120);
     t2.rotation.y = 0.5;
-    out.push(t2);
+    towers.add(t2);
     const t3 = decoTower(M, { night, h: 190, w: 44 });
     t3.position.set(spirePos.x - 235, 0, spirePos.z + 60);
     t3.rotation.y = -0.7;
-    out.push(t3);
+    towers.add(t3);
     const t4 = decoTower(M, { night, h: 158, w: 38 });
     t4.position.set(spirePos.x + 90, 0, spirePos.z - 210);
     t4.rotation.y = 1.1;
-    out.push(t4);
+    towers.add(t4);
 
     // ---- the district the spire stands out of ------------------------------------------------
     // Midtown seen down an avenue is not one lit object in a void; it is a plain of five-storey
@@ -2079,7 +2354,7 @@ export const def = {
           wt.rotation.y = rng.range(0, 6.28);
           grp.add(wt);
         }
-        out.push(grp);
+        district.add(grp);
       }
     }
 
@@ -2108,12 +2383,12 @@ export const def = {
       geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 12, 0, 0, 14, 12, 14], 2));
       geo.setIndex([0, 2, 1, 1, 2, 3]);
       geo.computeVertexNormals();
-      const water = new THREE.Mesh(geo, M('river', () => new THREE.MeshStandardMaterial({
+      const sheet = new THREE.Mesh(geo, M('river', () => new THREE.MeshStandardMaterial({
         color: 0x16222f, roughness: 0.20, metalness: 0.3, envMapIntensity: 2.0,
       })));
-      water.receiveShadow = false;
-      water.userData.noMerge = true;
-      out.push(water);
+      sheet.receiveShadow = false;
+      sheet.userData.noMerge = true;
+      water.add(sheet);
 
       // bulkhead + fence: west along the bank, and back east along the head of the basin
       const gran = stoneMat(M, 'bulkhead', '#5e5952', 0.95);
@@ -2126,21 +2401,21 @@ export const def = {
         const yaw = Math.atan2(run.along.x, run.along.z);
         for (let i = 0; i < run.n; i++) {
           const p = run.from.clone().addScaledVector(run.along, i * 28 + 14);
-          const w = new THREE.Mesh(box(3.0, 2.4, 28.4), gran);
+          const w = mesh(box(3.0, 2.4, 28.4), gran);
           w.position.set(p.x, 0.6, p.z);
           w.rotation.y = yaw;
           w.castShadow = true; w.receiveShadow = true;
-          out.push(w);
-          const f = new THREE.Mesh(box(0.1, 0.1, 28.4), steel);
+          water.add(w);
+          const f = mesh(box(0.1, 0.1, 28.4), steel);
           f.position.set(p.x, 2.85, p.z);
           f.rotation.y = yaw;
           f.castShadow = false;
-          out.push(f);
+          water.add(f);
           for (let k = 0; k < 5; k++) {
-            const post = new THREE.Mesh(box(0.09, 1.2, 0.09), steel);
+            const post = mesh(box(0.09, 1.2, 0.09), steel);
             post.position.copy(p).addScaledVector(run.along, k * 5.6 - 11).setY(2.3);
             post.castShadow = false;
-            out.push(post);
+            water.add(post);
           }
         }
       }
@@ -2151,12 +2426,12 @@ export const def = {
     const bridge = suspension(M, { night });
     bridge.position.copy(br.pos).addScaledVector(outward, 160).setY(0);
     bridge.rotation.y = yawForX(outward.x, outward.z);
-    out.push(bridge);
+    water.add(bridge);
 
     // the working waterfront between the kerb and the bulkhead: pier sheds, so the gap between
     // the street and the water is not bare ground
     {
-      const shed = M('shed', () => new THREE.MeshStandardMaterial({ color: 0x4c4a48, roughness: 0.9 }));
+      const shed = flatMat(M, 0x4c4a48, { rough: 0.9 });
       const roof = steelMat(M, 'shedroof', '#3a3f47', { rough: 0.7, metal: 0.45 });
       const lit = glowMat(M, 'shedlit', '#ffcf90', night ? 1.8 : 0.2);
       for (let i = -1; i <= 4; i++) {
@@ -2174,7 +2449,7 @@ export const def = {
           put(grp, new THREE.PlaneGeometry(w * 0.13, hh * 0.30), lit,
             -w * 0.4 + k * w * 0.2, hh * 0.52, d / 2 + 0.08, 0, { cast: false });
         }
-        out.push(grp);
+        water.add(grp);
       }
     }
 
@@ -2192,25 +2467,25 @@ export const def = {
         const yaw = Math.atan2(s.tan.x, s.tan.z);
         const p = s.pos.clone().addScaledVector(s.right, -22.5);
         const seg = ((U_PARK1 - U_PARK0) * track.length) / n + 0.6;
-        const w = new THREE.Mesh(box(2.4, 1.5, seg), gran);
+        const w = mesh(box(2.4, 1.5, seg), gran);
         w.position.set(p.x, 0.75, p.z); w.rotation.y = yaw;
         w.castShadow = true; w.receiveShadow = true;
-        out.push(w);
-        const r = new THREE.Mesh(box(0.08, 1.5, seg), steel);
+        park.add(w);
+        const r = mesh(box(0.08, 1.5, seg), steel);
         r.position.set(p.x - s.right.x * 0.9, 2.1, p.z - s.right.z * 0.9); r.rotation.y = yaw;
         r.castShadow = false;
-        out.push(r);
+        park.add(r);
         for (let k = 0; k < 6; k++) {
-          const post = new THREE.Mesh(box(0.08, 1.6, 0.08), steel);
+          const post = mesh(box(0.08, 1.6, 0.08), steel);
           post.position.copy(p).addScaledVector(s.tan, k * (seg / 6) - seg / 2)
             .addScaledVector(s.right, -0.9).setY(2.05);
           post.castShadow = false;
-          out.push(post);
+          park.add(post);
         }
         if (i % 2 === 0) {
           const t = bareTree(M, { seed: 500 + i, h: rng.range(9, 14) });
           t.position.copy(p).addScaledVector(s.right, -rng.range(5, 13)).setY(0.1);
-          out.push(t);
+          park.add(t);
         }
       }
       // one lawn behind the wall, laid in a yawed group so it cannot shear on the bend
@@ -2222,7 +2497,7 @@ export const def = {
       q.rotation.x = -Math.PI / 2;
       q.receiveShadow = true;
       lawn.add(q);
-      out.push(lawn);
+      park.add(lawn);
     }
 
     // ---------------------------------------------------------------- 5. the canyon wall
@@ -2286,7 +2561,7 @@ export const def = {
             wt.rotation.y = r.range(0, 6.28);
             bg.add(wt);
           }
-          out.push(bg);
+          walls.add(bg);
         }
       }
       const b = tenement(M, C, {
@@ -2303,7 +2578,7 @@ export const def = {
       });
       b.position.copy(pos);
       b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + cl.side * Math.PI / 2 + r.range(-0.05, 0.05);
-      out.push(b);
+      walls.add(b);
     }
 
     // ---- the middle distance ------------------------------------------------------------------
@@ -2351,7 +2626,7 @@ export const def = {
             wt.rotation.y = rng.range(0, 6.28);
             grp.add(wt);
           }
-          out.push(grp);
+          midband.add(grp);
         }
       }
     }
@@ -2360,7 +2635,7 @@ export const def = {
     // The chase capture never sees the spire or the bridge — it runs the first straight, under the
     // El. So the El gets a STATION on it: platforms, a corrugated canopy, a lit head house and a
     // staircase down to each pavement with a green 42 ST blade over the door.
-    out.push(elStation(track, M, { u: U_STATION, night }));
+    el.add(elStation(track, M, { u: U_STATION, night }));
 
     // ---------------------------------------------------------------- 7. the street itself
     const HW = track.halfWidth;
@@ -2392,7 +2667,7 @@ export const def = {
             o.position.copy(p).setY(s.pos.y + rng.range(-0.02, 0.02));
             o.rotation.y = Math.atan2(s.tan.x, s.tan.z) + rng.range(-0.05, 0.05);
             o.scale.setScalar(rng.range(0.96, 1.05));
-            out.push(o);
+            street.add(o);
           }
           u += (len + gap) / track.length;
           n++;
@@ -2418,7 +2693,7 @@ export const def = {
           });
           bl.position.copy(p).setY(s.pos.y + 0.17);
           bl.rotation.y = Math.atan2(s.tan.x, s.tan.z) + side * Math.PI / 2;
-          out.push(bl);
+          street.add(bl);
         }
       }
     }
@@ -2448,7 +2723,7 @@ export const def = {
           });
         o.position.copy(s.pos).addScaledVector(s.right, side * kerb).setY(s.pos.y + 0.17);
         o.rotation.y = Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0) + rng.range(-0.04, 0.04);
-        out.push(o);
+        street.add(o);
       }
     }
 
@@ -2460,14 +2735,14 @@ export const def = {
       const lat = rng.sign() * rng.range(0.62, 0.95) * HW;
       const p = steamPlume(M, { seed: i, h: rng.range(9, 15), r: rng.range(2.2, 3.4), opacity: 0.18 });
       p.position.copy(s.pos).addScaledVector(s.right, lat).setY(0.06);
-      out.push(p);
-      const cover = new THREE.Mesh(
+      street.add(p);
+      const cover = mesh(
         new THREE.CylinderGeometry(0.68, 0.68, 0.07, 14),
         steelMat(M, 'manhole', '#3a3d44', { rough: 0.6, metal: 0.65 }),
       );
       cover.position.copy(p.position).setY(0.05);
       cover.castShadow = false;
-      out.push(cover);
+      street.add(cover);
     }
     for (const [u, side] of [[0.045, -1], [0.108, 1], [0.286, 1], [0.352, -1], [0.508, -1], [0.828, 1]]) {
       const st = steamStack(M, { seed: Math.round(u * 100), night });
@@ -2500,13 +2775,19 @@ export const def = {
           .addScaledVector(s.tan, 12 + k * 3.5)
           .setY(0.17);
         o.rotation.y = Math.atan2(s.tan.x, s.tan.z) + rng.range(-0.4, 0.4);
-        out.push(o);
+        street.add(o);
       }
       const p = steamPlume(M, { seed: 30 + b.index, h: 13, r: 4.4, opacity: 0.3 });
       p.position.copy(s.pos).addScaledVector(s.right, side * (HW + 9)).addScaledVector(s.tan, 26).setY(0.1);
-      out.push(p);
+      street.add(p);
     }
 
+    // ---- and the whole city collapses here ----------------------------------------------------
+    // Each band is merged into one buffer per material per spatial cell. Nothing about WHAT is in
+    // the scene changes; this is only how it is handed to the driver.
+    for (const [g, chunk] of Object.values(BAND)) {
+      if (g.children.length) out.push(fold(g, chunk));
+    }
     return out;
   },
 };

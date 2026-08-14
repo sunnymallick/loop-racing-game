@@ -49,6 +49,17 @@ async function main() {
 
       const r = await h.page.evaluate(async (n) => {
         const g = window.__GAME.game;
+        // Engine.render() calls renderer.info.reset() as its last act, so reading info AFTER the
+        // loop always returned 0 and the "calls"/"tris" columns were meaningless. Hook reset() and
+        // sample the counters the instant before they are cleared: that is the true per-frame cost.
+        const info = g.engine.renderer.info;
+        const realReset = info.reset.bind(info);
+        const callSamples = [], triSamples = [];
+        info.reset = () => {
+          callSamples.push(info.render.calls);
+          triSamples.push(info.render.triangles);
+          realReset();
+        };
         // free-run the real loop: drive forward under boost, the worst case for fill rate
         g.input.setScripted({ throttle: 1, steer: 0.06, nitro: true });
         const times = [];
@@ -62,15 +73,22 @@ async function main() {
           g.render(1 / 60);
         }
         g.input.clearScripted();
+        info.reset = realReset;
         times.sort((a, b) => a - b);
         const mean = times.reduce((a, b) => a + b, 0) / times.length;
+        // median over frames, so a warm-up or shadow-update frame can't skew the reported count
+        const median = (a) => {
+          if (!a.length) return 0;
+          const s = [...a].sort((x, y) => x - y);
+          return s[Math.floor(s.length / 2)];
+        };
         return {
           meanMs: mean,
           fps: 1000 / mean,
           p95Ms: times[Math.floor(times.length * 0.95)],
           worstFps: 1000 / times[times.length - 1],
-          drawCalls: g.engine.renderer.info.render.calls,
-          triangles: g.engine.renderer.info.render.triangles,
+          drawCalls: median(callSamples),
+          triangles: median(triSamples),
         };
       }, FRAMES);
 

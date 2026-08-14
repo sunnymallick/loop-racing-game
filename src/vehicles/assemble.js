@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import {
-  loftBody, loftBand, profileU, roundedBox, buildWheel, wheelWell, archLip, paintMaterial, glassMaterial,
+  loftBody, loftBand, profileU, roundedBox, buildWheel, wheelParts, wheelScalable, WheelRig,
+  wheelWell, archLip, paintMaterial, glassMaterial,
   chromeMaterial, darkTrimMaterial, plasticMaterial, carbonMaterial, emissiveMaterial,
+  cavityMaterial, darkMetalMaterial, stdMaterial, glowSprite,
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
 } from './kit.js';
 import { lerp, clamp, RNG } from '../core/rng.js';
@@ -262,34 +264,72 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const trF = bp.dims.track, trR = bp.dims.trackRear ?? bp.dims.track;
   const wheelMarks = [];
   const flankAt = flankSampler(tubSections);
+
+  /**
+   * WHEELS: four corners, one InstancedMesh per material.
+   *
+   * Each corner keeps the same empty transform chain it always had — holder (steer + heave) →
+   * frame (the π flip that faces the dish outboard) → spin (roll) — so physics.js drives it
+   * unchanged, but nothing is parented to those empties any more. The rig reads them once a frame
+   * and writes the instance matrices, which takes 32 wheels from ~320 draw calls to ~18.
+   */
+  const wcfg = (cfg) => ({
+    ...cfg, style: cfg.style || bp.wheels.style,
+    rimColor: cfg.rimColor || bp.wheels.rimColor,
+    caliperColor: cfg.caliperColor || bp.wheels.caliperColor,
+    capColor: bp.wheels.capColor,
+    lipColor: bp.wheels.lipColor,
+    // beadlock was declared on bp.wheels but never forwarded, so the SUV's bronze clamp ring and
+    // its twelve bolts — the single most legible wheel detail at distance — never rendered.
+    beadlock: cfg.beadlock ?? bp.wheels.beadlock ?? false,
+    tire: cfg.tire || bp.wheels.tire || 'street',
+  });
+  const frontCfg = wcfg(bp.wheels.front), rearCfg = wcfg(bp.wheels.rear);
+  const frontParts = wheelParts(frontCfg);
+  // A staggered car wears the same alloy at two sizes. When that is all that separates the axles,
+  // the rear runs the front's geometry through a per-instance scale and all four corners share one
+  // set of instanced meshes; otherwise each axle gets its own.
+  const shareAxles = wheelScalable(frontCfg, rearCfg);
+  const rearParts = shareAxles ? frontParts : wheelParts(rearCfg);
+  const rearScale = shareAxles && new THREE.Matrix4().makeScale(
+    rearCfg.width / frontCfg.width,
+    (rearCfg.radius ?? 0.36) / (frontCfg.radius ?? 0.36),
+    (rearCfg.radius ?? 0.36) / (frontCfg.radius ?? 0.36),
+  );
+  const rig = new WheelRig();
+  car.add(rig);
+  const spinIds = { front: [], rear: [], all: [] };
+  const staticIds = { front: [], rear: [], all: [] };
+
   for (let i = 0; i < 4; i++) {
     const isFront = i < 2;
-    const cfg = isFront ? bp.wheels.front : bp.wheels.rear;
+    const cfg = isFront ? frontCfg : rearCfg;
     const tr = isFront ? trF : trR;
     const sx = (i % 2 === 0) ? -1 : 1;
     const pz = isFront ? wb / 2 : -wb / 2;
 
     const holder = new THREE.Group();                       // steering pivot
-    const wheel = buildWheel({
-      ...cfg, style: cfg.style || bp.wheels.style,
-      rimColor: cfg.rimColor || bp.wheels.rimColor,
-      caliperColor: cfg.caliperColor || bp.wheels.caliperColor,
-      capColor: bp.wheels.capColor,
-      lipColor: bp.wheels.lipColor,
-      // beadlock was declared on bp.wheels but never forwarded, so the SUV's bronze clamp ring and
-      // its twelve bolts — the single most legible wheel detail at distance — never rendered.
-      beadlock: cfg.beadlock ?? bp.wheels.beadlock ?? false,
-      tire: cfg.tire || bp.wheels.tire || 'street',
-    });
-    if (sx > 0) wheel.rotation.y = Math.PI;                  // face the dish outward on both sides
-    holder.add(wheel);
+    const frame = new THREE.Group();                        // the dish faces outboard on both sides
+    if (sx > 0) frame.rotation.y = Math.PI;
+    const spin = new THREE.Group();
+    spin.name = 'spin';
+    frame.add(spin);
+    holder.add(frame);
     holder.position.set(sx * tr / 2, cfg.radius, pz);
     holder.userData.radius = cfg.radius;
-    holder.userData.spin = wheel.getObjectByName('spin');
+    holder.userData.spin = spin;
     holder.name = ['FL', 'FR', 'RL', 'RR'][i];
     car.add(holder);
     wheels.push(holder);
     wheelMarks.push({ x: sx * tr / 2, z: pz, r: cfg.radius });
+
+    const extra = isFront ? null : (rearScale || null);
+    const si = rig.corner([holder, frame, spin], extra);
+    const ti = rig.corner([holder, frame], extra);
+    (isFront ? spinIds.front : spinIds.rear).push(si);
+    (isFront ? staticIds.front : staticIds.rear).push(ti);
+    spinIds.all.push(si);
+    staticIds.all.push(ti);
 
     // --- the arch OPENING ------------------------------------------------
     // Everything here is measured off the tyre and off the real body flank at this station, so
@@ -329,22 +369,67 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     }
   }
 
+  // One authored bounding sphere for every wheel batch: the corners move within it but never leave
+  // it, so the rig still frustum-culls with the rest of the car instead of being pinned on screen.
+  const maxR = Math.max(frontCfg.radius, rearCfg.radius);
+  const wheelSphere = new THREE.Sphere(
+    new THREE.Vector3(0, maxR, 0),
+    Math.hypot(Math.max(trF, trR) / 2 + Math.max(frontCfg.width, rearCfg.width), wb / 2 + maxR) + 0.25,
+  );
+  if (shareAxles) {
+    rig.batch(frontParts.spin, spinIds.all, wheelSphere);
+    rig.batch(frontParts.statics, staticIds.all, wheelSphere);
+  } else {
+    rig.batch(frontParts.spin, spinIds.front, wheelSphere);
+    rig.batch(frontParts.statics, staticIds.front, wheelSphere);
+    rig.batch(rearParts.spin, spinIds.rear, wheelSphere);
+    rig.batch(rearParts.statics, staticIds.rear, wheelSphere);
+  }
+
   // ---------------- 4. lights + detail ----------------
   const detail = new THREE.Group();
   detail.name = 'detail';
   bodyGroup.add(detail);
 
-  const addLight = (cfg, bucket, yaw) => {
+  /**
+   * LAMP BANKS.
+   *
+   * A lamp used to be its own Group of a lens plus a halo card, so a car with four round taillights
+   * and four headlights submitted twenty draw calls of two triangles each, per car, every frame.
+   * Lamps that light TOGETHER are one thing: every unit that shares a colour, an intensity and a
+   * halo strength within a bucket now shares one lens material and one halo material, and their
+   * geometry is baked into a single mesh apiece.
+   *
+   * The contract physics.js and menu.js read is unchanged — a bank is a Group whose children[0] is
+   * the lens and which contains a child named 'glow'. Writing the bank's emissiveIntensity lights
+   * every lamp in it, which is exactly what writing each lamp's did.
+   */
+  const banks = new Map();
+  const addLight = (cfg, bucket, yaw, kind) => {
+    const key = `${kind}|${cfg.color}|${cfg.intensity ?? 3.0}|${cfg.glow ?? 0.85}`;
+    let bank = banks.get(key);
+    if (!bank) {
+      bank = {
+        group: new THREE.Group(),
+        lensMat: emissiveMaterial({ color: cfg.color, intensity: cfg.intensity ?? 3.0 }),
+        glowMat: (cfg.glow ?? 0.85) > 0 ? new THREE.MeshBasicMaterial({
+          map: glowSprite(cfg.color),
+          transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+          opacity: (cfg.glow ?? 0.85) * 0.40,
+        }) : null,
+      };
+      banks.set(key, bank);
+      bucket.push(bank.group);
+    }
     for (const sx of cfg.mirror === false ? [1] : [-1, 1]) {
       const u = lightUnit({
         w: cfg.w, h: cfg.h, color: cfg.color, intensity: cfg.intensity ?? 3.0,
         shape: cfg.shape, glow: cfg.glow ?? 0.85, bezel: cfg.bezel !== false, segs: cfg.segs ?? 0,
+        lensMat: bank.lensMat, glowMat: bank.glowMat,
       });
       u.position.set(sx * cfg.x, cfg.y, cfg.z);
       u.rotation.y = yaw;
       if (cfg.rx) u.rotation.x = cfg.rx;
-      u.userData.noMerge = true;          // physics.js drives children[0] and 'glow' by name
-      bodyGroup.add(u);
       // the housing and bezel are static — lift them out so they join the batched detail mesh
       u.updateMatrix();
       for (const part of u.children.filter((o) => ['housing', 'bezel', 'rib'].includes(o.name))) {
@@ -354,16 +439,32 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
         m.decompose(part.position, part.quaternion, part.scale);
         detail.add(part);
       }
-      bucket.push(u);
+      bank.group.add(u);
     }
   };
-  for (const h of bp.lights?.head || []) addLight({ color: '#e8f0ff', ...h }, lights.head, 0);
+  for (const h of bp.lights?.head || []) addLight({ color: '#e8f0ff', ...h }, lights.head, 0, 'head');
   for (const t of bp.lights?.tail || []) {
     const before = lights.tail.length;
-    addLight({ color: '#ff2010', intensity: 2.6, ...t }, lights.tail, Math.PI);
+    // brake and non-brake lamps are banked separately even when they match, or a brake write would
+    // light a lamp that is not a brake light
+    addLight({ color: '#ff2010', intensity: 2.6, ...t }, lights.tail, Math.PI, t.brake === false ? 'tail-only' : 'tail');
     if (t.brake !== false) for (let i = before; i < lights.tail.length; i++) lights.brake.push(lights.tail[i]);
   }
-  for (const r of bp.lights?.reverse || []) addLight({ color: '#fff4e0', intensity: 1.6, glow: 0.35, ...r }, lights.reverse, Math.PI);
+  for (const r of bp.lights?.reverse || []) addLight({ color: '#fff4e0', intensity: 1.6, glow: 0.35, ...r }, lights.reverse, Math.PI, 'reverse');
+
+  // Bake each bank down to its lens mesh + its halo mesh and hand it to the body.
+  for (const bank of banks.values()) {
+    const merged = mergeByMaterial(bank.group);
+    const lens = merged.children.find((o) => o.material === bank.lensMat);
+    const glow = merged.children.find((o) => o.material === bank.glowMat);
+    bank.group.clear();
+    if (lens) { lens.name = 'lens'; lens.castShadow = false; bank.group.add(lens); }   // children[0]
+    // renderOrder stays 0, as it was when every halo was its own un-merged card: the merge pass
+    // pushes transparent meshes to 4, which would re-sort the halos against the glasshouse.
+    if (glow) { glow.name = 'glow'; glow.castShadow = false; glow.renderOrder = 0; bank.group.add(glow); }
+    bank.group.userData.noMerge = true;    // physics.js drives children[0] and 'glow' by name
+    bodyGroup.add(bank.group);
+  }
 
   // ---------------- 5. detail pass ----------------
   // grille(s)
@@ -447,7 +548,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       // the dark aperture the pipe comes out of — without it a tip reads as a ring stuck on air
       const aperture = new THREE.Mesh(
         roundedBox(e.r * 3.0, e.r * 2.5, 0.07, e.r * 0.8),
-        new THREE.MeshStandardMaterial({ color: 0x0a0b0e, roughness: 0.9, metalness: 0.25 }),
+        cavityMaterial(),
       );
       aperture.position.z = (e.len ?? 0.22) * 0.62;
       tip.add(aperture);
@@ -466,8 +567,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       outer.rotation.x = Math.PI / 2;
       outer.material = shellOf(outer.material);
       tip.add(outer);
-      const bore = new THREE.Mesh(new THREE.CircleGeometry(e.r * 0.86, 16),
-        new THREE.MeshStandardMaterial({ color: 0x08090b, roughness: 0.95 }));
+      const bore = new THREE.Mesh(new THREE.CircleGeometry(e.r * 0.86, 16), cavityMaterial());
       bore.rotation.y = Math.PI;
       bore.position.z = -(e.len ?? 0.22) * 0.30;
       tip.add(bore);
@@ -622,9 +722,9 @@ function buildInterior(cb, trim, chrome) {
   const seatCol = it.seat ?? 0x24262e;
   const trimCol = it.trim ?? 0x15171c;
   const accent = it.accent ?? 0x7a1f24;
-  const seatMat = new THREE.MeshStandardMaterial({ color: seatCol, roughness: 0.88, metalness: 0.03 });
-  const accentMat = new THREE.MeshStandardMaterial({ color: accent, roughness: 0.80, metalness: 0.05 });
-  const trimMat = new THREE.MeshStandardMaterial({ color: trimCol, roughness: 0.72, metalness: 0.12 });
+  const seatMat = stdMaterial({ color: seatCol, rough: 0.88, metal: 0.03 });
+  const accentMat = stdMaterial({ color: accent, rough: 0.80, metal: 0.05 });
+  const trimMat = stdMaterial({ color: trimCol, rough: 0.72, metal: 0.12 });
 
   // Everything is placed in ABSOLUTE y so a car file can tune the cabin to its own roofline.
   const floorY = it.floorY ?? (cb.stations[0].yBelt - 0.26);
@@ -717,7 +817,7 @@ function buildInterior(cb, trim, chrome) {
   g.add(shelf);
 
   if (it.rollBar) {
-    const barMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, metalness: 0.9, roughness: 0.3 });
+    const barMat = stdMaterial({ color: '#9aa0a8', metal: 0.9, rough: 0.3 });
     const bar = new THREE.Mesh(roundedBox(halfSeat * 2 + 0.30, 0.05, 0.05, 0.02), barMat);
     bar.position.set(0, headY + 0.06, seatZ - 0.40);
     g.add(bar);
@@ -741,7 +841,7 @@ function buildExtra(x, mats) {
   if (x.type === 'blower') {
     mesh = new THREE.Group();
     const b = new THREE.Mesh(roundedBox(0.46, 0.22, 0.44, 0.04),
-      new THREE.MeshStandardMaterial({ color: 0x24272d, metalness: 0.85, roughness: 0.28 }));
+      darkMetalMaterial({ color: '#24272d', metal: 0.85, rough: 0.28 }));
     mesh.add(b);
     for (let i = 0; i < 3; i++) {
       const rib = new THREE.Mesh(roundedBox(0.50, 0.03, 0.05, 0.012), chromeMaterial({ color: '#9aa0a8', rough: 0.3 }));
@@ -805,7 +905,7 @@ function buildExtra(x, mats) {
       mesh.add(cross);
     }
     if (x.jerry) {
-      const can = new THREE.Mesh(roundedBox(0.20, 0.28, 0.11, 0.02), new THREE.MeshStandardMaterial({ color: 0x2f3a2a, roughness: 0.8 }));
+      const can = new THREE.Mesh(roundedBox(0.20, 0.28, 0.11, 0.02), stdMaterial({ color: '#2f3a2a', rough: 0.8, metal: 0 }));
       can.position.set(-(x.w ?? 0.7) * 0.22, 0.18, -(x.d ?? 1.2) * 0.28);
       mesh.add(can);
       const spare = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.09, 8, 18), plastic);
@@ -890,7 +990,7 @@ function buildExtra(x, mats) {
     // a bolted-on body panel with a real shut gap around it — tailgates, boot lids, hatches
     mesh = new THREE.Group();
     const gap = new THREE.Mesh(roundedBox((x.w ?? 1.4) + 0.06, (x.h ?? 0.7) + 0.06, 0.03, 0.05),
-      new THREE.MeshStandardMaterial({ color: 0x08090c, roughness: 0.9 }));
+      cavityMaterial());
     gap.position.z = -0.012;
     mesh.add(gap);
     const face = new THREE.Mesh(roundedBox(x.w ?? 1.4, x.h ?? 0.7, x.d ?? 0.05, 0.04), x.mat === 'dark' ? trim : paint);
@@ -910,7 +1010,7 @@ function buildExtra(x, mats) {
      */
     mesh = new THREE.Group();
     const w = x.w ?? 1.5, h = x.h ?? 0.66, dep = x.d ?? 0.07;
-    const dark = new THREE.MeshStandardMaterial({ color: 0x07080b, roughness: 0.92, metalness: 0.15 });
+    const dark = cavityMaterial();
     const gap = new THREE.Mesh(roundedBox(w + 0.055, h + 0.055, 0.03, 0.045), dark);
     gap.position.z = -0.014;
     mesh.add(gap);
@@ -939,7 +1039,7 @@ function buildExtra(x, mats) {
     rec.position.set(x.plateX ?? 0, -h * 0.24, dep * 0.5 - 0.006);
     mesh.add(rec);
     const plate = new THREE.Mesh(roundedBox(0.50, 0.17, 0.02, 0.014),
-      new THREE.MeshStandardMaterial({ color: 0xd9dbd2, roughness: 0.55, metalness: 0.1 }));
+      stdMaterial({ color: '#d9dbd2', rough: 0.55, metal: 0.1 }));
     plate.position.set(x.plateX ?? 0, -h * 0.24, dep * 0.5 + 0.014);
     mesh.add(plate);
     for (const sx of [-1, 1]) {
@@ -982,14 +1082,14 @@ export function recolor(car, color) {
   const m = car.userData.paintMaterial;
   const cfg = m.userData?.livery;
   if (cfg) {
-    m.map?.dispose();
+    if (!m.map?.userData?.pooled) m.map?.dispose();   // the livery cache owns pooled maps
     cfg.base = color;
     m.map = bodyPaintTexture(cfg);
     m.color.set('#ffffff');
     m.needsUpdate = true;
     const up = m.userData.upper;
     if (up) {                                        // roof / pillar bands: same livery, no panels
-      up.mat.map?.dispose();
+      if (!up.mat.map?.userData?.pooled) up.mat.map?.dispose();
       up.cfg.base = color;
       up.mat.map = bodyPaintTexture(up.cfg);
       up.mat.color.set('#ffffff');

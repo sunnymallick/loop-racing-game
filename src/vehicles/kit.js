@@ -30,6 +30,30 @@ import { canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas, sprit
 // ------------------------------------------------------------------ materials
 
 /**
+ * SHARED MATERIAL POOL.
+ *
+ * Eight cars are on track at once. Two meshes cannot share a draw call unless they share a MATERIAL
+ * OBJECT, and mergeByMaterial() can only collapse a car's sub-meshes down to the number of DISTINCT
+ * materials it uses — so every ad-hoc `new MeshStandardMaterial({...})` scattered through a car is a
+ * draw call per car per frame, times eight, times the shadow pass.
+ *
+ * Every material below that nothing mutates at runtime therefore comes out of this pool: identical
+ * requests get the identical object, across every car and every rebuild. The pool is keyed on the
+ * values that actually reach the shader, so pooling can never change what a surface looks like.
+ *
+ * NOT pooled: paint (recolour mutates it) and the lamp lens/glow materials (physics.js drives their
+ * emissiveIntensity and opacity per car).
+ */
+const _matPool = new Map();
+function pooled(key, make) {
+  let m = _matPool.get(key);
+  if (!m) { m = make(); m.userData.pool = key; _matPool.set(key, m); }
+  return m;
+}
+/** Stable pool key for the roles that vary only by colour/roughness. */
+const poolKey = (...a) => a.join(':');
+
+/**
  * Metallic clearcoat car paint.
  *
  * Deliberately LOW metalness: a fully metallic body just mirrors the sky and the paint colour
@@ -76,7 +100,7 @@ function flakeNormal(seed = 3) {
 }
 
 export function glassMaterial({ tint = '#080d13', opacity = 0.80, rough = 0.045 } = {}) {
-  return new THREE.MeshPhysicalMaterial({
+  return pooled(poolKey('glass', tint, opacity, rough), () => new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(tint),
     metalness: 0.0, roughness: rough,
     transparent: true, opacity,
@@ -84,17 +108,73 @@ export function glassMaterial({ tint = '#080d13', opacity = 0.80, rough = 0.045 
     clearcoat: 1, clearcoatRoughness: 0.02,
     side: THREE.DoubleSide,
     depthWrite: false,
-  });
+  }));
 }
+
+/**
+ * The chrome PALETTE. Bright metal is asked for from a dozen places — bezels, grille bars, grille
+ * surrounds, mirror faces, exhaust tips, badge bars, roll hoops, blower ribs — each of which used
+ * to invent its own material a couple of percent apart in colour and roughness. That is a dozen
+ * unbatchable draw calls per car for a difference no eye can find, so a request snaps to the
+ * nearest of four tiers instead. The tiers span the same range the ad-hoc values did (0.10–0.29
+ * roughness, 0.60–0.84 value), so every part keeps the brightness class it was authored with.
+ */
+const CHROME_TIERS = [
+  { color: '#d6dae0', rough: 0.11 },   // polished — surrounds, tips, plates
+  { color: '#c4c9d1', rough: 0.14 },   // bright chrome — bezels, handles
+  { color: '#b3b9c2', rough: 0.17 },   // standard chrome — bars, trims
+  { color: '#9aa0a8', rough: 0.29 },   // satin alloy — hoops, skid plates, ribs
+];
+const _tierLum = CHROME_TIERS.map((t) => new THREE.Color(t.color).r * 0.4 + new THREE.Color(t.color).g * 0.4 + new THREE.Color(t.color).b * 0.2);
 
 export function chromeMaterial({ color = '#b3b9c2', rough = 0.16 } = {}) {
   // envMapIntensity used to be 1.35 on a near-white base colour, which pushed every bumper, bezel
   // and mirror past the bloom threshold: the chrome read as a glowing white blob, not metal
   // (§6.1 round-3 note). Polished aluminium is a DARK material that borrows the sky — 1.0 on a
   // 0.70-value base is what actually reads as chrome under a sunset key.
-  return new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color(color), metalness: 1.0, roughness: rough, envMapIntensity: 1.0,
-  });
+  const c = new THREE.Color(color);
+  const lum = c.r * 0.4 + c.g * 0.4 + c.b * 0.2;
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < CHROME_TIERS.length; i++) {
+    const d = Math.abs(lum - _tierLum[i]) * 3.2 + Math.abs(rough - CHROME_TIERS[i].rough);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  const t = CHROME_TIERS[best];
+  return pooled(poolKey('chrome', best), () => new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(t.color), metalness: 1.0, roughness: t.rough, envMapIntensity: 1.0,
+  }));
+}
+
+/**
+ * Near-black cavity: the inside of a grille, a vent, an exhaust aperture, a shut gap, a pipe bore.
+ * Every one of these used to be its own #05060a-vs-#0a0b0e material. They are all "a hole", they
+ * all render as black, and they now share one.
+ */
+export function cavityMaterial() {
+  return pooled('cavity', () => new THREE.MeshStandardMaterial({
+    color: 0x08090c, roughness: 0.92, metalness: 0.18,
+  }));
+}
+
+/** Semi-gloss dark plastic: lamp housings and the ribs across a lens. */
+export function housingMaterial() {
+  return pooled('housing', () => new THREE.MeshStandardMaterial({
+    color: 0x0a0b0e, roughness: 0.52, metalness: 0.38,
+  }));
+}
+
+/** Dark machined metal: vent fins, blower cases, grille frames that are not chrome. */
+export function darkMetalMaterial({ color = '#2a2d34', rough = 0.50, metal = 0.60 } = {}) {
+  return pooled(poolKey('darkmetal', color, rough, metal), () => new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), roughness: rough, metalness: metal,
+  }));
+}
+
+/** Generic pooled standard material — for one-off bits that are neither chrome nor cavity. */
+export function stdMaterial({ color = '#808080', rough = 0.7, metal = 0.1, side = THREE.FrontSide } = {}) {
+  return pooled(poolKey('std', color, rough, metal, side), () => new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), roughness: rough, metalness: metal, side,
+  }));
 }
 
 /**
@@ -105,14 +185,16 @@ export function chromeMaterial({ color = '#b3b9c2', rough = 0.16 } = {}) {
  * Trim is painted plastic or matt-black steel: barely metallic, and rough enough to scatter.
  */
 export function darkTrimMaterial({ color = '#15161a', rough = 0.74 } = {}) {
-  return new THREE.MeshStandardMaterial({
+  return pooled(poolKey('trim', color, rough), () => new THREE.MeshStandardMaterial({
     color: new THREE.Color(color), metalness: 0.14, roughness: rough, envMapIntensity: 0.55,
-  });
+  }));
 }
 
 /** Satin black plastic — bumper inserts, arch liners, diffusers. Not the same as gloss trim. */
 export function plasticMaterial({ color = '#121317', rough = 0.85 } = {}) {
-  return new THREE.MeshStandardMaterial({ color: new THREE.Color(color), metalness: 0.1, roughness: rough });
+  return pooled(poolKey('plastic', color, rough), () => new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), metalness: 0.1, roughness: rough,
+  }));
 }
 
 let _carbon = null;
@@ -140,14 +222,17 @@ export function carbonMaterial() {
   return _carbon;
 }
 
-export function emissiveMaterial({ color = '#ff2020', intensity = 3.0, opacity = 1 } = {}) {
-  return new THREE.MeshStandardMaterial({
+export function emissiveMaterial({ color = '#ff2020', intensity = 3.0, opacity = 1, shared = false } = {}) {
+  const make = () => new THREE.MeshStandardMaterial({
     color: new THREE.Color(color),
     emissive: new THREE.Color(color),
     emissiveIntensity: intensity,
     roughness: 0.35, metalness: 0.0,
     transparent: opacity < 1, opacity,
   });
+  // Lamps whose intensity physics.js drives (brake, head) must own their material. Everything else
+  // that merely glows — instrument cluster, plate lamps, light-bar pods — can share one.
+  return shared ? pooled(poolKey('emissive', color, intensity, opacity), make) : make();
 }
 
 // ------------------------------------------------------------------ tyres
@@ -613,7 +698,7 @@ function taperedBlade(rInner, rOuter, wInner, wOuter, depth, r = 0.012) {
  * Returns a Group whose child named 'spin' is the part that rotates — the caliper stays put.
  * @param style 'mesh'|'fivespoke'|'offroad'|'turbofan'
  */
-export function buildWheel({
+function wheelGraph({
   radius = 0.36, width = 0.26, spokes = 5, style = 'fivespoke',
   rimColor = '#cfd4da', caliperColor = '#c81f1f', tireProfile = 0.30, lipColor = null,
   tire = 'street', capColor = null, beadlock = false,
@@ -663,15 +748,20 @@ export function buildWheel({
   // rendered as a glowing white disc with a halo and NO readable spoke, which is the round-2
   // "featureless" verdict restated. 1.15 keeps the metal reflective but inside the tonemap, so the
   // spoke faces, the dish and the shadow between them all survive.
-  const rimMat = new THREE.MeshPhysicalMaterial({
+  const rimRough = style === 'offroad' ? 0.34 : style === 'turbofan' ? 0.26 : 0.17;
+  const rimMat = pooled(poolKey('rim', rimColor, rimRough), () => new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(rimColor), metalness: 1.0,
-    roughness: style === 'offroad' ? 0.34 : style === 'turbofan' ? 0.26 : 0.17,
+    roughness: rimRough,
     envMapIntensity: 1.15, clearcoat: 0.8, clearcoatRoughness: 0.07, side: THREE.DoubleSide,
-  });
+  }));
   const lipMat = lipColor
-    ? new THREE.MeshPhysicalMaterial({ color: new THREE.Color(lipColor), metalness: 1.0, roughness: 0.20, envMapIntensity: 1.05, clearcoat: 1, side: THREE.DoubleSide })
+    ? pooled(poolKey('rimlip', lipColor), () => new THREE.MeshPhysicalMaterial({ color: new THREE.Color(lipColor), metalness: 1.0, roughness: 0.20, envMapIntensity: 1.05, clearcoat: 1, side: THREE.DoubleSide }))
     : rimMat;
-  const wellMat = new THREE.MeshStandardMaterial({ color: 0x0a0b0e, roughness: 0.92, metalness: 0.2 });
+  // BackSide is baked into the pooled material rather than assigned onto it later — a shared
+  // material must never be mutated after the fact or every other user of it moves too.
+  const wellMat = pooled('wheelbarrel', () => new THREE.MeshStandardMaterial({
+    color: 0x0a0b0e, roughness: 0.92, metalness: 0.2, side: THREE.BackSide,
+  }));
 
   // The rim used to sit 50–70 mm inboard of the outer sidewall, so from anywhere but dead side-on
   // the whole alloy was in the tyre's shadow and the wheel read as a black blob (§6.1 round-2).
@@ -685,7 +775,6 @@ export function buildWheel({
   // barrel: the dark drum you see through the spoke windows
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(rimR * 0.965, rimR * 0.965, width * 1.02, 16, 1, true), wellMat);
   barrel.rotation.z = Math.PI / 2;
-  barrel.material.side = THREE.BackSide;
   spin.add(barrel);
   const backPlate = new THREE.Mesh(new THREE.CircleGeometry(rimR * 0.965, 16), wellMat);
   backPlate.rotation.y = -Math.PI / 2;                        // faces the viewer from outboard
@@ -741,14 +830,18 @@ export function buildWheel({
 
   // beadlock ring: an outer clamp ring plus a circle of bolts. It is the single most legible
   // wheel detail at distance, which is why it goes on the SUV.
+  // Polished fasteners — lug nuts and beadlock bolts — are one shared material: they were
+  // #b8bfc9/0.20 and #c9ced6/0.28, i.e. the same polished steel written down twice.
+  const lugMat = pooled('lugnut', () => new THREE.MeshStandardMaterial({ color: 0xbcc3cc, metalness: 1.0, roughness: 0.23 }));
+
   if (beadlock) {
-    const boltMat = new THREE.MeshStandardMaterial({ color: 0xc9ced6, metalness: 1.0, roughness: 0.28 });
+    const boltMat = lugMat;
     spin.add(new THREE.Mesh(ringLathe([
       [rimR * 0.845, xBead - 0.004], [rimR * 0.870, xBead + 0.016], [rimR * 0.985, xBead + 0.018],
       [rimR * 1.000, xBead - 0.002],
-    ], 24), new THREE.MeshStandardMaterial({
+    ], 24), pooled(poolKey('beadring', capColor || '#c4a24a'), () => new THREE.MeshStandardMaterial({
       color: new THREE.Color(capColor || '#c4a24a'), metalness: 0.9, roughness: 0.34, side: THREE.DoubleSide,
-    })));
+    }))));
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * Math.PI * 2 + 0.13;
       const b = new THREE.Mesh(new THREE.CylinderGeometry(rimR * 0.040, rimR * 0.044, width * 0.07, 6), boltMat);
@@ -767,12 +860,11 @@ export function buildWheel({
   const cap = new THREE.Mesh(ringLathe([
     [rHub * 0.62, faceX + conf.depth * 0.40], [rHub * 0.50, faceX + conf.depth * 0.60],
     [0.001, faceX + conf.depth * 0.64],
-  ], 16), new THREE.MeshStandardMaterial({
+  ], 16), pooled(poolKey('hubcap', capColor || caliperColor), () => new THREE.MeshStandardMaterial({
     color: new THREE.Color(capColor || caliperColor), metalness: 0.75, roughness: 0.26, side: THREE.DoubleSide,
-  }));
+  })));
   spin.add(cap);
   // lug ring: five polished bolts on a machined ring, sitting proud of the hub face
-  const lugMat = new THREE.MeshStandardMaterial({ color: 0xb8bfc9, metalness: 1.0, roughness: 0.20 });
   spin.add(new THREE.Mesh(ringLathe([
     [rHub * 0.66, faceX + conf.depth * 0.44], [rHub * 1.02, faceX + conf.depth * 0.44],
     [rHub * 1.06, faceX + conf.depth * 0.30],
@@ -787,25 +879,26 @@ export function buildWheel({
 
   // --- brake rotor (spins) + caliper (does not) ---------------------------
   const rDisc = rimR * 0.86;
-  const discFaceMat = new THREE.MeshStandardMaterial({
+  const discFaceMat = pooled('discface', () => new THREE.MeshStandardMaterial({
     map: discTexture(), color: 0xffffff, metalness: 0.85, roughness: 0.40, side: THREE.DoubleSide,
-  });
+  }));
   const face = new THREE.Mesh(new THREE.CircleGeometry(rDisc, 20), discFaceMat);
   face.rotation.y = -Math.PI / 2;                        // faces outboard, seen through the spokes
   face.position.x = OUT * hw * 0.30;
   spin.add(face);
-  const edge = new THREE.Mesh(new THREE.CylinderGeometry(rDisc, rDisc, width * 0.11, 18, 1, true),
-    new THREE.MeshStandardMaterial({ color: 0x50555d, metalness: 0.8, roughness: 0.55 }));
+  // The rotor's rim and its hat were #50555d/0.55 and #4a4f58/0.44 — two draw calls for two shades
+  // of the same cast steel, both of them deep inside the barrel behind the spokes. One material.
+  const steelMat = pooled('brakesteel', () => new THREE.MeshStandardMaterial({ color: 0x4d525a, metalness: 0.85, roughness: 0.50 }));
+  const edge = new THREE.Mesh(new THREE.CylinderGeometry(rDisc, rDisc, width * 0.11, 18, 1, true), steelMat);
   edge.rotation.z = Math.PI / 2; edge.position.x = OUT * hw * 0.24;
   spin.add(edge);
-  const hat = new THREE.Mesh(new THREE.CylinderGeometry(rHub * 1.05, rHub * 1.05, width * 0.30, 14),
-    new THREE.MeshStandardMaterial({ color: 0x4a4f58, metalness: 0.9, roughness: 0.44 }));
+  const hat = new THREE.Mesh(new THREE.CylinderGeometry(rHub * 1.05, rHub * 1.05, width * 0.30, 14), steelMat);
   hat.rotation.z = Math.PI / 2; hat.position.x = OUT * hw * 0.24;
   spin.add(hat);
 
-  const calMat = new THREE.MeshStandardMaterial({
+  const calMat = pooled(poolKey('caliper', caliperColor), () => new THREE.MeshStandardMaterial({
     color: new THREE.Color(caliperColor), metalness: 0.5, roughness: 0.30,
-  });
+  }));
   const cal = new THREE.Mesh(roundedBox(width * 0.26, rDisc * 0.70, rDisc * 0.50, 0.022), calMat);
   cal.position.set(OUT * hw * 0.06, rDisc * 0.78, -rDisc * 0.22);
   cal.rotation.x = 0.30;
@@ -819,16 +912,147 @@ export function buildWheel({
 
   g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
 
-  // ~30 primitives per wheel × 4 wheels × 8 cars is a draw-call disaster; bake them down.
-  // The rotating parts and the fixed parts have to stay in separate groups.
+  // ~30 primitives per wheel is a draw-call disaster; bake them down. The rotating parts and the
+  // fixed parts have to stay in separate groups.
   const statics = new THREE.Group();
   for (const child of [...g.children]) if (child !== spin) statics.add(child);
+  return { spin, statics, radius, width };
+}
+
+const _wheelCache = new Map();
+const _bake = (group) => mergeByMaterial(group).children
+  .filter((m) => m.isMesh)
+  .map((m) => ({ geo: m.geometry, mat: m.material, cast: m.castShadow }));
+
+/** Every wheel option with its default filled in — the cache key and the comparison basis. */
+function normWheel(opts = {}) {
+  return {
+    radius: opts.radius ?? 0.36, width: opts.width ?? 0.26, spokes: opts.spokes ?? 5,
+    style: opts.style ?? 'fivespoke', rimColor: opts.rimColor ?? '#cfd4da',
+    caliperColor: opts.caliperColor ?? '#c81f1f', tireProfile: opts.tireProfile ?? 0.30,
+    lipColor: opts.lipColor ?? null, tire: opts.tire ?? 'street',
+    capColor: opts.capColor ?? null, beadlock: !!opts.beadlock,
+  };
+}
+
+/**
+ * The merged geometry of ONE wheel, cached by configuration.
+ *
+ * Thirty-two wheels are on track (four per car, eight cars) and they come in at most eight distinct
+ * configurations, so the geometry is built once per configuration and every car points at the same
+ * buffers. Returns `{ spin, statics, radius }` where each list is `{ geo, mat }` pairs — one entry
+ * per distinct material, which is the unit an InstancedMesh can draw in a single call.
+ */
+export function wheelParts(opts = {}) {
+  const cfg = normWheel(opts);
+  const key = JSON.stringify(cfg);
+  const hit = _wheelCache.get(key);
+  if (hit) return hit;
+  const graph = wheelGraph(cfg);
+  const parts = { spin: _bake(graph.spin), statics: _bake(graph.statics), radius: cfg.radius, width: cfg.width, cfg };
+  _wheelCache.set(key, parts);
+  return parts;
+}
+
+/**
+ * Can `b` be drawn as a SCALED copy of `a`?
+ *
+ * A staggered car (wider, taller rear tyre on the same alloy) is the same wheel at two sizes, so
+ * one geometry plus a per-instance scale draws all four corners in one call instead of two. Only
+ * the three size fields may differ, and the tyre's aspect ratio has to be close enough that
+ * scaling the front carcass lands on the rear one — 2 points of profile is under a millimetre of
+ * sidewall at these radii.
+ */
+export function wheelScalable(rawA, rawB) {
+  const a = normWheel(rawA), b = normWheel(rawB);
+  for (const f of ['spokes', 'style', 'rimColor', 'caliperColor', 'lipColor', 'tire', 'capColor', 'beadlock']) {
+    if (a[f] !== b[f]) return false;
+  }
+  return Math.abs(a.tireProfile - b.tireProfile) <= 0.02;
+}
+
+/**
+ * Four wheels, four corners, one draw call per material.
+ *
+ * The wheels are the only part of a car that moves relative to it — they steer, they spin, they
+ * follow the heave — so they cannot be merged into the body. They are however the SAME object four
+ * times, which is exactly what InstancedMesh is for. Each corner keeps its own empty Object3D
+ * chain (holder → mirror frame → spin) so physics.js drives it exactly as before; the rig reads
+ * those transforms every frame and writes them into the instance matrices.
+ *
+ * The rig is a child of the car and holds no transform of its own, so an instance matrix is simply
+ * the corner's local chain — no world-space maths, and the whole thing culls as one object using a
+ * bounding sphere that is constant in car space.
+ */
+export class WheelRig extends THREE.Object3D {
+  constructor() {
+    super();
+    this.name = 'wheels';
+    this.corners = [];        // { chain:[Object3D], matrix:Matrix4 }
+    this.batches = [];        // { mesh:InstancedMesh, ids:[corner index] }
+  }
+
+  /**
+   * @param chain  the Object3D chain from the car down to the transform the parts ride on
+   * @param extra  an optional constant matrix applied inside the chain (the front/rear size scale)
+   */
+  corner(chain, extra = null) {
+    this.corners.push({ chain, extra, matrix: new THREE.Matrix4() });
+    return this.corners.length - 1;
+  }
+
+  batch(parts, cornerIds, sphere) {
+    for (const { geo, mat, cast } of parts) {
+      const im = new THREE.InstancedMesh(geo, mat, cornerIds.length);
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      im.castShadow = cast !== false && !mat.transparent;
+      im.receiveShadow = true;
+      // Instances move every frame, so a computed bounding sphere would be stale by the time it is
+      // tested. This one is authored instead: it covers every corner in car space and never moves.
+      im.boundingSphere = sphere.clone();
+      this.add(im);
+      this.batches.push({ mesh: im, ids: cornerIds });
+    }
+  }
+
+  /** Runs once per frame, from the renderer's own scene-graph update — before the shadow pass. */
+  updateMatrixWorld(force) {
+    for (const c of this.corners) {
+      c.matrix.identity();
+      for (const node of c.chain) {
+        node.updateMatrix();
+        c.matrix.multiply(node.matrix);
+      }
+      if (c.extra) c.matrix.multiply(c.extra);
+    }
+    for (const b of this.batches) {
+      for (let i = 0; i < b.ids.length; i++) {
+        b.mesh.setMatrixAt(i, this.corners[b.ids[i]].matrix);
+      }
+      b.mesh.instanceMatrix.needsUpdate = true;
+    }
+    super.updateMatrixWorld(force);
+  }
+}
+
+/** A single wheel as a Group — kept for callers that want one wheel on its own. */
+export function buildWheel(opts = {}) {
+  const parts = wheelParts(opts);
   const wheel = new THREE.Group();
-  const mergedSpin = mergeByMaterial(spin);
-  mergedSpin.name = 'spin';
-  wheel.add(mergedSpin);
-  for (const m of [...mergeByMaterial(statics).children]) wheel.add(m);
-  wheel.userData.radius = radius;
+  const spin = new THREE.Group();
+  spin.name = 'spin';
+  for (const p of parts.spin) {
+    const m = new THREE.Mesh(p.geo, p.mat);
+    m.castShadow = p.cast !== false; m.receiveShadow = true;
+    spin.add(m);
+  }
+  wheel.add(spin);
+  for (const p of parts.statics) {
+    const m = new THREE.Mesh(p.geo, p.mat);
+    m.castShadow = p.cast !== false; m.receiveShadow = true;
+    wheel.add(m);
+  }
+  wheel.userData.radius = parts.radius;
   return wheel;
 }
 
@@ -849,9 +1073,9 @@ export function wheelWell(radius, width, { inboard = 0.0 } = {}) {
   wall.translate(-width / 2 + inboard, 0, 0);
   parts.push(wall);
   const geo = mergeGeometries(parts, false) || arch;
-  return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+  return new THREE.Mesh(geo, pooled('wheelwell', () => new THREE.MeshStandardMaterial({
     color: 0x0b0c0f, roughness: 0.96, metalness: 0.0, side: THREE.DoubleSide,
-  }));
+  })));
 }
 
 /**
@@ -992,7 +1216,6 @@ export function mergeByMaterial(group) {
 
 /** Contact shadow — §7 caps a hovering car at 55. Body blob plus a firm patch under each tyre. */
 export function contactShadow(w = 2.2, l = 5.0, wheels = []) {
-  const tex = sprite({ size: 128, shape: 'glow', color: '#000000', seed: 2 });
   const geos = [];
   const add = (pw, pl, y, x = 0, z = 0) => {
     const g = new THREE.PlaneGeometry(pw, pl).toNonIndexed();
@@ -1003,12 +1226,20 @@ export function contactShadow(w = 2.2, l = 5.0, wheels = []) {
   add(w, l, 0.018);
   for (const p of wheels) add(p.r * 1.5, p.r * 2.1, 0.024, p.x, p.z);
   const merged = mergeGeometries(geos, false) || geos[0];
-  const m = new THREE.Mesh(merged, new THREE.MeshBasicMaterial({
-    map: tex, transparent: true, opacity: 0.60, depthWrite: false, color: 0x000000,
-  }));
+  const m = new THREE.Mesh(merged, pooled('contactshadow', () => new THREE.MeshBasicMaterial({
+    map: sprite({ size: 128, shape: 'glow', color: '#000000', seed: 2 }),
+    transparent: true, opacity: 0.60, depthWrite: false, color: 0x000000,
+  })));
   m.renderOrder = 2;
   m.name = 'contactShadow';
   return m;
+}
+
+const _glowTex = new Map();
+/** The halo sprite behind a lens, one texture per colour instead of one per lamp per car. */
+export function glowSprite(color) {
+  if (!_glowTex.has(color)) _glowTex.set(color, sprite({ size: 128, shape: 'glow', color, seed: 4 }));
+  return _glowTex.get(color);
 }
 
 /**
@@ -1017,7 +1248,7 @@ export function contactShadow(w = 2.2, l = 5.0, wheels = []) {
  */
 export function lightUnit({
   w = 0.34, h = 0.16, color = '#ff2418', intensity = 4.0, glow = 1.0, shape = 'rect', bezel = true,
-  segs = 0,
+  segs = 0, lensMat = null, glowMat = null,
 } = {}) {
   const g = new THREE.Group();
   const lensGeo = shape === 'round'
@@ -1025,13 +1256,16 @@ export function lightUnit({
     : shape === 'strip'
       ? roundedBox(w, h, 0.02, h * 0.45)
       : roundedBox(w, h, 0.025, Math.min(w, h) * 0.30);
-  const lens = new THREE.Mesh(lensGeo, emissiveMaterial({ color, intensity }));
+  // A bank of lamps that light together (both taillights, both headlights) is handed ONE lens
+  // material so the whole bank bakes into a single mesh — physics.js then drives all of them with
+  // the one emissiveIntensity write it was already doing.
+  const lens = new THREE.Mesh(lensGeo, lensMat || emissiveMaterial({ color, intensity }));
   lens.position.z = 0.015;
   g.add(lens);                                  // children[0]
 
   const housing = new THREE.Mesh(
     shape === 'round' ? new THREE.CylinderGeometry(h * 0.58, h * 0.52, 0.09, 14) : roundedBox(w * 1.10, h * 1.30, 0.09, Math.min(w, h) * 0.30),
-    new THREE.MeshStandardMaterial({ color: 0x0a0b0e, roughness: 0.5, metalness: 0.4 }),
+    housingMaterial(),
   );
   if (shape === 'round') housing.rotation.x = Math.PI / 2;
   // The housing's front face must clear the lens plane. At -0.03 the two were coplanar and the
@@ -1055,7 +1289,7 @@ export function lightUnit({
   // rectangle and the shape of the lamp is erased (round-1 note on the Brutus tail lamps).
   if (segs > 1) {
     const vertical = h > w;
-    const ribMat = new THREE.MeshStandardMaterial({ color: 0x0b0c0f, roughness: 0.55, metalness: 0.35 });
+    const ribMat = housingMaterial();      // the ribs are moulded out of the housing itself
     for (let i = 1; i < segs; i++) {
       const f = i / segs - 0.5;
       const rib = new THREE.Mesh(
@@ -1075,8 +1309,8 @@ export function lightUnit({
     const r = Math.max(w, h) * 1.35;
     const gl = new THREE.Mesh(
       new THREE.PlaneGeometry(r, r),
-      new THREE.MeshBasicMaterial({
-        map: sprite({ size: 128, shape: 'glow', color, seed: 4 }),
+      glowMat || new THREE.MeshBasicMaterial({
+        map: glowSprite(color),
         transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: glow * 0.40,
       }),
     );
@@ -1094,12 +1328,11 @@ export function grilleMesh({
 } = {}) {
   const hasSurround = surround === null ? frame === 'chrome' : surround;
   const g = new THREE.Group();
-  const back = new THREE.Mesh(roundedBox(w * 0.99, h * 0.99, d * 0.5, 0.02),
-    new THREE.MeshStandardMaterial({ color: 0x05060a, roughness: 0.9, metalness: 0.2 }));
+  const back = new THREE.Mesh(roundedBox(w * 0.99, h * 0.99, d * 0.5, 0.02), cavityMaterial());
   back.position.z = -d * 0.5;
   g.add(back);
   const barMat = frame === 'chrome' ? chromeMaterial({ color: '#b9bfc8', rough: 0.16 })
-    : new THREE.MeshStandardMaterial({ color: 0x1a1c21, roughness: 0.45, metalness: 0.7 });
+    : darkMetalMaterial({ color: '#1a1c21', rough: 0.45, metal: 0.7 });
   if (mesh) {
     for (let i = 0; i < slats; i++) {
       const y = -h / 2 + (i + 0.5) * (h / slats);
@@ -1147,12 +1380,12 @@ export function grilleMesh({
 }
 
 /** A vent: louvres recessed into a dark aperture. Bonnet extractors, side intakes, engine covers. */
-export function ventMesh({ w = 0.4, h = 0.2, fins = 4, angle = 0.5, dark = '#0a0b0d' } = {}) {
+export function ventMesh({ w = 0.4, h = 0.2, fins = 4, angle = 0.5, dark = null } = {}) {
   const g = new THREE.Group();
   const back = new THREE.Mesh(roundedBox(w, h, 0.05, 0.02),
-    new THREE.MeshStandardMaterial({ color: new THREE.Color(dark), roughness: 0.9, metalness: 0.2 }));
+    dark ? stdMaterial({ color: dark, rough: 0.9, metal: 0.2 }) : cavityMaterial());
   g.add(back);
-  const finMat = new THREE.MeshStandardMaterial({ color: 0x2a2d34, roughness: 0.5, metalness: 0.6 });
+  const finMat = darkMetalMaterial({ color: '#2a2d34', rough: 0.5, metal: 0.6 });
   for (let i = 0; i < fins; i++) {
     const f = new THREE.Mesh(roundedBox(w * 0.92, h / fins * 0.5, 0.05, 0.008), finMat);
     f.position.set(0, -h / 2 + (i + 0.5) * (h / fins), 0.03);
@@ -1171,7 +1404,21 @@ export function ventMesh({ w = 0.4, h = 0.2, fins = 4, angle = 0.5, dark = '#0a0
  *
  * @param anchors  profileU(sections) — u of each authored half-profile point.
  */
-export function bodyPaintTexture({
+const _paintTex = new Map();
+export function bodyPaintTexture(opts = {}) {
+  // 1024² of fbm, gradients and shut lines is ~85 ms, and eight cars ask for two apiece at load.
+  // Identical liveries hand back the identical texture instead of redrawing it.
+  const key = JSON.stringify(opts);
+  let tex = _paintTex.get(key);
+  if (!tex) {
+    tex = drawBodyPaint(opts);
+    tex.userData.pooled = true;
+    _paintTex.set(key, tex);
+  }
+  return tex;
+}
+
+function drawBodyPaint({
   base = '#1b7f6b', stripe = '#f2f2ee', accent = null, style = 'none',
   anchors = null, panels = {}, seed = 1, size = 1024,
 } = {}) {

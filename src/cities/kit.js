@@ -24,6 +24,39 @@ import { drawText, textCanvas } from '../core/font.js';
  *     per-building UV offset keeps the lit-window pattern from repeating (§7 cap 65).
  *  3. Props are placed by `track.scatter()` with random gaps and picked from a weighted mix, and
  *     every instance gets scale/rotation/colour jitter — never a metronome (§7 cap 66).
+ *
+ * ---------------------------------------------------------------------------------------------
+ * SHARED PERFORMANCE API — what a city file should call instead of `group.add(thing)`
+ * ---------------------------------------------------------------------------------------------
+ *
+ *   new PropBatch(target, { chunk = 250, minInstances = 24 })
+ *     .add(key, factory, { pos, rotY, rx, rz, scale, color, variant, variants })
+ *     .flush()
+ *       Collector for a placement loop. Builds each distinct prototype ONCE, then emits either an
+ *       InstancedMesh (deep buckets) or a merged buffer (shallow ones) — whichever is fewer draw
+ *       calls. See the class doc below for the rules; the worked example is the barrier run in
+ *       buildCity(). This is the right tool for lamps, barriers, palms, railings, parked cars,
+ *       crowd, bollards, scaffolding — anything you place in a loop.
+ *
+ *   mergeGroup(group, chunkMetres)
+ *       Collapse a finished group in place: everything sharing a material inside the same chunk
+ *       becomes one mesh, and frustum culling still works at chunk granularity. Anything flagged
+ *       `userData.noMerge` (animated, transparent, gameplay-tagged) is left alone. buildCity()
+ *       already runs this over `blocks`, `props` and `landmarks`, so a city that adds to those
+ *       groups gets it for free — call it yourself only for a group you build outside them.
+ *
+ *   new LightBank({ budget }).harvest(root); bank.update(camera, dt)
+ *       A fixed pool of real point lights, re-pointed each frame at the nearest sources. Wired up
+ *       automatically by buildCity() — city files keep writing plain `THREE.PointLight`s and the
+ *       kit takes them over. Set `light.userData.alwaysOn = true` to opt one out, or
+ *       `def.lightBudget` to change the pool size. THIS IS THE ONE TO KNOW ABOUT: a point light
+ *       is a FULL-SCREEN cost in three.js, not a local one — twenty of them cost more than the
+ *       entire rest of the frame put together (measured: 9.8 ms of Vegas's 19.8 ms).
+ *
+ * Measured on an M1 Pro at 1600x900: the four cities submit 1,650-2,050 draw calls per frame and
+ * render in 8.3-11.1 ms (90-120 fps) with post, bloom and shadows on. If you are looking at a
+ * frame-rate number well below that, it is not this file — see tools/profile.mjs's draw-call
+ * line, which accumulates over the whole sample rather than reporting one frame.
  */
 
 // ---------------------------------------------------------------- shared plumbing
@@ -129,6 +162,286 @@ function mergeStatic(group, chunk = 110) {
     group.add(m);
   }
   return group;
+}
+
+/** Public name for the chunked merge — see the API note at the top of this file. */
+export const mergeGroup = mergeStatic;
+
+/**
+ * PROP BATCH — one collector for everything the city repeats, which then picks the cheaper of
+ * instancing and merging per bucket.
+ *
+ * Use it instead of `group.add(makeProp())` in a placement loop:
+ *
+ *   const batch = new PropBatch(props, { chunk: 300 });
+ *   for (const s of track.spaced(4.05, { side, offset })) {
+ *     batch.add('barrier', (v) => jerseyBarrier({ len: 4, cache, seed: v }), {
+ *       pos: s.pos, rotY: yawOf(s), scale: r.range(0.97, 1.04), variant: s.index, variants: 8,
+ *     });
+ *   }
+ *   batch.flush();     // emits the finished meshes into `props`
+ *
+ * Rules of the API:
+ *  - `key` identifies the PROTOTYPE. Everything sharing a key must be geometrically identical;
+ *    put anything that changes the geometry (length, height, style) into the key string.
+ *  - `variants` builds N differently-seeded prototypes under the same key and spreads instances
+ *    across them, so a batched prop is still not a metronome (§7 caps a visibly repeated element
+ *    at 66). The factory is called with the variant index — pass it through as the seed. Pass
+ *    `variant: s.index` to keep the choice tied to the position rather than to insertion order.
+ *  - `color` sets a per-instance tint via `instanceColor`, which is how you get forty paint
+ *    colours out of one parked-car mesh instead of forty materials. A bucket with per-instance
+ *    colours is always instanced, because a merged buffer has nowhere to put them.
+ *  - Prototype children that cannot be instanced (lights, sprites, points) are cloned per
+ *    instance instead, so a prop that carries one is still safe to batch.
+ *  - `chunk` is the spatial cell in metres: props are grouped per cell so frustum culling still
+ *    throws away the half of the city behind you. 0 puts the whole city in one call.
+ *
+ * WHY IT IS NOT ALWAYS AN InstancedMesh. An InstancedMesh costs one draw per (prototype part,
+ * variant, chunk), and that denominator matters: 700 barriers of 4 kinds x 8 variants x 2 parts
+ * over a dozen 300 m chunks is ~430 draw calls of six instances each — measurably WORSE than the
+ * ~30 buffers the same props merge down to. Instancing only pays once a bucket is deep. So a
+ * bucket with `minInstances` (24) or more transforms becomes an InstancedMesh; anything shallower
+ * is merged by material exactly as `mergeGroup()` would do it. Either way the caller writes the
+ * same loop and never has to make that call by hand.
+ */
+export class PropBatch {
+  constructor(target, { chunk = 250, minInstances = 24 } = {}) {
+    this.target = target;
+    this.chunk = chunk;
+    this.minInstances = minInstances;
+    this.protos = new Map();     // key|variant -> [{ geometry, material, matrix, cast, receive }]
+    this.extras = new Map();     // key|variant -> [Object3D] (lights etc, cloned per instance)
+    this.buckets = new Map();
+    this._q = new THREE.Quaternion();
+    this._e = new THREE.Euler();
+    this._v = new THREE.Vector3();
+    this._s = new THREE.Vector3();
+    this.count = 0;
+  }
+
+  /** Flatten a prototype object into instanceable parts, once per (key, variant). */
+  _proto(key, variant, factory) {
+    const id = `${key}|${variant}`;
+    let parts = this.protos.get(id);
+    if (parts) return parts;
+    const root = factory(variant);
+    root.updateMatrixWorld(true);
+    parts = [];
+    const extras = [];
+    root.traverse((o) => {
+      if (o.isMesh && o.material && !Array.isArray(o.material)) {
+        parts.push({
+          geometry: o.geometry, material: o.material,
+          matrix: o.matrixWorld.clone(),
+          cast: o.castShadow, receive: o.receiveShadow,
+          order: o.renderOrder, boost: !!o.userData.boost,
+        });
+      } else if (!o.isMesh && o.type !== 'Group' && o.type !== 'Object3D') {
+        extras.push(o);
+      }
+    });
+    this.protos.set(id, parts);
+    if (extras.length) this.extras.set(id, extras);
+    return parts;
+  }
+
+  /**
+   * add(key, factory, { pos, rotY, rx, rz, scale, color, variant, variants })
+   * `pos` may be a Vector3 or {x,y,z}; `scale` a number or {x,y,z}.
+   */
+  add(key, factory, {
+    pos, rotY = 0, rx = 0, rz = 0, scale = 1, color = null, variant = null, variants = 1,
+  } = {}) {
+    const v = variant != null ? (variant % variants + variants) % variants
+      : (this.count * 7 + (key.length * 13)) % variants;
+    const parts = this._proto(key, v, factory);
+    this._e.set(rx, rotY, rz);
+    this._q.setFromEuler(this._e);
+    this._v.set(pos?.x || 0, pos?.y || 0, pos?.z || 0);
+    if (typeof scale === 'number') this._s.set(scale, scale, scale);
+    else this._s.set(scale.x ?? 1, scale.y ?? 1, scale.z ?? 1);
+    const world = new THREE.Matrix4().compose(this._v, this._q, this._s);
+    const cx = this.chunk > 0 ? Math.floor(this._v.x / this.chunk) : 0;
+    const cz = this.chunk > 0 ? Math.floor(this._v.z / this.chunk) : 0;
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      const bk = `${key}|${v}|${i}|${cx}|${cz}`;
+      let b = this.buckets.get(bk);
+      if (!b) { b = { part: p, mats: [], colors: null, cx, cz }; this.buckets.set(bk, b); }
+      b.mats.push(new THREE.Matrix4().multiplyMatrices(world, p.matrix));
+      if (color && !b.colors) b.colors = new Array(b.mats.length - 1).fill(null);
+      if (b.colors) b.colors.push(color);
+    }
+    const extras = this.extras.get(`${key}|${v}`);
+    if (extras) {
+      for (const e of extras) {
+        const c = e.clone();
+        c.applyMatrix4(world);
+        c.matrix.decompose(c.position, c.quaternion, c.scale);
+        this.target.add(c);
+      }
+    }
+    this.count++;
+    return this;
+  }
+
+  /** Emit the finished meshes into the target group. Call once, at the end of the loop. */
+  flush() {
+    const out = [];
+    const col = new THREE.Color();
+    const merge = new Map();       // material|flags|chunk -> geometries, for the shallow buckets
+    for (const b of this.buckets.values()) {
+      const n = b.mats.length;
+      const p = b.part;
+      if (n < this.minInstances && !b.colors) {
+        // too few to be worth an instanced draw: fold it in with everything else in this cell
+        // that shares a material, which is exactly what mergeGroup() would have produced.
+        const mk = `${p.material.id}|${p.cast ? 1 : 0}${p.receive ? 1 : 0}|${p.order || 0}|${b.cx}|${b.cz}`;
+        let m = merge.get(mk);
+        if (!m) { m = { part: p, geos: [] }; merge.set(mk, m); }
+        for (let i = 0; i < n; i++) {
+          const g = normalizeGeo(p.geometry);
+          g.applyMatrix4(b.mats[i]);
+          m.geos.push(g);
+        }
+        continue;
+      }
+      const im = new THREE.InstancedMesh(p.geometry, p.material, n);
+      for (let i = 0; i < n; i++) im.setMatrixAt(i, b.mats[i]);
+      if (b.colors) {
+        for (let i = 0; i < n; i++) im.setColorAt(i, col.set(b.colors[i] || '#ffffff'));
+        im.instanceColor.needsUpdate = true;
+      }
+      im.instanceMatrix.needsUpdate = true;
+      im.castShadow = p.cast; im.receiveShadow = p.receive;
+      if (p.order) im.renderOrder = p.order;
+      im.userData.noMerge = true;                  // an InstancedMesh must survive mergeGroup()
+      if (p.boost) im.userData.boost = true;       // keep gameplay tags off the merge path
+      im.computeBoundingSphere();
+      this.target.add(im);
+      out.push(im);
+    }
+    for (const m of merge.values()) {
+      const geo = m.geos.length === 1 ? m.geos[0] : mergeGeometries(m.geos, false);
+      const mesh = new THREE.Mesh(geo, m.part.material);
+      mesh.castShadow = m.part.cast; mesh.receiveShadow = m.part.receive;
+      if (m.part.order) mesh.renderOrder = m.part.order;
+      if (m.part.boost) mesh.userData.boost = true;
+      this.target.add(mesh);
+      out.push(mesh);
+    }
+    this.buckets.clear();
+    return out;
+  }
+}
+
+/**
+ * POINT-LIGHT BUDGET.
+ *
+ * A real point light in three.js is not a local cost: every lit fragment in the frame evaluates
+ * EVERY light in the scene, so the twentieth kerbside flood costs a full-screen pass whether or
+ * not it is on screen. Measured on an M1 Pro at 1600x900, Vegas's twenty landmark lights cost
+ * 9.8 ms of a 19.8 ms frame — half the frame, for lights that are mostly kilometres away.
+ *
+ * The bank keeps a FIXED number of real lights (so the shader permutation never changes and
+ * nothing recompiles mid-race) and re-points them each frame at the nearest sources that can
+ * actually reach the camera. City code keeps writing plain `THREE.PointLight`s wherever it wants
+ * them; buildCity() harvests them into the bank automatically. A light you genuinely need lit at
+ * all times survives by setting `light.userData.alwaysOn = true`.
+ */
+export class LightBank {
+  constructor({ budget = 6, fade = 5 } = {}) {
+    this.budget = budget;
+    this.fadeRate = fade;
+    this.sources = [];
+    this.group = new THREE.Group();
+    this.group.name = 'lightBank';
+    this.proxies = [];
+    this._p = new THREE.Vector3();
+  }
+
+  /** Take every PointLight under `root` out of the lighting loop and into the bank. */
+  harvest(root) {
+    root.updateMatrixWorld(true);
+    const found = [];
+    root.traverse((o) => {
+      if (o.isPointLight && !o.userData.proxy && !o.userData.banked && !o.userData.alwaysOn) found.push(o);
+    });
+    for (const o of found) {
+      o.getWorldPosition(this._p);
+      this.sources.push({
+        light: o, pos: this._p.clone(),
+        reach: o.distance > 0 ? o.distance : 300,
+      });
+      o.visible = false;             // an invisible light is skipped entirely by the renderer
+      o.userData.banked = true;
+    }
+    // Only allocate as many real lights as there is anything to point at. A city with no point
+    // lights of its own must end up with NO extra lights in the shader — an idle proxy still
+    // costs every fragment in the frame.
+    const n = Math.min(this.budget, this.sources.length);
+    while (this.proxies.length < n) {
+      const l = new THREE.PointLight(0xffffff, 0, 1, 2);
+      // Allocated once and left VISIBLE for the life of the city even when it is pointing at
+      // nothing: three.js bakes the light count into every shader permutation, so a light that
+      // blinks in and out relinks ~1300 programs mid-race. Constant count, varying intensity.
+      l.userData.proxy = true;
+      l.userData.noMerge = true;
+      this.group.add(l);
+      this.proxies.push({ light: l, src: null, k: 0 });
+    }
+    return this;
+  }
+
+  /** Re-point the bank. `snap` skips the crossfade — used for the first frame and for captures. */
+  update(camera, dt = 1 / 60, snap = false) {
+    if (!this.sources.length) return;
+    const cp = camera.position ?? camera;
+    const live = [];
+    for (const s of this.sources) {
+      if (s.light.intensity <= 0) continue;
+      const d = Math.sqrt((s.pos.x - cp.x) ** 2 + (s.pos.y - cp.y) ** 2 + (s.pos.z - cp.z) ** 2);
+      if (d >= s.reach) continue;                       // contributes exactly zero
+      s._d = d;
+      // rank on how much of its reach is left, so a 400 m flood outranks a 60 m kerb light
+      s._score = d / s.reach;
+      live.push(s);
+    }
+    live.sort((a, b) => a._score - b._score);
+    const want = live.slice(0, this.budget);
+    const wanted = new Set(want);
+
+    // keep bindings that are still wanted; free the rest as they fade out
+    const bound = new Set();
+    for (const p of this.proxies) {
+      if (p.src && wanted.has(p.src)) bound.add(p.src);
+    }
+    const incoming = want.filter((s) => !bound.has(s));
+    const step = snap ? 1 : Math.min(1, this.fadeRate * dt);
+    for (const p of this.proxies) {
+      const keep = p.src && wanted.has(p.src);
+      if (!keep) {
+        p.k += (0 - p.k) * step;
+        if (p.k < 0.02 || snap) {
+          p.k = 0;
+          p.src = incoming.pop() || null;
+          if (p.src && snap) p.k = 1;
+        }
+      } else {
+        p.k += (1 - p.k) * step;
+      }
+      const l = p.light;
+      if (!p.src) { l.intensity = 0; continue; }
+      const s = p.src;
+      l.position.copy(s.pos);
+      l.color.copy(s.light.color);
+      l.distance = s.light.distance;
+      l.decay = s.light.decay;
+      // the last 12% of a light's reach fades out, so a swap at the edge of the set is invisible
+      const edge = clamp((1 - (s._d ?? 0) / s.reach) / 0.12, 0, 1);
+      l.intensity = s.light.intensity * p.k * edge;
+    }
+  }
 }
 
 /** Plane with explicitly-scaled UVs — this is how facade tiling is baked per building. */
@@ -3956,23 +4269,34 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     // eighty identical jersey units at exactly 4.05 m is the clearest possible example of it. So
     // the run is broken up: units are nudged in yaw/height/scale, a few are missing, and every so
     // often a water-filled plastic barrier, a stack of sandbags or a cone cluster takes a slot.
+    // …and it is the worked example for PropBatch: ~700 units down a 2 km lap become one
+    // InstancedMesh per (prototype part, variant, 300 m chunk) instead of 700 groups whose
+    // vertices get copied into a merged buffer. Eight seeded variants per kind keep the run
+    // irregular — the reflector posts, sandbag stacks and cone clusters still differ unit to unit.
     const br = rng.fork(83);
+    const VAR = 8;
+    const barrierBatch = new PropBatch(props, { chunk: 300 });
+    const accent = L.accent || '#e06a1e';
     for (const side of [-1, 1]) {
       for (const s of track.spaced(4.05, { side, offset: Math.max(1.6, wallOff - 0.45), rng: rng.fork(side + 2) })) {
         if (pdef.barrierGaps && s.index % pdef.barrierGaps === 0) continue;
         if (br.bool(0.06)) continue;                               // an occasional missing unit
         const roll = br.next();
-        let b;
-        if (roll < 0.09) b = waterBarrier({ len: 2.0, cache, seed: s.index * 5 + side, color: L.accent || '#e06a1e' });
-        else if (roll < 0.13) b = sandbags({ cache, seed: s.index * 3 + side });
-        else if (roll < 0.16) b = trafficCones({ cache, seed: s.index * 11 + side, n: br.int(2, 3) });
-        else b = jerseyBarrier({ len: 4, cache, seed: s.index * 7 + side });
-        b.position.copy(s.pos).setY(s.pos.y + br.range(-0.03, 0.02));
-        b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.035, 0.035);
-        b.scale.setScalar(br.range(0.97, 1.04));
-        props.add(b);
+        // NOTE: the RNG draw order below is load-bearing — cones consume an extra int, and the
+        // y/yaw/scale jitter is drawn in that order. Changing it re-rolls the whole street.
+        let key = null, make = null;
+        const v = (s.index * 7 + side + VAR * 4) % VAR;
+        if (roll < 0.09) { key = `water|${accent}`; make = (i) => waterBarrier({ len: 2.0, cache, seed: i * 5 + 3, color: accent }); }
+        else if (roll < 0.13) { key = 'sandbags'; make = (i) => sandbags({ cache, seed: i * 3 + 1 }); }
+        else if (roll < 0.16) { const n = br.int(2, 3); key = `cones|${n}`; make = (i) => trafficCones({ cache, seed: i * 11 + 5, n }); }
+        else { key = 'jersey'; make = (i) => jerseyBarrier({ len: 4, cache, seed: i * 7 + 1 }); }
+        const y = s.pos.y + br.range(-0.03, 0.02);
+        const rotY = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.035, 0.035);
+        const scale = br.range(0.97, 1.04);
+        barrierBatch.add(key, make, { pos: { x: s.pos.x, y, z: s.pos.z }, rotY, scale, variant: v, variants: VAR });
       }
     }
+    barrierBatch.flush();
   }
   if (pdef.palms) {
     const pr = rng.fork(31);
@@ -4202,6 +4526,15 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   mergeStatic(props, 340);
   mergeStatic(landmarks, 260);
 
+  // ---- point-light budget ----
+  // Every lit fragment evaluates every light in the scene, so a city that scatters twenty
+  // landmark floods around a 2 km lap pays for all twenty on every pixel of every frame — Vegas
+  // measured 9.8 ms of a 19.8 ms frame in exactly that state. The bank keeps a fixed handful of
+  // real lights and re-points them at whatever is near enough to matter (see LightBank).
+  const lightBank = new LightBank({ budget: def.lightBudget ?? 6 });
+  lightBank.harvest(group);
+  group.add(lightBank.group);
+
   if (envMap) {
     group.traverse((o) => {
       // NOT onto unlit materials. `MeshBasicMaterial` here always means an additive decal — light
@@ -4218,6 +4551,10 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   }
 
   const spawnS = track.at(def.spawnU ?? 0);
+  // Prime the bank from the spawn point so a still capture taken before the first update() is
+  // lit exactly like a running frame.
+  lightBank.update(spawnS.pos.clone().setY(spawnS.pos.y + 2), 1, true);
+  let lastT = null;
   // Where the `landmark` capture should start from: far enough back on the approach to the hero
   // landmark that it is dead ahead for the whole shot (§8's "a framing that includes the city's
   // primary landmark"). main.js reads this for `scenario('landmark')`.
@@ -4229,6 +4566,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     name: def.name,
     spawn: { pos: spawnS.pos.clone(), yaw: Math.atan2(spawnS.tan.x, spawnS.tan.z), u: def.spawnU ?? 0 },
     boostPads: (pdef.boostPads || []).map((b) => ({ ...b })),
+    lightBank,
     update(t, camera) {
       sky.position.set(camera.position.x, 0, camera.position.z);
       sun.target.position.set(camera.position.x, 0, camera.position.z);
@@ -4236,6 +4574,11 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
       // landmark animation (marquee bulb chase, beam pulse). These drive MATERIALS, not meshes,
       // so they keep working after mergeStatic() has collapsed the scene graph.
       for (let i = 0; i < lmAnims.length; i++) lmAnims[i](t);
+      // NOTE: a city file may re-export this method detached from its object (lasvegas.js does),
+      // so the clock lives in a closure, not on `this`.
+      const dt = lastT == null ? 1 : clamp(t - lastT, 0, 0.25);
+      lastT = t;
+      lightBank.update(camera, dt, dt >= 1);
     },
   };
 }
