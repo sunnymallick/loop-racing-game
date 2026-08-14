@@ -26,7 +26,7 @@ const H = Number(arg('height', 900));
 const BAR = 50;
 
 async function main() {
-  const h = await boot({ headless: false, width: W, height: H });
+  const h = await boot({ gpu: true, width: W, height: H });
   const rows = [];
   try {
     await open(h.page, h.url, { city: CITIES[0], car: CAR });

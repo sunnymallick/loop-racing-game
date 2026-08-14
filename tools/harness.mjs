@@ -10,7 +10,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
  * Every builder/critic agent gets its own server + browser, so many can run concurrently
  * without fighting over a port.
  */
-export async function boot({ headless = true, width = 1600, height = 900 } = {}) {
+export async function boot({ headless = true, width = 1600, height = 900, gpu = false } = {}) {
   const port = 20000 + Math.floor(Math.random() * 30000);
   const server = await createServer({
     root: ROOT,
@@ -25,16 +25,28 @@ export async function boot({ headless = true, width = 1600, height = 900 } = {})
   await server.listen();
   const url = server.resolvedUrls.local[0].replace(/\/$/, '');
 
+  // Two very different launch modes:
+  //
+  //  gpu:false (default) — force SwiftShader. Deterministic, headless, and safe to run 7-at-a-time
+  //    across concurrent agents. Frame rate from this mode is MEANINGLESS as a performance signal.
+  //
+  //  gpu:true — the real GPU, for tools/perf.mjs only. Playwright's bundled Chromium has no Metal
+  //    backend on macOS and silently falls back to SwiftShader even when headless is false, so we
+  //    ask for the installed Google Chrome via `channel` and drop every software-rasteriser flag.
+  //    Without this, "headed" runs still report ~0.5 fps and look like a catastrophic perf bug.
   const browser = await chromium.launch({
-    headless,
-    args: [
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
-      '--ignore-gpu-blocklist',
-      '--enable-webgl',
-      '--disable-dev-shm-usage',
-      '--force-device-scale-factor=1',
-    ],
+    headless: gpu ? false : headless,
+    ...(gpu ? { channel: 'chrome' } : {}),
+    args: gpu
+      ? ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--enable-zero-copy', '--force-device-scale-factor=1']
+      : [
+        '--use-angle=swiftshader',
+        '--enable-unsafe-swiftshader',
+        '--ignore-gpu-blocklist',
+        '--enable-webgl',
+        '--disable-dev-shm-usage',
+        '--force-device-scale-factor=1',
+      ],
   });
   const context = await browser.newContext({
     viewport: { width, height },
