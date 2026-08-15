@@ -2806,7 +2806,15 @@ export const def = {
   landmarkU: 0.243,
   look: {
     accent: '#ffc21e',
-    lampColor: '#ffcb8c',
+    // (round 3) '#ffcb8c' -> '#e8a35e'. This colour is not only the lamp head: `cities/kit.js`
+    // multiplies it straight into `lightPoolMaterial`, the ADDITIVE quad laid on the carriageway
+    // under every second lamp, whose core stop is alpha 0.60. On a road authored at '#1e2026' that
+    // pool arrives around rgb(200,170,120) — a 10x lift that swamps the asphalt's own aggregate
+    // and is the literal "milky untextured tan" of the round-2 measurement. A real sodium lamp is
+    // about 2000K, i.e. distinctly orange rather than this near-white cream, so deepening it is
+    // both the correct colour AND ~25-45% less additive energy per channel. The pool now reads as
+    // a warm pool ON asphalt instead of replacing it.
+    lampColor: '#e8a35e',
     // A WET street. §2.2 makes a reflective road mandatory at night and round 3 measured this one
     // as "dry matte asphalt that reflects nothing" — the lowest-scoring thing in the city. At 0.60
     // the road's roughness map only came down to ~0.5 and the kerbside streaks were laid at 60%
@@ -2831,14 +2839,31 @@ export const def = {
       // Ablated directly (tools/_coh_nycroad.mjs): with uWet forced to 0 AND the spill pass off,
       // that patch still measures rgb(150,123,99) over a 99–152 range. It is the sodium lamp pools
       // on the tarmac itself, and if it wants more aggregate in it that is a road-surface job.
-      strength: 0.66, gain: 2.95, threshold: 0.54, knee: 0.52, spread: 0.030,
-      patch: 0.80, patchScale: 0.070, fresnel: 2.5,
+      // (round 3) …and re-opened after all, for the reason the note above did not consider. The
+      // ablation was right that killing this term does not remove the flat warm patch — but that
+      // is not the same as this term being innocent, because what it ADDS on top of that patch is
+      // a wash rather than a streak. At threshold 0.54 an ordinary sodium-lit stretch of tarmac
+      // already clears the bar, at gain 2.95 it clears it hard, and at spread 0.030 the reflection
+      // is smeared over six times Miami's cone — so instead of "every light source draws a long
+      // reflection down the stone" (§1.3) the whole carriageway comes up one uniform milk. That is
+      // exactly what round 2 measured: "milky untextured tan, meanL 109, hi-frequency detail 5.1
+      // falling to ~0 on the tan band, no aggregate and no wet specular streaks".
+      // Threshold up so only the lamp heads, the deli windows and the gantry clear it; gain down;
+      // cone tightened to Vegas' order. The road between the reflections goes back to being dark
+      // asphalt with its aggregate in it, and the reflections become the vertical streaks §2.2
+      // makes mandatory instead of a veil that erases both.
+      strength: 0.48, gain: 2.10, threshold: 0.68, knee: 0.52, spread: 0.016,
+      patch: 0.74, patchScale: 0.070, fresnel: 2.5,
     },
     // Blue hour, not midnight: a luminous cobalt sky with a pale band at the horizon is what gives
     // the canyon and the spire a silhouette to read against. Vegas owns black-sky neon.
+    // (coherence pass) the cobalt asserted. #4f719f is a slate — s33 — and it is the colour the
+    // canyon and the spire are read against, so a slate there makes the whole frame slate. #4478bc
+    // is the same value at s47: a blue hour that is actually blue, which is also what gives the
+    // sodium lamps and the taxi yellow something to be warm against.
     sky: {
-      top: '#0b1a3e', horizon: '#4f719f', ground: '#151a23',
-      haze: '#7290bc', sunDir: [-0.62, 0.05, -0.78], sunColor: '#ffb178',
+      top: '#0a1c48', horizon: '#4478bc', ground: '#151a23',
+      haze: '#7f9ecc', sunDir: [-0.62, 0.05, -0.78], sunColor: '#ffb178',
       clouds: 0.50, stars: 0.26, seed: 404,
     },
     sun: { color: '#a6bfea', intensity: 2.15, dir: [-0.44, 0.64, -0.63] },
@@ -2846,9 +2871,19 @@ export const def = {
     // crush to black, and a canyon is nothing BUT shadow. The hemisphere ground term and the
     // omnidirectional shadow fill are both lifted, and both are tinted the same slate blue the
     // sky is, so the dark half of the frame reads as cold masonry rather than as a hole.
+    // (round 3) 2.10 -> 1.62. A hemisphere of 2.10 is a DAYLIGHT fill, and it is the other half of
+    // why this city photographed with no black point: it lands on every up-facing surface in the
+    // canyon — carriageway, sidewalk, kerb, canopy, parked roofs — regardless of whether a lamp is
+    // anywhere near, so the sodium pools had nothing darker to be pools against and the road read
+    // as one flat lit band. The rig still has plenty of fill for §2.1's "shadows keep colour and
+    // never crush": `shadowFill` 0.86 on a slate-blue ambient is untouched, and so is the warm
+    // sodium bounce below. What comes out is the value separation a night canyon needs.
     ambient: {
-      sky: '#8fb0e0', ground: '#454f60', intensity: 2.10,
-      fill: { color: '#ffab5e', intensity: 0.58, dir: [0.55, 0.20, 0.62] },
+      sky: '#8fb0e0', ground: '#454f60', intensity: 1.62,
+      // (coherence pass) 0.58 -> 0.70. This is the sodium bounce coming back up the canyon off the
+      // opposite kerb, and it is the only warm light in the rig; with the cobalt now stronger above
+      // it, it has to come up with it or the split collapses back into one blue.
+      fill: { color: '#ffab5e', intensity: 0.70, dir: [0.55, 0.20, 0.62] },
     },
     shadowTint: '#41598a',
     shadowFill: 0.86,
@@ -2859,18 +2894,55 @@ export const def = {
     // is what the floodlit hero at 768 m needs to stand against.
     fog: { color: '#2a3c60', near: 150, far: 1900 },
     ground: { color: '#3d424c' },
+    // (coherence pass) Measured across the sixteen-frame set, New York was the least committed
+    // palette of the four: frame mean rgb(64,50,60) at 14% saturation, against LA 34%, Miami 44%
+    // and Vegas 52%. §2.1 wants a named palette of three to five hues repeated across sky, lights
+    // and props, and this city has one — SODIUM AMBER, TAXI YELLOW, COBALT BLUE HOUR, with brake
+    // red as the accent — it just wasn't being asserted. Two changes, and they pull in opposite
+    // directions on purpose so the split gets wider rather than everything getting louder:
+    //   uSaturation 1.22 -> 1.34, the same figure the other three run at;
+    //   uGain #e6eeff -> #fdf0e6. The gain tints the highlight band, and a COOL gain over a city
+    //     whose highlights are all sodium lamps, deli windows and taxi paint was quietly greying
+    //     out the one warm hue the palette owns. Warm highlights over a cobalt lift is the blue
+    //     hour; cool highlights over a cobalt lift is a monochrome.
     grade: {
-      uSaturation: 1.22, uExposure: 1.12, uContrast: 1.05,
-      uLift: '#141f36', uGain: '#e6eeff', uVignette: 0.22,
+      uSaturation: 1.34, uExposure: 1.06, uContrast: 1.08,
+      uLift: '#141f36', uGain: '#fdf0e6', uVignette: 0.22,
     },
+    // (round 3) See `_applyEnv` in src/main.js. New York's paint weighting works out at
+    // 1.25 x 1.53 x 2.80 = 5.4 — nearly Vegas' — because the two constants that make it up both
+    // scale with night-ness and this city measures 0.63 of the way there. On a probe that is a
+    // canyon of sodium windows that is what turned the teal muscle car's flanks into a pale
+    // amber-white sheen. 0.62 keeps the deli windows and the El's lamps visibly IN the bodywork
+    // and hands the paint back its own value.
+    paintEnv: 0.62,
     bloom: { strength: 0.94, radius: 0.58, threshold: 0.70 },
   },
   track: {
     width: 9.5,
-    surface: { tint: '#1e2026', lanes: 2, centerLine: 'single-yellow', worn: 0.85, gutterTint: '#44464d' },
+    // `edgeLine: false` — the round-3 "painted shoulder stripes that alias into a shimmering dotted
+    // moiré" is two separate stripes and this is the one a city file can reach. The road texture
+    // paints a 0.15 m white line 0.55 m in from each edge; on a 9.5 m avenue that is 1.6% of the
+    // texture's U span, so past about forty metres it falls under a pixel per band and crawls. It
+    // is also simply wrong here: a Manhattan avenue has a single yellow centre line, a parking lane
+    // and a granite kerb, and no painted white edge at all. Removing it costs the city nothing it
+    // should have had and takes one of the two crawling stripes out of every frame.
+    //
+    // The OTHER one is the red/white rumble curb, which is laid by `Track.buildRoad` from
+    // `curbStripeTexture()` at a fixed vScale with no per-city hook — see the report; that one
+    // needs a change in src/cities/track.js and it aliases in all four cities, not just this one.
+    surface: {
+      tint: '#1e2026', lanes: 2, centerLine: 'single-yellow', edgeLine: false,
+      worn: 0.85, gutterTint: '#44464d',
+    },
     bank: 0.02,
     sidewalkWidth: 5.0,
-    sidewalkTint: '#8f8b84',
+    // (round 3) '#8f8b84' is a 56%-value warm grey, and under a sodium rig at this exposure it
+    // arrives on screen as a pale sand band that is the single largest flat area in the drift
+    // capture. Manhattan sidewalk is dirty grey concrete a good deal darker than the buildings
+    // behind it; at '#5d5a54' it sits below the carriageway's lit pools instead of above them and
+    // its slab joints and grime are readable again instead of being burnt out.
+    sidewalkTint: '#5d5a54',
     crossings: 9,
     // A Manhattan circuit: a long straight avenue aimed at the spire, two hard block corners, a
     // river run under the bridge, a wide sweeper and a kink through the park.
@@ -2946,7 +3018,20 @@ export const def = {
     },
   },
   props: {
-    lampStyle: 'modern', lampSpacing: 26, lampHeight: 9,
+    // (round 3) lampSpacing 26 -> 40. The lamps themselves were never the problem; the ADDITIVE
+    // light pool under every second one is (`lightPoolMaterial` in cities/kit.js — a radial
+    // gradient at alpha 0.60, laid over the road as a ribbon `lampHeight * 2.6` = 23 m long). At
+    // 26 m spacing that is a 23 m pool every 52 m on BOTH kerbs, so the pools met and the whole
+    // carriageway came up as one flat additive wash with no aggregate in it — the "milky
+    // untextured tan" the round-2 critique measured at meanL 109 with hi-frequency detail ~0. At
+    // 40 m they are 23 m pools every 80 m: each one reads as a separate pool with dark, textured
+    // asphalt between, which is what §1.3's "warm amber street lamps line the road" looks like.
+    // …and the pool is `lampHeight * 2.6` long, so the mast comes down with the spacing: at 9 m the
+    // ribbon was 23 m of additive quad starting 6 m in front of the chase camera (confirmed by
+    // raycast — `tools/_pxid.mjs` names the nearest surface under that whole band as a props-layer
+    // MeshBasicMaterial, i.e. the pool itself, not the road). 8 m is still a Manhattan mast arm and
+    // it is 21 m of pool instead of 23.
+    lampStyle: 'modern', lampSpacing: 40, lampHeight: 8,
     palms: false,
     // The kit's kerb run is eighty identical striped units at 4.05 m with the same stripe phase —
     // §7's "same prop mesh at a visible regular interval", cap 66, and the round-1 critic saw it

@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 import {
-  loftBody, loftBand, profileU, roundedBox, buildWheel, wheelParts, wheelScalable, WheelRig,
-  wheelWell, archLip, paintMaterial, glassMaterial,
+  loftBody, loftTub, loftBand, roundedBox, buildWheel, wheelParts, wheelScalable, WheelRig,
+  wellLinerMaterial, flareBand, paintMaterial, glassMaterial,
   chromeMaterial, darkTrimMaterial, plasticMaterial, carbonMaterial, emissiveMaterial,
   cavityMaterial, darkMetalMaterial, stdMaterial, interiorMaterial, glowSprite, hemiTint,
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
-  panelNoise, cloneShaded,
+  panelNoise, cloneShaded, wingEndplate,
 } from './kit.js';
 import { lerp, clamp, RNG } from '../core/rng.js';
 
@@ -139,33 +139,9 @@ function sampleStation(list, z) {
 }
 
 /**
- * The widest half-width of the tub at any z — i.e. where the flank actually IS.
- *
- * Arches, sills and mirrors have to be placed off this, not off `dims.width`, or a bolt-on ends up
- * hanging in space next to the car (round-1 note on the Dominator's front bar).
- */
-function flankSampler(tubSections) {
-  const secs = [...tubSections].sort((a, b) => a.z - b.z);
-  const halfOf = (s) => Math.max(...s.pts.map((p) => p[0]));
-  return (z) => {
-    if (z <= secs[0].z) return halfOf(secs[0]);
-    const last = secs[secs.length - 1];
-    if (z >= last.z) return halfOf(last);
-    for (let i = 1; i < secs.length; i++) {
-      if (z <= secs[i].z) {
-        const a = secs[i - 1], b = secs[i];
-        const t = (z - a.z) / ((b.z - a.z) || 1);
-        return lerp(halfOf(a), halfOf(b), t);
-      }
-    }
-    return halfOf(last);
-  };
-}
-
-/**
  * The half-width of the tub at a point (z, y) — not just at its widest station.
  *
- * `flankSampler` answers "how wide is the car here", which is the character line. Anything mounted
+ * A "how wide is the car at this z" sampler answers with the character line. Anything mounted
  * BELOW the character line — and the whole wheel arch is below it — needs to know where the body
  * surface is at its own height, because the flank tucks in by 12–15 cm between the crease and the
  * rocker. Sampling the wrong one is what let the wheel-well shell stand five centimetres outside
@@ -217,9 +193,80 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   car.name = bp.id;
   const paintColor = color || bp.colors[0];
 
-  // ---------------- materials ----------------
+  // ---------------- 1. the tub ----------------
+  /**
+   * The body is SKINNED FIRST, before a single material exists, because two things downstream have
+   * to be solved against the finished surface rather than against the authored numbers:
+   *
+   *   - the arch openings are cut into the tub, so the tub has to know where the tyres are, how big
+   *     they are and how far outboard their sidewalls stand. That ordering is the whole round-5
+   *     fix: rounds 1-4 closed the tub first and then bolted a ring and a shell onto the outside of
+   *     it, which is why the arch could float and the opening could show daylight;
+   *   - the livery is drawn in the tub's own skin coordinates, so its anchors have to come from the
+   *     parameterisation the tub actually ended up with.
+   */
   const tubSections = bp.body.map((s) => bodySection(s.z, s));
-  const anchors = profileU(tubSections);
+  const wb = bp.dims.wheelbase;
+  const trF = bp.dims.track, trR = bp.dims.trackRear ?? bp.dims.track;
+  const bodyAt = profileSampler(tubSections);
+  const wcfg = (cfg) => ({
+    ...cfg, style: cfg.style || bp.wheels.style,
+    rimColor: cfg.rimColor || bp.wheels.rimColor,
+    caliperColor: cfg.caliperColor || bp.wheels.caliperColor,
+    capColor: bp.wheels.capColor,
+    lipColor: bp.wheels.lipColor,
+    // beadlock was declared on bp.wheels but never forwarded, so the SUV's bronze clamp ring and
+    // its twelve bolts — the single most legible wheel detail at distance — never rendered.
+    beadlock: cfg.beadlock ?? bp.wheels.beadlock ?? false,
+    tire: cfg.tire || bp.wheels.tire || 'street',
+  });
+  const frontCfg = wcfg(bp.wheels.front), rearCfg = wcfg(bp.wheels.rear);
+
+  /**
+   * ONE OPENING PER CORNER, described in car space and solved against the real bodywork.
+   *
+   *   r       the arch LIP — `archGap` above the tyre crown, so the crescent of shadow between
+   *           rubber and metal is 35-50 mm: enough to read as an opening, tight enough that the
+   *           wheel still FILLS it (§6.1 caps an under-filled arch at 60).
+   *   tyreX   the tyre's outer sidewall plane. The lip is driven out to meet it wherever the body
+   *           is narrower, which is what puts the tyre INSIDE the bodywork flush to the lip
+   *           instead of standing beside it.
+   *   wellX   just inboard of the tyre's inner sidewall — where the barrel of the arch ends up.
+   */
+  const openings = [];
+  for (let i = 0; i < 2; i++) {
+    const isFront = i === 0;
+    const cfg = isFront ? frontCfg : rearCfg;
+    const hub = (isFront ? trF : trR) / 2;
+    openings.push({
+      z: isFront ? wb / 2 : -wb / 2,
+      y: cfg.radius,
+      r: cfg.radius * (bp.archGap ?? 1.09),
+      tyreR: cfg.radius,
+      tyreX: hub + cfg.width * 0.5,
+      wellX: Math.max(0.10, hub - cfg.width * 0.5 - 0.015),
+      margin: bp.archProud ?? 0.010,
+      proud: bp.archLip ?? 0.014,
+      flareW: bp.archFlare ?? 0.13,
+      // how far the metal turns in behind the lip — the depth of the shadow crescent above the tyre
+      inset: bp.archInset ?? 0.048,
+      depth: bp.archDepth ?? 0.11,
+      span: Math.PI * (bp.archSpan ?? 1.04),
+      bodyAt,
+    });
+  }
+  const tubGeo = loftTub(tubSections, {
+    openings,
+    // The tuner and the truck wear satin bolt-on over-fenders. `archBlackBand` is how far down the
+    // flare's fall-off the black runs (1 = only the lip itself, 0 = the whole flare): the plastic
+    // is a band of the SHELL, so the over-fender and the wing it sits on share every vertex along
+    // that line and there is no ring, no gap and nothing to see through. Everything else keeps the
+    // flare painted, with no material break at all.
+    flareAt: bp.blackArches ? (bp.archBlackBand ?? 0.40) : null,
+  });
+
+  // ---------------- 2. materials ----------------
+  const anchors = tubGeo.anchors;
   const liveryCfg = { ...(bp.livery || {}), anchors, base: paintColor };
   /**
    * Three paint materials off one livery, because they are mapped in three different UV spaces:
@@ -287,19 +334,33 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   bodyGroup.name = 'body';
   car.add(bodyGroup);
 
-  // ---------------- 1. the tub ----------------
-  const tub = new THREE.Mesh(loftBody(tubSections), paint);
+  // ---------------- 3. the tub's meshes ----------------
+  if (bp.blackArches) flareBand(paint);
+  const tub = new THREE.Mesh(tubGeo.shell, paint);
   tub.name = 'shell';
   bodyGroup.add(tub);
+  if (tubGeo.liner) {
+    const ln = new THREE.Mesh(tubGeo.liner, wellLinerMaterial());
+    ln.name = 'wheelwells';
+    // The liner is the inside of a hole with a tyre in it: it is occluded by the shell it is cut
+    // out of from every direction a shadow could come from, so it never contributes an ounce of
+    // ink and it is pure cost in the shadow pass. `noShadow` survives the traverse below.
+    ln.userData.noShadow = true;
+    bodyGroup.add(ln);
+  }
 
-  // ---------------- 2. the glasshouse ----------------
+  // ---------------- 4. the glasshouse ----------------
   const lights = { head: [], tail: [], brake: [], reverse: [] };
   if (bp.cabin) {
     const cb = bp.cabin;
     const st = cb.stations[0].z <= cb.stations[cb.stations.length - 1].z
       ? cb.stations : [...cb.stations].reverse();
     const zA = st[0].z, zB = st[st.length - 1].z;
-    const shell = new THREE.Mesh(loftBody(cabinRange(st, zA, zB, 14), { capFront: false, capRear: false }), glass);
+    // flip: the tube is wound INWARD and worn BackSide, so exactly one pane — the near one —
+    // survives per sightline. See loftBody()'s winding note and glassMaterial().
+    const shell = new THREE.Mesh(
+      loftBody(cabinRange(st, zA, zB, 14), { capFront: false, capRear: false, flip: true }), glass,
+    );
     shell.name = 'glasshouse';
     shell.castShadow = false;
     shell.renderOrder = 4;
@@ -332,13 +393,9 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     bodyGroup.add(mergeByMaterial(buildInterior(cb, trim, chrome)));
   }
 
-  // ---------------- 3. wheels, arches, wells ----------------
+  // ---------------- 5. wheels ----------------
   const wheels = [];
-  const wb = bp.dims.wheelbase;
-  const trF = bp.dims.track, trR = bp.dims.trackRear ?? bp.dims.track;
   const wheelMarks = [];
-  const flankAt = flankSampler(tubSections);
-  const bodyAt = profileSampler(tubSections);
 
   /**
    * WHEELS: four corners, one InstancedMesh per material.
@@ -348,18 +405,6 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    * unchanged, but nothing is parented to those empties any more. The rig reads them once a frame
    * and writes the instance matrices, which takes 32 wheels from ~320 draw calls to ~18.
    */
-  const wcfg = (cfg) => ({
-    ...cfg, style: cfg.style || bp.wheels.style,
-    rimColor: cfg.rimColor || bp.wheels.rimColor,
-    caliperColor: cfg.caliperColor || bp.wheels.caliperColor,
-    capColor: bp.wheels.capColor,
-    lipColor: bp.wheels.lipColor,
-    // beadlock was declared on bp.wheels but never forwarded, so the SUV's bronze clamp ring and
-    // its twelve bolts — the single most legible wheel detail at distance — never rendered.
-    beadlock: cfg.beadlock ?? bp.wheels.beadlock ?? false,
-    tire: cfg.tire || bp.wheels.tire || 'street',
-  });
-  const frontCfg = wcfg(bp.wheels.front), rearCfg = wcfg(bp.wheels.rear);
   const frontParts = wheelParts(frontCfg);
   // A staggered car wears the same alloy at two sizes. When that is all that separates the axles,
   // the rear runs the front's geometry through a per-instance scale and all four corners share one
@@ -407,75 +452,37 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     spinIds.all.push(si);
     staticIds.all.push(ti);
 
-    // --- the arch OPENING ------------------------------------------------
-    // Everything here is measured off the tyre and off the real body flank at this station, so
-    // there is no daylight between the tyre, the well and the lip (§6.1 caps a floating arch at 60).
-    const tyreOuter = cfg.width * 0.5;                        // outer sidewall, relative to hub
-    const flank = flankAt(pz) - Math.abs(tr / 2);             // body surface, relative to hub
-    const openR = cfg.radius * (bp.archGap ?? 1.055);         // ~one finger above the tyre crown
-    const flare = cfg.flare ?? bp.archFlare ?? 0.055;
-    const xOut = Math.max(tyreOuter + 0.012, flank + flare);  // the lip must clear the tyre
-    const xIn = Math.min(flank - 0.012, xOut - 0.045);
-
-    // Dark inner fender, radius-matched to the OPENING so the gap above the tyre reads as shadow.
-    // Its outboard edge stops at the arch lip's inner return and tucks back toward the body at both
-    // ends of the sweep, so it can never stand proud of a flank that is falling away fore and aft.
-    const wLo = -tyreOuter * 0.86, wHi = xOut - 0.006;
-    const well = wheelWell(openR * 1.012, wLo, wHi, {
-      span: Math.PI * (bp.archSpan ?? 1.03) * 0.99,
-      flankAt: (dz, dy) => bodyAt(pz + dz, cfg.radius + dy) - Math.abs(tr / 2),
-    });
-    well.position.set(sx * (tr / 2), cfg.radius, pz);
-    well.scale.x = sx;
-    bodyGroup.add(well);
-
-    if (bp.arches !== false) {
-      // the lip is skinned in the tub's own UV space: u walks the rocker→character-line band, v
-      // tracks real z, so the flare wears the same paint (and two-tone split) as the flank it grows
-      // out of instead of sampling an arbitrary slice of the livery canvas.
-      const zLen = bp.dims.length;
-      const geo = archLip({
-        r: openR,
-        span: Math.PI * (bp.archSpan ?? 1.03),
-        xIn, xOut,
-        t: bp.archThickness ?? 0.05,
-        lift: bp.archLift ?? 0,
-        uLo: anchors[3] * 0.55, uHi: anchors[5] * 0.98,
-        vAt: (pz + zLen / 2) / zLen, vPerMetre: 1 / zLen,
-      });
-      const arch = new THREE.Mesh(geo, shellOf(bp.blackArches ? plastic : paint));
-      arch.position.set(sx * (tr / 2), cfg.radius, pz);
-      arch.scale.x = sx;                                      // +X is always outboard
-      bodyGroup.add(arch);
-
-      /**
-       * FLARE FASTENERS.
-       *
-       * A bolt-on over-fender is riveted to the wing it stands on, and that row of fasteners is the
-       * thing that says "widebody kit" from thirty metres — it draws an arc of specular dots around
-       * an opening that is otherwise one dark shape. Round 3's verdict was that the flares read as
-       * a flat cutout with hard geometric edges; a curve of lit points is what turns a cutout into a
-       * bolted-on part. They are chrome, which the car already carries, so they merge into an
-       * existing bucket and cost no draw call.
-       */
-      if (bp.archBolts) {
-        const n = bp.archBolts;
-        const span = Math.PI * (bp.archSpan ?? 1.03) * 0.90;
-        const R = openR + (bp.archThickness ?? 0.05) * 1.10;
-        if (!boltGeo) {
-          boltGeo = new THREE.CylinderGeometry(0.0155, 0.0175, 0.020, 6);
-          boltGeo.rotateZ(Math.PI / 2);
-        }
-        for (let k = 0; k < n; k++) {
-          const th = -span / 2 + span * (k / (n - 1));
-          const b = new THREE.Mesh(boltGeo, chrome);
-          b.position.set(
-            sx * (tr / 2 + xOut * 0.90),
-            cfg.radius + Math.cos(th) * R,
-            pz + Math.sin(th) * R,
-          );
-          bodyGroup.add(b);
-        }
+    /**
+     * FLARE FASTENERS.
+     *
+     * The arch itself is now part of the tub (see §1), so all that is left here is the row of
+     * rivets that says "bolt-on over-fender" from thirty metres: an arc of specular dots around an
+     * opening that is otherwise one dark shape. They ride ON the flare's own crown, which the tub
+     * has already solved against the tyre, so they sit on the metal instead of hanging beside it.
+     * They are chrome, which the car already carries, so they merge into an existing bucket and
+     * cost no draw call.
+     */
+    if (bp.archBolts && bp.arches !== false) {
+      const n = bp.archBolts;
+      const openR = cfg.radius * (bp.archGap ?? 1.09);
+      const span = Math.PI * (bp.archSpan ?? 1.04) * 0.86;
+      const R = openR + (bp.archFlare ?? 0.13) * 0.34;
+      if (!boltGeo) {
+        boltGeo = new THREE.CylinderGeometry(0.0155, 0.0175, 0.020, 6);
+        boltGeo.rotateZ(Math.PI / 2);
+      }
+      for (let k = 0; k < n; k++) {
+        const th = -span / 2 + span * (k / (n - 1));
+        const zAt = pz + Math.sin(th) * R, yAt = cfg.radius + Math.cos(th) * R;
+        // the flare's own surface at this point, from the same solve the tub used: the body
+        // half-width here, blended 72% of the way to the lip crown (that is where a fastener sits
+        // on the sweep, a third of the way out from the lip)
+        const surf = bodyAt(zAt, yAt);
+        const lipZ = pz + Math.sin(th) * openR, lipY = cfg.radius + Math.cos(th) * openR;
+        const crown = Math.max(bodyAt(lipZ, lipY) + 0.014, Math.abs(tr / 2) + cfg.width * 0.5 + 0.010);
+        const b = new THREE.Mesh(boltGeo, chrome);
+        b.position.set(sx * (lerp(surf, crown, 0.72) - 0.004), yAt, zAt);
+        bodyGroup.add(b);
       }
     }
   }
@@ -497,7 +504,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     rig.batch(rearParts.statics, staticIds.rear, wheelSphere);
   }
 
-  // ---------------- 4. lights + detail ----------------
+  // ---------------- 6. lights + detail ----------------
   const detail = new THREE.Group();
   detail.name = 'detail';
   bodyGroup.add(detail);
@@ -577,7 +584,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     bodyGroup.add(bank.group);
   }
 
-  // ---------------- 5. detail pass ----------------
+  // ---------------- 7. detail pass ----------------
   // grille(s)
   for (const gr of bp.grilles || (bp.grille ? [bp.grille] : [])) {
     const g = grilleMesh({
@@ -606,19 +613,36 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     }
   }
 
-  // mirrors — a stalk plus a teardrop cap plus a real mirror face
+  /**
+   * MIRRORS — a stalk, a moulded pod and a real mirror face.
+   *
+   * Round-5 crop of the garage hero frame: the supercar's near mirror is the third-largest object in
+   * the picture and it was ONE 175x100x100 rounded cuboid in full body colour, i.e. a bright orange
+   * brick floating beside the screen. A mirror pod is a shell that is TALLER at its outer face than
+   * where it meets the stalk and has a chin under it — three boxes that share a silhouette read as a
+   * moulded part where one box reads as a box, and they merge into buckets the car already carries.
+   */
   if (bp.mirrors) {
     const mi = bp.mirrors;
+    const podMat = mi.painted ? paintSolid : trim;
     for (const sx of [-1, 1]) {
-      const arm = new THREE.Mesh(roundedBox(0.13, 0.045, 0.06, 0.02), trim);
-      arm.position.set(sx * mi.x, mi.y, mi.z);
-      arm.rotation.z = sx * -0.35;
+      const arm = new THREE.Mesh(roundedBox(0.115, 0.038, 0.052, 0.018), trim);
+      arm.position.set(sx * (mi.x + 0.012), mi.y, mi.z);
+      arm.rotation.z = sx * -0.38;
       detail.add(arm);
-      const cap = new THREE.Mesh(roundedBox(0.175, 0.10, 0.10, 0.042), mi.painted ? paintSolid : trim);
-      cap.position.set(sx * (mi.x + 0.10), mi.y + 0.035, mi.z);
+      // the shell: a shallow outer face, a deeper root, and a chin fairing under the two
+      const cap = new THREE.Mesh(roundedBox(0.150, 0.086, 0.092, 0.036), podMat);
+      cap.position.set(sx * (mi.x + 0.098), mi.y + 0.040, mi.z);
+      cap.rotation.y = sx * 0.13;
       detail.add(cap);
-      const face = new THREE.Mesh(new THREE.PlaneGeometry(0.13, 0.075), chromeMaterial({ color: '#aeb6c2', rough: 0.05 }));
-      face.position.set(sx * (mi.x + 0.10), mi.y + 0.035, mi.z - 0.052);
+      const root = new THREE.Mesh(roundedBox(0.088, 0.062, 0.062, 0.026), podMat);
+      root.position.set(sx * (mi.x + 0.045), mi.y + 0.022, mi.z + 0.006);
+      detail.add(root);
+      const chin = new THREE.Mesh(roundedBox(0.128, 0.030, 0.070, 0.014), trim);
+      chin.position.set(sx * (mi.x + 0.096), mi.y - 0.008, mi.z);
+      detail.add(chin);
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(0.116, 0.066), chromeMaterial({ color: '#aeb6c2', rough: 0.05 }));
+      face.position.set(sx * (mi.x + 0.098), mi.y + 0.042, mi.z - 0.049);
       face.rotation.y = Math.PI;
       detail.add(face);
     }
@@ -725,7 +749,8 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       gur.position.set(0, w.y + 0.098, w.z - w.chord * 0.60);
       detail.add(gur);
       for (const sx of [-1, 1]) {
-        const plate = new THREE.Mesh(roundedBox(0.018, 0.175, w.chord * 1.16, 0.010), bladeMat);
+        // swept aero plate, not a flat rectangle (§6.1 round-5: "wing endplates … are flat box stacks")
+        const plate = new THREE.Mesh(wingEndplate(w.chord * 1.16, 0.185, 0.018), bladeMat);
         plate.position.set(sx * w.w * 0.5, w.y + 0.040, w.z - w.chord * 0.06);
         detail.add(plate);
       }
@@ -750,7 +775,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       gur.position.set(0, w.y + 0.028, w.z - w.chord * 0.50);
       detail.add(gur);
       for (const sx of [-1, 1]) {
-        const plate = new THREE.Mesh(roundedBox(0.018, 0.145, w.chord * 1.32, 0.010), bladeMat);
+        const plate = new THREE.Mesh(wingEndplate(w.chord * 1.32, 0.155, 0.018), bladeMat);
         plate.position.set(sx * w.w * 0.5, w.y + 0.028, w.z);
         plate.rotation.x = 0.06;
         detail.add(plate);
@@ -793,10 +818,10 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   // bespoke extras
   for (const x of bp.extras || []) detail.add(buildExtra(x, { paint: paintSolid, trim, chrome, plastic, carbon }));
 
-  // ---------------- 6. batch, shadow, env ----------------
+  // ---------------- 8. batch, shadow, env ----------------
   bodyGroup.traverse((o) => {
     if (!o.isMesh) return;
-    o.castShadow = o.material !== glass;
+    o.castShadow = o.material !== glass && !o.userData.noShadow;
     o.receiveShadow = true;
   });
   // A car built one primitive at a time is 250+ draw calls; eight on a grid will not hold 50 fps.
@@ -1055,12 +1080,48 @@ function buildExtra(x, mats) {
       rib.position.set(0, -0.05 + i * 0.09, 0.20);
       mesh.add(rib);
     }
-    const scoop = new THREE.Mesh(roundedBox(0.42, 0.16, 0.36, 0.05), chromeMaterial({ color: '#c2c7cf', rough: 0.16 }));
+    /**
+     * The hat, and the round-5 note "the muscle blower is a two-box stack".
+     *
+     * It was: a case box with a scoop box on top of it. A 6-71 wearing a bug-catcher is a case, a
+     * FRONT DRIVE (pulley, belt, idler) and a scoop whose mouth is a flared bell with butterflies
+     * across it — and the drive is the half you actually see, because it stands at the front of the
+     * assembly facing the camera down the length of the bonnet.
+     */
+    const scoop = new THREE.Mesh(roundedBox(0.42, 0.15, 0.34, 0.05), chromeMaterial({ color: '#c2c7cf', rough: 0.16 }));
     scoop.position.y = 0.19; scoop.rotation.x = -0.06;
     mesh.add(scoop);
-    const mouth = new THREE.Mesh(roundedBox(0.34, 0.10, 0.03, 0.02), plastic);
-    mouth.position.set(0, 0.20, 0.185);
+    // flared bell mouth, wider than the scoop body, with two butterfly blades across it
+    const bell = new THREE.Mesh(roundedBox(0.46, 0.175, 0.055, 0.030), chromeMaterial({ color: '#c9ced6', rough: 0.14 }));
+    bell.position.set(0, 0.192, 0.175); bell.rotation.x = -0.06;
+    mesh.add(bell);
+    const mouth = new THREE.Mesh(roundedBox(0.38, 0.115, 0.03, 0.02), plastic);
+    mouth.position.set(0, 0.194, 0.196);
     mesh.add(mouth);
+    // butterflies and belts reuse materials the blower already carries (the case's dark metal and
+    // the mouth's plastic) so the whole hat stays inside two existing buckets
+    for (const bx of [-0.085, 0.085]) {
+      const fly = new THREE.Mesh(roundedBox(0.028, 0.10, 0.016, 0.006),
+        darkMetalMaterial({ color: '#24272d', metal: 0.85, rough: 0.28 }));
+      fly.position.set(bx, 0.194, 0.203);
+      mesh.add(fly);
+    }
+    // front drive: crank pulley, blower pulley and the belt over them
+    for (const [py, pr, pw] of [[-0.02, 0.115, 0.045], [0.10, 0.085, 0.040]]) {
+      const pul = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, pw, 18), chromeMaterial({ color: '#9ba1ab', rough: 0.20 }));
+      pul.rotation.z = Math.PI / 2;
+      pul.position.set(0, py, 0.245);
+      mesh.add(pul);
+      const boss = new THREE.Mesh(new THREE.CylinderGeometry(pr * 0.34, pr * 0.34, pw + 0.02, 10), chromeMaterial({ color: '#b9bec6', rough: 0.12 }));
+      boss.rotation.z = Math.PI / 2;
+      boss.position.set(0, py, 0.245);
+      mesh.add(boss);
+    }
+    for (const bx of [-0.10, 0.10]) {
+      const belt = new THREE.Mesh(roundedBox(0.016, 0.20, 0.026, 0.006), plastic);
+      belt.position.set(bx, 0.042, 0.247);
+      mesh.add(belt);
+    }
     for (let i = 0; i < 8; i++) {
       const t = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.34, 8), chromeMaterial({ color: '#d0d5dc', rough: 0.12 }));
       const side = i < 4 ? -1 : 1;

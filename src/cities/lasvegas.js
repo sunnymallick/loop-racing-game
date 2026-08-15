@@ -45,6 +45,24 @@ const MAGENTA = '#ff2fd0';
 const GOLD = '#ffc21e';
 const CYAN = '#2fe0ff';
 const HUES = [MAGENTA, GOLD, CYAN];
+/**
+ * THE WHITE POINT.
+ *
+ * Measured over the twelve Vegas captures, 71-78% of all the chroma in the frame sat inside ONE
+ * 60-degree hue window and the brightest 0.6% of pixels still averaged 94% saturation — i.e. there
+ * was no neutral anywhere in the city, so the grade overwrote every car: a muscle car's paint, its
+ * white racing stripes, its chrome and the SUV beside it all came back the same magenta. A palette
+ * of three saturated hues and nothing else is not §2.1's "3-5 hues", it is one hue.
+ *
+ * The fix is not to desaturate the neon — the neon is the city. It is that a real Strip sign is
+ * built from TWO light sources: coloured gas tubes, and a chase of plain incandescent BULBS around
+ * the cabinet. The bulbs are white. They are the brightest thing on the sign, they are on every
+ * cabinet, every blade marquee and every span across the boulevard, and they are what a magenta
+ * tube is magenta *against*. Putting them back is simultaneously the correct reference (§1.3's
+ * three-colour neon over near-black, with the warm practicals as the one tie to daylight) and the
+ * neutral the highlight band needs.
+ */
+const BULB = '#ffefd2';
 const INK = '#150a26';               // the violet "black" everything sits on
 
 // ---------------------------------------------------------------- tiny local kit
@@ -268,11 +286,31 @@ function vcCollapse(out, chunk = 240) {
 const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
 const cyl = (r0, r1, h, n = 8, open = false) => new THREE.CylinderGeometry(r0, r1, h, n, 1, open);
 
-/** A neon tube: unlit, saturated, always over the bloom threshold. */
+/**
+ * A neon tube — and the docstring above this used to say "always over the bloom threshold", which
+ * was not true and is the second half of the missing white point.
+ *
+ * Traced: a MeshBasicMaterial at pure MAGENTA is linear (1.00, 0.026, 0.63); the bloom prefilter
+ * keys off `max(r,g,b)`, the atmosphere pass has already multiplied by this city's derived
+ * exposure of 0.877, and the derived night threshold is 1.171 — so a tube arrived at 0.877 and
+ * cleared exactly nothing. Everything that looked like a halo was the separate additive `halo()`
+ * quads stacking, not the tube blooming (§7 caps "emissive surfaces with no bloom" at 60).
+ *
+ * A real tube photographed at night does two things at once: it clips its own core to WHITE and
+ * throws its colour into the air around it. So the tube carries 28% white — enough that the core
+ * has energy in all three channels rather than in one and a half — and 2.3x the level, which puts
+ * it at ~2.0 after exposure: comfortably over the threshold, well up the ACES shoulder, and with
+ * `uHiChroma` down at 0.16 it is allowed to roll off toward white instead of being dragged back
+ * to pure magenta. The `halo()` and `spill()` quads that surround every tube are UNCHANGED and
+ * still carry the full-chroma hue, so the sign still reads magenta, gold or cyan from any
+ * distance — the colour just now belongs to the light around the tube rather than to the tube,
+ * which is where it belongs and where the reference puts it.
+ */
 function tube(color) {
-  return mat(`tube|${color}`, () => vcTag(
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(color) }), VC_TUBE, color,
-  ));
+  return mat(`tube|${color}`, () => {
+    const c = new THREE.Color(color).lerp(new THREE.Color(1, 1, 1), 0.28).multiplyScalar(2.3);
+    return vcTag(new THREE.MeshBasicMaterial({ color: c }), VC_TUBE, c);
+  });
 }
 /** Shared soft radial falloff — the alpha every glow, halo and light pool in this city uses. */
 function softTexture() {
@@ -1823,7 +1861,10 @@ function neonPylon({ h = 22, bw = 8, seed = 1, index = 0, hue = 0, crown = 0 }) 
   const st = new B(steel(), { cast: false });
   const tb = new B(tube(third));
   const hb = new B(halo(color, 0.10));
-  const cb = chaseBatch(accent, (seed % 5) / 5);
+  // The cabinet's bulb chase is WHITE (see BULB): coloured gas in the tubes, plain incandescent
+  // in the border. `accent` still drives the tube and halo work below, so the pylon keeps its
+  // three-hue identity — it just stops being monochrome.
+  const cb = chaseBatch(BULB, (seed % 5) / 5);
 
   // mast: two legs with lattice bracing, standing on a plinth
   const legX = bwEff * 0.30;
@@ -1912,7 +1953,7 @@ function bladeSign({ h = 9, w = 11, seed = 1, index = 0, hue = 0 }) {
   const g = new THREE.Group();
   const color = HUES[hue % 3];
   const st = new B(steel('#1c1526'));
-  const cb = chaseBatch(color, (seed % 3) / 3);
+  const cb = chaseBatch(BULB, (seed % 3) / 3);
   const bh = w * 0.4219;                       // matches the pooled 512x216 face exactly
   const face = wideFace(index);
   for (const s of [1, -1]) {
@@ -2850,8 +2891,11 @@ export const def = {
     // Vegas has no key light to speak of, so an unlit wall gets NOTHING from the rig and reads
     // as a hole punched in the frame (the drift capture was half filled by one). This is the
     // omnidirectional floor that keeps those faces at a dim violet instead of at black.
-    shadowTint: '#381c58',
-    shadowFill: 0.86,
+    // (grade pass) …and near-neutral, for the same reason as the sun and the hemisphere. An
+    // AmbientLight is omnidirectional: at 68% saturation this one was painting violet onto every
+    // surface in the city from every direction at once, including the four cars.
+    shadowTint: '#2f2a46',
+    shadowFill: 0.80,      // see the note on `ambient` below — the black in "near black"
     // THE OFF-ROAD GROUND.
     //
     // This used to self-light in the fog colour (#150726) and the round-3 critic called the result
@@ -2866,7 +2910,10 @@ export const def = {
     // is a real violet with luminance in it, and at 2.2 that reads as tarmac — texture, parking
     // slabs, the car's shadow — while staying darker than the carriageway, which is what keeps
     // the neon bright against a near-black frame.
-    groundGlowColor: '#3b2458',
+    // (grade pass) The off-road plane self-lights in casino spill, and the spill it sits in is a
+    // mix of magenta, gold and cyan — i.e. much closer to a dim warm violet-grey than to a pure
+    // violet. Same value, a third of the chroma, for the same reason as the hemisphere above.
+    groundGlowColor: '#3b3350',
     groundGlow: 3.80,
     sky: {
       // Black desert sky. The horizon carries a low bruise of city-glow and nothing else — the
@@ -2875,19 +2922,115 @@ export const def = {
       top: '#000005', horizon: '#0a0419', ground: '#050309', haze: '#1d0722',
       sunDir: [0.85, -0.06, 0.5], sunColor: '#4a0e33', clouds: 0.0, stars: 2.6, seed: 202,
     },
-    sun: { color: '#9a58e0', intensity: 0.24, dir: [0.35, 0.8, -0.45] },
+    // A violet moon at 0.24 is barely a light — but it is the only light that reaches a car in
+    // the gaps between signs, so its COLOUR is what a car photographs as there. #9a58e0 is 61%
+    // saturated, which is why "the muscle car's paint, its white racing stripes, its chrome and
+    // the SUV beside it are all the same magenta" measured true even in frames with no sign
+    // nearby. Same value, a third of the chroma: still a violet Mojave night, but a white stripe
+    // under it is allowed to be white.
+    sun: { color: '#8c7ac0', intensity: 0.24, dir: [0.35, 0.8, -0.45] },
+    // (coherence pass) Vegas is the city that OWNS the near-black-with-neon look — that is the
+    // whole basis on which Miami has just been moved off it — so it has to actually be near black
+    // between the signs. Measured, it was not quite: the twelve Vegas captures averaged 47% of the
+    // frame under sRGB 26, but the carriageway and the unlit masonry both sat in a broad violet
+    // wash that came from this hemisphere term rather than from any light in the scene. 0.90 ->
+    // 0.80 and shadowFill 0.86 -> 0.80 take about a code value and a half out of everything that
+    // nothing is lighting, which is where the black in "near black" comes from. Neither goes below
+    // the floor that keeps an unlit wall a surface rather than a hole — `groundGlow` (3.80, on its
+    // own colour) is still carrying the off-road plane, and it is deliberately untouched.
+    // (grade pass) …and the hemisphere COLOUR is the other half of the same measurement. At
+    // #3d2260 — 63% saturation — every up-facing surface in the city, which is to say the whole
+    // carriageway and every parapet, roof and canopy top, was being painted violet by the rig
+    // whether or not a sign was anywhere near it. That is where "78% of the frame's chroma sits
+    // in one 60-degree window" comes from: not from the neon, which is only ~4% of the frame,
+    // but from a violet fill on everything the neon was supposed to be seen against. #33304c is
+    // the same value at a third of the chroma — still unmistakably a violet night, but now dark
+    // and near-neutral enough that a magenta tube reads as magenta and a gold one as gold.
+    // (round 3) THE STRIP KEY. The one gap the whole-game critic named against these four files is
+    // that Vegas erases the hero car: "the teal muscle car has no hue left at all — it reads as
+    // white chrome and its twin white racing stripes are completely invisible against the body".
+    // Measured with an env-probe ablation (`tools/_probe_ablate.mjs`, and `_grade_variants.mjs`
+    // for the grade half): with the car's `envMapIntensity` forced to 0 the body goes near-black
+    // violet, i.e. BEFORE this round there was no diffuse light on a Vegas car at all. Its whole
+    // appearance was the cube probe reflected at `engine._paintEnv` = 3.0 — a mirror of the Strip,
+    // and a mirror has no albedo, so a teal car, a white car and a red car all photograph as the
+    // same pink-white silhouette (see `vegas-supercar-landmark.png`, round 2).
+    //
+    // The fix has to be a light, not a grade knob, and it has to be DIFFUSE, because diffuse is
+    // the only term that carries the receiver's own colour. The Strip is a two-kilometre wall of
+    // light on both sides of the road, so the physically-obvious answer is also the right one: a
+    // strong, low, LATERAL fill. 0.26 -> 1.15, and the direction dropped to y=0.18 so it rakes
+    // across flanks, facades and parapets and barely touches the carriageway (N·L 0.18 on the road
+    // against 0.85-0.95 on a car's side), which is what keeps "near black between the signs" true
+    // while giving the paint something of its own to show.
+    //
+    // Colour: GOLD (#ffc21e) is 88% saturated, which is a casino-marquee tube, not the average of
+    // a mile of mixed neon — at 1.15 it would have hosed every car in the city amber. #ffd9ae is
+    // the same warm cast at a third of the chroma: still unmistakably the Strip's own light, still
+    // the complement of the violet moon that §2.1 asks for, but a teal car stays teal under it.
     ambient: {
-      sky: '#3d2260', ground: '#20103a', intensity: 0.90,
-      fill: { color: GOLD, intensity: 0.26, dir: [-0.6, 0.25, 0.7] },
+      sky: '#33304c', ground: '#1d1a2c', intensity: 0.80,
+      fill: { color: '#ffd9ae', intensity: 1.15, dir: [-0.72, 0.18, 0.66] },
     },
+    // (round 3) The other half of the same gap. The SpillPass adds the neon's own colour back onto
+    // whatever is near it, and `uRolloff` is the receiver brightness at which it stops. At the
+    // derived night default (0.55) the hero car — the brightest object in most frames — was still
+    // inside the band, so the Strip's magenta was being added on top of a body that was already
+    // blown. 0.30 keeps the pass doing the job it exists for (§2.2: the dark wall beside a neon
+    // panel is lit BY the panel) and takes it off everything that is already lit.
+    spill: { strength: 0.26, rolloff: 0.30 },
+    // (round 3) …and the third and largest term of the same fix. See `_applyEnv` in src/main.js for
+    // why this knob had to exist: Vegas' probe is a cube capture of two kilometres of neon and it
+    // was arriving on car paint at 1.25 x 1.84 x 3.00 = 6.9, which is a mirror, not a clearcoat.
+    // 0.45 leaves the Strip clearly IN the bodywork — the sign colours still run down the flanks
+    // and the roof still carries the marquee — while dropping it under the diffuse term above, so
+    // the twin white stripes separate from the paint and the panels keep their own value. Vegas
+    // gets the hardest cut of the four because it is the only city whose probe is 100% emissive.
+    paintEnv: 0.45,
     fog: { color: '#150726', near: 150, far: 2000 },
-    ground: { color: '#6a4f8e', accent: '#8a5eb4' },
+    // The off-road plane's albedo, desaturated with the rest of the violet wash: a parking apron
+    // under casino spill is a warm-grey concrete lit violet, not violet concrete. Value unchanged
+    // so the shoulder still sits darker than the carriageway.
+    ground: { color: '#5e5476', accent: '#7a6c96' },
     grade: {
       // uGain was #ffe4ff, which tints every highlight in the city magenta — and a magenta
       // highlight tint is precisely what turns GOLD into orange and CYAN into blue, i.e. what
       // collapsed a strict three-hue palette into "purple with warm bits". Near-neutral gain
       // plus a black-black lift is what lets the three hues read as three hues.
-      uSaturation: 1.34, uExposure: 1.02, uContrast: 1.22,
+      //
+      // (grade pass) uSaturation 1.34 -> 1.10 and an explicit uPreSat. Vegas measured meanSat
+      // 0.833 against 0.35-0.45 in the other three — 2.3x the rest of the game — and both of
+      // these knobs were sitting at the top of their range on the most saturated scene in the
+      // build. The engine clamps the derived saturation to 1.02-1.30, so 1.34 was simply asking
+      // for the ceiling; 1.10 asks for the floor, which is the right end of that range for the
+      // one city whose raw pixels are already at 80% chroma before the grade touches them.
+      // (round 3) uExposure 1.02 -> 0.92, i.e. -0.15 stop. ACES desaturates as it climbs its
+      // shoulder, so a body panel that arrives at the tonemapper above ~1.5 comes out white
+      // whatever colour it started, and pulling the stop is the pre-tonemap half of the car-paint
+      // fix. It is deliberately only -0.15 and not the -0.35 tried first: measured over the chase,
+      // landmark and drift captures, -0.35 took the share of frame under L=40 from 49/48/70% to
+      // 67/67/80%, and "no floor off the hero line" is already a live deduction against these four
+      // files. `paintEnv` below does the heavy lifting on the car, so the stop only has to stop the
+      // brightest panels from riding the shoulder, and the lateral fill above pays back more than
+      // it takes out on everything that is not the road.
+      uSaturation: 1.10, uExposure: 0.92, uContrast: 1.22, uPreSat: 1.08,
+      /**
+       * uHiChroma 0.44 (derived) -> 0.16, and this is the knob that actually creates a white
+       * point.
+       *
+       * It re-injects the pre-tonemap HUE into pixels that were bright enough for ACES to have
+       * rolled toward white — which in a day city is a good idea (a sodium window should roll off
+       * to warm cream, not paper) and in THIS city is the whole disease: every hot pixel in Vegas
+       * belongs to a saturated tube, so at 0.44 the grade was reaching into the brightest 0.6% of
+       * the frame and dragging it back to pure magenta. That is why the highlight band measured
+       * 94% saturated with no neutral anywhere, and it is why the muscle car's white racing
+       * stripes came back magenta: they are lit BY the signs, so they land in the same band.
+       *
+       * At 0.16 the tube cores go white-hot with a coloured fringe, which is what a real neon
+       * tube photographed at night actually does, and anything merely lit by them keeps its own
+       * colour.
+       */
+      uHiChroma: 0.16,
       uLift: '#040110', uGain: '#fff2fb', uVignette: 0.36,
     },
     // Threshold up and radius in: round 5's 0.57/0.72 ate its own sign faces — the WELCOME
@@ -2902,11 +3045,22 @@ export const def = {
   blocks: {
     spacing: 46, offset: 25, jitter: 9, spacingJitter: 0.34,
     minW: 18, maxW: 44, minH: 30, maxH: 140,
-    // near-black violet masonry: at night these are only ever seen by their own window light
-    wallColors: ['#544075', '#453466', '#68508c', '#4c3a6c', '#7659a8'],
+    // Near-black masonry: at night these are only ever seen by their own window light, by a
+    // neighbouring sign, or by the porte-cochère cove under them. Two of the five are now warm
+    // stone rather than violet — the Strip is stucco, travertine and sand-coloured precast, and a
+    // block that answers a gold sign warm and a magenta one cool is what stops the mid-ground
+    // being one tinted wash. (Measured: this and the hemisphere above are the two terms that put
+    // 78% of the city's chroma into a single hue window.)
+    wallColors: ['#544075', '#4c463f', '#68508c', '#4c3a6c', '#6a6052'],
     glassColors: ['#1a1030', '#101a30', '#20132c'],
-    litColors: [GOLD, CYAN, MAGENTA],
-    neonColors: [MAGENTA, GOLD, CYAN],
+    // Lit hotel windows are INCANDESCENT. Round 5 had them on the three neon hues, which put a
+    // magenta window grid on a third of the towers in the city — hundreds of square metres of the
+    // mid-ground painted the same colour as the signs, which is most of "78% of the frame's chroma
+    // in one hue window". Warm white is both what a hotel window actually is and the largest
+    // available neutral in a night city; one cyan stays in the rotation so the towers are not all
+    // one temperature either.
+    litColors: ['#ffd996', GOLD, '#ffefd2', CYAN],
+    neonColors: [MAGENTA, GOLD, CYAN, GOLD],
     lowColors: ['#66508a', '#523e72', '#7658a0'],
     signs: ['CASINO', 'JACKPOT', 'SLOTS', '24 HRS', 'LUCKY', 'CHAPEL', 'PAWN', 'BUFFET', 'ACES'],
     litRatio: 0.66, setbackChance: 0.34, accentChance: 0.78, fireEscapeChance: 0.10,
@@ -3324,7 +3478,13 @@ export const def = {
     // hundred triangles for the whole circuit, and they run their bulbs off the shared chase map.
     {
       const sr = rng.fork(881);
-      const bats = HUES.map((c, i) => chaseBatch(c, i / 3));
+      // Four strands, not three: the middle of every triple that crosses the road is plain white
+      // incandescent (see BULB). Because the strings run the length of the corridor and recede to
+      // the vanishing point they are in every driving frame at every depth, so this is the term
+      // that puts a neutral into the near, mid AND far bands at once — and a run of white bulbs
+      // slung over a boulevard is the most Las Vegas object there is.
+      const SPAN_HUES = [MAGENTA, BULB, CYAN, GOLD];
+      const bats = SPAN_HUES.map((c, i) => chaseBatch(c, i / 4));
       const mastB = new B(steel('#1b1526'), { cast: false });
       const mastShade = new B(shadeMaterial(0.55));
       const holder = new THREE.Group();
@@ -3334,9 +3494,9 @@ export const def = {
         const u = U(m);
         if (Math.abs(track.turnRate(u)) < 0.0055) {
           const y = sr.range(10.4, 13.4);
-          const hue = k % 3;
+          const hue = k % 4;
           for (let s = 0; s < 3; s++) {
-            bulbSpan(track, bats[(hue + s) % 3], m + s * 1.9, {
+            bulbSpan(track, bats[(hue + s) % 4], m + s * 1.9, {
               y: y + s * 1.15, sag: sr.range(1.5, 2.8), w: sr.range(0.62, 0.9),
               lat0: -1.60, lat1: 1.60, segs: 16,
             });

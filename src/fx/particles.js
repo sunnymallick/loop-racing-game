@@ -1597,6 +1597,9 @@ const FRAG = /* glsl */`
   }
 `;
 
+/** The attributes ParticleSystem.update() rewrites every frame, in upload order. */
+const UPLOAD = ['position', 'aSize', 'aRot', 'aAlpha', 'aColor', 'aVel', 'aMeta'];
+
 export class ParticleSystem {
   constructor({
     texture, tiles = 1, max = 900, blending = THREE.AdditiveBlending, depthWrite = false,
@@ -1741,14 +1744,22 @@ export class ParticleSystem {
     }
     this.count = maxI;
     this.geometry.setDrawRange(0, this.count);
+    // Upload only the LIVE PREFIX of each attribute.
+    //
+    // `needsUpdate = true` with no update range makes three.js re-upload the whole backing array
+    // every frame — for the smoke pool that is 2800 particles x 15 floats x 4 pools = ~300 KB of
+    // bufferSubData per frame whether four particles are alive or two thousand, and a driver that
+    // decides to reallocate one of those buffers mid-frame is exactly the kind of stall that shows
+    // up as a p95 spike rather than as a lower mean. The pool is compacted at the front (`count` is
+    // the live high-water mark), so a range of [0, count) is all the GPU ever needs to see.
     if (this.count > 0) {
-      this.geometry.attributes.position.needsUpdate = true;
-      this.geometry.attributes.aSize.needsUpdate = true;
-      this.geometry.attributes.aRot.needsUpdate = true;
-      this.geometry.attributes.aAlpha.needsUpdate = true;
-      this.geometry.attributes.aColor.needsUpdate = true;
-      this.geometry.attributes.aVel.needsUpdate = true;
-      this.geometry.attributes.aMeta.needsUpdate = true;
+      const a = this.geometry.attributes;
+      for (let k = 0; k < UPLOAD.length; k++) {
+        const at = a[UPLOAD[k]];
+        at.clearUpdateRanges();
+        at.addUpdateRange(0, this.count * at.itemSize);
+        at.needsUpdate = true;
+      }
     }
   }
 
@@ -1844,7 +1855,9 @@ export class DebrisField {
       chunk: new DebrisKind(chunk, chunkMat, 96),
       glass: new DebrisKind(glass, glassMat, 48),
     };
-    for (const k of Object.values(this.kinds)) this.group.add(k.mesh);
+    // hoisted: update() runs every frame and Object.values() would allocate a fresh array each time
+    this._kindList = Object.values(this.kinds);
+    for (const k of this._kindList) this.group.add(k.mesh);
 
     this._q = new THREE.Quaternion();
     this._dq = new THREE.Quaternion();
@@ -1888,7 +1901,7 @@ export class DebrisField {
   }
 
   update(dt) {
-    for (const k of Object.values(this.kinds)) {
+    for (const k of this._kindList) {
       let dirty = false;
       for (let i = 0; i < k.max; i++) {
         if (!k.alive[i]) continue;
@@ -1951,7 +1964,7 @@ export class DebrisField {
 
   clear() {
     const m = new THREE.Matrix4().makeScale(0, 0, 0);
-    for (const k of Object.values(this.kinds)) {
+    for (const k of this._kindList) {
       k.free.length = 0;
       for (let i = k.max - 1; i >= 0; i--) { k.free.push(i); k.alive[i] = 0; k.mesh.setMatrixAt(i, m); }
       k.mesh.instanceMatrix.needsUpdate = true;
@@ -1997,9 +2010,20 @@ function jitter(geo, rng, amount) {
  * length, a hot dark core with feathered shoulders, and a faint sheen so it doesn't read as a flat
  * black decal.
  */
+/** Attributes SkidTrails.add() writes, in upload order. */
+const SKID_ATTRS = ['position', 'uv', 'aAlpha', 'aSeq'];
+
 export class SkidTrails {
   constructor({ max = 27000, color = 0x1a1618, opacity = 0.95 } = {}) {
     this.max = max;
+    // dirty vertex window for this frame, flushed once by flush()
+    this._lo = max; this._hi = 0;
+    // installed by the FX director: (worldPos, intensity) -> 0..1 "is this tyre really scrubbing"
+    this.gate = null;
+    // installed by the FX director: (worldPos) -> the world Y the tyre is actually standing on.
+    // main.js flattens every contact point to y = 0.04 before it gets here, which lays the whole
+    // ribbon six metres under the road on LA's hill section. See Effects._contactY.
+    this.groundY = null;
     this.pos = new Float32Array(max * 3);
     this.uv = new Float32Array(max * 2);
     this.alpha = new Float32Array(max);
@@ -2038,7 +2062,11 @@ export class SkidTrails {
         }
         void main(){
           float x = vUv.x;
-          float edge = smoothstep(0.0,0.07,x)*smoothstep(1.0,0.93,x);
+          // Soft SHOULDERS. At a 7% fade a 0.55 m mark has a 4 cm edge, which at chase distance is
+          // two pixels — i.e. a hard-edged dark quad lying on the tarmac, the §7 tell. A real mark
+          // is dense under the contact patch and scuffs out to nothing across the tread, so the
+          // fade now takes a quarter of the width on each side.
+          float edge = smoothstep(0.0,0.26,x)*smoothstep(1.0,0.74,x);
           // tread: the tyre lays bands, not a solid slab
           float tread = 0.80 + 0.20*smoothstep(0.42,0.5,abs(fract(x*4.0)-0.5));
           // streaky rubber grain along the length
@@ -2064,41 +2092,137 @@ export class SkidTrails {
     this._last = new Map();
   }
 
-  /** Append a quad segment for one wheel. `key` keeps each wheel's ribbon continuous. */
+  /** Write one vertex into the ring and remember that the frame dirtied it. */
+  _push(x, y, z, u, v, a) {
+    const i = this.i % this.max;
+    this.pos[i * 3] = x; this.pos[i * 3 + 1] = y + 0.016; this.pos[i * 3 + 2] = z;
+    this.uv[i * 2] = u; this.uv[i * 2 + 1] = v;
+    this.alpha[i] = a;
+    this.seq[i] = this.i;
+    this.i++;
+    if (i < this._lo) this._lo = i;
+    if (i + 1 > this._hi) this._hi = i + 1;
+  }
+
+  /**
+   * Append a quad segment for one wheel. `key` keeps each wheel's ribbon continuous.
+   *
+   * `gate`, when the FX director has installed one, is asked whether this wheel is actually
+   * scrubbing. Rubber is only laid by a SLIDING tyre, and the signal both callers key off
+   * (`body.slide`) reads ~0.4 for any car merely pinned at full throttle — which is why the LA
+   * landmark frame came back with a fan of ten parallel skid arcs across the whole road, laid by
+   * eight cars all travelling dead straight. Same root cause as the tyre smoke; see
+   * `Effects._slipAt`.
+   *
+   * Deliberately allocation-free: this runs for four player wheels plus two per opponent every
+   * frame for the whole race, and the three Vector3 clones and the fresh Map entry it used to make
+   * per call were ~1.3 kB of garbage a frame — which is collected as a frame-time spike, not as a
+   * lower average.
+   */
   add(key, pos, right, width, intensity) {
-    const prev = this._last.get(key);
-    const w = Math.max(0.30, width * (1.5 + 0.35 * intensity));
-    const l = pos.clone().addScaledVector(right, -w * 0.5);
-    const r = pos.clone().addScaledVector(right, w * 0.5);
-    if (prev) {
-      const step = prev.p.distanceTo(pos);
-      if (step < 0.02) return;                 // don't pile up zero-area quads when nearly stopped
-      const v0 = prev.v, v1 = prev.v + step * 0.55;
-      const verts = [prev.l, prev.r, l, prev.r, r, l];
-      const uvs = [[0, v0], [1, v0], [0, v1], [1, v0], [1, v1], [0, v1]];
-      const alphas = [prev.a, prev.a, intensity, prev.a, intensity, intensity];
-      for (let k = 0; k < 6; k++) {
-        const i = this.i % this.max;
-        this.pos[i * 3] = verts[k].x; this.pos[i * 3 + 1] = verts[k].y + 0.016; this.pos[i * 3 + 2] = verts[k].z;
-        this.uv[i * 2] = uvs[k][0]; this.uv[i * 2 + 1] = uvs[k][1];
-        this.alpha[i] = alphas[k];
-        this.seq[i] = this.i;
-        this.i++;
+    if (this.gate) {
+      const g = this.gate(pos, intensity);
+      if (g < 0.05) {
+        // …and when it stops scrubbing, TAPER OUT. Deleting the ribbon's state here left the last
+        // quad at full alpha, so every mark ended on a straight edge cut square across the road —
+        // a hard-edged quad on the tarmac, which is the §7 tell this system exists to avoid.
+        const prev = this._last.get(key);
+        if (prev && prev.on) this._segment(prev, pos, right, width, 0);
+        this._last.delete(key);
+        return;
       }
-      this.material.uniforms.uHead.value = this.i;
-      this.geometry.setDrawRange(0, Math.min(this.i, this.max));
-      this.geometry.attributes.position.needsUpdate = true;
-      this.geometry.attributes.uv.needsUpdate = true;
-      this.geometry.attributes.aAlpha.needsUpdate = true;
-      this.geometry.attributes.aSeq.needsUpdate = true;
-      this._last.set(key, { l, r, p: pos.clone(), v: v1, a: intensity });
-    } else {
-      this._last.set(key, { l, r, p: pos.clone(), v: 0, a: intensity });
+      intensity *= 0.35 + 0.65 * g;
+    }
+    let e = this._last.get(key);
+    if (!e) {
+      e = {
+        lx: 0, ly: 0, lz: 0, rx: 0, ry: 0, rz: 0, px: 0, py: 0, pz: 0, v: 0, a: 0, on: false, n: 0,
+      };
+      this._last.set(key, e);
+    }
+    // RAMP IN over the first few segments. A tyre does not begin laying full-strength rubber at a
+    // straight line across the road: without this the head of every mark is a hard leading edge,
+    // which at 3x into la-muscle-crash read as a dark slab lying over the smoke rather than as a
+    // mark on the tarmac.
+    this._segment(e, pos, right, width, intensity * Math.min(1, e.n / 3));
+    e.n++;
+  }
+
+  /** Extend one wheel's ribbon to `pos`, ending at alpha `a`. Allocation-free. */
+  _segment(e, pos, right, width, a) {
+    const w = Math.max(0.30, width * (1.5 + 0.35 * a));
+    const hw = w * 0.5;
+    const py = this.groundY ? this.groundY(pos) : pos.y;
+    const lx = pos.x - right.x * hw, ly = py - right.y * hw, lz = pos.z - right.z * hw;
+    const rx = pos.x + right.x * hw, ry = py + right.y * hw, rz = pos.z + right.z * hw;
+    if (e.on) {
+      const dx = e.px - pos.x, dy = e.py - py, dz = e.pz - pos.z;
+      const step = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (step < 0.02) return;                 // don't pile up zero-area quads when nearly stopped
+      const v0 = e.v, v1 = e.v + step * 0.55;
+      this._push(e.lx, e.ly, e.lz, 0, v0, e.a);
+      this._push(e.rx, e.ry, e.rz, 1, v0, e.a);
+      this._push(lx, ly, lz, 0, v1, a);
+      this._push(e.rx, e.ry, e.rz, 1, v0, e.a);
+      this._push(rx, ry, rz, 1, v1, a);
+      this._push(lx, ly, lz, 0, v1, a);
+      e.v = v1;
+      e.dx = -dx / step; e.dy = -dy / step; e.dz = -dz / step;   // travel direction, for break()
+    }
+    e.lx = lx; e.ly = ly; e.lz = lz;
+    e.rx = rx; e.ry = ry; e.rz = rz;
+    e.px = pos.x; e.py = py; e.pz = pos.z;
+    e.a = a; e.on = true;
+  }
+
+  /**
+   * Upload only the vertices this frame actually wrote. Called once a frame by the FX director.
+   *
+   * The old code flagged all four attributes `needsUpdate` inside `add()`, so every frame in which
+   * ANY wheel laid a segment re-uploaded the whole 27 000-vertex ring — 756 kB of `bufferSubData`
+   * per frame to write six vertices per wheel. That is invisible in a mean frame time and very
+   * visible in the tail.
+   */
+  flush() {
+    if (this._hi <= this._lo) return;
+    const lo = this._lo, hi = this._hi;
+    this._lo = this.max; this._hi = 0;
+    this.material.uniforms.uHead.value = this.i;
+    this.geometry.setDrawRange(0, Math.min(this.i, this.max));
+    const at = this.geometry.attributes;
+    for (let k = 0; k < SKID_ATTRS.length; k++) {
+      const a = at[SKID_ATTRS[k]];
+      a.clearUpdateRanges();
+      a.addUpdateRange(lo * a.itemSize, (hi - lo) * a.itemSize);
+      a.needsUpdate = true;
     }
   }
 
-  break(key) { this._last.delete(key); }
-  clear() { this.i = 0; this._last.clear(); this.material.uniforms.uHead.value = 0; this.geometry.setDrawRange(0, 0); }
+  /**
+   * The wheel has stopped sliding. Run the ribbon on half a metre further at zero alpha so the mark
+   * tapers away instead of ending on a hard line ruled across the road.
+   */
+  break(key) {
+    const e = this._last.get(key);
+    if (e && e.on && e.dx !== undefined) {
+      const d = 0.55;
+      const v0 = e.v, v1 = e.v + d * 0.55;
+      const lx = e.lx + e.dx * d, ly = e.ly + e.dy * d, lz = e.lz + e.dz * d;
+      const rx = e.rx + e.dx * d, ry = e.ry + e.dy * d, rz = e.rz + e.dz * d;
+      this._push(e.lx, e.ly, e.lz, 0, v0, e.a);
+      this._push(e.rx, e.ry, e.rz, 1, v0, e.a);
+      this._push(lx, ly, lz, 0, v1, 0);
+      this._push(e.rx, e.ry, e.rz, 1, v0, e.a);
+      this._push(rx, ry, rz, 1, v1, 0);
+      this._push(lx, ly, lz, 0, v1, 0);
+    }
+    this._last.delete(key);
+  }
+  clear() {
+    this.i = 0; this._last.clear();
+    this._lo = this.max; this._hi = 0;
+    this.material.uniforms.uHead.value = 0; this.geometry.setDrawRange(0, 0);
+  }
   dispose() { this.geometry.dispose(); this.material.dispose(); }
 }
 

@@ -26,6 +26,31 @@ const _occFrom = new THREE.Vector3();
 const _occCar = new THREE.Vector3();
 const _occDir = new THREE.Vector3();
 const OCC_CANDIDATES = [[0, 0], [1.5, 0], [0, 3.8], [0, -3.8], [3.2, 0], [2.2, 3.8], [2.2, -3.8]];
+// scratch: the finish camera's road frame, its aim point and the basis it composes in
+const _finFwd = new THREE.Vector3();
+const _finRight = new THREE.Vector3();
+const _finAim = new THREE.Vector3();
+const _finDir = new THREE.Vector3();
+const _finUp = new THREE.Vector3();
+const _finTmp = new THREE.Vector3();
+const _finWant = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+
+/**
+ * THE FLAG BEAT, in seconds after the line.
+ *
+ * Round 1 ended a race by leaving the chase rig exactly where it was and fading a panel up over it.
+ * The critic measured what that produced: "at +6 frames the camera does not change at all … the
+ * chequered start/finish strip is a washed pink sliver already cropped at the LEFT EDGE of frame —
+ * by +40 it is gone entirely. No cut, no slow-mo, no hero angle, no flag geometry framed."
+ *
+ * So the flag is now three shots, cut and dollied like a replay:
+ *   FLAG  — a hard CUT to a low, wide, three-quarter FRONT angle ahead of the car, dollying in and
+ *           sweeping around the nose while the chequer, the gantry and the city sit behind it.
+ *   MOVE  — a dolly from that angle onto the results stage.
+ *   then  — the panel rises with the car still lit and held in its right third.
+ */
+const FIN = { FLAG: 1.9, MOVE: 1.05, PANEL: 3.05 };
 
 /**
  * NITRO CIRCUIT — game shell.
@@ -62,6 +87,10 @@ class Game {
     this.camPos = new THREE.Vector3();
     this.camLook = new THREE.Vector3();
     this.camFov = 62;
+    this.hero = null;          // the two-light hero rig — see _heroRig()
+    this._heroLevel = 1;       // how bright this city is, so the rig sits inside its exposure
+    this.results = null;       // the classification, snapshotted at the flag
+    this._resultsUp = false;
     this.headless = new URLSearchParams(location.search).has('shot');
     this.menu = new Menu(this);
     this.rng = new RNG(4242);
@@ -108,6 +137,13 @@ class Game {
     // bounce instead of a fixed near-black. Mutates pooled materials in place, so it applies to
     // cars already built as well as to the ones built next, and adds no draw call.
     setBodyTint(built.look);
+    // (presentation piece) How much light this city already puts on a car body, so the hero rig
+    // below can be sized as a FRACTION of the city's own exposure rather than as a fixed lamp. A
+    // fixed lamp is either invisible against LA's 4.05 key or a searchlight against the Vegas
+    // Strip's 0.24. Half the key (the car only ever faces it obliquely) plus the whole hemisphere,
+    // which is the term that actually bathes a car body from every direction.
+    const L = built.look || {};
+    this._heroLevel = clamp((L.sun?.intensity ?? 2) * 0.5 + (L.ambient?.intensity ?? 0.8), 0.8, 4.0);
     if (this.car) this._applyEnv(this.car);
     return built;
   }
@@ -115,6 +151,9 @@ class Game {
   setCar(id, color = null) {
     // the jet lives under the car — detach it before disposeObject() walks the subtree, or the
     // nitrous piece's shared (module-cached) geometry and textures get disposed out from under it
+    // …and with it the finish rig's borrowed rim lamp (see `_heroLight`), or this would hold the
+    // outgoing jet's light alive past its own disposal — which the leak check would find.
+    this._rimSave = null;
     if (this.jet) { this.jet.group.removeFromParent(); this.jet.dispose?.(); this.jet = null; }
     // (fx piece) the crash system deforms and scuffs the REAL bodywork, so it holds references to
     // this car's geometry — drop them before the car is freed, and re-point it at the new one.
@@ -142,13 +181,216 @@ class Game {
     car.add(this.jet.group);
     this._applyEnv(car);
     this.effects.attachCar(car);
+    this._heroRig(car);
     return car;
+  }
+
+  /**
+   * THE HERO RIG — a two-light kit bolted to the player's car.
+   *
+   * ART_DIRECTION §1: "the player's car is large, bright and unmistakably the subject of every
+   * frame". The coherence critic's charge was that it is not: in `miami-tuner-chase.png` it is one
+   * of four near-identical silhouettes at the same on-screen scale, and in `nyc-muscle-chase.png`
+   * its `#16a984` teal arrives on screen as pale pink-white. The second half of that is a lighting
+   * fact, not a framing one, and it has a specific cause: NYC runs a hemisphere term of 2.10 and
+   * Miami a saturated cyan one, and a body lit from every direction at once by a colour that is not
+   * its own comes out neutral. (miami.js's own note says it: "pink + cyan = grey".)
+   *
+   * So the hero car — and only the hero car — carries its own two lights with it:
+   *
+   * So the hero car — and only the hero car — carries ONE light with it: a three-quarter key on the
+   * camera's side, forward of the door and high enough to catch the roofline. It does two jobs at
+   * once, which is why it is one lamp and not the two this started as (see the note on cost below):
+   * it rakes the flank the three-quarter chase framing now shows, and it draws the shoulder line
+   * and the top of the rear tyres as a bright edge against the road — the §1.4 separation. It is
+   * tinted most of the way to the car's OWN paint colour, so the surface it lights comes back
+   * toward its hue instead of further toward white. That is the exposure protection: not less light
+   * on the paint, but light the paint can actually be a colour in.
+   *
+   * COST — READ THIS BEFORE ADDING A SECOND ONE. Every extra light in the scene is a per-fragment
+   * loop in every shader in the frame, and this game is fill-bound. Measured on the real GPU at
+   * 1600x900 (tools/_pres_perf.mjs, which is perf.mjs with the `__HERO` ablation switch): the
+   * two-lamp version of this rig cost ~1 ms a frame in Vegas and ~2 ms in Miami, which by itself
+   * took both cities under the 50 fps bar. One lamp is half of that and the cities hold. There are
+   * already-resident zero-intensity point lights in the scene (the nitrous jet's, and the FX
+   * director's crash pool) that a hero light could ride on for nothing — see the report.
+   *
+   * It is sized from `_heroLevel` (see setCity) so it reads as part of each city's rig; it lives
+   * UNDER the car, which is what keeps it out of `captureEnvironment`'s cube capture (that hides
+   * the car group, and an invisible parent takes its lights with it); and it is dark unless a race
+   * is actually running (`_heroLight`), so the garage's own lighting is untouched.
+   */
+  _heroRig(car) {
+    if (!this.hero) {
+      const group = new THREE.Group();
+      group.name = 'heroRig';
+      const key = new THREE.PointLight(0xffffff, 0, 15, 2);
+      // never harvested into the city's LightBank, never swallowed by a geometry merge
+      key.userData.alwaysOn = true;
+      key.userData.noMerge = true;
+      group.add(key);
+      this.hero = { group, key, tint: new THREE.Color() };
+      group.visible = false;
+    }
+    this.hero.group.removeFromParent();
+    car.add(this.hero.group);
+    this.hero.tint.set(this.carColor || '#ffffff');
+  }
+
+  /**
+   * Place and expose the hero rig. Runs once per frame from `_updateCamera`, so the key always
+   * sits on whichever side the chase rig has swung to.
+   */
+  _heroLight(side, flame, stage = 0) {
+    const h = this.hero;
+    if (!h) return;
+    // ablation hook: `window.__HERO = false` takes the rig out without changing anything else, so
+    // the difference it makes to the car can be measured rather than asserted (tools/_pres_ab.mjs)
+    h.group.visible = window.__HERO !== false;
+    if (!h.group.visible) {
+      // the ablation has to take the paint floor with it, or the A/B measures half the rig
+      const off = this.car?.userData?.paintMaterial;
+      if (off?.emissive && off.emissiveIntensity !== 1) {
+        off.emissive.setRGB(0, 0, 0); off.emissiveIntensity = 1;
+      }
+      return;
+    }
+    const lv = this._heroLevel;
+
+    /**
+     * THE PAINT'S OWN FLOOR — the exposure protection, done in the material rather than the lamp.
+     *
+     * The critic: "in nyc-muscle-chase.png it is washed to pink-white by ambient neon and loses its
+     * paint identity entirely". A hemisphere term of 2.10 in a colour that is not the car's own is
+     * an additive wash, and no amount of *more* light fixes an additive wash — it only raises it
+     * further toward white. What does fix it is giving the paint a small self-lit floor in its OWN
+     * hue, so the ratio the eye reads as colour survives the wash: at emissiveIntensity 0.11 a
+     * teal body is measurably teal-er than the neon lying on it, which is invisible in LA daylight
+     * (where the key is 40x it) and decisive under a saturated cyan hemisphere.
+     *
+     * 0.06, not the 0.11 this started at. The bloom threshold is ~0.6 in exposure-normalised units
+     * and a night city's auto-exposure is already lifting the frame, so 0.11 on a bright teal put
+     * the body OVER it: the NYC capture came back with a cyan halo round the whole car, which is a
+     * car that emits light rather than a car that is painted. 0.06 sits under the threshold in
+     * every city.
+     *
+     * It costs nothing — the shader already samples `emissive`. Only the PLAYER's car gets it
+     * (`paintMaterial()` builds a fresh material per car, so this cannot leak onto an opponent) and
+     * it is put back in `_resetFinish()` so the garage's own lighting is untouched.
+     */
+    const pm = this.car?.userData?.paintMaterial;
+    if (pm && pm.emissive) {
+      pm.emissive.copy(h.tint);
+      pm.emissiveIntensity = 0.06 + stage * 0.03;
+    }
+    // ---- TWO RULES GOVERN WHERE IT GOES, AND BOTH WERE LEARNED FROM CAPTURES -----------------
+    //
+    // 1. STAY OFF THE MIRROR DIRECTION. Clearcoat at roughness 0.04 turns a point light into a
+    //    needle-sharp specular; the bloom threshold sits at ~0.6 in exposure-normalised units, and
+    //    a needle above it comes back out of UnrealBloomPass as a dinner plate. The first cut of
+    //    this rig sat 2.9 m ahead of and 3.3 m above the car — which is exactly where a roof
+    //    mirrors a chase camera — and every frame came back with a blown white disc over the
+    //    greenhouse. Moving it to just behind the roof only moved the disc onto the backlight,
+    //    which is raked and mirrors an overhead-and-behind lamp straight down the lens (that was
+    //    the Vegas capture). Out to the side, ahead of the door and up at shoulder-and-a-half
+    //    height, both the roof and the flank mirror it away from the camera: the roof's mirror
+    //    direction is 62 degrees off it and the flank's is 109.
+    //
+    // 2. STAY CLOSE. Illuminance falls as 1/d², so a lamp 2.5 m off the flank delivers four times
+    //    what the same lamp delivers at 5 m and delivers almost none of it to the road, to the
+    //    barrier, or to the car alongside — which is what makes this a HERO light rather than a
+    //    brighter city. The same inverse square is the modelling: across the width of the body it
+    //    falls off about 4:1, so the car has a lit side and a shaded side instead of the flat
+    //    all-directions bath that is exactly what miami.js means by "pink + cyan = grey".
+    // …but not so close that the NEAREST bodywork gets three times what the flank gets. At 2.4 m
+    // out and 2.6 m up the windscreen header sat 1.5 m from the lamp and took 2.0x the city's own
+    // level, which on the Vegas Strip — where the auto-exposure is already lifting a dark frame —
+    // bloomed into a cyan flare across the roof. Standing it off to 2.9/2.95 and paying for the
+    // distance in intensity leaves the flank where it was and cuts that near-field peak by 60 %.
+    //
+    // ---- …AND THE STAGE. On the flag beat the rig stops being a chase light and becomes §1.4's
+    // garage rig: the key swings forward and up onto the three-quarter FRONT the finish camera is
+    // shooting, and a RIM lights from behind and across, drawing the roofline, the shoulder and the
+    // far wheel arch as a cool edge against a scrim the HUD has just darkened to nothing. That edge
+    // is the entire difference between a car standing in a frame and a car staged in one.
+    //
+    // THE RIM IS NOT A NEW LIGHT, AND IT MUST NOT BECOME ONE. Two things forbid it. The first is
+    // the cost note above — a second resident lamp measured ~1 ms a frame in Vegas and ~2 ms in
+    // Miami. The second is worse and less obvious: `NUM_POINT_LIGHTS` is a shader DEFINE, so making
+    // a light visible part-way through a race invalidates every program in the scene and Three.js
+    // recompiles the lot. On a real GPU that is a hitch. On the harness's software GL it is
+    // *forty seconds*, and I measured it: with a dedicated `visible = false` rim lamp the first
+    // render after the flag took 40 s and `page.screenshot` timed out, which would have broken the
+    // capture of this very beat for the critic.
+    //
+    // So the rim rides the nitrous jet's lamp, which is already resident, already counted and —
+    // for the whole of the flag beat — parked at zero: with no flame the jet's own update hits its
+    // early-out (`if (!this.fxRoot.visible) { this.light.intensity = 0; return; }`) before this
+    // runs, so nothing fights over it. It is put back exactly as found in `_resetFinish`.
+    const rim = this.jet?.light || null;
+    if (stage > 0.001) {
+      if (rim) {
+        rim.position.set(-side * 3.10, 2.15, -3.40);
+        rim.distance = 20;
+        rim.intensity = lv * 7.2 * stage;
+        // a cool rim against a warm key is the separation; tinted a sixth of the way to the paint
+        // so it is still recognisably this car's edge and not a white outline
+        rim.color.setRGB(0.80, 0.90, 1.0).lerp(h.tint, 0.16);
+      }
+      h.key.position.set(
+        side * lerp(2.90, 3.05, stage), lerp(2.95, 2.55, stage), lerp(1.30, 3.30, stage),
+      );
+      h.key.intensity = lv * (6.2 + stage * 3.0);
+      h.key.color.setRGB(1.0, 0.95, 0.86).lerp(h.tint, 0.34);
+      return;
+    }
+    h.key.position.set(side * 2.90, 2.95, 1.30);
+    h.key.intensity = lv * 6.2 * (1 + flame * 0.45);
+    // 60 % of the way from a faintly cool white to the paint. The bodywork is metallic clearcoat
+    // and vehicle-art deliberately lets the city's env probe carry most of its light (kit.js
+    // `tonePaint`: "a chase camera looks at the back of the car, which faces away from the key in
+    // every frame, so the environment probe is the ONLY light on the bodywork"). A white hero light
+    // would therefore only add more of the neutral wash that erased the colour in the first place;
+    // this one arrives already the colour the car is supposed to be.
+    h.key.color.setRGB(0.95, 0.97, 1.0).lerp(h.tint, 0.60);
   }
 
   _applyEnv(obj) {
     if (!this.city?.envMap) return;
     // LIGHTING piece owns how hard paint/chrome/glass lean on the probe (engine.applyEnvironment).
     this.engine.applyEnvironment(obj, this.city.envMap);
+    /**
+     * CITY piece, `look.paintEnv`: one number per city saying how hard THIS city's probe may press
+     * on car paint. It exists because the two weightings above it are both authored blind to the
+     * city's actual probe content and they MULTIPLY:
+     *
+     *   vehicles/kit.js  tonePaint()  envAuthored 1.25 x _paintBoost lerp(1.0, 1.85, night)
+     *   core/engine.js   applyLook()  x _paintEnv  mix2(2.15, 2.70) + wet * 0.35
+     *
+     * In Las Vegas that is 1.25 x 1.84 x 3.00 = 6.9, applied to a cube capture of two kilometres
+     * of neon — so the hero car stops being paint and becomes a mirror of the Strip. Measured: with
+     * envMapIntensity forced to 0 the body goes near-black, i.e. essentially ALL of its appearance
+     * was that reflection, which is why a teal car, a white car and a red car photograph as the
+     * same pink-white silhouette. Both of those constants belong to other pieces and both are
+     * right for a city whose probe is a daylight sky; what was missing was the per-city term.
+     *
+     * Idempotent: applyEnvironment() above rewrites envMapIntensity from userData.__envBase every
+     * time, so this scales a freshly-computed value rather than compounding on repeat calls.
+     */
+    const k = this.city.look?.paintEnv;
+    if (k === undefined || k === 1) return;
+    obj.traverse((o) => {
+      if (!o.isMesh) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (!m || m.envMapIntensity === undefined || m.userData.__envBase === undefined) continue;
+        // the same "its whole job is to reflect" test engine.applyEnvironment() uses, so this only
+        // ever scales a value that call just recomputed from __envBase — never its own output
+        const reflective = (m.clearcoat ?? 0) > 0.3 || (m.metalness ?? 0) >= 0.6
+          || (m.roughness ?? 1) <= 0.12;
+        if (reflective) m.envMapIntensity *= k;
+      }
+    });
   }
 
   startRace({ opponents = 7 } = {}) {
@@ -183,11 +425,39 @@ class Game {
     this.race.attachCars(this.aiCars, { effects: this.effects, scene: this.engine.scene });
     this.effects.clear();
     this.state = 'racing';
-    this._finishT = 0;
-    this._finishPrompt = false;
+    this._resetFinish();
     this.time = 0;
     this._snapCamera();
     return this;
+  }
+
+  /**
+   * Everything the flag beat latched, put back. Called from BOTH ends — a restart and a return to
+   * the garage — so the two paths cannot drift apart, which is the bug that let a second race start
+   * with the rim lamp still lit and the grade still parked at the results screen's aberration.
+   */
+  _resetFinish() {
+    this._finishT = 0;
+    this._finishPrompt = false;
+    this._flagDone = false;
+    this._pyro = 0;
+    this._finSnap = false;
+    this._finLookSet = false;
+    this._finFovSet = false;
+    this.results = null;
+    this._resultsUp = false;
+    this._restoreGrade();
+    // hand the nitrous piece its lamp back, exactly as it was
+    const rs = this._rimSave;
+    if (rs) {
+      rs.light.position.copy(rs.pos);
+      rs.light.color.copy(rs.color);
+      rs.light.distance = rs.distance;
+      rs.light.intensity = 0;
+      this._rimSave = null;
+    }
+    const pm = this.car?.userData?.paintMaterial;
+    if (pm && pm.emissive) { pm.emissive.setRGB(0, 0, 0); pm.emissiveIntensity = 1; }
   }
 
   /**
@@ -198,8 +468,8 @@ class Game {
    */
   toGarage() {
     this.state = 'menu';
-    this._finishT = 0;
-    this._finishPrompt = false;
+    this._resetFinish();
+    if (this.hero) this.hero.group.visible = false;
     this.race?.detachCars?.();
     for (const c of this.aiCars) { this.engine.scene.remove(c); disposeObject(c); }
     this.aiCars = [];
@@ -217,6 +487,8 @@ class Game {
     this.input.update(dt);
 
     if (this.state === 'menu') {
+      // the garage lights its own hero (menu.js `_enterStage`); the race rig must not be in there
+      if (this.hero) this.hero.group.visible = false;
       this.menu.update(dt, this.input);
       return;
     }
@@ -370,15 +642,27 @@ class Game {
     // set to 'finished', the director announced FINISH and then WINNER / FINISHED Pn, and nothing
     // anywhere consumed either: the car drove a cool-down lap for ever, with no result, no prompt
     // and no key that got you back to the garage. Whatever else is true of the pieces, a game you
-    // cannot leave the end of is not one product. This is the minimum that makes it a loop — the
-    // designed results screen it deserves is still a build round (see the report).
+    // cannot leave the end of is not one product.
+    //
+    // (presentation piece, r1) …and now the results screen it deserves. The banner beat is left
+    // exactly as the race director wrote it — FINISH, then WINNER / FINISHED Pn — and the panel
+    // rises under it, so the shout and the classification are one sequence rather than two takes on
+    // the same news. The HUD owns the drawing (ui/hud.js `_drawResults`); this owns *when*, and
+    // the snapshot the panel reads, taken once so a cool-down lap cannot rewrite the result.
     if (this.state === 'finished') {
+      if (!this._flagDone) this._flagCut();
       this._finishT = (this._finishT ?? 0) + dt;
-      // after the FINISH / position banners have had the slot (1.5 s + 4.0 s)
-      if (!this._finishPrompt && this._finishT > 5.8) {
-        this._finishPrompt = true;
-        this.hud.message('ENTER  ·  GARAGE', 999, '#ffc23d');
+      if (!this.results) this.results = this._classification();
+      // two more waves while the camera is still down at the line — a celebration is a burst, a
+      // beat, and another burst, and one pop reads as something misfiring
+      if (this._pyro < 2 && this._finishT > 0.34 + this._pyro * 0.34) {
+        this._flagPyro(this._pyro === 0 ? 0.52 : -0.52);
+        this._pyro++;
       }
+      // FIN.PANEL: the flag shot, then the dolly onto the stage, then the panel rises under a car
+      // that is already lit and already composed — so the shout, the angle and the classification
+      // are one sequence rather than three takes on the same news.
+      if (!this._resultsUp && this._finishT > FIN.PANEL) this._resultsUp = true;
       if (this._finishT > 1.0 && (this.input.pressed('confirm') || this.input.pressed('cancel'))) {
         this.toGarage();
         return;
@@ -466,7 +750,250 @@ class Game {
     this.engine.camera.position.copy(this.camPos);
   }
 
+  /**
+   * THE CUT. One frame, fired the instant the director drops the flag.
+   *
+   * Four things happen here that cannot happen gradually, because the frame after this one is a
+   * different shot and the frame before it was a race:
+   *
+   * 1. THE WINNER IS REPAIRED. The critic, at 3x on the round-1 money frame: "the winning car is a
+   *    wreck: two of the four taillights are dead chrome rings while the other two glow, the right
+   *    rear quarter is caved with a hard crease, and the arch is torn open with embers venting from
+   *    the wound. The reference frames never present a battered hero; this build's money frame
+   *    does." The FX director already knows how to put its own deformation back (`BodyDamage.clear`
+   *    un-dents every vertex it moved and drops the scuff and broken-lamp patches) — it simply had
+   *    no reason to before. Doing it ON the cut means no frame ever shows the damage healing.
+   * 2. THE SIDE IS CHOSEN. The finish rig stands off one flank for the whole beat; it picks the
+   *    side of the road with room on it, once, so it cannot swap sides mid-shot.
+   * 3. THE LINE FIRES. Two gold fountains off the ends of the chequer — §2.5 wants spectacle at the
+   *    set piece, and round 1's flag had "no confetti/smoke/light cast" at all. They are thrown
+   *    from the START LINE's own cross-section, so they are behind the car and inside the shot the
+   *    next frame cuts to.
+   * 4. THE ABERRATION IS PARKED. §2.1 wants chromatic aberration subtle; the grade's is radial
+   *    (`ab ∝ r²`), which is invisible on a car in the middle of the frame and 3–4 px on one staged
+   *    out at the right third — where this beat is about to put it. The authored value is kept and
+   *    restored, so this is a shot look, not a change to the city's grade.
+   */
+  _flagCut() {
+    this._flagDone = true;
+    this._finSnap = true;
+    const trk = this.city?.track;
+    // 2 — which flank the rig stands off. It PREFERS the car's left, because that is the side that
+    // ends the beat with the car's nose pointing back into the frame, toward the classification —
+    // a hero staged on the right third facing off the right edge of the screen is a car leaving.
+    // It only crosses over when the car is hugging the left barrier hard enough that standing
+    // there would put the rig through it.
+    const lat = trk ? trk.nearest(this.body.pos, this.race?.playerU ?? null).lateral : 0;
+    this._finSide = lat < -0.45 ? 1 : -1;
+
+    // 1 — a clean winner
+    this.effects.body?.clear?.();
+    this.effects.damage = 0;
+
+    // 3 — the pyro, on the line itself
+    this._pyro = 0;
+    this._flagPyro(-0.88);
+    this._flagPyro(0.88);
+
+    // 4 — snapshot whatever the city's grade authored, and the lamp the rim borrows
+    const ab = this.engine.grade?.uniforms?.uAberration;
+    if (ab && this._abBase == null) this._abBase = ab.value;
+    const rim = this.jet?.light;
+    if (rim && !this._rimSave) {
+      this._rimSave = {
+        light: rim, pos: rim.position.clone(), color: rim.color.clone(), distance: rim.distance,
+      };
+    }
+  }
+
+  /**
+   * One gold fountain off the start/finish line, `k` of the way to that edge of the road.
+   *
+   * The FX director's boost-pad burst is exactly the right event — a 360° upward throw of sparks, a
+   * glow ring, a light cast on the tarmac and a small shake — and it is already in the toolkit, so
+   * the flag gets spectacle without a new effect. They are fired from the LINE's own cross-section
+   * rather than from the car, so they are behind the car and inside the shot the flag camera cuts
+   * to, and they come in waves (see the `finished` block) because one pop is a glitch and three is
+   * a finish.
+   */
+  _flagPyro(k) {
+    const trk = this.city?.track;
+    if (!trk || !this.race) return;
+    const s = trk.at(this.race.startU ?? 0);
+    _finTmp.copy(s.pos).addScaledVector(s.right, k * trk.halfWidth);
+    _finTmp.y += 0.10;
+    this.effects.boostPad(_finTmp, '#ffc23a');
+  }
+
+  /** Put the grade's aberration back the way the city left it. */
+  _restoreGrade() {
+    const ab = this.engine.grade?.uniforms?.uAberration;
+    if (ab && this._abBase != null) ab.value = this._abBase;
+    this._abBase = null;
+  }
+
+  /**
+   * THE FINISH CAMERA — the flag shot, the dolly, and the results stage, as one continuous solve.
+   *
+   * Both ends of the beat are the same rig described by five numbers, so the middle is a lerp
+   * rather than a second camera: an AZIMUTH off the car's nose, a DISTANCE, a HEIGHT, a FIELD OF
+   * VIEW, and — the part round 1 had no notion of — WHERE IN THE FRAME THE CAR GOES.
+   *
+   * That last one is why this is a solve and not a `lookAt`. The results panel reserves its right
+   * third for the car (ui/hud.js `resultsLayout`), and "point the camera at the car" cannot put a
+   * car in the right third: it puts it in the middle. So the aim point is displaced off the car by
+   * exactly the screen-space offset asked for — `dist · tan(fov/2) · aspect · ndcX` along the
+   * camera's own right axis, the same the other way for the vertical — which lands the car on the
+   * composition the panel was laid out around, at any aspect ratio and any focal length.
+   *
+   * The rig is built in the ROAD's frame, not the car's. The director spends the whole cool-down
+   * steering the car back onto the racing line (race.js `_flag`), and a rig hung off the car's own
+   * yaw inherits every degree of that correction as a camera wobble; the road's tangent is the one
+   * axis that is already smooth.
+   */
+  _finishCamera(dt) {
+    const cam = this.engine.camera;
+    const b = this.body;
+    const t = this._finishT ?? 0;
+    const trk = this.city?.track;
+
+    // where in the beat we are: 0 = the flag shot, 1 = the stage
+    const u = clamp(t / FIN.FLAG, 0, 1);
+    const w = smoothstep(0, 1, clamp((t - FIN.FLAG) / FIN.MOVE, 0, 1));
+    const side = this._finSide ?? 1;
+
+    // ---- the flag shot. Low, wide and ahead: the car drives at the lens, and the chequer, the
+    // gantry and whatever the city put behind them stay in frame over the roof the whole time. The
+    // dolly does the work — in from 16.6 m to 9.2 m while the azimuth sweeps 21° → 58° past the
+    // nose, the lens drops to a metre off the deck and the angle comes off 60° to 50°.
+    const fu = smoothstep(0, 1, u);
+    let az = lerp(0.375, 1.02, fu);
+    let dist = lerp(16.6, 9.2, fu);
+    let high = lerp(2.05, 1.05, fu);
+    let fov = lerp(60, 50, fu);
+    let ndcX = -0.06, ndcY = -0.24;
+
+    // ---- the stage. §1.4's three-quarter front, held, with a slow breath on it so the frame is
+    // alive rather than a freeze — the car is still rolling, so the city slides behind it.
+    const stg = this.hud.resultsStageNDC();
+    const breath = Math.sin(t * 0.42);
+    const sAz = 0.575 + breath * 0.050;
+    const sHigh = 1.52 + breath * 0.06;
+    const sFov = 50;
+    /**
+     * THE DISTANCE THAT MAKES THE CAR MEASURE WHAT THE PANEL RESERVED FOR IT.
+     *
+     * Silhouette width at this azimuth is L·sin(az) + W·cos(az). The frame is 2·d·tan(fov/2)·aspect
+     * wide at distance d, so d falls straight out of the fraction the layout asked for — except
+     * that the car is not IN the middle of the frame, and a rectilinear projection stretches
+     * everything it puts off-axis by 1/cos²θ. At the right third that is a 30 % error, and the
+     * first cut of this solve duly ran the car's tail off the right edge of the screen. θ is the
+     * horizontal angle the composition target sits at, so the correction is exact for a flat
+     * subject and close enough for a car.
+     */
+    // …× 1.10, measured. The correction above is exact for a flat card on the plane at `dist`, and
+    // a car is a box: its near corner is closer than that plane and projects larger. Projecting the
+    // car's own envelope through the live camera in all four cities put it 8–13 % over the width
+    // asked for, so the residual is carried here rather than left as a car with its tail off the
+    // edge of the screen.
+    const dm = this.car?.userData?.dims || {};
+    const sil = ((dm.length ?? 4.6) * Math.sin(sAz) + (dm.width ?? 2.0) * Math.cos(sAz)) * 1.10;
+    const aspect = cam.aspect || 16 / 9;
+    const sTanY = Math.tan(sFov * 0.5 * Math.PI / 180);
+    const cosT = Math.cos(Math.atan(Math.abs(stg.x) * sTanY * aspect));
+    const sDist = clamp(
+      sil / Math.max(0.04, stg.w) / (2 * sTanY * aspect) / (cosT * cosT),
+      6, 26,
+    );
+    az = lerp(az, sAz, w);
+    dist = lerp(dist, sDist, w);
+    high = lerp(high, sHigh, w);
+    fov = lerp(fov, sFov, w);
+    ndcX = lerp(ndcX, stg.x, w);
+    ndcY = lerp(ndcY, stg.y, w);
+
+    // ---- the road frame
+    if (trk) {
+      const nc = trk.nearest(b.pos, this.race?.playerU ?? null);
+      _finFwd.copy(nc.sample.tan).setY(0).normalize();
+      _finRight.copy(nc.sample.right).setY(0).normalize();
+    } else {
+      _finFwd.copy(b.forward).setY(0).normalize();
+      _finRight.copy(b.right).setY(0).normalize();
+    }
+
+    // ---- the rig, AHEAD of the car and off one flank
+    const want = _finWant.copy(b.pos)
+      .addScaledVector(_finFwd, Math.cos(az) * dist)
+      .addScaledVector(_finRight, side * Math.sin(az) * dist);
+    want.y = b.pos.y + high;
+    // never outside the barriers: a hero angle shot through a wall is not a hero angle
+    if (trk) {
+      const nc = trk.nearest(want, this.race?.playerU ?? null);
+      if (Math.abs(nc.lateral) > 1.02) {
+        const s = nc.sample;
+        want.x = s.pos.x + s.right.x * Math.sign(nc.lateral) * trk.halfWidth * 1.02;
+        want.z = s.pos.z + s.right.z * Math.sign(nc.lateral) * trk.halfWidth * 1.02;
+      }
+    }
+
+    if (this._finSnap) { this.camPos.copy(want); this._finSnap = false; }
+    else this.camPos.lerp(want, 1 - Math.exp(-11 * dt));
+    this.camFov = this._finFovSet ? lerp(this.camFov, fov, 1 - Math.exp(-9 * dt)) : fov;
+    this._finFovSet = true;
+
+    // ---- the composition solve, off the position the rig ACTUALLY reached
+    _finAim.copy(b.pos); _finAim.y += 0.74;
+    _finDir.copy(_finAim).sub(this.camPos);
+    const dd = Math.max(0.5, _finDir.length());
+    _finDir.divideScalar(dd);
+    _finRight.crossVectors(_finDir, UP).normalize();
+    _finUp.crossVectors(_finRight, _finDir).normalize();
+    const tanY = Math.tan(this.camFov * 0.5 * Math.PI / 180);
+    _finAim.addScaledVector(_finRight, -dd * tanY * aspect * ndcX)
+      .addScaledVector(_finUp, -dd * tanY * ndcY);
+    if (this._finLookSet) this.camLook.lerp(_finAim, 1 - Math.exp(-13 * dt));
+    else { this.camLook.copy(_finAim); this._finLookSet = true; }
+
+    // ---- KEEP STRANGERS OUT OF THE MONEY FRAME. race.js re-asserts opponent visibility every
+    // frame from its own near-plane cull (`_lensClear`), and it runs before this — so this is the
+    // last word on it. During the flyby only what would sit ON the lens is dropped; once the panel
+    // is being composed the stage is a portrait and the field is done racing, so the field goes.
+    if (this.aiCars.length) {
+      const portrait = w > 0.55;
+      for (const c of this.aiCars) {
+        if (portrait) { if (c.visible) c.visible = false; continue; }
+        if (c.visible && c.position.distanceToSquared(this.camPos) < 90) c.visible = false;
+      }
+    }
+
+    const shake = this.effects.cameraShake(dt);
+    cam.position.copy(this.camPos).add(shake.offset);
+    cam.lookAt(this.camLook);
+    cam.rotateZ(shake.roll * 0.6);
+    cam.fov = this.camFov;
+    cam.updateProjectionMatrix();
+
+    // the hero rig goes over to the garage's key-plus-rim on the same clock as the camera
+    this._heroLight(side, 0, smoothstep(0.15, 0.95, u * (1 - w) + w));
+
+    // ---- the grade. Everything the race was driving is wound off: no boost push, no speed lines,
+    // no heat haze, and the radial aberration parked low so the car — which the panel puts out at
+    // r ≈ 0.7, where `ab ∝ r²` is at its strongest — keeps a clean edge (§2.1: "subtle").
+    const g = this.engine.grade.uniforms;
+    g.uBoost.value = lerp(g.uBoost.value, 0, 1 - Math.exp(-6 * dt));
+    if (g.uHeat) g.uHeat.value = 0;
+    if (g.uAberration && this._abBase != null) {
+      g.uAberration.value = lerp(this._abBase, this._abBase * 0.30, smoothstep(0, 1, w));
+    }
+    const sp = this.engine.speed.uniforms;
+    sp.uAmount.value = lerp(sp.uAmount.value, 0, 1 - Math.exp(-5 * dt));
+    sp.uLines.value = lerp(sp.uLines.value, 0, 1 - Math.exp(-8 * dt));
+  }
+
   _updateCamera(dt) {
+    // the flag takes the camera away from the chase rig entirely — see `_finishCamera`
+    if (this.state === 'finished') { this._finishCamera(dt); return; }
     const cam = this.engine.camera;
     const b = this.body;
     const speed01 = clamp(Math.abs(b.speed) / b.p.topSpeed, 0, 1.2);
@@ -499,8 +1026,25 @@ class Game {
     // moved most of the way toward it: base distance 6.0 → 5.0, speed pull-back 3.2 → 2.3, and the
     // FOV trimmed with it (see `targetFov`), which together put ~1.35× more car on screen. The
     // nitrous term is scaled by the same ratio so the boost framing itself does not change.
-    const back = 5.0 + speed01 * 2.3 * (1 - flame * 0.55) + gPull
-      - flame * 1.95 - kick * 0.90 + b.drift * 1.7;
+    // (presentation piece, r1) GENERALISE THE BOOST FRAMING TO ORDINARY DRIVING. The nitrous dive
+    // below produces the one framing in the whole capture set where the player's car is
+    // unmistakably the subject, and the reason is arithmetic, not luck: at 5.0 + 2.3 the rig sits
+    // 7.3 m back at speed and the car measures ~16 % of the frame; the dive puts it at 4.1 m and
+    // the car measures ~22 %. Ordinary driving now runs 4.35 + 1.75 → 6.1 m, which with the trimmed
+    // FOV (see `targetFov`) is 1.32x more car on screen — the boost frame's scale, held all the
+    // time. The flame terms are re-solved against the new base so the boost rig itself lands within
+    // 2 cm of where the nitrous piece tuned it (4.10 m vs 4.09 m at full flame and full speed).
+    //
+    // (presentation piece, r2) …AND ONE MORE STEP, because the measurement said it was not enough.
+    // I projected the car's own envelope through the live camera in all four cities (see
+    // tools/_pres_r2_frame.mjs) and round 1 put it at 26–29 % of the frame width with an opponent
+    // measuring MORE than that in two of the ten seats. Another 8 % of rig and 5 % of lens takes it
+    // to ~32 %, which is where §1.1's reference car sits — large enough that no opponent at any
+    // plausible distance can out-mass it. The flame coefficient is re-solved with it, so the boost
+    // rig still lands where the nitrous piece tuned it: at full flame and full speed this reads
+    // 4.10 m, exactly as before.
+    const back = 4.05 + speed01 * 1.58 * (1 - flame * 0.40) + gPull
+      - flame * 0.90 - kick * 0.90 + b.drift * 1.7;
     // Still ABOVE the jet's axis — the plume needs an elevation angle or it projects down its own
     // centreline — but roughly two metres lower than round 3's tower.
     const up = 2.05 + speed01 * 0.42 + flame * 0.35 + kick * 0.35 + b.drift * 1.00;
@@ -508,7 +1052,68 @@ class Game {
     // plume, and sitting on the axis foreshortens the jet into a bright blob behind the bumper.
     // (The jet's own screen-space governor pays for whatever foreshortening survives — see
     // NitrousJet._governor — so this is about composition, not about rescuing the plume's size.)
-    const lateralSwing = flame * 4.20 * (this._boostSide ?? 1);
+    //
+    // (presentation piece, r1) …and a smaller STANDING swing the rest of the time, for the same
+    // reason. Dead astern, a car is a tail panel: a rectangle of taillights with the same outline
+    // as every other car on the road, and — in a neon city — the one surface drenched in its own
+    // brake-light bloom, which is exactly how the NYC muscle car's teal arrived on screen as pink.
+    // 1.65 m of offset at 6 m is 15° of yaw: enough to open the flank, the door line and the front
+    // wheel, which is where a car's paint colour and its identity actually live. Faded in with
+    // speed so the grid and the pits stay square-on, and out under drift (the yaw follow in
+    // `_camYaw` is already showing the flank there) and under boost (the 4.20 term owns it).
+    //
+    // (presentation piece, r2) …and widened, to put the hero ON a thirds intersection instead of
+    // near one. The critic measured the car's centroid at x 41 % / y 70 % in all sixteen frames —
+    // "never on a thirds intersection, never composed against the landmark" — and x 41 % is the
+    // dead ground between the centre and the left third, which is the one place a subject cannot
+    // be composed against anything. 2.05 m of swing at the r2 rig distance is 20° of yaw and lands
+    // it at x ≈ 34 %, so the empty two-thirds of road on the right is where the city's landmark
+    // gets to sit.
+    const heroSwing = 2.05 * smoothstep(0.10, 0.55, speed01)
+      * (1 - smoothstep(0.15, 0.60, b.drift)) * (1 - flame);
+    /**
+     * WHICH THIRD THE HERO SITS ON — and why it is not a constant.
+     *
+     * The other half of the critic's charge was that the car "sits in the same fixed slot … never
+     * composed against the landmark", and that in two frames "the frame's true centre is empty road
+     * while the landmark is centred and the hero is pushed left — subject and landmark compete
+     * instead of composing". A fixed swing cannot fix that, because which side the picture WANTS
+     * the car on depends on which way the road is going: on a right-hand bend the vanishing point,
+     * the road's sweep and (by construction — cities/track.js sites landmarks on "the outside of
+     * the biggest corner") the landmark are all off to the right, and a car parked on the left
+     * third is composed against all three. On a left-hander it is the mirror of that.
+     *
+     * So the standing swing takes its side from the ROAD's signed curvature, on a ~1 s crossfade
+     * with a deadband wide enough that a straight is untouched and keeps round 1's side. This is
+     * deliberately NOT `_boostSide`: the nitrous piece owns that one and tuned it against the
+     * speedometer's corner, and a boost frame must not start choosing sides off the geometry.
+     */
+    //
+    // Read AHEAD, and commit. The first cut read the curvature under the car on a one-second
+    // crossfade, and two of the ten measured seats came back with the hero at x 0.46 and x 0.48 —
+    // dead centre, caught mid-swing, which is the one place worse than the fixed slot it replaced.
+    // So the signal is the mean curvature of the next ~90 m (the road the frame is actually
+    // looking down), it only changes side on a bend it can be sure of, and when it does it takes
+    // 0.4 s rather than a second and a half.
+    const trkC = this.city?.track;
+    let curv = 0;
+    if (trkC) {
+      const u0 = this.race?.playerU ?? 0;
+      for (let i = 1; i <= 4; i++) curv += trkC.curvature(u0 + i * 0.009);
+      curv /= 4;
+    }
+    // …and it only crosses over for a bend it has been sure of for half a second. Without that
+    // hysteresis a road that wanders either side of the threshold flips the side every few metres
+    // and the capture lands mid-swing — which is a hero dead centre, the one place worse than the
+    // fixed slot this replaces. Sustained bend, then a 0.4 s move, then held.
+    const wantSideC = Math.abs(curv) > 9e-4 ? (curv > 0 ? 1 : -1) : 0;
+    if (wantSideC && wantSideC !== (this._heroWant ?? -1)) {
+      this._heroHold = (this._heroHold ?? 0) + dt;
+      if (this._heroHold > 0.5) { this._heroWant = wantSideC; this._heroHold = 0; }
+    } else this._heroHold = 0;
+    const wantHero = this._heroWant ?? -1;
+    this._heroSide = lerp(this._heroSide ?? wantHero, wantHero, 1 - Math.exp(-4.0 * dt));
+    const lateralSwing = flame * 4.20 * (this._boostSide ?? 1) + heroSwing * this._heroSide;
 
     const fwd = b.forward, right = b.right;
     // ------------------------------------------------------------------ the drift camera
@@ -734,7 +1339,14 @@ class Game {
     const lookTarget = b.pos.clone()
       // (coherence pass) scaled with the shorter rig — a lead point 10 m up the road from a camera
       // only 7 m behind the car pushes the car down into the bottom of the frame.
-      .addScaledVector(chase, (4.4 + speed01 * 3.6) * (1 - flame * 0.74))
+      // (presentation piece) …and scaled again with the shorter one. The flame coefficient is
+      // re-solved so the boost aim lands on the same point it did before (6.7 x 0.31 = 2.08 m).
+      // (presentation piece, r2) …and shortened once more, to lift the hero off the bottom edge.
+      // The measured centroid sat at y 70 %; the lead point is what puts it there, because the
+      // frame centres on a point 6.7 m up the road and the car hangs below it. 5.85 m of lead
+      // brings it to y ≈ 66 %, the thirds line. The flame coefficient is re-solved so the boost
+      // aim point does not move: 5.85 × 0.355 = 2.08 m, which is what 6.7 × 0.31 was.
+      .addScaledVector(chase, (3.5 + speed01 * 2.35) * (1 - flame * 0.645))
       .setY(b.pos.y + 1.05 + flame * 0.15);
     lookTarget.lerp(b.pos.clone().setY(b.pos.y + 0.95), smoothstep(0.2, 0.8, b.drift) * 0.45);
     // (nitrous piece, r5) COMPOSE THE SHOT AROUND THE JET. With the rig swung out to a rear
@@ -792,10 +1404,24 @@ class Game {
     // (coherence pass) 54→68 was a 100-degree horizontal angle at speed, which is what shrank the
     // hero to a chip in the middle of the road. Trimmed to 52→63 alongside the shorter rig; the
     // boost/kick terms keep their full authority, so a nitrous frame still snaps wide.
-    const targetFov = 52 + smoothstep(0.08, 1.0, speed01) * 11 + boost * 4 + flame * 4 + kick * 14;
+    // (presentation piece, r1) 52→63 is still 95° across at speed. 50→58 is 89°, which stops the
+    // frame stretching the car toward the edges and reads as a longer lens on the same subject —
+    // together with the 6.1 m rig that is the 1.32x. The flame term is rescaled 4 → 8 so a boost
+    // still snaps to the same 70° the nitrous piece tuned; only ordinary driving is narrower.
+    // (presentation piece, r2) 48→55 is 86° across. Together with the 5.63 m rig that is the
+    // measured 32 % of frame width; the flame term is rescaled again (8 → 11) so a boost still
+    // snaps to the same 70° the nitrous piece tuned.
+    const targetFov = 48 + smoothstep(0.08, 1.0, speed01) * 7 + boost * 4 + flame * 11 + kick * 14;
     this.camFov = lerp(this.camFov, targetFov, 1 - Math.exp(-(6 + surge * 26) * dt));
     cam.fov = this.camFov + (this.effects.fovKick || 0);   // impact punch (fx piece)
     cam.updateProjectionMatrix();
+
+    // the hero rig follows the chase rig's side, so the key is always raking the flank the camera
+    // can actually see (presentation piece — see _heroRig)
+    // …taken from the swing the rig ACTUALLY made, not from `_boostSide`: the standing swing now
+    // chooses its own side off the road's curvature, and a key raking the flank the camera cannot
+    // see is a key lighting nothing.
+    this._heroLight(Math.sign(lateralSwing) || Math.sign(this._heroSide) || -1, flame);
 
     // post response — grade saturates/tightens and the speed lines take the flame's tint
     // (nitrous piece, r4) HELD, not decayed. Round 3 drove the grade shift off `kick`, which is
@@ -839,6 +1465,60 @@ class Game {
     else this.hud.draw(this.hudState(), dt);
   }
 
+  /**
+   * The classification, taken once at the flag.
+   *
+   * The race director already computes and FREEZES the result the moment the player crosses the
+   * line (`race.results`, `race._classified`) — including the DNF marks and the finishing times
+   * every car is stamped from one clock. This turns that into what a results screen needs to draw:
+   * eight rows with a display name for the machine, a gap to the winner, and the player's own lap
+   * book. Nothing here re-derives a position; if the panel and the standings deck ever disagreed,
+   * one of them would be lying to the player.
+   */
+  _classification() {
+    const r = this.race;
+    if (!r) return null;
+    const src = (r.results?.length ? r.results : r.standings) || [];
+    const nameOf = (id) => (id && VEHICLE_IDS.includes(id) ? getVehicle(id).spec.name : '');
+    const rows = src.slice(0, 8).map((x, i) => {
+      const car = x.you ? this.carId : x.car;
+      return {
+        pos: x.pos ?? i + 1,
+        name: x.name,
+        you: !!x.you,
+        car,
+        carName: nameOf(car),
+        finished: !!x.finished,
+        dnf: !!x.dnf,
+        time: x.finishTime ?? null,
+        gapM: x.gapM ?? 0,
+        lap: x.lap ?? 0,
+      };
+    });
+    const winner = rows.find((x) => x.finished && x.time != null);
+    for (const row of rows) {
+      // the number a results screen is actually read for: how far off the winner you were
+      row.gap = (winner && row.finished && row.time != null) ? row.time - winner.time : null;
+    }
+    const laps = (r.lapTimes || []).filter((t) => t > 0);
+    const me = rows.find((x) => x.you) || null;
+    return {
+      pos: r.playerFinishPos ?? r.playerPos ?? 1,
+      total: rows.length,
+      rows,
+      laps,
+      best: laps.length ? Math.min(...laps) : null,
+      time: r.finishTime ?? null,
+      dnf: !!(me ? me.dnf : r.dnf),
+      lapsRun: r.playerLap ?? 0,
+      lapCount: r.laps ?? 3,
+      carName: getVehicle(this.carId).spec.full,
+      cityName: this.city?.name || '',
+      record: getCity(this.cityId)?.def.record ?? null,
+      recordBeaten: !!r.recordBeaten,
+    };
+  }
+
   hudState() {
     const r = this.race;
     return {
@@ -862,6 +1542,11 @@ class Game {
       record: getCity(this.cityId)?.def.record,
       countdown: r?.state === 'countdown' ? r.countdown : (r ? r.time : null),
       state: r?.state,
+      // the results panel. Null until the flag beat has played out — see the `finished` block.
+      results: this._resultsUp ? this.results : null,
+      // …and the beat's own clock, so the HUD can take its instrument clusters off the flag shot
+      // before the panel arrives (ui/hud.js `draw`).
+      finishT: this.state === 'finished' ? (this._finishT ?? 0) : 0,
     };
   }
 
@@ -955,8 +1640,10 @@ window.__GAME = {
     // circuits to Menu.update() — so every scenario run AFTER it silently drove nothing and
     // captured the garage instead of the race (`--shots menu,chase` produced two menu frames).
     // Any non-menu scenario re-enters racing first.
-    if (name !== 'menu' && game.state === 'menu') {
-      game.menu.close();
+    // …and any scenario run after 'results' would otherwise start in state 'finished', where the
+    // race is over, the throttle is ignored and the classification panel is up over the frame.
+    if (name !== 'menu' && game.state !== 'racing') {
+      if (game.state === 'menu') game.menu.close();
       game.startRace();
       game.race.state = 'racing'; game.race.countdown = 0;
     }
@@ -1180,6 +1867,49 @@ window.__GAME = {
         // not from inside whatever the car ran into.
         autopilot(110, game.body.p.topSpeed * 0.70, opts.offset ?? 0);
         break;
+      case 'results': {
+        // THE FLAG, DRIVEN FOR REAL.
+        //
+        // A results screen is only worth capturing if the numbers on it came out of the race
+        // director rather than out of this file, so this does not fabricate a classification: it
+        // seats the whole field on its last lap and then DRIVES that lap. The crossing, the
+        // finishing times (all stamped off one clock), the order, the DNF marks, the record
+        // comparison and the player's lap split are all produced by race.js exactly as they are in
+        // a race a person played — the harness only skips the two laps in front of them.
+        //
+        // By DEFAULT it drives the whole distance, because a results screen showing a one-lap time
+        // against a three-lap record is a screenshot that lies about the game. `--laps 1` seats the
+        // field on the final lap instead and is about three times quicker, for when what is being
+        // looked at is the layout rather than the numbers.
+        const r = game.race;
+        const want = clamp(Math.round(opts.laps ?? r.laps), 1, r.laps);
+        const trk = game.city.track;
+        place(opts.u ?? 0.015);
+        r.reformPack(game.body);                        // stagger the pack around the new position
+        const u0 = ((trk.nearest(game.body.pos).u % 1) + 1) % 1;
+        const seat = Math.max(0, r.laps - want);
+        r._playerCounter.reset(u0, seat);
+        r.playerU = u0;
+        r.playerProgress = r._playerCounter.progress;
+        r.lapTime = 0;
+        for (const d of r.drivers) {
+          d.counter.raw += seat;
+          d.counter.cp = Math.floor(d.counter.raw * d.counter.n);
+          d.counter.lap = Math.floor(d.counter.cp / d.counter.n);
+          d.progress = d.counter.progress = d.counter.raw;
+          d.lap = d.counter.lap;
+        }
+        // Race it home. The cap is a backstop, not the exit: a lap is ~2 500 m and the pace below
+        // covers one in well under 2 600 frames on every city. If it is ever hit the race still
+        // ends — the director's own deadline drops the flag FINISH_WINDOW seconds after the winner
+        // is home and classifies the player as a DNF, which the panel draws too.
+        const pace = game.body.p.topSpeed * (opts.pace ?? 0.90);
+        const cap = 2600 * want + 1400;
+        for (let i = 0; i < cap && game.state !== 'finished'; i++) autopilot(1, pace);
+        // the flag beat: FINISH (1.5 s), the position shout, then the panel rising under it
+        run(opts.after ?? 300, {});
+        break;
+      }
       case 'still':
         place(opts.u ?? 0.05);
         run(4, { throttle: 0 });

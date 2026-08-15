@@ -26,8 +26,19 @@ const V = (z) => (z + 2.46) / 4.92;
 
 export const blueprint = {
   id: 'suv', spec, colors: spec.colors,
-  // the tub reaches 1.141 half-width at the arch stations; the track puts the tyre flush with it
-  dims: { length: 4.92, width: 2.30, height: 2.08, wheelbase: 3.05, track: 1.895, trackRear: 1.895, rideHeight: 0.34 },
+  /**
+   * ROUND-5 TRACK. Verbatim: "the far-side rear wheel sits fully outboard of the rear bumper corner
+   * with a visible gap and no fender or flare above it — the rear track is wider than the body."
+   *
+   * At 1.895 the outer sidewall stood at 1.1475 against a 1.058 body and a 0.96 bumper corner, i.e.
+   * 187 mm of tyre hanging outboard of the back of the truck. The flare was reaching it (the tub
+   * solves the lip against `tyreX`, so it always does) but a satin-black flare over a black tyre
+   * against the arch's own shadow is three dark things in a row and the eye reads one gap. Three
+   * changes together, none of which alone was enough: the track comes in 40 mm, the bumper goes out
+   * 100 mm so its corner is under the tyre rather than a hand's width inboard of it, and the flare
+   * itself is now a mid-dark satin with a lit crown (kit.js `flareBand`, and `archBlackBand` below).
+   */
+  dims: { length: 4.92, width: 2.30, height: 2.08, wheelbase: 3.05, track: 1.855, trackRear: 1.855, rideHeight: 0.34 },
   // the truck stays the least glossy thing in the game — satin utility paint, not a show car —
   // but it still needs enough of the probe in it to read as metal rather than as matt vinyl
   paint: { metalness: 0.36, roughness: 0.36, clearcoat: 0.72, clearcoatRoughness: 0.105, flake: 0.30, envIntensity: 1.10 },
@@ -103,9 +114,16 @@ export const blueprint = {
     front: { radius: 0.500, width: 0.40, spokes: 6, tireProfile: 0.335 },
     rear: { radius: 0.500, width: 0.40, spokes: 6, tireProfile: 0.335 },
   },
-  // square bolt-on flares 55 mm proud of the slab side, riveted round the opening
-  archThickness: 0.078, archGap: 1.05, archFlare: 0.055, archSpan: 1.02, blackArches: true,
-  archBolts: 7,
+  // Square bolt-on flares, riveted round the opening. Cut into the tub (kit.js `loftTub`) rather
+  // than bolted onto it: the truck has the flattest slab sides in the game, so a ring standing off
+  // that slab was the most obviously detached thing on any of the four cars. archProud is the
+  // biggest here — a 4x4's flares deliberately stand outboard of the tyre to throw mud clear.
+  // archBlackBand 0.38 → 0.60: the satin plastic now stops at the lip and its return, and the CROWN
+  // of the flare — the part that arcs over the top of the tyre and is what you read as a fender —
+  // stays body colour. On a gold truck that is a bright arc over each wheel where there used to be
+  // an unbroken black mass from the door shut line to the tread.
+  archGap: 1.090, archFlare: 0.205, archLip: 0.030, archProud: 0.026, archInset: 0.068,
+  archDepth: 0.16, archSpan: 1.04, blackArches: true, archBolts: 7, archBlackBand: 0.60,
 
   lights: {
     head: [{ x: 0.70, y: 1.13, z: 2.455, w: 0.30, h: 0.30, shape: 'round', color: '#f4f8ff', intensity: 3.0 }],
@@ -134,18 +152,21 @@ export const blueprint = {
   handles: [{ x: 1.055, y: 1.40, z: 0.30 }, { x: 1.055, y: 1.40, z: -0.86 }],
 
   trim: [
-    { w: 1.96, h: 0.26, d: 0.30, y: 0.86, z: 2.44, mat: 'dark', r: 0.05 },     // front bumper
-    { w: 1.92, h: 0.24, d: 0.28, y: 0.86, z: -2.42, mat: 'dark', r: 0.05 },    // rear bumper
+    { w: 2.04, h: 0.26, d: 0.30, y: 0.86, z: 2.44, mat: 'dark', r: 0.05 },     // front bumper
+    { w: 2.02, h: 0.24, d: 0.28, y: 0.86, z: -2.42, mat: 'dark', r: 0.05 },    // rear bumper
     // Body-colour caps along the top of both bumpers. A 2 m black bar under a gold truck welded the
     // bumper, the flares and the tyres into one silhouette in every chase frame; a painted upper
     // half splits that bar in two and carries the car's colour all the way down the tailgate.
-    { w: 1.90, h: 0.075, d: 0.30, y: 1.005, z: 2.442, mat: 'paint', r: 0.026 },
-    { w: 1.86, h: 0.070, d: 0.28, y: 0.995, z: -2.422, mat: 'paint', r: 0.026 },
+    { w: 1.98, h: 0.075, d: 0.30, y: 1.005, z: 2.442, mat: 'paint', r: 0.026 },
+    { w: 1.96, h: 0.070, d: 0.28, y: 0.995, z: -2.422, mat: 'paint', r: 0.026 },
     // and a satin blade along the bottom of each, so the bumper has a lit lower edge
-    { w: 1.70, h: 0.032, d: 0.26, y: 0.730, z: 2.446, mat: 'chrome', r: 0.011 },
-    { w: 1.66, h: 0.032, d: 0.25, y: 0.740, z: -2.426, mat: 'chrome', r: 0.011 },
-    { x: 1.16, w: 0.14, h: 0.18, d: 2.70, y: 0.82, z: 0, mat: 'dark', mirror: true, r: 0.04 },  // rock slider
-    { x: 1.150, w: 0.055, h: 0.024, d: 2.50, y: 0.916, z: 0, mat: 'chrome', mirror: true, r: 0.009 }, // slider tread edge
+    { w: 1.78, h: 0.032, d: 0.26, y: 0.730, z: 2.446, mat: 'chrome', r: 0.011 },
+    { w: 1.74, h: 0.032, d: 0.25, y: 0.740, z: -2.426, mat: 'chrome', r: 0.011 },
+    // ROCK SLIDER. At x 1.16 its inner face was 109 mm outboard of the rocker it is meant to be
+    // welded to, so the truck had a black bar hovering under each door with the garage floor
+    // visible behind it. Pulled in to overlap the body; the tread edge rides its top outer corner.
+    { x: 1.045, w: 0.14, h: 0.18, d: 2.70, y: 0.82, z: 0, mat: 'dark', mirror: true, r: 0.04 },  // rock slider
+    { x: 1.085, w: 0.055, h: 0.024, d: 2.50, y: 0.916, z: 0, mat: 'chrome', mirror: true, r: 0.009 }, // slider tread edge
     { w: 1.44, h: 0.10, d: 0.66, y: 0.60, z: 2.06, mat: 'chrome', r: 0.03 },   // front skid plate
     { w: 1.44, h: 0.10, d: 0.60, y: 0.60, z: -2.10, mat: 'chrome', r: 0.03 },  // rear skid plate
     { w: 1.72, h: 0.055, d: 0.10, y: 1.435, z: -2.485, mat: 'dark', r: 0.02 },  // tailgate top lip

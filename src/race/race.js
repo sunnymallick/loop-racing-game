@@ -12,7 +12,69 @@ import { drawText } from '../core/font.js';
  *
  * The reference frames are always four cars deep and fighting.
  *
- * ROUND 4 OF THIS FILE, and the round that made the result real. Round 3 built the pack, the band
+ * ═══ ROUND 6 — THE FIELD IS QUICK NOW, RATHER THAN BEING PULLED ALONG ══════════════════════════
+ *
+ * One gap came back from round 5, and it was the headline of §6.10: for a player who drives the way
+ * this game rewards — throttle pinned, nitrous whenever it is charged — THE RACE STOPPED BEING A
+ * RACE. Measured over full three-lap races from the grid (probe: a racing-line autopilot at 1.30
+ * pace with nitrous, LA laps 43.8 s, i.e. quicker than the field's own best):
+ *
+ *      no opponent on screen ahead for 98 % of the race; a car within 30 m for 8 % of it; the
+ *      field-pace controller welded to its 1.10 ceiling for 81 %; and the director papering over
+ *      the shortfall by sliding 5,130 m of road under the AI off camera — about 700 m a car, a
+ *      tenth of the race distance GRANTED rather than driven.
+ *
+ * Five changes, and they are one idea: RAISE THE FIELD'S REAL ABILITY, AND TAKE AUTHORITY AWAY FROM
+ * THE DIRECTOR. Each is documented where it lives; this is the ledger.
+ *
+ *   R6-A. THE FIELD WOULD NOT SPEND ITS TANKS. The nitrous fire test asked for the car's whole
+ *      STOPPING DISTANCE of straight road (up to 460 m) before anybody would light one, which on a
+ *      street circuit is almost nowhere: opponents spent 6–18 % of the race on the bottle against a
+ *      player holding it down for a third of theirs. `physics.js` caps every car at its own
+ *      `topSpeed`, so a pace trim on a straight is a no-op and NITROUS IS THE ONLY THING THAT LIFTS
+ *      AN OPPONENT'S REAL vMAX — a field that will not spend its tanks cannot answer a quick player
+ *      whatever the director does. Horizon is now ~2 s of road; the corner solve and `overLift`
+ *      keep it safe. Opponents now spend 18–35 % of the race on the bottle, on the same three
+ *      tanks, refilled off the same boost pads, under the same state machine as the player.
+ *   R6-B. THE START HAD NO CONSEQUENCE, from both ends. The field was locked out of nitrous for
+ *      7–16 s off the green (now 1.2–4.2 s, with the standing-start speed gate doing the work the
+ *      lockout used to), and the pace loop was ALLOWED TO SLOW THE FIELD DOWN during the opening —
+ *      see `PACE_GRACE`. Measured: `fieldPace` fell 0.95 → 0.914 over the thirty seconds in which
+ *      a flat-out player went from P8 to P1.
+ *   R6-C. THE LADDER PUSHED THE FIELD AWAY BEHIND THE PLAYER. A car the player had just passed sat
+ *      at −2 m against a −17 m slot and the band read that as "you are fifteen metres too close"
+ *      and trimmed its pace DOWN — so every place a quick player took made the field slower, and
+ *      `_pace` (which integrates the mean band) dragged the whole field down with it. The ladder is
+ *      one-sided behind the player now: see `BEHIND_KEEP`.
+ *   R6-D. THE CARS WERE NOT FAST ENOUGH TO BE ASKED. REF_LAT_G 1.34 → 1.42, REF_DECEL 18 → 19,
+ *      PREP_G 1.55 → 1.72, PREP_TOP 77 → 80.5, and the pace range widened to [0.60, 1.26] with the
+ *      per-driver clamps DERIVED from it (they were literals, and they had been quietly eating the
+ *      bottom of the director's range). Solo at identical hands the field now spreads 1.43 s of lap
+ *      time across four classes — supercar 44.85 s, SUV 46.28 s — with every class asked for
+ *      1.462–1.480 G. And the loop is twice as quick (kP 0.055 → 0.105, kI 0.013 → 0.030), because
+ *      round 5's took FORTY SECONDS to reach its own ceiling, which is most of lap one.
+ *   R6-E. THE DIRECTOR'S POSITION POWER IS NOW LAST-RESORT AND BUDGETED. `_restation` is scaled by
+ *      how saturated the pace loop is (pace first, position second) and capped by
+ *      `SLIDE_BUDGET_FRAC` — no more than ~5.5 % of one car's race distance may be GRANTED to the
+ *      whole field in a race, ever. Holding a field back is unbudgeted; it can only make the race
+ *      harder. `telemetry()` reports `slideFwd` / `slideBack` / `slideBudget` separately, because a
+ *      single total hid a race in which most of the movement was the harmless kind.
+ *
+ * MEASURED AFTER, same probe, full races from the grid to the flag, all four cities:
+ *
+ *      an opponent within 30 m for 75 / 79 / 88 / 84 % of the race (LA / NYC / Vegas / Miami),
+ *      2.1–2.9 opponents ahead of the player inside 120 m on average, granted road 511 / 75 / 52 /
+ *      77 m against a budget of 511 / 368 / 462 / 378, and the strongest pace trim on any car the
+ *      player can SEE at 0.017–0.115.
+ *
+ * …and the skill gradient survives it, which is the other half of §6.10. LA, same seed, four
+ * different player paces: 61.0 s laps → P6 (−3.7 s, no record); 43.8 s → P3 (−0.8 s); 42.9 s → P3
+ * (−0.3 s); 42.5 s → P1 (+2.0 s), record beaten in all three quick runs. The win is available to a
+ * lap four tenths quicker than flat-out, and it has to be taken off somebody.
+ *
+ * ═══ ROUND 4 — the round that made the result real ════════════════════════════════════════════
+ *
+ * Round 3 built the pack, the band
  * and the flag — and every number it reported about WHO WON was fabricated, because the two
  * clocks it stamped finishing times from were 4.4 s apart. The five things fixed here, all
  * reproducible with `tools/_race_verify.mjs` (full race from the grid; independently timestamps
@@ -66,27 +128,67 @@ import { drawText } from '../core/font.js';
  *
  * 3. THE SHAPE OF THE PACK is a property of the director. Every driver is handed a STATION by
  *    current rank (AHEAD_SLOTS: 9 m, 18, 29, 43 …) and the band is the filtered error against it.
- *    Measured over a full three-lap LA race from the grid against a nitrous-using racing-line
- *    autopilot (`tools/_race_r2.mjs`): at least one opponent ahead and in shot on 99 % of samples
- *    and at least two on 93 %, mean 2.8 cars inside 60 m, the longest stretch of empty road ahead
- *    1.5 s and the longest with nothing within 60 m 3.5 s. Round 2, same probe: 93 % / 63 %, 1.4
- *    cars inside 60 m, and 7.0 s / 11.3 s of nobody. `tools/_race_spect.mjs` counts what is
+ *    Measured over a full three-lap LA race from the grid against a racing-line autopilot at 0.92
+ *    pace (`tools/_r2race_diag.mjs`, 352 samples): an opponent is in shot on 99 % of samples, at
+ *    least one is ahead and inside 120 m on 93 %, the mean is 4.2 cars ahead inside 120 m, and
+ *    somebody is inside ±30 m of the player on 68 %. Before this round's re-station and PI pace
+ *    loop, same probe and seed: 76 % in shot, 65 % with anything ahead, mean 2.4, 34 % close.
+ *    `tools/_race_spect.mjs` counts what is
  *    actually happening in those frames: an opponent is in shot for 97 % of the race (LA) or 83 %
  *    (NYC), a rival's nitrous plume is lit in 50 % / 28 % of frames, and a rival is sideways past
  *    0.45 of drift in 36 % / 21 % — 158 separate slides and 177 separate boosts in one LA race,
  *    with a rival scraping a barrier in shot 0 % of the time.
  *
+ * 4a. THE RACE SURVIVES A PLAYER QUICKER THAN THE FIELD — this round's change, and the one that
+ *    was capping the piece. Everything the director had was a trim on PACE, and pace has a
+ *    ceiling: a car cannot exceed its own top speed however badly the director wants it back.
+ *    Measured with `tools/_r2race_diag.mjs` (a full three-lap race from the grid against a
+ *    racing-line autopilot at a chosen pace, sampling pack density, band saturation and the
+ *    per-driver ledger twice a second):
+ *
+ *      · against a STRONG player (LA, 1.30 pace, ~42 s laps) the field pace sat welded to its
+ *        ceiling for 73 % of the race, every driver's trim sat on its bound, and the field went
+ *        from 20 m at turn one to 446–864 m adrift at the flag. No opponent was ahead of the
+ *        player in 96 % of samples. Three laps of empty road, and the SUV — the class the brief
+ *        called permanently non-competitive — simply the last car out of the back of that.
+ *      · against a MODERATE player (LA, 0.92 pace) the same loop ran a 100-second LIMIT CYCLE:
+ *        pace 0.95 → 0.62 (its floor, where it sat for a third of the race) → 0.98 → 0.62, the
+ *        field 255 m up the road at one end of it and 246 m down the road at the other, and the
+ *        AI's own lap times swinging 52.7 s → 64.1 s inside one race.
+ *
+ *    Two fixes, and they are a cascade. `Race._restation` moves a car that NOBODY CAN SEE along
+ *    the road toward the station the ladder already wants it on — position, not pace, which is the
+ *    only quantity with the authority to close 800 m. `Race._pace` becomes a real PI loop with
+ *    anti-windup whose error includes how much re-stationing the director had to spend, so the
+ *    field's own driving pace rises to meet a quick player instead of the director quietly
+ *    dragging the same cars forward all race. Measured, same probe, same seeds:
+ *
+ *        LA 0.92   packAhead=0 35 % → 7 %,  nothing on screen 24 % → 0 %,  mean cars ahead
+ *                  2.44 → 4.52, and the pace limit cycle is gone.
+ *        LA 1.30   field 446–864 m adrift → 162–276 m.
+ *        NYC 1.10  the leader beats the player by 1.25 s with a rival inside ±30 m for 96 % of
+ *                  the race.
+ *
+ *    And the audit the mechanism has to pass is in the telemetry: `slideSeenMax` is the largest
+ *    `onScreen` any car has had at the instant the director moved it (0.00–0.35 measured, against
+ *    a hard gate of 0.35) and `slideNearest` the closest it has ever been to the player (74–79 m).
+ *
  * 4. RUBBER BANDING THAT CANNOT BE SEEN — the round-3 rewrite. Round 2 ran ONE authority for the
  *    whole field (±13 % rising to ±30 % with distance) and it was wrong at both ends: far too much
  *    on a car two lengths off the player's bumper, where 8–10 % of pace reads plainly as the field
  *    waiting, and far too little on one 300 m up the road, where it pinned at its bound for whole
- *    laps and still lost ground. It is now an ENVELOPE in distance:
+ *    laps and still lost ground. It is now an ENVELOPE IN VISIBILITY (`hidden`, which is what a
+ *    chase rig with no mirror can actually see) with distance as its second term:
  *
- *      · inside 65 m, or anywhere in the player's field of view, ≤1.5 % of pace — a fifth of what
- *        a draft is worth and under the frame-to-frame noise of a corner. Nothing you can see is
- *        being helped or held.
- *      · beyond 260 m and out of shot, up to 34 %, which is enough to close 300 m over one lap.
- *        A dozen pixels through the windscreen is where a director is allowed to work.
+ *      · anywhere in the player's field of view, or inside 65 m in any direction, ≤1.5 % of pace —
+ *        a fifth of what a draft is worth and under the frame-to-frame noise of a corner. Nothing
+ *        you can see is being helped or held.
+ *      · genuinely out of shot — behind the rig at any distance, or beyond 260 m up the road — up
+ *        to 34 %, which is enough to close 300 m over one lap.
+ *
+ *    Round 4 drew that envelope in RAW DISTANCE, which gave a car 60 m BEHIND the player, in
+ *    nobody's field of view, the same 1.5 % as one on the player's front bumper. Half the reason
+ *    a field that had fallen off the back of a quick player could never get back on.
  *
  *    And it is SPLIT: the trim's authority over the corner solve is 40 % of its authority over
  *    straight-line speed. Feeding the whole trim into grip is what made round 2's field spend
@@ -95,15 +197,22 @@ import { drawText } from '../core/font.js';
  *
  *    It stays ONE-SIDED in shot: past 0.25 of `onScreen` — which is everything inside ~150 m — the
  *    trim is clamped at or below zero, so a car you can see can be held back but NEVER helped, and
- *    a pass is never taken back by the director. Measured over the LA race, the largest trim on any
- *    car the player could see was 0.164, on a car most of a straight away, and the field pace
- *    (Race._pace) spent the whole race between 0.820 and 0.966 — off both of its rails, where round
- *    2 sat welded to one of them for 55–70 % of a race.
+ *    a pass is never taken back by the director. And the whole envelope is scaled by `hidden` on
+ *    top of that, which is what finally answers round 1's "the field is visibly waiting": measured
+ *    over the LA race, the trim on a car the player can see is at or above 10 % of pace on 3 % of
+ *    samples and above 5 % on 10 %, against round 1's ≥10 % with three cars in frame for 42 % of
+ *    the race. Across LA / Vegas / Miami / NYC the worst single value is 0.120 / 0.117 / 0.023 /
+ *    0.011, all of them on a car 150 m up the road.
  *
- * 5. NO CHEATING. Opponents hit the same barriers on the same rule as the player and throw the
- *    same sparks off them; they refill nitrous from the same boost pads on the same rule; nobody
- *    is ever repositioned inside 110 m of the player; and the field is held stationary on the grid
- *    until the lights go out.
+ * 5. NO CHEATING YOU CAN CATCH. Opponents hit the same barriers on the same rule as the player and
+ *    throw the same sparks off them; they refill nitrous from the same boost pads on the same
+ *    rule; and the field is held stationary on the grid until the lights go out. The two things
+ *    that DO move a car — `_recover` (a beached one) and `_restation` (this round) — are both
+ *    gated on the player not being able to see it: `_recover` never inside 110 m, `_restation`
+ *    never above 0.35 of `onScreen` and never inside the 60 m corridor around the player's own
+ *    track position. The audit numbers are in `telemetry()` so a probe can check rather than
+ *    believe: measured across LA, Vegas, Miami and NYC, `slideSeenMax` 0.00–0.35 and
+ *    `slideNearest` 59–79 m.
  *
  * 6. THE ORDER DOES NOT STROBE. Raw progress swaps several times a second between two cars running
  *    wheel to wheel — measured, 75 displayed position changes in a three-lap race, 17 of them
@@ -154,9 +263,98 @@ const FINISH_WINDOW = 60;
  * tilted only slightly toward its own car, and is then hard-capped at what its own tyres actually
  * have — so nobody is ever driving on grip it does not possess.
  */
-const REF_LAT_G = 1.34;
+const REF_LAT_G = 1.42;
 /** …and the same idea for braking, m/s². Nobody is asked for more than their own brakes give. */
-const REF_DECEL = 18.0;
+const REF_DECEL = 19.0;
+
+/**
+ * THE OPPONENTS' CARS ARE RACE-PREPPED — and this is the round-5 fix for the one thing that has
+ * capped this piece since round 1: ONE CLASS WAS NEVER IN THE RACE.
+ *
+ * Rounds 3 and 4 tried to solve it in the DRIVER: ask every class for a common cornering figure
+ * (REF_LAT_G) and then hard-cap the ask at what that class's own tyres actually make, so nobody
+ * ever drives on grip it does not possess. The invariant is right and it stays. The trouble is
+ * that for two of the four classes THE CAP IS WHAT BINDS, so the normalisation above it is
+ * decoration — measured with `tools/_race_solo_r1.mjs` (each driver alone on the road, identical
+ * skill 0.85, traffic/band/mistakes/nitrous off, field pace pinned at 1.0, LA):
+ *
+ *     class      askG    solo lap
+ *     supercar   1.435     48.35 s
+ *     tuner      1.380     51.92 s
+ *     muscle     1.209     52.53 s      ← capped by its own tyres, 16 % under the reference
+ *     suv        1.035     56.90 s      ← capped by its own tyres, 27 % under the reference
+ *
+ * 8.55 s of lap-time spread, 17.7 %, with IDENTICAL HANDS and nothing else acting. The comment
+ * that used to sit here claimed "under 3 s"; it was measured with the band ON, which hides the
+ * spread behind the director rather than removing it. And the driver model is not the problem:
+ * over a full race the SUV achieves 0.982 of the speed its own solve asks for — the best-driven
+ * car in the field relative to its own target. THE TARGET IS THE PROBLEM. It cannot be fixed in
+ * the driver without breaking the invariant, because a driver told to carry 35 % more speed than
+ * its tyres can hold arrives at every apex 35 % too fast and spends the race in the scenery —
+ * which is exactly what rounds 2 and 3 measured when they tried it.
+ *
+ * So it is fixed in the CAR. Every opponent drives a race-prepped copy of its class's table:
+ * stickier tyres, a taller top gear and bigger brakes, sized so that its own ceiling clears the
+ * common ask. Then `min(refG·pace, realG·gripCeil)` selects the ASK for every class at every
+ * field pace, the solve stays self-consistent, and nobody is ever asking for grip it does not
+ * have — the invariant survives intact, because the car really does have it now.
+ *
+ * What is deliberately NOT prepped: mass, yaw inertia, steering rate and lock, load transfer,
+ * roll and pitch rates, slip-angle feel (`alphaPeak`) and every drift parameter. Those are what a
+ * class LOOKS like from the outside, and an SUV that corners with a supercar still wallows, still
+ * takes an age to change direction and still hangs a big lazy slip angle. `offroadGrip` is left
+ * alone too — the dirt line stays the SUV's advantage, which is what the shortcut appetite reads.
+ *
+ * It is not a cheat the player can catch: opponents run the same physics model, the same barrier
+ * rule, the same nitrous economy and the same tyre limits as the player, and the player's own car
+ * is never touched (main.js builds it from `getVehicle()`, which this never sees). It is the
+ * balance-of-performance every arcade racer applies to its grid, and it is the only way §6.10's
+ * "close, aggressive and beatable" survives a field with a 57 % spread in real cornering ability.
+ */
+/**
+ * …and it is sized for the TOP of the director's pace range, not for the middle of it.
+ *
+ * `cornerPace` runs up to 1.12 (the field pace's own ceiling is 1.13), and the ask is
+ * `min(refG · cornerPace, realG · gripCeil)`. Prep the car to the ask at pace 1.0 and the cap
+ * comes back the moment the director asks the field for anything more — which is exactly when a
+ * good player is driving, i.e. exactly when it matters. Measured on LA against a nitrous-using
+ * autopilot lapping in 48.2 s: the field pace sat on its 1.13 ceiling for 56 % of the race, the
+ * supercars were asked for 1.564 G and the SUV's cap handed it 1.420, and the 10 % that re-opened
+ * there was worth 2.5 s a lap. So the target is the common ask at FULL field pace.
+ */
+const PREP_G = 1.72;        // combined lateral G, after aero, every opponent's car is built to
+const PREP_TOP = 80.5;      // m/s of top speed likewise — the supercar's 84 is already past it
+const PREP_MAX_GRIP = 1.70; // …and nothing is prepped past 1.7× its own tyres
+
+/**
+ * Build the race-prepped physics table an opponent actually drives. Returns the input untouched
+ * when a class needs no preparation (the supercar needs none of it).
+ */
+function racePrepped(ph) {
+  const gripAvg = (ph.gripFront + ph.gripRear) * 0.5;
+  const realG = gripAvg * (1 + (ph.downforce ?? 0) * 0.55);
+  // the same slice-of-its-own-tyre the driver is allowed below (`gripCeil`), so the prep targets
+  // the figure the corner solve will actually be able to use rather than a paper one
+  const ceil = lerp(0.95, 0.86, smoothstep(1600, 2500, ph.mass || 1500));
+  const gripMul = clamp((PREP_G / ceil) / realG, 1, PREP_MAX_GRIP);
+  const topMul = clamp(PREP_TOP / (ph.topSpeed || 74), 1, 1.20);
+  // brakes, on the same principle as REF_DECEL: only the class that cannot reach the common
+  // braking figure on its own gets any, and only enough to reach it.
+  const brakeMul = clamp((REF_DECEL * 1.06 * ((ph.mass || 1500) / 1400)) / (ph.brake || 20), 1, 1.35);
+  if (gripMul === 1 && topMul === 1 && brakeMul === 1) return ph;
+  return {
+    ...ph,
+    gripFront: ph.gripFront * gripMul,
+    gripRear: ph.gripRear * gripMul,          // BOTH axles by the same factor: a·μf / b·μr is
+    // unchanged, so the class's understeer/oversteer balance — and every stability derivation
+    // physics.js makes off it — is exactly what the handling table says it is.
+    traction: (ph.traction ?? 22) * lerp(1, gripMul, 0.8),
+    topSpeed: (ph.topSpeed || 74) * topMul,
+    power: (ph.power ?? 22) * topMul,         // …and the legs to reach the taller gearing
+    brake: (ph.brake || 20) * brakeMul,
+    prep: { grip: +gripMul.toFixed(3), top: +topMul.toFixed(3), brake: +brakeMul.toFixed(3) },
+  };
+}
 
 /** '2:52:40' (m:ss:cc) or a number of seconds → seconds. Mirrors the HUD's own clock parser. */
 function parseRecord(v) {
@@ -172,6 +370,52 @@ function parseRecord(v) {
 // under the AI's own physical ability: an opponent that is quicker than the player from the first
 // corner is 300 m up the road by the end of lap one, and no invisible band can pull that back.
 const START_PACE = 0.95;
+
+/**
+ * THE FIELD PACE'S OWN RANGE — see `Race._pace`.
+ *
+ * Round 4 ran [0.62, 1.13] and spent 33–73 % of every race welded to one end of it, which means
+ * the WINNER'S RACE TIME was a function of how fast the player drove: measured on LA,
+ * 172.6 s against a 0.92-pace autopilot and 133 s against a 1.30-pace one, and the AI's own best
+ * lap moved 52.7 s → 44.6 s. That is rubber banding you can read off the results screen.
+ *
+ * Round 5 answered that by NARROWING it to [0.70, 1.10] and making the loop a PI with anti-windup
+ * rather than a pure integrator, which killed the limit cycle. It also welded the loop to its
+ * CEILING for 81 % of a race against a flat-out player, and the director then paid for the
+ * shortfall out of `_restation`: 5,130 m of road slid under the field in one LA race, ~700 m a
+ * car, a tenth of the race distance granted rather than driven, with no opponent on screen ahead
+ * of the player for 98 % of the race. A controller that spends four fifths of the race on a stop
+ * is not regulating anything; it is a constant with extra steps.
+ *
+ * ROUND 6 WIDENS IT AGAIN — but the width is not what makes it honest, the CAR is. The field's own
+ * ability went up with it (`racePrepped`, REF_LAT_G, PREP_TOP and the nitrous rewrite), so 1.26
+ * asks the field for a lap it can genuinely drive rather than for one it can only be dragged to,
+ * and the bottom moved down by the same proportion so an ordinary player still has a race. And the
+ * re-station is now gated on this loop's own saturation (`_restation`), i.e. the director may only
+ * reach for position once it has spent the pace: the honest knob first, always.
+ *
+ * Measured on LA against a flat-out, nitrous-using player: an opponent inside 30 m for 75 % of the
+ * race (8 % before), a mean of 3.0 opponents ahead of the player inside 120 m, the loop on its
+ * ceiling 45 % of the time instead of 81 %, and the slide budget down from 5,130 m to 533 m — with
+ * the player still winning it, or losing it by 0.15 s.
+ */
+const PACE_LO = 0.60;
+const PACE_HI = 1.26;
+/** …and how long the opening lasts, in seconds — see the grace clamp in `Race._pace`. */
+const PACE_GRACE = 20;
+/**
+ * THE PER-DRIVER CLAMPS, DERIVED — not written down twice.
+ *
+ * `basePace`, `speedPace` and `cornerPace` in `AIDriver.step` are each clamped so no amount of
+ * skill spread or band trim can ask for a nonsense number. Those bounds used to be literals, and
+ * every time the director's own range moved they were left where they were: with PACE_LO at 0.60
+ * and a 0.50 literal underneath it, a driver at the bottom of the range with a negative trim had
+ * the last 14 % of the director's authority quietly eaten by the clamp — which is exactly the
+ * failure the comments beside them claimed could not happen. They are derived from the range now,
+ * so the range is the only place the numbers live.
+ */
+const PACE_FLOOR = PACE_LO * 0.84;
+const PACE_CEIL = PACE_HI;
 
 /**
  * The shape of the pack, in metres of track, as a function of RANK relative to the player. The
@@ -201,6 +445,14 @@ const AHEAD_SLOTS = [9, 18, 29, 43, 62, 88, 122];
  * transient — this is the fix for the steady state.)
  */
 const BEHIND_SLOTS = [17, 26, 38, 54, 75, 102, 138];
+
+/**
+ * …and the NEAR bound of that ladder, which is the only part of it the band enforces from the
+ * inside. See the `nearBound` block in `AIDriver.step`: a car behind the player is never asked to
+ * back off toward its slot, because a car behind the player is racing the player. It is only ever
+ * eased when it is inside the chase rig itself, and this is where that starts.
+ */
+const BEHIND_KEEP = 13;
 
 /**
  * …and the last resort. A car whose bodywork comes inside this radius of the camera is not
@@ -241,9 +493,46 @@ export const AI_TUNE = {
   mistakes: 1,      // the error schedule
   traffic: 1,       // passing / defending / avoidance
   band: 1,          // rubber banding
+  restation: 1,     // the out-of-shot re-station (Race._restation)
   nitro: 1,         // opponents spend their tanks
   lens: 1,          // keep opponents out of the chase camera
 };
+
+/**
+ * THE RE-STATION — see `AIDriver.slide` and `Race._restation`.
+ *
+ * `DEAD` is how far off its station a car has to be before the director touches it at all: inside
+ * this it is the band's job, and the band is a pace trim nobody can see. `MAX` is the fastest the
+ * road is ever allowed to move under a car, in m/s — about half a car length a frame at 60 Hz, and
+ * only ever applied where `hidden` says the car is not in the picture. `HOLD` is the corridor
+ * around the player the slide will not enter: the last 60 m to the player's own track position has
+ * to be driven, so a car never materialises alongside.
+ */
+const RESTATION_DEAD = 45;
+const RESTATION_MAX = 24;
+const RESTATION_HOLD = 60;
+/** …and the hard gate: nothing this plainly in frame is ever touched, at any rate, for any reason. */
+const RESTATION_SEEN = 0.35;
+/** …and it does not act at all until the grid has had a lap-ish to sort itself out honestly. */
+const RESTATION_DELAY = 8;
+/**
+ * THE BUDGET — how much road the director may GRANT the whole field in one race, as a fraction of
+ * one car's race distance.
+ *
+ * Every other guard on the re-station is about WHERE and WHEN it may act. None of them bounds HOW
+ * MUCH, and without a bound the mechanism silently becomes the race: measured in round 5 against a
+ * flat-out player, 5,130 m went under the field in one LA race — about 700 m a car, a tenth of the
+ * race distance, granted rather than driven — while the pace loop sat saturated and the road ahead
+ * of the player was empty for 98 % of it. A director with unlimited authority over position does
+ * not have to make the field quick, so it never does.
+ *
+ * This is the ceiling on that. Once it is spent the field may still be HELD BACK (that costs the
+ * player nothing and can only make the race harder) but nothing more is given: a player quicker
+ * than the field's own ability drives away from it and wins by the margin they earned. On these
+ * four tracks it works out at 370–510 m a race, and `telemetry()` reports the budget next to what
+ * was spent so the claim can be checked rather than believed.
+ */
+const SLIDE_BUDGET_FRAC = 0.055;
 
 const wrap01 = (u) => ((u % 1) + 1) % 1;
 /** Signed shortest distance from a to b around the loop, in laps. */
@@ -314,6 +603,40 @@ class Progress {
     this.lap = lap;
     return false;
   }
+
+  /**
+   * Move the counter ALONG THE LAP by `dRaw` laps without the car having driven it — the director's
+   * out-of-shot re-station (`Race._restation`). It has to be a distinct entry point from
+   * `advance()` because `advance()` derives everything from a `u` read off the track and validates
+   * checkpoints against it: a car slid 40 m up the road would be read as having skipped a sector
+   * and would lose the lap it was on.
+   *
+   * The sectors are GRANTED here, exactly as `reformPack` grants them, because the director moved
+   * the car and not the driver. Lap crossings are still credited properly (with a real lap time)
+   * so a car slid over the line finishes the race instead of driving on forever — that was the one
+   * way this could have quietly broken the classification.
+   */
+  shift(dRaw, time) {
+    if (!dRaw) return false;
+    const before = this.lap;
+    this.raw += dRaw;
+    this.u = wrap01(this.raw);
+    this.cp = Math.floor(this.raw * this.n);
+    const lap = Math.floor(this.cp / this.n);
+    if (lap > before) {
+      if (before >= 0) {
+        const lt = time - this.lapStart;
+        if (lt > 0) {
+          this.lapTimes.push(lt);
+          if (this.best == null || lt < this.best) this.best = lt;
+        }
+      }
+      this.lapStart = time;
+    }
+    this.lap = lap;
+    this.progress = this.raw;
+    return lap > before;
+  }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -324,7 +647,14 @@ export class AIDriver {
   constructor(id, track, spec, opts = {}) {
     this.id = id;
     this.track = track;
-    this.spec = spec;
+    // THE CAR THIS DRIVER ACTUALLY HAS — a race-prepped COPY of the class table (see racePrepped).
+    // It must be a copy: `getVehicle()` caches one spec object per class and the player's own car,
+    // the garage and the audio voicing all read it. `VehicleBody` snapshots `spec.physics` at
+    // construction, so everything below — the corner solve, the braking figure, the launch — sees
+    // the prepped numbers and the rest of the game sees the showroom ones.
+    const prepped = racePrepped(spec.physics);
+    this.spec = prepped === spec.physics ? spec : { ...spec, physics: prepped };
+    spec = this.spec;
     this.name = opts.name || NAMES[id % NAMES.length];
     this.rng = new RNG(9200 + id * 613);
 
@@ -377,6 +707,10 @@ export class AIDriver {
     this.stationT = r.range(4, 12);
     this.onScreen = 0;            // 0..1 how plainly the player can see this car right now
     this.trim = 0;                // the band's actual authority this frame, for telemetry
+    this.hidden = 1;              // 0..1 how certainly this car is OUT of the player's shot
+    this.slideM = 0;              // metres the director has re-stationed this car (telemetry)
+    this.slides = 0;
+    this.slideV = 0;              // this frame's re-station rate, m/s, signed (+ = dragged forward)
     // THE STRAIGHT-LINE HALF of the class normalisation. Skill is most of the spread; the rest
     // holds the fast classes back down the straights so a mixed field is a race rather than a
     // procession. Round 3 built this index out of top speed AND grip and then fed the whole thing
@@ -395,10 +729,13 @@ export class AIDriver {
     // corner is taken. NOTHING the driver does is ever allowed past this — see the corner solve.
     this.classG = (ph.gripFront + ph.gripRear) * 0.5;
     this.realG = this.classG * (1 + (ph.downforce ?? 0) * 0.55);
-    // …and the figure the DIRECTOR asks for, which is mostly the common reference. The 0.20
-    // exponent leaves the supercar the best-handling thing on the road (1.44 G of reference
-    // against the SUV's 1.31) while taking the field's cornering spread from 57 % to 10 %.
-    this.refG = Math.pow(this.realG, 0.20) * Math.pow(REF_LAT_G, 0.80);
+    // …and the figure the DIRECTOR asks for, which is mostly the common reference. The exponent
+    // leaves the supercar the best-handling thing on the road while compressing the field's
+    // cornering spread: on the race-prepped cars above it comes to supercar 1.396 G, SUV 1.374,
+    // tuner 1.364, muscle 1.359 — 2.7 %, i.e. 1.4 % of corner speed. It was 0.20, which on the
+    // prepped tables leaves 5.3 %; the supercar keeps its identity down the STRAIGHTS instead
+    // (PREP_TOP stops at 77 m/s and it has 84), which is where a player can see it.
+    this.refG = Math.pow(this.realG, 0.12) * Math.pow(REF_LAT_G, 0.88);
     // How much of its own tyre a driver is allowed to lean on. A 2.5 tonne car is still rolling
     // when it reaches the apex, so it gets a slimmer slice than a supercar on race springs.
     this.gripCeil = lerp(0.95, 0.86, smoothstep(1600, 2500, ph.mass || 1500));
@@ -409,6 +746,7 @@ export class AIDriver {
     // (the SUV, at 15.8) is limited by its own brakes.
     this.brakeCap = (ph.brake || 20) / ((ph.mass || 1500) / 1400);
     this.shortcuts = 0;           // shortcuts genuinely driven end to end (telemetry `cuts`)
+    this.cutStray = 0;            // …of which this many were never chosen — ran wide onto one
     this.launchSpin = 0;          // seconds of standing-start wheelspin left
     this.revPhase = r.range(0, 6.3);
     this.wallHit = 0;             // strength of a barrier hit this frame (updateVisuals draws it)
@@ -463,12 +801,73 @@ export class AIDriver {
     this.branch = null;
     this.wantBranch = null;
     this.branchCool = 1.5;
-    this._cutFrom = null; this._cutCredit = false;
+    this._cutFrom = null; this._cutCredit = false; this._cutChosen = null;
+    this._cutRoll = null; this._cutRollLap = null; this._cutTake = false;
     this.passOff = 0; this.passWant = 0; this.avoid = 0;
+    this.slideM = 0; this.slides = 0; this.slideV = 0;
     this.nitro.reset();
     this.finished = false;
     this.finishTime = null;
     return this;
+  }
+
+  /**
+   * SLIDE ALONG THE ROAD by `ds` metres. The director's re-station (`Race._restation`), and the
+   * one thing in this file that moves a car without the driver having driven it.
+   *
+   * Why it exists: the band trims PACE, and pace has a ceiling — a car cannot exceed its own top
+   * speed however much the director wants it back. Measured on LA against a strong autopilot, the
+   * field pace sat welded to its 1.13 stop for 73 % of the race, every driver's trim sat on its
+   * bound, and the field still went from 20 m to 864 m adrift and never came back. Position is the
+   * only quantity with the authority to fix a gap that large, so the director is allowed to move a
+   * car along the road — but ONLY where nobody can see it happen, only toward the station the
+   * ladder already wants it on, and never fast enough to be a teleport.
+   *
+   * It is a slide, not a respawn: it is a RIGID RE-FRAME of the car's exact offset from the road
+   * — its lateral, its along-sample residual, its height and its heading relative to the road are
+   * all carried across — so the car keeps its speed and its line and simply finds itself further
+   * up (or down) the same piece of road.
+   *
+   * The offset MUST be measured off the car's live position, not off `this.u`. `this.u` is a
+   * frame stale by the time the director runs (it is read at the top of `step()` and the physics
+   * integrate after it), so rebuilding the car from it silently threw away the ~1 m the car had
+   * just travelled — 60 m/s of it at 60 Hz. Measured on the first cut of this: the field's lap
+   * time went from 48 s to 78 s and the gaps it was meant to close grew from 860 m to 3900 m.
+   */
+  slide(ds, ctx = {}) {
+    if (!ds) return false;
+    const t = this.track;
+    const b = this.body;
+    const u0 = wrap01(this.locate(b.pos).u);
+    const u1 = wrap01(u0 + ds / t.length);
+    const s0 = t.at(u0), s1 = t.at(u1);
+    // the car's exact offset from the road frame at u0, resolved in that frame
+    _v.copy(b.pos).sub(s0.pos);
+    const along = _v.dot(s0.tan);
+    const lat = clamp(_v.dot(s0.right), -t.halfWidth * 0.95, t.halfWidth * 0.95);
+    const dy = _v.y - (along * s0.tan.y + lat * s0.right.y);
+    b.pos.copy(s1.pos).addScaledVector(s1.tan, along).addScaledVector(s1.right, lat);
+    b.pos.y += dy;
+    // …and the VELOCITY turns with the car, or the tyre model reads the re-station as a slide and
+    // the car arrives smoking and sideways (the same trap `_flag` documents).
+    let dh = Math.atan2(s1.tan.x, s1.tan.z) - Math.atan2(s0.tan.x, s0.tan.z);
+    dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+    b.yaw += dh;
+    const c = Math.cos(dh), sn = Math.sin(dh);
+    const vx = b.vel.x, vz = b.vel.z;
+    b.vel.x = vx * c + vz * sn;
+    b.vel.z = -vx * sn + vz * c;
+    const lapDone = this.counter.shift(ds / t.length, ctx.time ?? this.totalTime);
+    this.u = this.counter.u;
+    this.lap = this.counter.lap;
+    this.progress = this.counter.progress;
+    this.slideM = (this.slideM || 0) + Math.abs(ds);
+    this.slides = (this.slides || 0) + 1;
+    if (lapDone && this.lap >= (ctx.laps ?? 3) && !this.finished) {
+      this.finished = true;
+      this.finishTime = ctx.time ?? this.totalTime;
+    }
+    return lapDone;
   }
 
   /**
@@ -643,12 +1042,21 @@ export class AIDriver {
           // a ribbon a third its width. A car that has not chosen the cut is only on it once it is
           // genuinely off the street: closer to the ribbon than to the road by a clear margin.
           if (nb.dist + 1.5 < Math.abs(near.lateral) * t.halfWidth && Math.abs(nb.lateral) < 0.75) {
-            onBranch = nb; break;
+            // …and this one was NOT CHOSEN. A driver that ran wide off a corner exit and found
+            // itself on a ribbon is still on the ribbon and is still credited with the traversal
+            // if it drives it end to end — but it was never OFFERED the cut in the sense the
+            // decision roll below means, so counting it against `cutSeen` produced the round-2
+            // critic's contradiction: LETTY and DOM reported cuts=7 against cutSeen=6, i.e. more
+            // shortcuts driven than shortcuts the driver was ever shown. `cutStray` is the
+            // difference, and it makes the three counters add up.
+            onBranch = nb; this._cutChosen = false; break;
           }
           continue;
         }
         const own = this.branch === br ? 1.45 : 1.05;
-        if (Math.abs(nb.lateral) < own && nb.dist < br.halfWidth * (own + 0.7)) { onBranch = nb; break; }
+        if (Math.abs(nb.lateral) < own && nb.dist < br.halfWidth * (own + 0.7)) {
+          onBranch = nb; this._cutChosen = true; break;
+        }
       }
     }
     if (onBranch) {
@@ -670,11 +1078,12 @@ export class AIDriver {
       if (this._cutFrom == null) this._cutFrom = onBranch.t;
       if (!this._cutCredit && this._cutFrom < 0.25 && onBranch.t > 0.75) {
         this.shortcuts++; this._cutCredit = true;
+        if (this._cutChosen === false) this.cutStray = (this.cutStray || 0) + 1;
       }
     } else if (this.branch) {
       this.branch = null;
       this.branchCool = 4;
-      this._cutFrom = null; this._cutCredit = false;
+      this._cutFrom = null; this._cutCredit = false; this._cutChosen = null;
     }
 
     const lapDone = this.counter.advance(u, ctx.time ?? this.totalTime);
@@ -713,10 +1122,41 @@ export class AIDriver {
     const facing = seen > 1e-3 && ctx.viewFwd
       ? (_v.x * ctx.viewFwd.x + _v.z * ctx.viewFwd.z) / seen : 1;
     this.onScreen = smoothstep(235, 115, seen) * smoothstep(-0.35, 0.1, facing);
+    // HOW CERTAINLY THIS CAR IS OUT OF THE SHOT — the gate on everything the director is allowed
+    // to do to it, and a different question from `onScreen`. A car 40 m BEHIND the player scores
+    // `onScreen` 0 because the chase rig has no mirror, but round 4 still handed it the 1.5 %
+    // authority of a car sitting on the player's bumper, because the authority envelope was drawn
+    // in RAW DISTANCE. That is exactly backwards: the whole point of the envelope is "nothing you
+    // can see is being helped", and the road behind you is the one place a director can work
+    // freely. `hidden` is the visibility answer — 1 when the car is genuinely not in frame — and
+    // it is what both the band's authority and the re-station now key off.
+    this.hidden = clamp((1 - this.onScreen)
+      // …but not right on the bumper: a car two lengths behind is about to be a car you are racing,
+      // and it arrives at the mirror-less zone from a place you were looking at a second ago.
+      * smoothstep(14, 46, seen), 0, 1);
+    // THE LADDER IS ONE-SIDED BEHIND THE PLAYER — the round-6 fix, and the quiet half of the
+    // fast-player collapse.
+    //
+    // The band pulls a car toward its station from BOTH sides, which is right in front of the
+    // player and wrong behind them. A car the player has just passed sits at −2 m with a −17 m
+    // slot, and the band reads that as "you are fifteen metres too close" and trims its pace DOWN.
+    // So every place a quick player took made the field slower — and because `_pace` integrates
+    // the MEAN band across the field, it dragged the whole field's pace down with it: measured from
+    // the LA grid against a flat-out player, `fieldPace` fell 0.950 → 0.914 over the thirty seconds
+    // in which the player went from P8 to P1. The director was asking the field for four per cent
+    // less at exactly the moment it was being overtaken.
+    //
+    // A car behind the player is racing the player. The only reason left to ease one off is the
+    // chase lens — the rig hangs 6–12 m back with no mirror — so the near bound is BEHIND_KEEP and
+    // nothing between there and the ladder slot is corrected at all. In front of the player the
+    // band is unchanged: a car ahead of its slot is still held back, which is what keeps the field
+    // from running away from an ordinary player.
+    const nearBound = this.station < 0 ? Math.max(this.station, -BEHIND_KEEP) : this.station;
     // The deadband scales with the station: a car whose job is to sit on the player's bumper is
     // held to ±5 m, one holding 120 m to ±20. Inside it the driver races on its own pace, so the
     // field is not permanently micro-correcting toward a ladder.
-    const gapErr = aheadM - this.station;
+    const gapErr = aheadM < this.station ? aheadM - this.station
+      : (aheadM > nearBound ? aheadM - nearBound : 0);
     const dead = clamp(Math.abs(this.station) * 0.30, 5, 20);
     // The error is normalised on the station's OWN scale — the front of the pack, which is what
     // the shot is made of, is the tightest-held part of it.
@@ -737,8 +1177,22 @@ export class AIDriver {
     //
     // `onScreen` then takes another bite out of it, so a car that is somehow both distant and
     // squarely in frame is still nearly untrimmed.
-    const far = smoothstep(65, 260, seen);
-    const auth = lerp(0.015, 0.34, far) * lerp(1, this.band < 0 ? 0.30 : 0.10, this.onScreen);
+    // …and it is drawn in VISIBILITY, not in raw distance. `far` was `smoothstep(65, 260, seen)`,
+    // which gave a car 60 m BEHIND the player — a car in nobody's field of view, on a rig with no
+    // mirror — the same 1.5 % of authority as one on the player's front bumper. That is most of
+    // why the round-4 field, once it had fallen off the back of a quick player, never came back:
+    // measured on LA at a strong pace, every driver's trim was pinned and the whole field still
+    // went from 20 m to 864 m adrift. `hidden` (above) answers the question the envelope is
+    // actually asking, and the raw-distance term stays as the second half of it so a car a long
+    // way UP the road still gets the full allowance even when it is technically in frame.
+    const far = Math.max(smoothstep(65, 260, seen), this.hidden);
+    const auth = lerp(0.015, 0.34, far) * lerp(1, this.band < 0 ? 0.30 : 0.10, this.onScreen)
+      // …and the whole envelope is then scaled by how certainly the car is out of frame, which is
+      // the principle the envelope exists to state. Without it a car 160 m up the road — plainly
+      // a car, with taillights, on the same straight as you — could be held 16 % below its pace,
+      // and round 1's critic measured exactly that: `trimOnScreen` reaching 0.163 and sitting at
+      // ≥0.10 with three cars in frame for 42 % of a race. That is the field visibly waiting.
+      * lerp(0.35, 1, this.hidden);
     this.trim = clamp(this.band, -1, 1) * auth;
     // THE BAND NEVER RUNS AWAY FROM YOU. A car the player can see is only ever allowed to be
     // trimmed DOWN. Two-sided, the ladder would put its foot down the instant the player closed
@@ -777,11 +1231,17 @@ export class AIDriver {
     // 30 % too fast for, every corner, and round 2's back markers were spending 12–18 s a race off
     // the road doing exactly that. The time a catching car is allowed to make up is on the
     // straights, where being 30 % quick costs nobody anything and nobody can see it happen.
-    const basePace = clamp(this.paceMul * (ctx.fieldPace ?? 1), 0.60, 1.10);
-    // …and the straight-line half is capped at 1.24 of the CLASS figure, not of this driver's own
-    // normalised pace. Above that the car is asking for a speed its brakes cannot undo before the
-    // next corner however far ahead it looks, and a catch-up that ends in a barrier is not one.
-    const speedPace = clamp(basePace * (1 + this.trim), 0.52, 1.20);
+    // (bounds are PACE_FLOOR/PACE_CEIL, derived from the director's own range — see the comment
+    // there for why they are no longer literals)
+    const basePace = clamp(this.paceMul * (ctx.fieldPace ?? 1), PACE_FLOOR, PACE_CEIL);
+    // …and the straight-line half is capped at the director's own ceiling, not at some multiple of
+    // this driver's normalised pace. Above that the car is asking for a speed its brakes cannot
+    // undo before the next corner however far ahead it looks, and a catch-up that ends in a
+    // barrier is not one. In practice this bound is rarely what binds: `physics.js` caps every car
+    // at its own `topSpeed`, so the real straight-line ceiling is the race-prepped table (or the
+    // bottle), which is why the nitrous rewrite above is where the field's straight-line answer to
+    // a quick player actually lives.
+    const speedPace = clamp(basePace * (1 + this.trim), PACE_FLOOR * 0.95, PACE_CEIL);
     // THE CORNER HALF IS CLASS-FREE. `paceMul` above is a TOP-SPEED index and belongs on the
     // straights; feeding it into the corner solve as well (round 3) both double-counted the class
     // and was thrown away again by the tyre ceiling, which is why the SUV — nominally handed 14 %
@@ -789,8 +1249,9 @@ export class AIDriver {
     // every race last, 822 m adrift at the LA flag with HAN and LETTY never once changing places.
     // What is left here is what a DRIVER brings: skill, the field pace, and the corner half of
     // the band's trim.
+    // (bounds derived from the director's range, see PACE_FLOOR)
     const cornerPace = clamp(lerp(0.86, 1.00, this.skill) * (ctx.fieldPace ?? 1)
-      * (1 + this.trim * 0.40), 0.58, 1.12);
+      * (1 + this.trim * 0.40), PACE_FLOOR, PACE_CEIL);
     this.pace = cornerPace;
     // THE CORNER ASK. Every class is asked for the same reference figure (REF_LAT_G), tilted a
     // fifth of the way toward its own real ability so the supercar is still the best-handling car
@@ -1004,7 +1465,14 @@ export class AIDriver {
       && t.branches?.length && ctx.racing !== false && !this.finished) {
       for (const br of t.branches) {
         const d = wrapDelta(u, br.enterU) * t.length;
-        if (d <= 6 || d > 110) continue;
+        // 175 m OF APPROACH, not 110. A shortcut mouth on this project's four tracks sits at a
+        // corner exit as often as not (Vegas u = 0.279, NYC u = 0.145), and 110 m at 55 m/s is two
+        // seconds — the driver was still IN that corner when it had to decide, failed the tidiness
+        // test below, and by the time it had gathered the car up the mouth was behind it. The aim
+        // itself still only fades in over the last 55 m (see `targetPos` below), so deciding
+        // earlier changes nothing about where the car drives until it is nearly there; it only
+        // means the decision is taken somewhere the car is able to take one.
+        if (d <= 8 || d > 175) continue;
         // IS THIS CUT WORTH ANYTHING? Not every branch is: measured with tools/_race_cuts.mjs,
         // Miami's u 0.80→0.865 ribbon is 340 m of road replacing 157 m of street and LA's flood
         // channel is 38 m longer than the boulevard it leaves. A driver that dives into one of
@@ -1012,41 +1480,96 @@ export class AIDriver {
         // so the ones that lose distance are simply not on the menu. (Cached on the branch: the
         // geometry never changes.)
         if (br._gainM == null) br._gainM = wrap01(br.exitU - br.enterU) * t.length - br.length;
-        if (br._gainM < -8) { this.branchCool = 2.5; continue; }
-        // Round 3 gated this on `skill > 0.72 && (taste > 0.76 || band > 0.60)` and then put a
-        // 5 s cooldown on every rejection, which came to a field that took a signposted shortcut
-        // roughly never — including NYC, where the lit SHORTCUT gate is in frame in the chase
-        // capture. The appetite now has the thing the design has been asking for all along in it:
-        // the CLASS's own off-road grip, so the SUV (0.90) is the car that always takes the dirt
-        // line and the supercar (0.48) is the one that mostly stays on the tarmac.
-        // …and a driver good enough and TIDY enough to make the entry. A fumbled mouth is worth
-        // 7–14 s of a race spent grinding the kerb beside it — measured on Vegas's u = 0.279
-        // shortcut, a muscle car that should not have been trying it went off at the mouth twice
-        // in one race and sat against the barrier for 3.9 s each time.
-        const aligned = Math.abs(lateral) < 0.50 && Math.abs(b.slip) < 0.12 && this.offRec < 0.15;
-        const appetite = this.shortcutTaste * 0.70 + (p.offroadGrip ?? 0.58) * 0.80
-          + Math.max(0, this.band) * 0.40 + clamp(br._gainM / 40, -0.2, 0.30);
-        const wants = this.skill > 0.68 && appetite > 0.92;
-        if (wants && aligned) { this.wantBranch = br; this.branchCool = 0; }
-        // A driver that WANTS the cut and is merely still tidying up looks again in a quarter of
-        // a second, not in three. One rejection used to cost 80–190 m of the approach, which on a
-        // city whose mouth sits at the exit of a corner (Vegas, u = 0.279) meant the whole field
-        // drove past every shortcut it had every intention of taking.
-        else this.branchCool = wants ? this.rng.range(0.25, 0.6) : this.rng.range(2.5, 5.0);
+        // …and a branch that loses distance costs NO cooldown. Round 4 set one, which on a city
+        // whose long branch is listed before its good one (Miami: u 0.046 loses 62 m, u 0.575
+        // saves 26) blinded the driver to the shortcut it wanted for the next 2.5 s of road.
+        if (br._gainM < -8) continue;
+        // ONE DECISION PER APPROACH — a coin, weighted, thrown once and then honoured.
+        //
+        // Round 4 re-evaluated a hard threshold (`skill > 0.68 && appetite > 0.92`) every frame
+        // and ANDed it with a tidiness test taken at the same instant, so a driver whose appetite
+        // sat below the line took a shortcut NEVER — not this lap, not this race, not ever — and
+        // one above the line took every cut on the track every lap. Measured over full races: two
+        // of seven drivers (ROMAN in LA and NYC, four of seven in Vegas) finished with a cut count
+        // of exactly 0, and it was structural rather than unlucky.
+        //
+        // A probability, rolled once when the branch comes into view and cached for the rest of
+        // the approach, gives the same personalities a different shape: the SUV (off-road grip
+        // 0.90) takes a dirt line nearly every time it sees one, the supercar (0.48) takes it
+        // about half the time, and no driver is permanently excluded from a route the level
+        // designer lit a gate over. It is rolled per LAP as well as per branch, so the same car
+        // takes a different line on lap two than it did on lap one.
+        if (this._cutRoll !== br || this._cutRollLap !== this.lap) {
+          this._cutRoll = br; this._cutRollLap = this.lap;
+          const worth = clamp(br._gainM / 26, 0, 1);                 // 26 m saved is a full reason
+          const dirt = clamp(((p.offroadGrip ?? 0.58) - 0.46) / 0.44, 0, 1);
+          // …and the SAME SHOWTIME BIAS the handbrake flick and the nitrous carry. A shortcut is a
+          // piece of level design with a lit gate over it (§6.4), and a cut taken on the far side
+          // of the lap is a cut nobody knows happened: measured over full LA and NYC races, every
+          // driver was offered six usable branches a race and took four to seven of them, and the
+          // player saw almost none of it. A driver the player is actually looking at now takes the
+          // route the level designer signposted.
+          const show = this.onScreen * 0.30;
+          // …and the floor is 0.18, not 0.06. A driver whose personality lands at the bottom of
+          // every term (a supercar with no dirt grip, low taste and mid skill) rolled 0.42 and
+          // could go a whole race without taking one — which reads from outside as "the AI ignores
+          // the shortcuts" even though the mechanism works.
+          const chance = clamp(
+            0.30 + this.shortcutTaste * 0.38 + dirt * 0.32 + worth * 0.32
+            + Math.max(0, this.band) * 0.26 + (this.skill - 0.80) * 0.30 + show, 0.18, 0.96);
+          this._cutTake = this.rng.bool(chance);
+          // …and the reasoning is kept, bounded, for the probes: `cuts=0` next to a list of
+          // TAKEs is a driver missing entries, and next to a list of `no`s it is one refusing
+          // them. Telling those apart from the outside took a whole round the last time.
+          const dbg = this._cutDbg || (this._cutDbg = []);
+          if (dbg.length > 23) dbg.shift();
+          dbg.push(`L${this.lap} d=${Math.round(d)} p=${chance.toFixed(2)} ${this._cutTake ? 'TAKE' : 'no'}`);
+          this.cutSeen = (this.cutSeen || 0) + 1;
+          if (this._cutTake) this.cutWant = (this.cutWant || 0) + 1;
+        }
+        // The TIDINESS test has moved to where it belongs — the entry, not the decision (see the
+        // abandon branch below, which drops a cut the car is arriving at sideways or wide inside
+        // the last 45 m). Vetoing the decision with it meant the answer depended on whether the
+        // car happened to be straight 110 m earlier, which is a corner-exit lottery and not a
+        // driver making a choice.
+        if (this._cutTake) this.wantBranch = br;
+        else this.branchCool = 1.2;
         break;
       }
     }
     if (this.wantBranch && !this.branch) {
-      const d = wrapDelta(u, this.wantBranch.exitU) * t.length;
-      if (d < 0 || d > this.wantBranch.length + 140) { this.wantBranch = null; this.branchCool = 5; }
+      // MEASURED TO THE MOUTH, NOT TO THE EXIT — and this one line was the whole of "opponents
+      // never use the shortcuts".
+      //
+      // The guard used to read `wrapDelta(u, exitU) > length + 140`, i.e. "the far end of this
+      // branch is further away than the branch is long, plus a bit". On a branch whose two ends
+      // are 360 m apart along the street and whose ribbon is 345 m long (Vegas u 0.279) that
+      // expression is true of any car more than 125 m before the MOUTH — so a driver that had
+      // just decided to take the cut threw the decision away on the very next frame, silently,
+      // every time. Measured with tools/_race_cutlog_r1.mjs on Vegas: every driver was offered
+      // six usable shortcuts and DECIDED to take three to six of them, and between zero and two
+      // survived to the mouth. Widening the decision window (above) made it worse rather than
+      // better, because the further out you decide, the more certain this test is to fire.
+      //
+      // What the guard is actually for is "I am not going to reach this mouth": the car is past
+      // it, or it has gone backwards. That is a distance to the MOUTH, and it is signed.
+      const dm = wrapDelta(u, this.wantBranch.enterU) * t.length;
+      if (dm < -12 || dm > 210) { this.wantBranch = null; this.branchCool = 3; }
       // …and a driver ABANDONS a cut it is not going to make. The aim fades in over the last 55 m
-      // (below) and a car arriving there sideways, wide, or well over its own corner solve is not
-      // entering a 7.5 m ribbon — it is about to put two wheels on the kerb beside the mouth and
-      // spend four seconds there. Straighten up, stay on the street, take it next lap.
-      else if (Math.abs(b.slip) > 0.26 || b.drift > 0.62 || Math.abs(lateral) > 0.80
-        || (speed - target) > 12) {
-        const dm = wrapDelta(u, this.wantBranch.enterU) * t.length;
-        if (dm < 45) { this.wantBranch = null; this.branchCool = 4; }
+      // (below) and a car arriving there genuinely sideways, or well over its own corner solve, is
+      // not entering a 7.5 m ribbon — it is about to put two wheels on the kerb beside the mouth
+      // and spend four seconds there. Straighten up, stay on the street, take it next lap.
+      //
+      // It is a test for TROUBLE, not for POSITION. At |lateral| > 0.80 it was neither: measured on
+      // Vegas, most of the aborts were cars sitting at exactly 0.80 with zero drift and a tenth of
+      // a radian of slip — i.e. cars on a perfectly ordinary wide corner-exit line, which is where
+      // that shortcut's mouth is, being told they were in trouble by the very line that was taking
+      // them to it. And it is bounded at the near end: aborting 7 m from a mouth the car is already
+      // turning into leaves it pointing at nothing, which is worse than either committing or never
+      // having tried, so inside 12 m the decision stands.
+      else if (dm > 12 && dm < 40 && (Math.abs(b.slip) > 0.30 || b.drift > 0.66
+        || Math.abs(lateral) > 1.00 || (speed - target) > 14)) {
+        this.wantBranch = null; this.branchCool = 4;
       }
     }
 
@@ -1169,6 +1692,13 @@ export class AIDriver {
       // reaction time off the line — eight cars do not leave on the same frame
       this.launchT -= dt;
       throttle = 0.62; brake = 1; steer = 0;
+      // NOTE (round 6): `launchSpin` is a SPECTACLE flag, not a performance one. It sets
+      // throttle = 1 and skips the traction management below, but that management keys on SLIP
+      // ANGLE, which is ~0 in a straight-line standing start — so the normal controller asks for
+      // full throttle at zero speed anyway and this changes nothing about how the car leaves.
+      // What it does is drive the smoke and the skid ribbons in `updateVisuals`. Shortening it to
+      // buy the heavy classes a better lap 1 was tried and measured: bit-identical race, shorter
+      // grid smoke. It stays as it is.
       if (this.launchT <= 0) this.launchSpin = this.rng.range(0.5, 1.1);
     } else if (this.launchSpin > 0) {
       // and they leave it lit: full throttle out of the box, which the tyre model turns into
@@ -1224,13 +1754,25 @@ export class AIDriver {
     // of the straight, and arrived at it 30 m/s too fast: the two SUVs were the only cars in the
     // field with double-digit off-track times (16–24 s a race, 7–10 barrier hits) and every one of
     // their excursions was at the end of a boost.
-    // …and the reach is now the car's OWN stopping distance from the speed the bottle will carry
-    // it to, not a flat multiple of current speed. Those are the same number for a supercar and
-    // very different ones for a 2.5 tonne car with the weakest brakes in the field: measured, the
-    // SUV's off-track time was 9.7 s with the opponents' nitrous ablated and 19.7 s with it on,
-    // and every one of the excursions was at the end of a boost.
-    const vBoost = speed * 1.30;
-    const nosReach = clamp(70 + (vBoost * vBoost) / (2 * Math.max(6, decel)), 180, 460);
+    // …and round 5 made the reach the car's OWN STOPPING DISTANCE from the speed the bottle would
+    // carry it to — up to 460 m of road that all had to be straight before anybody would light one.
+    //
+    // ROUND 6: THAT TEST IS THE FIELD'S BIGGEST SINGLE TIME LOSS. On a street circuit almost no
+    // part of the lap has 460 m of straight in front of it, so `straightAhead` was ~0 nearly
+    // everywhere: measured over a full-pace LA race the seven opponents spent 6–18 % of the race
+    // on the bottle while the player — who simply holds the button down — spent about a third of
+    // theirs on it. `physics.js` caps every car at its own `topSpeed`, so a pace trim on a straight
+    // is a NO-OP once the ask is already past that cap, and nitrous is therefore the ONLY quantity
+    // that lifts an opponent's real vMax. A field that will not spend its tanks cannot answer a
+    // player who is quicker than its top speed, whatever the director does — which is exactly the
+    // race the round-2 critic measured: 84 % of the race with no opponent ahead of the player.
+    //
+    // The conservatism is not needed here, because the two things it was protecting against are
+    // handled downstream and better: the corner solve above already looks 380 m ahead and has
+    // already set `target`, and `overLift` below cancels a live boost the moment the car is over
+    // that target. So the only question this has to answer is "is there enough road in front of me
+    // to be worth lighting it", and the answer is about two seconds of road.
+    const nosReach = clamp(speed * 2.4, 110, 260);
     let straightAhead = 1;
     for (let d = 20; d < nosReach; d += nosReach / 9) {
       straightAhead = Math.min(straightAhead, 1 - smoothstep(0.006, 0.020, Math.abs(t.turnRate(u + d / t.length))));
@@ -1242,13 +1784,33 @@ export class AIDriver {
       // spent, a bottle fired in front of the player is the reference frame
       // …but only two plumes are ever lit in shot at once. Three or four cars boosting in the same
       // frame is not more spectacular, it is a fireworks display, and it costs ~5 fps of fill.
+      // …AND NO MORE THAN TWO PLUMES IN FRAME, as a rule rather than as a bias. Round 5 dropped
+      // the showtime bonus to zero once two were lit but still let a third and a fourth car fire
+      // on their own base desire, and round 6 roughly doubled how often the field reaches for the
+      // bottle — three or four jets in one frame is not more spectacular, it is a fireworks
+      // display, and it is the most expensive fill in the game. Cars the player cannot see are not
+      // counted and are not restrained: an opponent chasing on the far side of the lap is exactly
+      // who should be spending its tank.
+      const inFrame = (ctx.boostBudget ?? 0) >= 2 && this.onScreen > 0.30;
       const show = (ctx.boostBudget ?? 0) < 2 ? this.onScreen * 0.55 : 0;
+      // A DRIVER THAT IS BEHIND WHERE IT WANTS TO BE EMPTIES THE TANK. This is the honest half of
+      // the round-6 fix: the band asks for pace, pace is capped at the car's own top speed, and the
+      // bottle is the only thing on the car that goes past it. So the further behind its station a
+      // driver is, the harder it leans on the one part of its own car that can do something about
+      // it — and it is spending the SAME three tanks, refilled off the SAME boost pads, on the same
+      // state machine as the player. Nothing is granted.
+      const chase = Math.max(0, this.band);
       const desire = straightAhead
-        * (0.30 * this.boostEager + duel + Math.max(0, this.band) * 0.30 + show);
-      if (speed > p.topSpeed * 0.45 && b.drift < 0.45 && this.offRec < 0.2
-        && this.rng.bool(clamp(desire, 0, 1) * dt * 2.6)) {
+        * (0.46 * this.boostEager + duel + chase * 0.85 + show);
+      if (!inFrame && speed > p.topSpeed * 0.42 && b.drift < 0.45 && this.offRec < 0.2
+        && this.rng.bool(clamp(desire, 0, 1) * dt * 3.4)) {
         wantBoost = true;
-        this.boostCool = this.rng.range(2.5, 7.0) * lerp(1.5, 0.7, this.boostEager);
+        // …and the cooldown is short enough that the TANK ECONOMY is what limits them rather than
+        // a timer. A tank refills in 5–12 s depending on class (`nitrous.js` refill × 0.30), which
+        // is the real budget; round 5's 2.5–10.5 s timer on top of it meant a car could not even
+        // spend what it had.
+        this.boostCool = this.rng.range(1.1, 3.4)
+          * lerp(1.4, 0.7, this.boostEager) * lerp(1, 0.55, chase);
       }
     }
     // Lift for the corner — and lift NOW, not after the half-second minimum, if the car is already
@@ -1403,6 +1965,18 @@ export class Race {
     this.contacts = 0;
     this.playerContacts = 0;
     this.reforms = 0;
+    this.restations = 0;          // frames on which the director slid somebody (see _restation)
+    this.slideM = 0;              // …and the total metres of road it moved under the field
+    // …SPLIT BY DIRECTION, because the two halves are completely different claims. FORWARD is road
+    // GRANTED to a car that could not drive it — the thing the round-2 critic counted and the only
+    // half that can hand anybody a place. BACKWARD is the director holding an over-eager field to
+    // the ladder, which costs the player nothing and can only ever make the race harder. A single
+    // total hid a race in which most of the movement was the second kind.
+    this.slideFwd = 0;
+    this.slideBack = 0;
+    this.slideSeenMax = 0;        // worst `onScreen` of any car at the instant it was slid
+    this.slideNearest = Infinity; // …and the closest one has been to the player when slid
+    this._slideRate = 0;
     this._lastPlayerPos = null;
     this._playerCounter = new Progress(0);
     this._traffic = [];
@@ -1434,10 +2008,16 @@ export class Race {
     //
     // A race director casts the other way round. The heavy, low-grip cars get the BEST drivers and
     // the fast ones get the rookies, which is both a better story (the guy in the truck is the one
-    // to watch) and the thing that turns four classes with a 5 s-a-lap spread into a field that
-    // finishes within a few seconds of each other. It is not a cheat: every car still drives on
-    // its own tyres, brakes and top speed — only the hands are dealt differently. A little jitter
-    // keeps it off a perfect anti-correlation, which would read as scripted.
+    // to watch) and a second, visible reason the order is not the class table read out loud. It is
+    // not a cheat: only the hands are dealt differently.
+    //
+    // It is no longer load-bearing, though, and it should not be: `racePrepped` above now takes
+    // the field's solo lap-time spread from 8.55 s to 2.34 s at identical skill, and the ±14 % of
+    // corner commitment this ladder is worth is a TILT on top of an even field rather than the
+    // thing holding one together. The ranking is deliberately still taken on the SHOWROOM tables
+    // (`getVehicle().spec`, not the prepped copy), because what it is casting for is the class's
+    // character — the truck is the truck whatever tyres it is on. A little jitter keeps it off a
+    // perfect anti-correlation, which would read as scripted.
     const ability = (v) => {
       const ph = v.spec.physics;
       return Math.pow((ph.topSpeed || 74) / 74, 0.5)
@@ -1518,6 +2098,10 @@ export class Race {
     this.lapTimes = [];
     this.events.length = 0;
     this.fieldPace = START_PACE;
+    this._paceI = START_PACE; this._slideRate = 0;
+    // the re-station audit is per RACE, or the worst case it reports is somebody else's
+    this.restations = 0; this.slideM = 0; this.slideSeenMax = 0; this.slideNearest = Infinity;
+    this.slideFwd = 0; this.slideBack = 0;
     this._paceErr = 0; this._lastRank = null; this._heldRank = null; this._shoutRank = null;
     this._order();
     return slot;
@@ -1638,6 +2222,7 @@ export class Race {
         ? ex.map((e) => e.position.clone())
         : [new THREE.Vector3(0, 0.45, -(dims.length ?? 4.6) / 2)];
       const jet = new NitrousJet(d.spec.nitro, { nozzles });
+      this._jetWarm = 3;              // …compiled on the grid, not on lap one — see updateVisuals
       // The player's jet carries a point light; seven more would change the light count every
       // material in the scene compiles against. The plume itself is the spectacle — take the
       // lamp off and the opponents cost nothing until they actually fire.
@@ -1671,13 +2256,47 @@ export class Race {
       (this._camPlayerPrev || (this._camPlayerPrev = new THREE.Vector3()))
         .copy(this._lastPlayerPos || camPos);
     }
+    // WARM THE OPPONENTS' PLUME SHADERS ON THE GRID.
+    //
+    // Every material in a NitrousJet compiles the first time it is RENDERED, and until round 6 no
+    // opponent was allowed near its tank for the first 7–16 s of a race, so that compile happened
+    // somewhere out on lap one — measured on the real GPU in Miami, a single 795 ms frame, which is
+    // a visible three-quarter-second freeze the first time anybody in the field lights a bottle.
+    // (The round-5 lockout did not fix it, it just moved it past the end of `tools/perf.mjs`'s
+    // measuring window, which is why the number looked clean.)
+    //
+    // So the director lights every opponent's jet for a few frames while the field is stationary on
+    // the grid, at a scale of 1/1000 — nothing is on screen, the programs are compiled, and the
+    // first real boost of the race costs what every later one costs. The one place a hitch is free
+    // is behind a countdown.
+    const warm = this._jetWarm > 0 ? this._jetWarm-- : 0;
     for (const d of this.drivers) {
       const b = d.body;
       if (d.jet) {
-        if (d.nitro.justFired) d.jet.ignite();
-        d.jet.update(dt, d.nitro.flame, {
-          speed: Math.abs(b.speed), camera, surge: d.nitro.surge, ramp: d.nitro.ramp,
-        });
+        if (warm) {
+          d.jet.group.scale.setScalar(1e-3);
+          if (warm > 2) d.jet.ignite();
+          d.jet.update(dt, 0.5, { speed: 40, camera, surge: 0.5, ramp: 0.5 });
+        } else {
+          if (d.jet.group.scale.x !== 1) { d.jet.group.scale.setScalar(1); d.jet.update(dt, 0, {}); }
+          // …AND A PLUME NOBODY CAN SEE IS NOT DRAWN. Every part of a NitrousJet sets
+          // `frustumCulled = false` (it has to — the geometry is rebuilt in local space every
+          // frame and its bounds lie), so an opponent boosting 200 m up the road, or one boosting
+          // BEHIND a chase rig that has no mirror, still pays full additive fill. Round 6 roughly
+          // doubled how often the field reaches for the bottle, so this went from a rounding error
+          // to real money on the fill-bound cities. `onScreen` is the driver's own answer to "can
+          // the player see me", already computed this frame; the 35 m term is the belt to its
+          // braces, because a plume just off the edge of frame can still throw light on the road.
+          const show = d.onScreen > 0.01
+            || !camPos || b.pos.distanceToSquared(camPos) < 35 * 35;
+          if (d.jet.group.visible !== show) d.jet.group.visible = show;
+          if (show) {
+            if (d.nitro.justFired) d.jet.ignite();
+            d.jet.update(dt, d.nitro.flame, {
+              speed: Math.abs(b.speed), camera, surge: d.nitro.surge, ramp: d.nitro.ramp,
+            });
+          }
+        }
       }
       if (!camPos) continue;
       // NEAR-PLANE CULL — see LENS_CULL. `_lensClear` keeps this from happening at all in almost
@@ -1743,6 +2362,8 @@ export class Race {
     for (const c of this.cars) {
       if (c) c.visible = true;                 // undo any near-plane cull before handing them back
       if (!c?.userData?.jet) continue;
+      c.userData.jet.group.visible = true;     // …and any off-camera plume cull
+      c.userData.jet.group.scale.setScalar(1);
       c.userData.jet.group.removeFromParent();
       c.userData.jet.dispose();
       c.userData.jet = null;
@@ -2073,11 +2694,17 @@ export class Race {
         this._holdP = null;
         for (const d of this.drivers) {
           d.launchT = d.reaction; d.launchSpin = 0; d.gridPos = null;
-          // NOBODY SPENDS A BOTTLE ON THE RUN TO TURN ONE. Left to the general boost logic the
-          // whole field lit up on the green — seven cars through 240 mph inside six seconds, 200 m
-          // clear of a player still in third gear, and a first lap with an empty road in it. They
-          // save it for the open road, on their own staggered timers.
-          d.boostCool = d.rng.range(7, 16);
+          // THE RUN TO TURN ONE IS A NITROUS ZONE FOR EVERYBODY, INCLUDING THEM.
+          //
+          // Round 3 locked the field out of its tanks for 7–16 s off the green, because the boost
+          // logic of the day had the whole field lit up on the line and 200 m clear of a player
+          // still in third gear. That logic has two gates it did not have then — a boost needs
+          // `speed > 0.42 × topSpeed` (so nobody fires from a standing start) and it needs road in
+          // front of it — and the lockout had become the largest reason the START HAD NO
+          // CONSEQUENCE: measured from the grid in LA and NYC, a full-throttle player went from
+          // P8 to P1 inside 15 s while seven cars sat on tanks they were not allowed to use.
+          // A short, staggered lockout is a field getting off the line, not a field standing aside.
+          d.boostCool = d.rng.range(1.2, 4.2);
         }
       }
       this._lastPlayerPos = this._lastPlayerPos || playerBody.pos.clone();
@@ -2186,11 +2813,16 @@ export class Race {
       racing: this.state !== 'countdown',
     };
     for (const d of this.drivers) d.step(dt, ctx);
+    // …and THEN the director's own two position powers, in that order: the re-station reads the
+    // `hidden` and `onScreen` the drivers have just computed, and `_recover` is the harder case of
+    // the same idea (a car that is not moving at all).
+    this._restation(dt, playerBody);
     this._recover(playerBody, dt);
 
     this._separate(playerBody, dt);
     this._deadline();
-    this._order();
+    // …and on the flag frame the order settles on raw progress before it freezes (see `_order`).
+    this._order(this._finishPending);
     if (this._finishPending) {
       // the results table is the standings AFTER this frame's ordering — snapshotting it inside
       // the lap-completion branch captured the previous frame, so the winner's own results row
@@ -2320,14 +2952,21 @@ export class Race {
    * FIELD PACE — the one piece of rubber banding that acts on everybody at once, and the reason
    * the race is a race whoever is holding the controller.
    *
-   * A slow integrator, bounded to 0.82–1.13 of the field's own ability and moving at up to 1.6 %
-   * of pace per second — far under what anybody can perceive on a car they are racing. What it
+   * A PI loop with anti-windup, bounded to PACE_LO..PACE_HI of the field's own (race-prepped)
+   * ability and moving slowly enough that nobody can perceive it on a car they are racing. What it
    * buys is that a driver 15 % off the pace still has a race in front of them, and one quicker
    * than the field still has to earn the win: the previous pass had a fixed pace, and a
    * reference-quality lap finished DEAD LAST, 230 m behind, in every city.
    *
-   * Two guards keep it honest: it never speeds the field up by more than 13 % (so it cannot pass a
-   * good player by cheating), and it freezes entirely while the player is crashed or stationary
+   * Three things about it are round-6 and each is documented at the line that does it: the OPENING
+   * is one-sided (the loop may only ask for more while the grid is still sorting itself out), the
+   * gains are twice what they were (round 5's took forty seconds to reach its own ceiling, which is
+   * most of lap one of a three-lap race), and the range it works in is wider — because the CARS are
+   * quicker now (`racePrepped`), not because the director was handed more authority.
+   *
+   * Two guards keep it honest: it is BOUNDED at both ends by numbers the field can genuinely drive
+   * (so it cannot pass a good player by cheating — see the solo ablation in the round-6 ledger at
+   * the top of this file), and it freezes entirely while the player is crashed or stationary
    * rather than collapsing the whole field to a crawl behind them.
    */
   _pace(dt, playerBody) {
@@ -2344,18 +2983,70 @@ export class Race {
     let sum = 0, n = 0;
     for (const d of this.drivers) { if (!d.finished) { sum += d.band; n++; } }
     if (!n) return;
-    const err = lerp(this._paceErr ?? 0, sum / n, 1 - Math.exp(-dt / 4));
+    // …PLUS THE EFFORT THE RE-STATION IS SPENDING, which is the half of the error the band cannot
+    // see. Once `_restation` is holding the field on its ladder the mean band goes to zero BY
+    // CONSTRUCTION — the positions are right — and a controller reading only the band would then
+    // conclude that the field's pace is correct while the director drags seven cars along by the
+    // scruff of the neck. The drag rate is the true error: a positive number means the field is
+    // genuinely too slow for whoever is holding the controller. Scaled so 6 m/s of mean drag is
+    // full deflection, and weighted above the band because it is the unambiguous signal.
+    const drag = clamp((this._slideRate ?? 0) / 6, -1, 1);
+    let want = clamp(sum / n + drag * 1.3, -1.6, 1.6);
+    // THE OPENING IS NOT A STEADY STATE, AND THE LADDER MUST NOT BRAKE THE FIELD THROUGH IT.
+    //
+    // AHEAD_SLOTS is a mid-race shape — the whole field inside 122 m of the player. On the run to
+    // turn one none of that is true yet: the grid is 25 m deep, the player starts on the back row,
+    // and a field getting off the line properly is legitimately 100–200 m up the road by the first
+    // sequence of corners. The band reads that as "everybody is past their slot" and the loop
+    // obediently slows the field down — measured on LA against a flat-out player, `fieldPace` ran
+    // 0.95 → 0.98 → 0.93 → 0.86 → 0.849 over the first thirty seconds, i.e. the director took five
+    // per cent off the field's pace during exactly the phase in which the player was driving past
+    // all seven of them, and then spent the next fifteen seconds putting it back. That is the
+    // "start with no consequence" the round-2 critic measured from the other end.
+    //
+    // So for the opening the loop may only ask for MORE. A player who starts last and is quicker
+    // than the field still gets through — they just have to do it against a field that is racing
+    // rather than one the director has just throttled.
+    if (this.time < PACE_GRACE) want = Math.max(0, want);
+    const err = lerp(this._paceErr ?? 0, want, 1 - Math.exp(-dt / 4));
     this._paceErr = err;
     if (Math.abs(playerBody.groundSpeed) < 8 && this.time > 4) return;   // crashed: hold, do not sag
-    // Full deflection means the entire field is ~100 m off station, and even then it is 1.6 % of
-    // pace a second. Deliberately narrow bounds: wider and the loop oscillates on a one-lap
-    // period — the field escapes on lap one, the director over-corrects, and the player drives
-    // past all seven of them on lap two, which is worse racing than either end of the swing.
-    // Round 2 held this to 0.80–1.06 at 1.2 %/s and it spent whole races welded to a bound, which
-    // is a controller that is not regulating. With the per-car authority above doing the real work
-    // the field pace only has to trim the whole grid's ability toward the driver holding the
-    // controller, but it still needs somewhere to go: 0.82–1.13 at 1.6 %/s.
-    this.fieldPace = clamp(this.fieldPace + err * 0.016 * dt, 0.82, 1.13);
+    // THE LOWER BOUND HAS TO CLEAR THE FIELD'S OWN ABILITY, and the race-prepped field (see
+    // `racePrepped`) is quick: alone on the road at identical hands and pace 1.0 it laps LA in
+    // 48.8–51.8 s, where a 0.92-pace racing-line autopilot laps it in 58.6 s. Anything above ~0.70
+    // therefore leaves an ordinary player with no race at the bottom of the range. What has
+    // changed is that saturation is no longer the end of the director's authority: `_restation`
+    // picks up whatever the pace cannot do, and it only had to move 295 m of road in the whole of
+    // that 186-second race.
+    //
+    // A PURE INTEGRATOR IS A BANG-BANG CONTROLLER, and that is what round 4 shipped: measured on
+    // LA at a moderate player pace, `fieldPace` ran 0.95 → 0.62 (its floor, where it sat for a
+    // THIRD of the race) → 0.98 → 0.62 again, a ~100-second limit cycle with the field 255 m up
+    // the road at one end of it and 246 m down the road at the other. The AI's own lap times swung
+    // 52.7 s → 64.1 s inside one race, which is the field visibly waiting.
+    //
+    // So: a real PI. The integrator is slower than round 4's and the proportional term does the
+    // fast work, which is what stops the loop winding past its target and then having to wind all
+    // the way back. Anti-windup is explicit — the integrator refuses to accumulate further into a
+    // bound it is already sitting on — so a race the director cannot win (a player quicker than
+    // the field's ceiling) leaves the integrator ready to respond the instant they slow down,
+    // instead of parked 0.5 past the stop and taking half a lap to come off it.
+    // …AND IT HAS TO ARRIVE INSIDE LAP ONE. Round 5's gains (kP 0.055, kI 0.013/s) took the loop
+    // FORTY SECONDS to walk from START_PACE to its ceiling — most of the first lap of a three-lap
+    // race — so against a flat-out player the field ran the whole of lap 1 at 0.92–0.98 of the pace
+    // the director had already decided it wanted, and lost 2–4 s a car before the loop had even
+    // arrived. Measured on LA: opponents' lap 1 46.2–48.7 s against their own lap 2 of 43.7–44.4 s
+    // with the player lapping in 43.8 s, i.e. the ENTIRE deficit that the re-station then had to
+    // pay for with 2.3 km of dragged road was the controller's rise time. Doubled here, with the
+    // proportional term doing most of the extra work — which is the term that cannot wind up, so
+    // the limit cycle round 5 fixed does not come back (verified at 0.85, 1.00 and 1.30 player
+    // pace: no oscillation, and the pace now settles inside the first 15 s).
+    const kP = 0.105;
+    const iPrev = this._paceI ?? this.fieldPace;
+    const outPrev = clamp(iPrev + err * kP, PACE_LO, PACE_HI);
+    const saturated = (outPrev >= PACE_HI - 1e-6 && err > 0) || (outPrev <= PACE_LO + 1e-6 && err < 0);
+    this._paceI = saturated ? iPrev : clamp(iPrev + err * 0.030 * dt, PACE_LO, PACE_HI);
+    this.fieldPace = clamp(this._paceI + err * kP, PACE_LO, PACE_HI);
   }
 
   /**
@@ -2388,6 +3079,122 @@ export class Race {
       d.stationT -= dt;
       if (d.stationT <= 0) { d.stationT = d.rng.range(7, 16); d.stationJit = d.rng.range(0.82, 1.24); }
     }
+  }
+
+  /**
+   * RE-STATION — the one mechanism in this file with the authority to fix a gap the band cannot.
+   *
+   * THE PROBLEM IT SOLVES. Every knob the director had before this acted on PACE, and pace has a
+   * hard ceiling: a car cannot exceed its own top speed however badly the director wants it back.
+   * Measured on LA with `tools/_r2race_diag.mjs` against a strong autopilot (44 s laps): the field
+   * pace sat welded to its 1.13 stop for 73 % of the race, every driver's trim sat on its bound,
+   * and the field still went from 20 m at the first corner to 446–864 m adrift at the flag, with
+   * NO opponent ahead of the player in 96 % of samples. Three laps of empty road. The same probe
+   * at a slower player pace showed the mirror image and a 100-second limit cycle: the field ran
+   * 255 m clear, the pace integrator hit its 0.62 floor and sat there for a third of the race, the
+   * player drove past all seven, and the whole thing swung back the other way. In both cases the
+   * pace loop is not regulating — it is saturated, and the race is decided by which side of the
+   * saturation the player is on.
+   *
+   * WHAT IT DOES. A car that is genuinely not in the picture — behind the chase rig, which has no
+   * mirror, or far enough up the road to be a few pixels — has the road slid under it toward the
+   * station the ladder already wants it on. It is not a teleport and not a respawn: at most half a
+   * car length per frame, capped at `RESTATION_MAX` m/s, tapering to nothing as the car nears its
+   * station, with its speed, its lateral, its height and its heading relative to the road all
+   * preserved (`AIDriver.slide`). And it stops `RESTATION_HOLD` metres short of the player's own
+   * track position in both directions, so the last 60 m — the part that becomes the shot — is
+   * always driven.
+   *
+   * WHY IT IS NOT A CHEAT YOU CAN CATCH. It is gated on `hidden`, which is zero for anything in
+   * frame and for anything within 46 m in any direction, so it never acts on a car you are looking
+   * at or racing; it can only ever move a car TOWARD the ladder, so it cannot take a place off
+   * anyone or hand one out; and the pace loop below integrates how much of it the director had to
+   * spend (`_slideRate`), so the field's actual driving pace rises to meet a quick player rather
+   * than the director dragging the same cars forward all race.
+   *
+   * …AND IT IS THE LAST RESORT, NOT THE FIRST — the round-6 gate. Round 5 let the slide act at full
+   * rate whatever the pace loop was doing, so the director reached for POSITION while it still had
+   * unspent PACE in hand: measured on LA against a flat-out player, 5,130 m of road went under the
+   * field in one race — roughly 700 m a car, a tenth of the race distance granted rather than
+   * driven — and a good part of it was spent while `fieldPace` was still climbing through the
+   * middle of its range. The slide's rate is now scaled by how close the pace loop is to its own
+   * ceiling (`_paceSat`), so the director exhausts the honest knob before it touches the dishonest
+   * one, and the same audit numbers say what it cost.
+   */
+  _restation(dt, playerBody) {
+    this._slideRate = 0;
+    if (!AI_TUNE.restation || this.state !== 'racing' || this.time < RESTATION_DELAY) return;
+    // A PLAYER WHO IS NOT DRIVING IS NOT A PACE THE FIELD SHOULD BE HELD TO — the same guard
+    // `_pace` has, and it is not cosmetic. The ladder wants the field within 122 m of the player,
+    // so with the car parked on the grid the director spent the whole race dragging seven cars
+    // backwards at 30 m/s: measured on an idle-player NYC probe, the field was still on LAP 0 at
+    // 356 s with no lap time recorded by anybody and the race had no winner to start the flag's
+    // deadline from. Crashed or stationary, the race carries on around them.
+    if (Math.abs(playerBody.groundSpeed) < 8 && this.time > 4) return;
+    // PACE FIRST, POSITION SECOND. Full authority only once the honest knob is spent: at the top
+    // of the pace loop's range the field is already driving as fast as the director can ask, and
+    // the gap that is left is the one only position can close. Anywhere in the middle of the range
+    // the answer is more pace, and the loop is already asking for it (`_pace` integrates
+    // `_slideRate`, so what little slide is allowed here still tells it to).
+    const sat = this.fieldPace >= 1
+      ? smoothstep(PACE_HI - 0.14, PACE_HI - 0.02, this.fieldPace)          // dragging the field UP
+      : smoothstep(PACE_LO + 0.14, PACE_LO + 0.02, this.fieldPace);          // …or holding it back
+    const slideAuth = lerp(0.12, 1, sat);
+    const budget = this.slideBudget;
+    const L = this.track.length;
+    let sumV = 0, n = 0;
+    const ctx = { time: this.raceTime, laps: this.laps };
+    for (const d of this.drivers) {
+      d.slideV = 0;
+      if (d.finished) continue;
+      n++;
+      // A car ON a shortcut has its position on the lap defined by the branch's arc length, not by
+      // the street's — sliding it would drop it onto the road it is not on. It comes back onto the
+      // street in a second or two and can be re-stationed then.
+      if (d.branch || d.wantBranch) continue;
+      const gap = (d.progress - this.playerProgress) * L;
+      const err = gap - d.station;
+      if (Math.abs(err) < RESTATION_DEAD || d.onScreen > RESTATION_SEEN) continue;
+      // out of shot AND a long way from being in it: `hidden` is the visibility test, the distance
+      // term is the belt to its braces (a car can be behind the player and still six metres away)
+      const seen = d.body.pos.distanceTo(playerBody.pos);
+      const vis = d.hidden * smoothstep(45, 85, seen);
+      if (vis < 0.02) continue;
+      const rate = RESTATION_MAX * clamp((Math.abs(err) - RESTATION_DEAD) / 120, 0, 1) * vis * slideAuth;
+      let ds = clamp(-Math.sign(err) * rate * dt, Math.min(0, -err), Math.max(0, -err));
+      // …and never through the player. The corridor is the same either side, so a car being reeled
+      // in from up the road stops at 60 m ahead and one being brought back stops 60 m behind.
+      if (gap < 0 && ds > 0) ds = Math.min(ds, Math.max(0, -gap - RESTATION_HOLD));
+      else if (gap > 0 && ds < 0) ds = Math.max(ds, Math.min(0, -gap + RESTATION_HOLD));
+      // …AND NEVER MORE THAN THE CAR IS ITSELF DOING. A drag bigger than the car's own speed is a
+      // tow rope, and a BACKWARD one that big stops the car making progress at all — which is a
+      // race that cannot end. Capped at 45 % of ground speed, a re-stationed car is always still
+      // driving forward down the road, whatever the director wants.
+      const cap = Math.abs(d.body.groundSpeed || d.body.speed || 0) * 0.45 * dt;
+      ds = clamp(ds, -cap, cap);
+      // …AND NEVER MORE, ALL RACE, THAN THE BUDGET (see SLIDE_BUDGET_FRAC). Holding the field back
+      // is unbudgeted — it can only ever make the race harder — but road GRANTED to a car that
+      // could not drive it is finite, and when it runs out the field has to drive.
+      if (ds > 0) ds = Math.min(ds, budget - this.slideFwd);
+      if (Math.abs(ds) < 1e-4) continue;
+      d.slide(ds, ctx);
+      d.slideV = ds / dt;
+      sumV += d.slideV;
+      this.slideM += Math.abs(ds);
+      if (ds > 0) this.slideFwd += ds; else this.slideBack -= ds;
+      this.restations++;
+      // THE AUDIT. The whole claim this mechanism rests on is "never on a car you can see", so the
+      // director records the worst case against itself: the largest `onScreen` any car has had at
+      // the instant it was moved, and the closest one has been to the player. A probe reads these
+      // rather than taking the gating logic's word for it.
+      if (d.onScreen > this.slideSeenMax) this.slideSeenMax = d.onScreen;
+      if (seen < this.slideNearest) this.slideNearest = seen;
+    }
+    // The mean drag across the field, m/s — the anti-windup signal the pace loop integrates. A
+    // positive number means the director is having to pull the field along, i.e. the field is
+    // genuinely too slow for whoever is driving, and the answer to that is more pace and less
+    // dragging.
+    this._slideRate = n ? sumV / n : 0;
   }
 
   /**
@@ -2593,7 +3400,16 @@ export class Race {
 
   // ---------------------------------------------------------------- standings
 
-  _order() {
+  /**
+   * @param settle  true on the ONE frame the flag falls. The order hysteresis below exists so the
+   *   on-screen deck does not strobe while two cars run wheel to wheel; it has no business
+   *   deciding a RESULT. Measured with tools/_race_verify.mjs: in LA and again in Vegas the
+   *   results table put a car 5.4 m and 9.1 m up the road BEHIND the one it had just passed,
+   *   because the pass was inside ORDER_HYST when the chequer fell and the previous order was
+   *   carried into the frozen classification. On the flag frame the not-yet-finished cars are
+   *   therefore sorted on raw progress, once, and THAT is what freezes.
+   */
+  _order(settle = false) {
     const t = this.track;
     // `finished` here means COMPLETED THE DISTANCE, not "the race is over". Round 3 wrote
     // `this.state === 'finished'` — which is also true when the flag falls on a player who never
@@ -2637,11 +3453,11 @@ export class Race {
     const byName = this._byName || (this._byName = new Map());
     byName.clear();
     for (const x of all) byName.set(x.name, x);
-    if (this._orderNames && this._orderNames.length === all.length) {
+    if (this._orderNames && this._orderNames.length === all.length && !settle) {
       order = this._orderNames.map((n) => byName.get(n));
       if (order.some((x) => !x)) order = raw.slice();
     } else order = raw.slice();
-    if (!this._classified) {
+    if (!this._classified && !settle) {
       const H = ORDER_HYST / t.length;
       const swapT = this._swapT || (this._swapT = new Map());
       const jumps = (A, B) => {                       // does B belong in front of A?
@@ -2730,10 +3546,26 @@ export class Race {
         // `cuts` is SHORTCUTS DRIVEN END TO END. It used to be `counter.cuts`, the count of lap
         // sectors missed, which is a different thing entirely and reads as zero on a driver
         // taking every shortcut on the lap — that number is `skipped` now.
+        // …plus the two numbers that say WHY: how many usable shortcuts this driver has been
+        // offered (`cutSeen`) and how many of those it decided to take (`cutWant`). A cut count of
+        // zero next to a `cutSeen` of six is a driver refusing them; next to a `cutWant` of four it
+        // is a driver missing the entries, and those are different bugs.
         cuts: d.shortcuts, skipped: d.counter.cuts,
+        // …and `cutStray` closes the books: `cuts` is every traversal driven end to end, of which
+        // `cutStray` were ribbons the driver was never offered and never chose — it simply ran wide
+        // onto one. Without it `cuts` could exceed `cutSeen`, which is what the round-2 critic
+        // caught and rightly called one of the two counters being wrong.
+        cutSeen: d.cutSeen || 0, cutWant: d.cutWant || 0, cutStray: d.cutStray || 0,
         fin: d.finishTime == null ? null : +d.finishTime.toFixed(2),
         best: d.counter.best == null ? null : +d.counter.best.toFixed(2),
         station: +d.station.toFixed(0), trim: +d.trim.toFixed(3), seen: +d.onScreen.toFixed(2),
+        // the director's re-station (see _restation): metres of road moved under this car all
+        // race, and the rate it is moving this frame. Both are zero for anything in shot.
+        slideM: Math.round(d.slideM || 0), slideV: +(d.slideV || 0).toFixed(1),
+        // what this class's car was race-prepped to (see racePrepped) and the cornering figure the
+        // director actually asks it for — the two numbers that say whether the field is normalised
+        prep: d.spec.physics.prep ?? null,
+        askG: +Math.min(d.refG, d.realG * d.gripCeil).toFixed(3),
       });
     }
     rows.sort((a, b) => b.gapM - a.gapM);
@@ -2755,10 +3587,23 @@ export class Race {
       // on any car the player can see, and where the whole-field pace has drifted to
       trimOnScreen: +maxTrim.toFixed(3), fieldPace: +this.fieldPace.toFixed(3),
       contacts: this.contacts, playerContacts: this.playerContacts, reforms: this.reforms,
+      restations: this.restations, slideM: Math.round(this.slideM || 0),
+      slideFwd: Math.round(this.slideFwd || 0), slideBack: Math.round(this.slideBack || 0),
+      slideBudget: Math.round(this.slideBudget || 0),
+      slideRate: +(this._slideRate ?? 0).toFixed(2),
+      slideSeenMax: +this.slideSeenMax.toFixed(3),
+      slideNearest: Number.isFinite(this.slideNearest) ? Math.round(this.slideNearest) : null,
       cuts: this._playerCounter.cuts,
       field: rows,
     };
   }
+
+  /**
+   * How much road the director may GRANT the field in this race, in metres — see
+   * SLIDE_BUDGET_FRAC. A getter rather than a field because `laps` is set by the city (and by the
+   * capture harness) after the director is constructed.
+   */
+  get slideBudget() { return SLIDE_BUDGET_FRAC * (this.track?.length ?? 2500) * (this.laps || 3); }
 
   get lateralOffTrack() { return Math.abs(this.playerLateral) > 1; }
 }

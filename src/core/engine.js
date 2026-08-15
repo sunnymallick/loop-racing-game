@@ -188,6 +188,9 @@ export class Engine {
     this.look = null;
     this._sunDir = new THREE.Vector3(0, 1, 0);
     this._sunWorld = new THREE.Vector3();
+    this._fwd = new THREE.Vector3();
+    this._ndc = new THREE.Vector3();
+    this._bufSize = new THREE.Vector2();
     this._invViewProj = new THREE.Matrix4();
     this._viewProj = new THREE.Matrix4();
     this._paintEnv = 1.25;
@@ -211,7 +214,7 @@ export class Engine {
 
     // WebGLRenderTarget.setSize does not resize an attached DepthTexture — do it by hand or the
     // atmosphere pass samples a stale, wrongly-sized depth buffer.
-    const buf = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const buf = this.renderer.getDrawingBufferSize(this._bufSize);
     if (this.depthTexture.image.width !== buf.x || this.depthTexture.image.height !== buf.y) {
       this.depthTexture.image.width = buf.x;
       this.depthTexture.image.height = buf.y;
@@ -660,11 +663,14 @@ export class Engine {
       a.uCamPos.value.copy(cam.position);
       a.uSunDir.value.copy(this._sunDir);
 
-      // project the key light onto the screen for the shaft pass
+      // project the key light onto the screen for the shaft pass.
+      // Scratch vectors, not fresh ones: this runs 60 times a second for the whole race, and two
+      // Vector3s per frame is 7 kB/s of garbage whose collection lands as a frame-time spike
+      // rather than as a lower average.
       this._sunWorld.copy(cam.position).addScaledVector(this._sunDir, 2000);
-      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+      const fwd = this._fwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
       const facing = fwd.dot(this._sunDir);
-      const ndc = this._sunWorld.clone().project(cam);
+      const ndc = this._ndc.copy(this._sunWorld).project(cam);
       a.uSunScreen.value.set(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5);
       // fade out as the sun leaves the frame — a shaft origin off screen looks like a smear
       // Rays still read when the sun itself sits just outside the frame — they converge on the edge
@@ -694,6 +700,47 @@ export class Engine {
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
+}
+
+/**
+ * Pre-compute every bounding volume a raycast against `root` will need.
+ *
+ * THIS IS A FRAME-PACING FIX, not a correctness one. `Mesh.raycast()` computes
+ * `geometry.boundingSphere` lazily — the *first* ray that reaches a mesh walks all of its vertices
+ * — and it only gets the cheap AABB rejection if `geometry.boundingBox` is non-null, which it never
+ * is unless somebody asks. A city is ~1900 meshes and 1.4M triangles of merged chunks, so the first
+ * crash-camera occlusion ray after an impact was paying for all of that inside one frame:
+ * a 110–156 ms hitch in every city, plus a ~40 ms one every sixth frame after it as the sliding car
+ * swept the ray across chunks it had not touched yet.
+ *
+ * Measured on the real GPU (M1 Pro, 1600x900, 400 frames, supercar, chase-with-nitro):
+ *
+ *   LA     p95 38.9 → 12.2 ms   worst 145.5 → 21.0 ms   frames >20 ms 7.5% → 0.8%
+ *   NYC    p95 23.6 → 13.6 ms   worst 116.7 → 20.0 ms   frames >20 ms 5.9% → 0.0%
+ *
+ * Doing it at load costs ~10–30 ms once, on a screen that is already loading, and it makes every
+ * later query — the crash camera's sightline probe, WorldDamage, BodyDamage — cheap and, more
+ * importantly, *evenly priced*. A mean frame rate hides this entirely; it is all tail.
+ */
+export function prewarmSceneQueries(root) {
+  if (!root) return 0;
+  let n = 0;
+  root.traverse((o) => {
+    const g = o.geometry;
+    if (!g || !g.attributes?.position) return;
+    if (g.boundingSphere === null || g.boundingSphere === undefined) { g.computeBoundingSphere(); n++; }
+    // Mesh.raycast only takes the (much tighter) AABB rejection path when this exists. A merged
+    // street of buildings has a bounding sphere the size of a block and a box that misses the ray
+    // by metres, so this is where most of the saving is.
+    if (g.boundingBox === null || g.boundingBox === undefined) g.computeBoundingBox();
+    // InstancedMesh keeps its own instance-space bounds, also computed lazily on first ray.
+    // (Guarded on count: an empty instanced mesh computes a NaN sphere, which culls it for ever.)
+    if (o.isInstancedMesh && o.count > 0 && !o.boundingSphere) {
+      o.computeBoundingSphere();
+      o.computeBoundingBox?.();
+    }
+  });
+  return n;
 }
 
 /** Recursively free GPU resources for a subtree — required so city swaps don't leak (§3.5). */

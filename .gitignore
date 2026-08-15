@@ -2,3 +2,10 @@ node_modules/
 shots/
 dist/
 .DS_Store
+
+# Agent scratch probes — throwaway analysis scripts written by builder/critic agents.
+# Kept on disk (they document how findings were measured) but not part of the project.
+tools/_*
+tools/_scratch/
+.la_probe*.mjs
+.pxscan.mjs

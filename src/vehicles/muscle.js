@@ -26,8 +26,17 @@ export const spec = {
   // (merged in by vehicles/index.js — do not add them back here)
 };
 
-// z runs -2.58 (tail) … +2.58 (nose). v in the paint texture = (z + 2.58) / 5.16
-const V = (z) => (z + 2.58) / 5.16;
+/**
+ * z runs -2.58 (tail) … +2.48 (nose). v in the paint texture = (z + 2.58) / 5.06.
+ *
+ * ROUND-2: the nose came back 100 mm. The verdict — "at 3x its front overhang ahead of the front
+ * wheel is enormous and the nose is a flat vertical slab, reading as a 70s land-yacht rather than
+ * long-hood/short-deck fastback" — was measuring 1.09 m of car ahead of the front wheel centre, on
+ * a 2.98 m wheelbase. A '70 fastback runs about 0.95-1.00 there; 1.09 is a Continental. It is now
+ * 0.99, and the last two stations rake the nose down and tuck the valance under it, so the front
+ * is a wedge with a leading edge instead of a wall.
+ */
+const V = (z) => (z + 2.58) / 5.06;
 
 export const blueprint = {
   id: 'muscle', spec, colors: spec.colors,
@@ -35,7 +44,7 @@ export const blueprint = {
   // straight-on chase view (§6.1 round-2: the wheels were invisible in every harness frame). The
   // rear tyre's outer sidewall sits at 1.085 while the tail panel tucks in to 0.914 — 17 cm of
   // haunch and rubber outboard of the bodywork on each side.
-  dims: { length: 5.16, width: 2.24, height: 1.42, wheelbase: 2.98, track: 1.740, trackRear: 1.846, rideHeight: 0.16 },
+  dims: { length: 5.06, width: 2.24, height: 1.42, wheelbase: 2.98, track: 1.740, trackRear: 1.846, rideHeight: 0.16 },
   // see paintMaterial(): metalness carries the environment into the paint, and the environment is
   // the only light on the back of a car in a chase frame. Deep metallic teal with a hard clearcoat.
   paint: { metalness: 0.52, roughness: 0.25, clearcoat: 0.95, clearcoatRoughness: 0.058, flake: 0.62, envIntensity: 1.20 },
@@ -44,7 +53,7 @@ export const blueprint = {
     panels: {
       stripeWidth: 0.038, stripeGap: 0.026,
       doors: [V(0.62), V(-1.02)],
-      hood: [V(0.74), V(2.42)],
+      hood: [V(0.74), V(2.32)],
       boot: [V(-2.44), V(-1.92)],
       arches: [V(1.49), V(-1.49)],
       fuelCap: [0.30, V(-2.10)],
@@ -77,10 +86,10 @@ export const blueprint = {
     { z: 1.05, w: 0.960, y0: 0.255, rocker: 0.885, ySill: 0.455, yBelt: 1.015, belt: 0.945, yDeck: 1.00, deck: 0.86, crown: 0.015, flare: 1.005 },
     { z: 1.42, w: 0.968, y0: 0.26, rocker: 0.89, ySill: 0.46, yBelt: 1.015, belt: 0.945, yDeck: 0.995, deck: 0.86, crown: 0.02, flare: 1.030 },
     { z: 1.80, w: 0.966, y0: 0.27, rocker: 0.895, ySill: 0.47, yBelt: 1.01, belt: 0.945, yDeck: 0.99, deck: 0.86, crown: 0.02, flare: 1.022 },
-    { z: 2.16, w: 0.958, y0: 0.30, rocker: 0.90, ySill: 0.49, yBelt: 1.00, belt: 0.95, yDeck: 0.985, deck: 0.87, crown: 0.02, flare: 1.008 },
-    { z: 2.44, w: 0.935, y0: 0.36, rocker: 0.93, ySill: 0.54, yBelt: 0.97, belt: 0.96, yDeck: 0.965, deck: 0.90, crown: 0.012 },
-    { z: 2.54, w: 0.895, y0: 0.42, floor: 0.60, rocker: 0.95, ySill: 0.58, yBelt: 0.945, belt: 0.97, yDeck: 0.945, deck: 0.92, crown: 0.006 },
-    { z: 2.58, w: 0.82, y0: 0.50, floor: 0.55, rocker: 0.96, ySill: 0.64, yBelt: 0.92, belt: 0.97, yDeck: 0.92, deck: 0.93, crown: 0.004 },
+    { z: 2.12, w: 0.958, y0: 0.30, rocker: 0.90, ySill: 0.49, yBelt: 1.00, belt: 0.95, yDeck: 0.985, deck: 0.87, crown: 0.02, flare: 1.008 },
+    { z: 2.36, w: 0.935, y0: 0.38, rocker: 0.93, ySill: 0.545, yBelt: 0.962, belt: 0.96, yDeck: 0.958, deck: 0.90, crown: 0.012 },
+    { z: 2.45, w: 0.892, y0: 0.455, floor: 0.60, rocker: 0.95, ySill: 0.60, yBelt: 0.928, belt: 0.97, yDeck: 0.926, deck: 0.92, crown: 0.006 },
+    { z: 2.48, w: 0.815, y0: 0.545, floor: 0.55, rocker: 0.96, ySill: 0.665, yBelt: 0.898, belt: 0.97, yDeck: 0.896, deck: 0.93, crown: 0.004 },
   ],
 
   // ---- the glasshouse: one continuous piece of glass, with paint bands laid over it ----
@@ -119,12 +128,16 @@ export const blueprint = {
     front: { radius: 0.365, width: 0.30, spokes: 5, tireProfile: 0.320 },
     rear: { radius: 0.405, width: 0.38, spokes: 5, tireProfile: 0.325 },
   },
-  archThickness: 0.058, archGap: 1.045, archFlare: 0.034, archSpan: 1.00,
+  // The arch is cut into the tub (kit.js `loftTub`). archFlare is wide because the haunch over a
+  // Charger's back wheel is a long, slow draw from the door to the widest point of the car — that
+  // swell IS the silhouette, and it is what the rear tyre now sits inside instead of beside.
+  archGap: 1.100, archFlare: 0.185, archLip: 0.016, archProud: 0.012, archInset: 0.056,
+  archDepth: 0.13, archSpan: 1.02,
 
   lights: {
     head: [
-      { x: 0.40, y: 0.86, z: 2.545, w: 0.22, h: 0.22, shape: 'round', color: '#f2f6ff', intensity: 2.8 },
-      { x: 0.68, y: 0.86, z: 2.545, w: 0.22, h: 0.22, shape: 'round', color: '#f2f6ff', intensity: 2.8 },
+      { x: 0.40, y: 0.845, z: 2.445, w: 0.22, h: 0.22, shape: 'round', color: '#f2f6ff', intensity: 2.8 },
+      { x: 0.68, y: 0.845, z: 2.445, w: 0.22, h: 0.22, shape: 'round', color: '#f2f6ff', intensity: 2.8 },
     ],
     // the four round lamps stand PROUD of the blacked-out tail panel (z −2.585) — round 1 buried
     // them inside it and the signature Charger tail read as one plain black slab
@@ -135,7 +148,7 @@ export const blueprint = {
     reverse: [{ x: 0.16, y: 0.665, z: -2.615, w: 0.17, h: 0.085, color: '#fff2d8', intensity: 1.4, glow: 0.3 }],
   },
 
-  grilles: [{ w: 1.50, h: 0.30, d: 0.18, y: 0.855, z: 2.505, slats: 11, vertical: true, frame: 'chrome' }],
+  grilles: [{ w: 1.50, h: 0.30, d: 0.18, y: 0.845, z: 2.405, slats: 11, vertical: true, frame: 'chrome' }],
   vents: [
     { x: 0.48, y: 1.005, z: 1.02, w: 0.30, h: 0.16, fins: 3, angle: 0.55, rx: -1.5708 },  // bonnet extractors
     { x: 0.86, y: 0.74, z: 1.02, w: 0.26, h: 0.18, fins: 3, angle: 0.4, ry: 1.5708 },     // fender gill
@@ -146,8 +159,8 @@ export const blueprint = {
   trim: [
     // The bumper WRAPS the nose: a centre bar plus two swept end sections that land on the flank.
     // Round 1 ran one straight bar wider than the body, which read as a slab bolted onto air.
-    { w: 1.30, h: 0.135, d: 0.22, y: 0.66, z: 2.555, mat: 'chrome', r: 0.055 },
-    { x: 0.68, w: 0.44, h: 0.135, d: 0.20, y: 0.66, z: 2.470, mat: 'chrome', ry: 0.42, mirror: true, r: 0.05 },
+    { w: 1.30, h: 0.135, d: 0.22, y: 0.66, z: 2.455, mat: 'chrome', r: 0.055 },
+    { x: 0.68, w: 0.44, h: 0.135, d: 0.20, y: 0.66, z: 2.370, mat: 'chrome', ry: 0.42, mirror: true, r: 0.05 },
     { w: 1.20, h: 0.135, d: 0.22, y: 0.66, z: -2.585, mat: 'chrome', r: 0.055 },
     { x: 0.635, w: 0.42, h: 0.135, d: 0.20, y: 0.66, z: -2.505, mat: 'chrome', ry: -0.42, mirror: true, r: 0.05 },
     { w: 1.44, h: 0.30, d: 0.05, y: 0.865, z: -2.578, mat: 'dark', r: 0.03 },   // tail panel blackout
@@ -168,7 +181,7 @@ export const blueprint = {
     // line that stops the lower flank fading into the contact shadow
     { x: 0.880, w: 0.028, h: 0.022, d: 2.20, y: 0.402, z: -0.10, mat: 'chrome', mirror: true, r: 0.008 },
     { x: 0.950, w: 0.045, h: 0.035, d: 2.10, y: 0.665, z: -0.10, mat: 'chrome', mirror: true, r: 0.014 }, // side spear
-    { w: 1.50, h: 0.09, d: 0.30, y: 0.44, z: 2.50, mat: 'dark', rx: 0.10, r: 0.03 },      // front valance
+    { w: 1.50, h: 0.09, d: 0.30, y: 0.44, z: 2.40, mat: 'dark', rx: 0.10, r: 0.03 },      // front valance
     // Rear valance: deliberately 1.16 m across a 2.19 m car and lifted clear of the road, so the
     // rear tyres stand outboard of it and the road shows underneath (§6.1 round-2 gap).
     { w: 1.16, h: 0.17, d: 0.26, y: 0.415, z: -2.505, mat: 'dark', rx: -0.12, r: 0.045 },

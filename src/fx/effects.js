@@ -4,6 +4,7 @@ import {
   smokeAtlas, sparkAtlas, glowAtlas, debrisAtlas, decalAtlas, scuffAtlas,
 } from './particles.js';
 import { RNG, clamp, lerp } from '../core/rng.js';
+import { prewarmSceneQueries } from '../core/engine.js';
 
 // sprite atlas tile indices (see particles.js)
 const SPARK_LONG = 0, SPARK_SHORT = 1, EMBER = 2, FLARE = 3;
@@ -20,6 +21,19 @@ const _ct = new THREE.Vector3();
 const _cp = new THREE.Vector3();
 const _lp = new THREE.Vector3();   // light placement scratch — copied out immediately by _light()
 const UP = new THREE.Vector3(0, 1, 0);
+// How far a smoke tint may stray from neutral: the largest per-channel deviation from white once
+// the tint has been normalised to unit luminance.
+//
+// Round 4 cuts this from 0.30 to 0.18. 0.30 is the right number for the light, and the wrong one
+// for the IMAGE: the grade this game ships lifts saturation and pushes a warm gain, so a puff that
+// leaves here 30% warm arrives on screen as salmon pink. At 3x into la-muscle-crash the plume read
+// as pink confetti — the exact "falling confetti, not smoke" note — even though the sampler was
+// doing the physically right thing. Smoke has to stay legibly GREY and merely lean toward the key.
+const SMOKE_CHROMA = 0.18;
+// The one smoke colour that is NOT the scene's: a puff sitting inside the fireball is lit by the
+// fireball, and it has to stay warm even in a magenta city.
+const FIRELIT = new THREE.Color('#c99a72');
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
 /**
  * FX director. Owns every particle pool, the world decals, the impact lights and the camera-shake
@@ -46,16 +60,19 @@ export class Effects {
       turbulence: 0.55, ground: 0.05, maxPx: 148, depthBias: 0.34, depthBiasMax: 1.5,
       // Smoke is SHEARED by the air it is thrown into: a fast puff is a long thin wisp and only
       // rounds off as it slows. Without this every puff is a camera-facing cotton ball — but
-      // round 2 ran the gain to 1+1.7 (a 2.7x stretch AND a 2.7x quad) and the plume came out as a
-      // fan of parallel scratches with clear air between them, which is a different failure and
-      // not a better one.
+      // round 2 ran the gain to 1+1.7, round 3 to 1+1.22, and BOTH captures came back as a fan of
+      // parallel scratches with clear air between them. Round 4 finally reads why, and it is not
+      // sparseness: `smokeAtlas` already bakes each tile at 1.26–1.48:1 along the *same* axis the
+      // shader shears on, and `stretch` multiplies it a third time. 1.4 x 2.2 x 1.4 is a 4:1 brush
+      // stroke, and forty of them thrown from one contact patch all point the same way — which is
+      // exactly the salmon curtain at 3x into la-muscle-crash.
       //
-      // Round 3 reads that failure differently. Parallel scratches are what you get from stretching
-      // a SPARSE plume; the answer is not less stretch but more particles, each smaller, so the
-      // sheared wisps overlap into a mass instead of hanging in clear air. So the cap goes back up
-      // to ~2.2x at full align, and every emitter below trades size for count to pay for it (total
-      // fill actually drops, because fill goes as size squared).
-      shear: 5.2, shearMax: 1.22,
+      // So the shader's share of the elongation comes right down. The tile keeps its ~1.4:1 (that
+      // is where the shape should live: it is baked with torn edges and noise, so an elongated TILE
+      // reads as smoke where an elongated QUAD reads as a scratch), and the shear is left only
+      // enough authority to point the puff downwind — total on-screen aspect now tops out near 2:1
+      // instead of 4:1.
+      shear: 3.4, shearMax: 0.40,
     });
     this.sparks = new ParticleSystem({
       texture: sparkAtlas(), tiles: 2,
@@ -78,6 +95,15 @@ export class Effects {
       ground: 0.06, bounce: 0.34, groundFriction: 0.55, maxPx: 140,
     });
     this.skid = new SkidTrails({});
+    // Skid marks are laid by exactly the same broken signal the tyre smoke was (see `_slipAt`), so
+    // they get exactly the same gate. main.js asks for `clamp(slide·0.62·1.6)` and race.js for
+    // `clamp(slide·1.5)`, i.e. roughly `slide` and `1.5·slide` — dividing by three puts an
+    // opponent's number back on the same scale as the `amount` its tyre smoke arrives with, and
+    // the player's branch ignores it entirely and reads the body.
+    this.skid.gate = (pos, strength) => this._slipAt(pos, strength / 3);
+    // …and laid on the surface the tyre is actually on, not on the constant y = 0.04 main.js
+    // flattens every contact point to. See `_contactY`.
+    this.skid.groundY = (pos) => this._contactY(pos);
     this.decals = new GroundDecals({ max: 72, texture: decalAtlas(), tiles: 2 });
     // marks left ON the barrier that was hit: soot, and a smear of the car's own paint
     this.wallMarks = new GroundDecals({ max: 40, texture: decalAtlas(), tiles: 2, offset: -8 });
@@ -140,7 +166,30 @@ export class Effects {
     this._clock = 0;
 
     this._queue = [];
-    this._bright = 0.4;          // scene luminance proxy, drives the smoke tint
+
+    // ---- what colour smoke IS in this city -------------------------------------------------
+    // Smoke is a grey scatterer: it has no colour of its own, it can only show you the colour of
+    // the light falling on it. Round 3 shipped hard-coded cool greys (#c4c8d1 / #e2e5eb) for every
+    // city, and the whole-game critique read the result exactly right — the same lavender-pink
+    // plume in LA midday, LA dusk, Vegas neon, Miami dusk and NYC night, "falling confetti, not
+    // smoke". A cool blue-grey sprite under a warm golden-hour key is a *blue* object in the frame,
+    // and the grade's saturation then finishes the job.
+    //
+    // So the tint is sampled from the scene's own light rig instead (see `_sampleSceneLight`):
+    // `_litTint` is what a puff standing in the key light is, `_shadeTint` is what one lying in
+    // the shadow the sky fills is, and every puff picks a point between them. Both are unit
+    // luminance, so they are pure hue — the VALUE of a puff stays where it was authored.
+    this._bright = 0.4;          // scene luminance proxy, drives the smoke value and opacity
+    this._litTint = new THREE.Color(1, 1, 1);
+    this._shadeTint = new THREE.Color(1, 1, 1);
+    this._tint = new THREE.Color();          // scratch handed to ParticleSystem.emit()
+    this._dustAlbedo = new THREE.Color().setRGB(1.24, 1.00, 0.66);  // road dust / dirt, unit lum
+    this._rubberAlbedo = new THREE.Color().setRGB(0.92, 0.90, 1.00);
+    this._smokeVal = 0.62;       // base linear value of a mid-grey puff in this city
+    this._pop = 1;               // opacity multiplier — a dark city needs thicker smoke to read
+    this._lightDirty = true;
+    this._fogKey = -1;
+
     this._smokeBuild = 0;
     this._scrapeT = 0;
     this._scrapeAcc = 0;
@@ -156,6 +205,9 @@ export class Effects {
     // midpoint of the car and this, so the shower — which is thrown BACKWARD from the contact,
     // not from the car — is inside the frame rather than off its bottom corner.
     this.lastImpact = new THREE.Vector3();
+    // The player's physics body, handed in by main.js every frame through update(). It is the only
+    // honest tyre-slip signal this piece can see, and `tyreSmoke` gates on it (see `_slipAt`).
+    this._car = null;
     this.damage = 0;             // 0..1, bleeds off over ~10 s
     this._damageSide = 1;
     this._damageT = 0;
@@ -173,6 +225,9 @@ export class Effects {
    */
   attachCar(car) {
     this.body.attach(car || null);
+    // same reason as setWorld(): the damage system's first query into the bodywork must not be the
+    // thing that builds the car's bounding volumes, because that first query happens mid-crash
+    if (car) prewarmSceneQueries(car);
     // a freshly built car carries no wounds, so the trail must not keep venting from the old one's
     this._damageAt = null; this._dents = 0; this._lastDentAt = null; this.damage = 0;
     if (car?.userData?.paintMaterial) this._paint = `#${car.userData.paintMaterial.color.getHexString()}`;
@@ -182,7 +237,122 @@ export class Effects {
    * Point the world-damage system at the city that is loaded. Pass null before the old city is
    * disposed so its deformed geometry is put back and nothing holds a reference to it.
    */
-  setWorld(group) { this.world.setWorld(group || null); }
+  setWorld(group) {
+    this.world.setWorld(group || null);
+    this._lightDirty = true;     // a new city means new light, and smoke is made of light
+    // FRAME PACING. Everything a crash asks of the world is a spatial query against this group —
+    // WorldDamage's crush/detach, and main.js's crash-camera sightline probe, which raycasts
+    // `city.group` for the 0.85 s this piece's `crashT` keeps open. three.js builds the bounding
+    // volumes those queries need lazily, on the first ray, so the whole cost of a 1900-mesh city
+    // landed inside the single frame of the first impact (110–156 ms) and then again, ~40 ms at a
+    // time, every sixth frame as the sliding car swept the ray onto chunks it had not touched.
+    // Paying for it here, on the loading screen, is the difference between a mean that passes and
+    // a tail that does not. See prewarmSceneQueries().
+    if (group) prewarmSceneQueries(group);
+  }
+
+  // ---------------------------------------------------------------- smoke colour
+
+  /**
+   * Work out what colour a puff of smoke is in *this* city, from the city's own light rig.
+   *
+   * Smoke has no colour: what you see is the illumination scattering out of it, so a plume under
+   * LA's golden key is warm cream on its lit side and turquoise-grey in its own shadow, while the
+   * same plume in Vegas is magenta where the signs reach it. Two unit-luminance tints come out of
+   * this — key-lit and sky-shaded — and every emitter below picks a point on the line between them.
+   *
+   * Only run when the city changes (`setWorld`) or the fog colour moves, because it walks the whole
+   * scene graph and a night city is several thousand nodes.
+   *
+   *   key   the shadow-casting directional — the sun, or the moon
+   *   sky   hemisphere / ambient / non-shadowing fills — the bounce that fills the shadow side
+   *   haze  the city's own fog colour. In a neon city this IS the light: nothing else in the rig
+   *         knows that the street is lit magenta by four hundred emissive signs, and the fog colour
+   *         is the one number every city author already tunes to say so.
+   */
+  _sampleSceneLight() {
+    let kr = 0, kg = 0, kb = 0;          // key
+    let sr = 0, sg = 0, sb = 0;          // sky / fill
+    this.scene.traverse((o) => {
+      if (!o.isLight) return;
+      const I = o.intensity;
+      if (!(I > 0)) return;
+      const c = o.color;
+      if (o.isDirectionalLight) {
+        if (o.castShadow) { kr += c.r * I; kg += c.g * I; kb += c.b * I; }
+        else { sr += c.r * I * 0.55; sg += c.g * I * 0.55; sb += c.b * I * 0.55; }
+      } else if (o.isHemisphereLight) {
+        sr += c.r * I; sg += c.g * I; sb += c.b * I;
+        const g = o.groundColor;
+        if (g) { sr += g.r * I * 0.35; sg += g.g * I * 0.35; sb += g.b * I * 0.35; }
+      } else if (o.isAmbientLight) {
+        sr += c.r * I; sg += c.g * I; sb += c.b * I;
+      }
+      // PointLights are deliberately skipped: they are street lamps and sign practicals, hundreds
+      // of them, each only lighting a few metres. Summing them would drown the key. The haze colour
+      // below is the honest proxy for what they do to the air.
+    });
+    const L = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let kl = L(kr, kg, kb), sl = L(sr, sg, sb);
+    if (kl < 1e-4) { kr = sr; kg = sg; kb = sb; kl = sl; }        // no key at all: sky is the key
+    if (sl < 1e-4) { sr = kr; sg = kg; sb = kb; sl = kl; }
+    // Each source is reduced to unit luminance FIRST and mixed by weight afterwards. Mixing by
+    // energy instead lets the sun (intensity 3) bury the hemisphere fill, and the shadow side of
+    // the plume then comes out the same warm cream as the lit side — no form, just a flat tint.
+    kl = Math.max(1e-4, kl); sl = Math.max(1e-4, sl);
+    kr /= kl; kg /= kl; kb /= kl;
+    sr /= sl; sg /= sl; sb /= sl;
+
+    const fog = this.scene.fog?.color;
+    let hr = 1, hg = 1, hb = 1;
+    if (fog) {
+      const hl = Math.max(1e-4, L(fog.r, fog.g, fog.b));
+      hr = fog.r / hl; hg = fog.g / hl; hb = fog.b / hl;
+    }
+    // 0 by day, 1 in a city whose only light is its own signage
+    const n = 1 - clamp((this._bright - 0.08) / 0.42, 0, 1);
+    const wK = 1.0 - 0.55 * n, hK = 0.25 + 1.10 * n;     // lit side: key, plus haze at night
+    const hS = 0.45 + 1.20 * n;                          // shadow side: sky, and more haze
+    this._litTint.setRGB(
+      kr * wK + sr * 0.35 + hr * hK, kg * wK + sg * 0.35 + hg * hK, kb * wK + sb * 0.35 + hb * hK,
+    );
+    this._shadeTint.setRGB(
+      sr * 0.85 + kr * 0.12 + hr * hS, sg * 0.85 + kg * 0.12 + hg * hS, sb * 0.85 + kb * 0.12 + hb * hS,
+    );
+    for (const c of [this._litTint, this._shadeTint]) {
+      // unit luminance, so this is hue only and never a brightness change
+      const l = L(c.r, c.g, c.b);
+      if (l > 1e-4) c.multiplyScalar(1 / l);
+      // …and then CLAMP the chroma. A fixed lerp toward white is not enough: Vegas' haze colour is
+      // #150726, whose luminance is 0.004, so normalising it gives (1.56, 0.50, 4.38) and even 42%
+      // of that is a lilac gas cloud rather than smoke lit by a lilac street. Scaling the whole
+      // deviation-from-white down to a fixed maximum keeps LA's warm cream (deviation 0.27, under
+      // the cap, untouched) while pulling Vegas and NYC back to a tinted grey. The deviation vector
+      // has zero luminance, so scaling it cannot change the value.
+      const dev = Math.max(Math.abs(c.r - 1), Math.abs(c.g - 1), Math.abs(c.b - 1));
+      const k = dev > SMOKE_CHROMA ? SMOKE_CHROMA / dev : 1;
+      c.setRGB(1 + (c.r - 1) * k, 1 + (c.g - 1) * k, 1 + (c.b - 1) * k);
+    }
+    this._lightDirty = false;
+  }
+
+  /**
+   * A smoke colour for this city. `rel` is the puff's own value relative to a mid-grey puff (so
+   * 0.6 is a dark rubber wisp and 1.35 a bright shredded filament), `shade` is 0 for a puff full in
+   * the key light and 1 for one buried in the plume's own shadow. `albedo` tints for a material
+   * that genuinely is not grey — road dust, dirt.
+   *
+   * The returned Color is a shared scratch: `ParticleSystem.emit` copies it on the spot.
+   */
+  _smokeColor(rel = 1, shade = 0.5, albedo = null) {
+    const c = this._tint.copy(this._litTint).lerp(this._shadeTint, clamp(shade, 0, 1));
+    if (albedo) { c.r *= albedo.r; c.g *= albedo.g; c.b *= albedo.b; }
+    // A puff is never brighter than the light falling on it. Smoke that clips to white stops being
+    // a volume and becomes a paper cut-out you can point at individually — which is exactly the
+    // "falling confetti" the critique named, and it is what a near-white sprite at 50% opacity over
+    // a dark night road looks like.
+    return c.multiplyScalar(Math.min(this._smokeVal * rel, 0.86));
+  }
 
   /**
    * The colour a torn-off body panel actually is. NOT the car's paint at full chroma: a shard
@@ -384,10 +554,11 @@ export class Effects {
         ],
         life: this.rng.range(0.7, 1.6), size: this.rng.range(0.18, 0.40),
         grow: this.rng.range(2.0, 3.2),
-        rot: this.rng.range(-0.35, 0.35), rotV: this.rng.range(-2.2, 2.2), tile: this.rng.int(0, 3),
-        stretch: this.rng.range(1.15, 1.65), align: 0.82,
-        color: this.rng.bool(0.5) ? '#cfc7b6' : '#a79f92',
-        alpha: 0.12 + 0.14 * s, fadeIn: 0.01, decay: 1.5,
+        rot: this.rng.range(-1.4, 1.4), rotV: this.rng.range(-2.2, 2.2), tile: this.rng.int(0, 3),
+        stretch: this.rng.range(1.0, 1.26), align: 0.52,
+        // pale dust off concrete or painted steel — its own albedo, but lit by the scene
+        color: this._smokeColor(this.rng.range(0.55, 1.05), this.rng.range(0.25, 0.85), this._dustAlbedo),
+        alpha: (0.12 + 0.14 * s) * this._pop, fadeIn: 0.01, decay: 1.5,
       });
     }
   }
@@ -395,12 +566,91 @@ export class Effects {
   // ---------------------------------------------------------------- events
 
   /**
-   * Tyre smoke from a sliding wheel. `amount` 0..1.
+   * How hard is the contact patch at `pos` actually scrubbing? 0 = the tyre is rolling.
+   *
+   * THE BUG this exists for: `la-tuner-landmark` showed dozens of smoke puffs with the car dead
+   * straight at 85 mph and no DRIFT panel on the HUD, in all sixteen landmark frames. Instrumenting
+   * the emitter found why — both call sites key off `body.slide`, and `slide` is
+   * `max(drift, wheelSlip·(0.30+0.70·throttle)·0.9)` with a slow decay, so a car simply *pinned at
+   * full throttle* sits at slide ≈ 0.41 for ever. Measured on that exact frame: slip −0.4°,
+   * drift 0.00, wheelSlip 0.12 — and slide 0.41, which cleared main.js's 0.12 gate on every rear
+   * wheel of every car in the field. Smoke covered 13.9% of the frame.
+   *
+   * `drift` is the honest lateral signal (physics.js deliberately made it slip-angle only for
+   * exactly this class of bug), and a genuine burnout is `wheelSlip` well past the ordinary
+   * traction-limited number a car makes just accelerating. So that is what this gates on.
+   *
+   * The player's body arrives through `update()`, so its slip is exact. Opponent smoke is emitted
+   * by race.js, which passes no body — for those the only signal available here is `amount`, and it
+   * is read conservatively (see the caller note in the class docs).
+   */
+  _slipAt(pos, amount) {
+    const b = this._car;
+    // the player's four contact patches are all inside ~2.6 m of the body origin; anything further
+    // out is an opponent and has to fall back on `amount`
+    if (b && b.pos) {
+      const dx = pos.x - b.pos.x, dz = pos.z - b.pos.z;
+      if (dx * dx + dz * dz < 9.0) {
+        // LATERAL. `drift` is the slip angle and nothing else, so this is the honest one, and it
+        // gets no speed qualifier: a 130 mph drift smokes exactly as hard as a 40 mph one.
+        const lat = smoothstep(0.10, 0.42, b.drift ?? 0);
+        // LONGITUDINAL. A tyre only smokes under power when the contact patch is genuinely
+        // spinning up against the road, which is a LOW-SPEED event: a car can light its rears up
+        // off the line or out of a hairpin, but at 85 mph in top gear there is nowhere near enough
+        // torque left to break traction. The model's `wheelSlip` does not know that — it sits at
+        // 0.12–0.62 for a car merely pinned at full throttle, which is the number that was painting
+        // the whole landmark frame with smoke — so the speed qualifier is applied here.
+        const spd = Math.abs(b.speed ?? 0);
+        const spin = smoothstep(0.34, 0.78, b.wheelSlip ?? 0) * (1 - smoothstep(17, 30, spd));
+        return Math.max(lat, spin);
+      }
+    }
+    // Opponents: race.js has no equivalent hook, and emits at `slide · 0.5 · (0.35..1.0)` — so a
+    // straight-line car at full throttle lands at 0.19–0.30 and a car genuinely sideways at
+    // 0.40–0.50. Ramping across the top of that band is the sharpest cut available without the
+    // body. It is a bridge until race.js can pass its drivers' real slip — see the report.
+    return smoothstep(0.36, 0.50, amount);
+  }
+
+  /**
+   * The world height the tyre is actually standing on.
+   *
+   * main.js builds each wheel's contact point with `wp.y = 0.04` — a constant — before handing it
+   * to `tyreSmoke` / `dirtSpray` / `skid.add`. That is right in three cities and wrong in Los
+   * Angeles, whose road climbs into the hills: at u≈0.36 the car sits at y = 6.22, so the whole
+   * plume was emitted, and the whole skid ribbon laid, SIX METRES UNDER the road the car is on.
+   * The physics body's origin is the centre of the wheelbase *on the ground* (ARCHITECTURE.md
+   * conventions), so it is the honest floor, and it is already handed to this piece every frame.
+   *
+   * Only applied within ~3 m of the player's body: further out is an opponent's wheel, whose own
+   * height this piece cannot know, and those are left exactly as they arrive.
+   */
+  _contactY(pos) {
+    const b = this._car;
+    if (!b || !b.pos) return pos.y;
+    const dx = pos.x - b.pos.x, dz = pos.z - b.pos.z;
+    if (dx * dx + dz * dz > 9.0) return pos.y;
+    return Math.max(pos.y, b.pos.y + 0.02);
+  }
+
+  /**
+   * Tyre smoke from a sliding wheel. `amount` 0..1 is the plume's density; `slip` is how hard the
+   * contact patch is scrubbing (0..1) and is what decides whether there is any smoke at all. Pass
+   * it: without it this has to infer the slip (see `_slipAt`), which it can only do exactly for the
+   * player's own car.
+   *
    * A long slide has to build into a *cloud*: each call adds a couple of big, slow, long-lived
    * puffs at the contact patch which grow 4-5x and curl on the pool's turbulence, plus a low
    * ground-hugging sheet, plus the odd dark rubber wisp right at the tyre.
    */
-  tyreSmoke(pos, vel, amount, surface = 'road') {
+  tyreSmoke(pos, vel, amount, surface = 'road', slip = null) {
+    if (amount < 0.06) return;
+    const py = this._contactY(pos);   // see _contactY: main.js flattens this to 0.04
+    // NO SLIP, NO SMOKE. Ramped rather than stepped so a slide fades its plume in as the tail goes
+    // out instead of the cloud switching on.
+    const scrub = slip === null ? this._slipAt(pos, amount) : clamp(slip, 0, 1);
+    if (scrub < 0.05) return;
+    amount = clamp(amount * (0.30 + 0.70 * scrub), 0, 1);
     if (amount < 0.06) return;
     this._smokeBuild = Math.min(1, this._smokeBuild + amount * 0.055);
     const build = this._smokeBuild;
@@ -411,7 +661,7 @@ export class Effects {
     // exactly what a cotton ball is. Fourteen puffs at 0.30–0.62 m growing 2.5x occupy the same
     // volume, cost LESS fill (area goes as size squared), overlap into one torn mass, and each one
     // is small enough that the shader's shear actually turns it into a wisp.
-    const n = amount > 0.55 ? 14 : 9;
+    const n = amount > 0.55 ? 16 : 11;
     const spd = Math.hypot(vel.x, vel.z);
     // At 100 mph a puff left standing at the contact patch is 40 m behind the car by the time it
     // has grown. Real tyre smoke is entrained in the car's wake, so each puff is launched with a
@@ -430,15 +680,24 @@ export class Effects {
     // thin and fast where it leaves the tyre and only balls up once it has stopped moving — so
     // roughly two thirds of these are small, fast, hard-sheared wisps and the rest are the slower
     // billow they roll up into.
+    // A weak slide makes a SMALL TIGHT plume, not a thin wide one. At a fixed fan the same handful
+    // of puffs from a light scrub are thrown four metres apart and arrive as separate legible
+    // scraps — litter, not smoke. The spread comes down with the slide so the few puffs a light
+    // scrub does make still overlap into one mass.
+    // …and the fan itself comes down. At 2.2–6.6 m/s a puff is four metres out from the tyre inside
+    // one second, so the plume was a set of individually legible scraps with night road between
+    // them. Tyre smoke boils UP out of a contact patch and is dragged back by the car; it does not
+    // spray sideways like a garden sprinkler.
+    const spread = 0.42 + 0.58 * amount;
     for (let i = 0; i < n; i++) {
       const side = this.rng.sign();
-      const off = this.rng.range(0.06, 0.85);
-      const fan = this.rng.range(2.2, 6.6);
+      const off = this.rng.range(0.06, 0.70) * spread;
+      const fan = this.rng.range(1.4, 4.2) * spread;
       const wisp = this.rng.bool(0.60);
       this.smoke.emit({
         pos: [
           pos.x + lx * side * off + this.rng.range(-0.28, 0.28),
-          pos.y + this.rng.range(0.02, 0.26),
+          py + this.rng.range(0.02, 0.26),
           pos.z + lz * side * off + this.rng.range(-0.28, 0.28),
         ],
         vel: [
@@ -453,17 +712,26 @@ export class Effects {
         grow: wisp ? this.rng.range(1.9, 2.8) : this.rng.range(2.4, 3.4),
         // aRot is a per-particle BIAS on the shear axis now, so it must stay small or the cloud
         // stops following the airflow. rotV keeps the slow billow turning over.
-        rot: this.rng.range(-0.38, 0.38), rotV: this.rng.range(-0.8, 0.8),
-        stretch: wisp ? this.rng.range(0.96, 1.14) : this.rng.range(0.86, 1.02),
-        align: wisp ? 0.82 : 0.46,
+        // aRot is a per-particle bias on the shear axis, and round 4 widens it a long way. Every
+        // puff leaving one contact patch has nearly the same velocity, so at a ±0.38 rad bias they
+        // all pointed the same way and the plume combed itself into parallel strokes. ±1.1 rad is
+        // enough that the sprites cross each other and knit.
+        rot: this.rng.range(-1.1, 1.1), rotV: this.rng.range(-0.8, 0.8),
+        stretch: wisp ? this.rng.range(0.92, 1.06) : this.rng.range(0.86, 0.98),
+        align: wisp ? 0.66 : 0.34,
         tile: this.rng.int(0, 3),
-        // a bright neon city washes light grey smoke out; a dark one swallows dark smoke — so the
-        // tint tracks the scene's own luminance and the cloud reads in both
-        color: dirt ? '#b6a184' : (this._bright > 0.42
-          ? (this.rng.bool(0.4) ? '#9ba0aa' : '#c4c8d1')
-          : (this.rng.bool(0.28) ? '#b9bcc6' : '#e2e5eb')),
-        alpha: (wisp ? 0.215 + 0.250 * amount : 0.280 + 0.320 * amount)
-          * (0.75 + 0.40 * build) * (this._bright > 0.42 ? 1.5 : 1.0),
+        // The colour comes from the LIGHT, not from a constant (see `_sampleSceneLight`). A wisp
+        // torn off the top of the plume is out in the key; the slower billow underneath is in the
+        // plume's own shadow and takes the sky. That split is what gives a cloud form — and it is
+        // the difference between smoke and the fixed lavender confetti this used to emit.
+        color: this._smokeColor(
+          this.rng.range(0.72, 1.12), wisp ? this.rng.range(0.05, 0.45) : this.rng.range(0.45, 0.95),
+          dirt ? this._dustAlbedo : null,
+        ),
+        // thinner per puff, more puffs: the same optical depth built out of overlapping sprites
+        // instead of individually readable ones
+        alpha: (wisp ? 0.175 + 0.205 * amount : 0.230 + 0.265 * amount)
+          * (0.75 + 0.40 * build) * this._pop,
         fadeIn: 0.012, decay: wisp ? 1.35 : 1.15,
       });
     }
@@ -471,21 +739,22 @@ export class Effects {
     // above spread out into separate scraps with clear air between them, and a plume made of
     // separate scraps reads as litter rather than smoke. These are small, slow, overlapping and
     // short-lived: they pile up under the tyre and hand off to the wisps as those pull away.
-    for (let i = 0; i < (amount > 0.18 ? 5 : 3); i++) {
+    for (let i = 0; i < (amount > 0.18 ? 7 : 4); i++) {
       this.smoke.emit({
-        pos: [pos.x + this.rng.range(-0.30, 0.30), pos.y + this.rng.range(0.02, 0.16), pos.z + this.rng.range(-0.30, 0.30)],
+        pos: [pos.x + this.rng.range(-0.30, 0.30), py + this.rng.range(0.02, 0.16), pos.z + this.rng.range(-0.30, 0.30)],
         vel: [
           vel.x * (carry * 0.55) + lx * this.rng.range(-1.6, 1.6),
           this.rng.range(0.8, 2.2),
           vel.z * (carry * 0.55) + lz * this.rng.range(-1.6, 1.6),
         ],
         life: this.rng.range(0.30, 0.62) * (0.8 + 0.5 * amount),
-        size: this.rng.range(0.28, 0.50), grow: this.rng.range(1.5, 2.3),
-        rot: this.rng.range(-0.6, 0.6), rotV: this.rng.range(-1.2, 1.2),
-        stretch: this.rng.range(0.82, 1.00), align: 0.30,
+        size: this.rng.range(0.30, 0.54), grow: this.rng.range(1.5, 2.3),
+        rot: this.rng.range(-1.6, 1.6), rotV: this.rng.range(-1.2, 1.2),
+        stretch: this.rng.range(0.86, 1.00), align: 0.18,
         tile: this.rng.int(0, 3),
-        color: dirt ? '#c2af92' : (this._bright > 0.42 ? '#b6bbc4' : '#dfe2e9'),
-        alpha: (0.27 + 0.30 * amount) * (this._bright > 0.42 ? 1.5 : 1.0),
+        color: this._smokeColor(this.rng.range(0.82, 1.0), this.rng.range(0.55, 1.0),
+          dirt ? this._dustAlbedo : null),
+        alpha: (0.215 + 0.245 * amount) * this._pop,
         fadeIn: 0.01, decay: 1.0,
       });
     }
@@ -498,15 +767,17 @@ export class Effects {
     for (let q = 0; q < sheets; q++) {
       const a = this.rng.range(0, Math.PI * 2);
       this.smoke.emit({
-        pos: [pos.x + this.rng.range(-0.4, 0.4), pos.y + 0.05, pos.z + this.rng.range(-0.4, 0.4)],
-        vel: [Math.cos(a) * this.rng.range(2.6, 6.4) + vel.x * 0.48, this.rng.range(0.5, 1.6), Math.sin(a) * this.rng.range(2.6, 6.4) + vel.z * 0.48],
+        pos: [pos.x + this.rng.range(-0.4, 0.4), py + 0.05, pos.z + this.rng.range(-0.4, 0.4)],
+        vel: [Math.cos(a) * this.rng.range(2.6, 6.4) * spread + vel.x * 0.48, this.rng.range(0.5, 1.6), Math.sin(a) * this.rng.range(2.6, 6.4) * spread + vel.z * 0.48],
         life: this.rng.range(1.0, 1.9) * (0.7 + 0.4 * build),
-        size: this.rng.range(0.38, 0.64), grow: this.rng.range(2.4, 3.4),
-        rot: this.rng.range(-0.5, 0.5), rotV: this.rng.range(-0.5, 0.5),
-        stretch: this.rng.range(0.95, 1.20), align: 0.62,
+        size: this.rng.range(0.40, 0.66), grow: this.rng.range(2.4, 3.4),
+        rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-0.5, 0.5),
+        stretch: this.rng.range(0.92, 1.06), align: 0.40,
         tile: this.rng.int(0, 3),
-        color: dirt ? '#a89279' : (this._bright > 0.42 ? '#a9aeb8' : '#cfd3da'),
-        alpha: (0.185 + 0.215 * amount) * (0.65 + 0.45 * build) * (this._bright > 0.42 ? 1.5 : 1.0),
+        // the ground sheet lies in the car's own shadow: almost all sky, no key
+        color: this._smokeColor(this.rng.range(0.62, 0.80), this.rng.range(0.72, 1.0),
+          dirt ? this._dustAlbedo : null),
+        alpha: (0.185 + 0.215 * amount) * (0.65 + 0.45 * build) * this._pop,
         fadeIn: 0.02, decay: 1.4,
       });
     }
@@ -517,17 +788,19 @@ export class Effects {
       for (let i = 0; i < nf; i++) {
         const side = this.rng.sign();
         this.smoke.emit({
-          pos: [pos.x + this.rng.range(-0.2, 0.2), pos.y + this.rng.range(0.02, 0.18), pos.z + this.rng.range(-0.2, 0.2)],
+          pos: [pos.x + this.rng.range(-0.2, 0.2), py + this.rng.range(0.02, 0.18), pos.z + this.rng.range(-0.2, 0.2)],
           vel: [
-            vel.x * (carry + 0.16) + lx * side * this.rng.range(4.0, 11.0),
+            vel.x * (carry + 0.16) + lx * side * this.rng.range(2.6, 7.0) * spread,
             this.rng.range(1.2, 3.4),
-            vel.z * (carry + 0.16) + lz * side * this.rng.range(4.0, 11.0),
+            vel.z * (carry + 0.16) + lz * side * this.rng.range(2.6, 7.0) * spread,
           ],
-          life: this.rng.range(0.20, 0.46), size: this.rng.range(0.14, 0.30), grow: this.rng.range(1.8, 2.8),
-          rot: this.rng.range(-0.3, 0.3), rotV: this.rng.range(-1.4, 1.4),
-          stretch: this.rng.range(1.25, 1.75), align: 0.95, tile: this.rng.int(0, 3),
-          color: dirt ? '#c0ac90' : (this._bright > 0.42 ? '#c9cdd6' : '#eef0f5'),
-          alpha: (0.13 + 0.15 * amount) * (this._bright > 0.42 ? 1.4 : 1.0),
+          life: this.rng.range(0.20, 0.46), size: this.rng.range(0.16, 0.32), grow: this.rng.range(1.8, 2.8),
+          rot: this.rng.range(-0.8, 0.8), rotV: this.rng.range(-1.4, 1.4),
+          stretch: this.rng.range(1.05, 1.30), align: 0.72, tile: this.rng.int(0, 3),
+          // torn straight off the patch and out into the open air: full key light, brightest layer
+          color: this._smokeColor(this.rng.range(1.10, 1.38), this.rng.range(0, 0.28),
+            dirt ? this._dustAlbedo : null),
+          alpha: (0.13 + 0.15 * amount) * (0.72 + 0.28 * this._pop),
           fadeIn: 0.008, decay: 1.7,
         });
       }
@@ -535,19 +808,21 @@ export class Effects {
     // hot rubber right at the tyre: dark, small, short-lived. Sells the surface as rubber.
     if (!dirt && amount > 0.45 && this.rng.bool(0.35)) {
       this.smoke.emit({
-        pos: [pos.x + this.rng.range(-0.14, 0.14), pos.y + 0.02, pos.z + this.rng.range(-0.14, 0.14)],
+        pos: [pos.x + this.rng.range(-0.14, 0.14), py + 0.02, pos.z + this.rng.range(-0.14, 0.14)],
         vel: [vel.x * 0.30 + this.rng.range(-0.9, 0.9), this.rng.range(0.4, 1.3), vel.z * 0.30 + this.rng.range(-0.9, 0.9)],
         life: this.rng.range(0.35, 0.75), size: this.rng.range(0.20, 0.38), grow: 2.2,
-        rot: this.rng.range(-0.4, 0.4), rotV: this.rng.range(-2, 2), tile: this.rng.int(0, 3),
-        stretch: this.rng.range(1.1, 1.5), align: 0.60,
-        color: '#4a464a', alpha: 0.22 * amount, fadeIn: 0.05, decay: 1.8,
+        rot: this.rng.range(-1.4, 1.4), rotV: this.rng.range(-2, 2), tile: this.rng.int(0, 3),
+        stretch: this.rng.range(1.0, 1.24), align: 0.44,
+        // burnt rubber: dark, and lit by whatever the scene's light is like everything else
+        color: this._smokeColor(0.13, 0.85, this._rubberAlbedo),
+        alpha: 0.22 * amount, fadeIn: 0.05, decay: 1.8,
       });
     }
     // grit flicked out of the contact patch at high slide
     if (!dirt && amount > 0.6 && spd > 12 && this.rng.bool(0.22)) {
       const a = this.rng.range(0, Math.PI * 2);
       this.sparks.emit({
-        pos: [pos.x, pos.y + 0.05, pos.z],
+        pos: [pos.x, py + 0.05, pos.z],
         vel: [Math.cos(a) * this.rng.range(1, 4) - vel.x * 0.12, this.rng.range(1, 3), Math.sin(a) * this.rng.range(1, 4) - vel.z * 0.12],
         life: this.rng.range(0.2, 0.5), size: this.rng.range(0.08, 0.15), grow: -0.4,
         rot: this.rng.range(0, 6.28), tile: EMBER, color: '#8d8377', alpha: 0.5, decay: 1.6,
@@ -641,14 +916,16 @@ export class Effects {
    * of the car's own velocity so it is still with the car — and in frame — a fifth of a second later.
    */
   impactSmoke(p, nrm, s, vx, vz, { count = 18, carry = 0.42, scale = 1, dark = 0.45, spreadR = 0.9 } = {}) {
-    const light = this._bright > 0.42 ? '#c2bcb6' : '#ece5dc';
-    const mid = this._bright > 0.42 ? '#9b948e' : '#cbc4bd';
+    // Round 4: 15% more puffs at 12% less alpha each. Same optical depth, but no single sprite is
+    // legible on its own — an individually readable pale blob over a black night street is exactly
+    // the "falling confetti" read, and it is the rim of the cloud that gives it away.
+    count = Math.round(count * 1.15);
     // §6.6 round-2 note: "impact smoke is inconsistent across cities — the NYC plume is convincing,
     // but in vegas-supercar the magenta grade eats it and only two faint puffs survive, so the same
     // crash reads with weight in one city and weightless in another." A near-black street under a
     // saturated neon grade gives a mid-grey puff at 15% almost nothing to sit against, so the
     // opacity has to rise as the scene darkens rather than being one number for all four cities.
-    const pop = this._bright > 0.42 ? 1.0 : 1.55;
+    const pop = this._pop;
     for (let i = 0; i < count; i++) {
       const a = this.rng.range(0, Math.PI * 2);
       const rad = this.rng.range(0, spreadR);
@@ -669,18 +946,21 @@ export class Effects {
         life: this.rng.range(1.4, 2.8) * (0.75 + 0.5 * s),
         size: this.rng.range(0.40, 0.78) * scale * (0.8 + 0.35 * s),
         grow: this.rng.range(2.6, 3.8),
-        rot: this.rng.range(-0.5, 0.5), rotV: this.rng.range(-1.1, 1.1),
-        stretch: this.rng.range(1.0, 1.32), align: 0.72,
+        rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.1, 1.1),
+        stretch: this.rng.range(0.95, 1.14), align: 0.46,
         tile: this.rng.int(0, 3),
         // …and it is lit by the fire it came out of: a cool blue-grey cloud sitting next to an
-        // orange fireball reads as two unrelated effects composited together.
-        color: isDark ? (this.rng.bool(0.5) ? '#5a5450' : '#726b66') : (this.rng.bool(0.45) ? mid : light),
+        // orange fireball reads as two unrelated effects composited together. The dark fraction is
+        // soot and shredded plastic, the pale fraction is road dust and coolant flash.
+        color: isDark
+          ? this._smokeColor(this.rng.range(0.22, 0.40), this.rng.range(0.55, 1.0))
+          : this._smokeColor(this.rng.range(0.85, 1.30), this.rng.range(0.05, 0.60)),
         // Deliberately thin — the shower and the fire are the subject, the smoke is the frame —
         // and thinner still the further out a puff starts. The puffs at the RIM of the cloud have
         // nothing behind them to overlap with, so at a uniform alpha they are the ones you read
         // individually, and a rim of individually legible pale blobs is what makes a cloud look
         // like a pile of sprites. Dense core, ghost edge.
-        alpha: (0.150 + 0.175 * s) * pop * this.rng.range(0.75, 1.25)
+        alpha: (0.132 + 0.154 * s) * pop * this.rng.range(0.75, 1.25)
           * (1 - 0.66 * clamp(rad / Math.max(0.01, spreadR), 0, 1)),
         fadeIn: 0.015, decay: 1.55,
       });
@@ -694,8 +974,7 @@ export class Effects {
    * actually goes when a panel is dragged down a barrier.
    */
   _impactChurn(p, nrm, tan, s, vx, vz) {
-    const n = Math.floor(16 + s * s * 40);
-    const warm = this._bright > 0.42 ? '#8f877f' : '#b4aca4';
+    const n = Math.floor(19 + s * s * 46);
     for (let i = 0; i < n; i++) {
       const along = -this.rng.range(0.2, 3.4) * (0.5 + s);
       const out = this.rng.range(0.1, 1.5);
@@ -706,19 +985,23 @@ export class Effects {
           p[1] + this.rng.range(-0.35, 0.85),
           p[2] + tan.z * along * 0.30 + nrm.z * out * 0.35 + this.rng.range(-0.25, 0.25),
         ],
+        // Slower outward, and each puff bigger. At 3.4 m/s of spread these small puffs were four
+        // metres apart inside a fifth of a second, and a dozen individually legible pale scraps
+        // with night road between them is the "falling confetti" read, not a churning core.
         vel: [
-          vx * 0.34 + tan.x * along * 1.7 + nrm.x * out * 3.4 + this.rng.range(-1.6, 1.6),
-          this.rng.range(0.8, 5.4) * (0.5 + s),
-          vz * 0.34 + tan.z * along * 1.7 + nrm.z * out * 3.4 + this.rng.range(-1.6, 1.6),
+          vx * 0.34 + tan.x * along * 1.7 + nrm.x * out * 2.2 + this.rng.range(-1.2, 1.2),
+          this.rng.range(0.8, 4.2) * (0.5 + s),
+          vz * 0.34 + tan.z * along * 1.7 + nrm.z * out * 2.2 + this.rng.range(-1.2, 1.2),
         ],
         life: this.rng.range(0.42, 1.15),
-        size: this.rng.range(0.14, 0.34) * (0.8 + 0.5 * s),
+        size: this.rng.range(0.20, 0.44) * (0.8 + 0.5 * s),
         grow: this.rng.range(1.6, 2.8),
-        rot: this.rng.range(-0.4, 0.4), rotV: this.rng.range(-5.5, 5.5), tile: this.rng.int(0, 3),
-        stretch: this.rng.range(1.15, 1.7), align: 1.0,
-        // a hot fraction is lit by the fireball itself: warm-tinted, brighter, and it bloom-pops
-        color: hot ? '#c99a72' : (this.rng.bool(0.45) ? '#5a5450' : warm),
-        alpha: (hot ? 0.20 : 0.185) * (this._bright > 0.42 ? 1.0 : 1.45) * this.rng.range(0.7, 1.3),
+        rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-5.5, 5.5), tile: this.rng.int(0, 3),
+        stretch: this.rng.range(1.0, 1.28), align: 0.70,
+        // a hot fraction is lit by the fireball itself — that one really is its own light source,
+        // so it keeps a fixed ember colour; everything else takes the scene
+        color: hot ? FIRELIT : this._smokeColor(this.rng.range(0.22, 0.68), this.rng.range(0.3, 1.0)),
+        alpha: (hot ? 0.175 : 0.160) * (0.72 + 0.28 * this._pop) * this.rng.range(0.7, 1.3),
         fadeIn: 0.008, decay: 1.6,
       });
     }
@@ -741,7 +1024,8 @@ export class Effects {
       life: this.rng.range(0.4, 0.8), size: this.rng.range(0.13, 0.26), grow: 2.2,
       rot: this.rng.range(0, 6.28), rotV: this.rng.range(-1, 1), tile: this.rng.int(0, 3),
       stretch: 1.2, align: 0.7,
-      color: '#9c9891', alpha: clamp(0.05 + sp * 0.012, 0, 0.16), fadeIn: 0.06, decay: 1.8,
+      color: this._smokeColor(0.62, 0.8, this._dustAlbedo),
+      alpha: clamp(0.05 + sp * 0.012, 0, 0.16) * this._pop, fadeIn: 0.06, decay: 1.8,
     });
     if (sp > 6 && this.rng.bool(0.5)) {
       for (let i = 0; i < 2; i++) {
@@ -811,10 +1095,11 @@ export class Effects {
           vel.z * 0.42 + nrm.z * this.rng.range(1.2, 4.0) + this.rng.range(-1.0, 1.0),
         ],
         life: this.rng.range(0.9, 1.8), size: this.rng.range(0.34, 0.68), grow: this.rng.range(3.2, 4.4),
-        rot: this.rng.range(-0.4, 0.4), rotV: this.rng.range(-1.0, 1.0), tile: this.rng.int(0, 3),
-        stretch: this.rng.range(1.1, 1.6), align: 0.60,
-        color: this.rng.bool(0.42) ? '#6f6c72' : (this._bright > 0.42 ? '#b0b5be' : '#d9dce3'),
-        alpha: (0.075 + 0.110 * a) * (this._bright > 0.42 ? 1.4 : 1.0),
+        rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.0, 1.0), tile: this.rng.int(0, 3),
+        stretch: this.rng.range(0.98, 1.22), align: 0.42,
+        color: this._smokeColor(this.rng.bool(0.42) ? this.rng.range(0.18, 0.30) : this.rng.range(0.72, 1.05),
+          this.rng.range(0.2, 0.9)),
+        alpha: (0.075 + 0.110 * a) * (0.72 + 0.28 * this._pop),
         fadeIn: 0.03, decay: 1.3,
       });
     }
@@ -1192,7 +1477,7 @@ export class Effects {
     // Its fade-in is a fraction of a 3 s life, so it has to be TINY or the cloud is still
     // invisible at the 0.2 s the crash is judged on.
     this._at(0.05, () => {
-      const puffs = Math.floor(24 + big * 52);
+      const puffs = Math.floor(28 + big * 60);
       for (let i = 0; i < puffs; i++) {
         const a = this.rng.range(0, Math.PI * 2);
         const rad = this.rng.range(0, 1.7);
@@ -1205,10 +1490,11 @@ export class Effects {
           ],
           life: this.rng.range(2.2, 4.2) * (0.7 + 0.5 * s),
           size: this.rng.range(0.38, 0.80), grow: this.rng.range(2.8, 4.0),
-          rot: this.rng.range(-0.5, 0.5), rotV: this.rng.range(-0.8, 0.8), tile: this.rng.int(0, 3),
-          stretch: this.rng.range(0.95, 1.25), align: 0.62,
-          color: this.rng.bool(0.4) ? '#918c88' : (this._bright > 0.42 ? '#c6c1ba' : '#e2dcd4'),
-          alpha: (0.135 + 0.160 * s) * (this._bright > 0.42 ? 1.0 : 1.55)
+          rot: this.rng.range(-1.6, 1.6), rotV: this.rng.range(-0.8, 0.8), tile: this.rng.int(0, 3),
+          stretch: this.rng.range(0.92, 1.10), align: 0.40,
+          color: this._smokeColor(this.rng.bool(0.4) ? this.rng.range(0.28, 0.44) : this.rng.range(0.86, 1.22),
+            this.rng.range(0.15, 0.95)),
+          alpha: (0.118 + 0.140 * s) * this._pop
             * this.rng.range(0.7, 1.2) * (1 - 0.45 * (rad / 1.7)),
           fadeIn: 0.018, decay: 1.35,
         });
@@ -1221,9 +1507,10 @@ export class Effects {
           pos: [p[0] + Math.cos(a) * 0.4, 0.10, p[2] + Math.sin(a) * 0.4],
           vel: [Math.cos(a) * sp, this.rng.range(0.2, 1.1), Math.sin(a) * sp],
           life: this.rng.range(1.3, 2.6), size: this.rng.range(0.24, 0.52), grow: this.rng.range(2.6, 4.0),
-          rot: this.rng.range(-0.45, 0.45), rotV: this.rng.range(-0.6, 0.6), tile: this.rng.int(0, 3),
-          stretch: this.rng.range(1.05, 1.5), align: 0.90,
-          color: '#b3ab9d', alpha: (0.085 + 0.07 * s) * (this._bright > 0.42 ? 1.0 : 1.5),
+          rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-0.6, 0.6), tile: this.rng.int(0, 3),
+          stretch: this.rng.range(0.98, 1.22), align: 0.62,
+          color: this._smokeColor(this.rng.range(0.60, 0.90), this.rng.range(0.5, 1.0), this._dustAlbedo),
+          alpha: (0.085 + 0.07 * s) * this._pop,
           fadeIn: 0.025, decay: 1.5,
         });
       }
@@ -1246,7 +1533,8 @@ export class Effects {
           vel: [this.rng.range(-1.1, 1.1), this.rng.range(0.05, 0.5), this.rng.range(-1.1, 1.1)],
           life: this.rng.range(2.0, 3.6), size: this.rng.range(0.9, 1.8), grow: 3.2,
           rot: this.rng.range(0, 6.28), rotV: this.rng.range(-0.4, 0.4), tile: this.rng.int(0, 3),
-          color: '#aeb2b9', alpha: 0.10 + 0.08 * s, fadeIn: 0.16, decay: 1.4,
+          color: this._smokeColor(this.rng.range(0.55, 0.80), this.rng.range(0.6, 1.0)),
+          alpha: (0.10 + 0.08 * s) * this._pop, fadeIn: 0.16, decay: 1.4,
         });
       }
     });
@@ -1329,10 +1617,10 @@ export class Effects {
           ],
           vel: [vx * 0.62 + this.rng.range(-1.0, 1.0), this.rng.range(1.2, 3.4), vz * 0.62 + this.rng.range(-1.0, 1.0)],
           life: this.rng.range(1.2, 2.4), size: this.rng.range(0.22, 0.48), grow: this.rng.range(3.0, 4.4),
-          rot: this.rng.range(-0.4, 0.4), rotV: this.rng.range(-1.8, 1.8), tile: this.rng.int(0, 3),
-          stretch: this.rng.range(1.0, 1.45), align: 0.60,
-          color: this.rng.bool(0.6) ? '#403d44' : '#6b6870',
-          alpha: 0.14 + 0.19 * s, fadeIn: 0.02, decay: 1.5,
+          rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.8, 1.8), tile: this.rng.int(0, 3),
+          stretch: this.rng.range(0.96, 1.18), align: 0.44,
+          color: this._smokeColor(this.rng.bool(0.6) ? 0.10 : 0.26, 0.85, this._rubberAlbedo),
+          alpha: (0.14 + 0.19 * s) * this._pop, fadeIn: 0.02, decay: 1.5,
         });
       }
     }
@@ -1378,6 +1666,7 @@ export class Effects {
    */
   dirtSpray(pos, vel, amount) {
     if (amount < 0.05) return;
+    const py = this._contactY(pos);   // see _contactY: main.js flattens this to 0.04
     const a = clamp(amount, 0, 1);
     this._smokeBuild = Math.min(1, this._smokeBuild + a * 0.05);
     const build = this._smokeBuild;
@@ -1385,13 +1674,23 @@ export class Effects {
     const inv = 1 / Math.max(0.001, spd);
     const lx = -vel.z * inv, lz = vel.x * inv;
     const carry = 0.55 + 0.22 * clamp(spd / 45, 0, 1);
-    for (let i = 0; i < 2; i++) {
+    // How hard the tyre is actually scrubbing. §2.5 asks for smoke off the LOADED WHEELS in a
+    // drift, and the §8 drift capture puts the car on the shoulder in seven of the eight
+    // city/car combinations — so this branch, not `tyreSmoke`, is the one the drift frame is
+    // scored on. A sliding tyre on a dirt shoulder throws dust AND burns rubber, and it throws far
+    // more of both than a tyre merely rolling over it.
+    const scrub = this._slipAt(pos, a);
+    const heavy = 1 + 1.4 * scrub;
+    // Round 4: this used to emit five sprites a call, against `tyreSmoke`'s twenty-plus, and the
+    // §8 drift frames came back with "a handful of white specks" where the plume should be.
+    const nW = Math.round((a > 0.5 ? 6 : 4) * heavy);
+    for (let i = 0; i < nW; i++) {
       const side = this.rng.sign();
-      const fan = this.rng.range(2.0, 6.0);
+      const fan = this.rng.range(1.6, 4.6);
       this.smoke.emit({
         pos: [
           pos.x + lx * side * this.rng.range(0.1, 0.8) + this.rng.range(-0.25, 0.25),
-          pos.y + this.rng.range(0.02, 0.25),
+          py + this.rng.range(0.02, 0.25),
           pos.z + lz * side * this.rng.range(0.1, 0.8) + this.rng.range(-0.25, 0.25),
         ],
         vel: [
@@ -1400,41 +1699,70 @@ export class Effects {
           vel.z * carry + lz * side * fan + this.rng.range(-1.2, 1.2),
         ],
         life: this.rng.range(0.9, 1.9) * (0.7 + 0.5 * a + 0.3 * build),
-        size: this.rng.range(0.55, 1.05) * (0.85 + 0.4 * build), grow: this.rng.range(3.2, 4.8),
-        rot: this.rng.range(-0.45, 0.45), rotV: this.rng.range(-1.2, 1.2), tile: this.rng.int(0, 3),
-        stretch: this.rng.range(0.95, 1.25), align: 0.40,
-        color: this.rng.bool(0.45) ? '#b9a88c' : '#d8cbb2',
-        alpha: (0.16 + 0.19 * a) * (0.75 + 0.4 * build), fadeIn: 0.02, decay: 1.25,
+        size: this.rng.range(0.42, 0.86) * (0.85 + 0.4 * build), grow: this.rng.range(3.2, 4.8),
+        rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.2, 1.2), tile: this.rng.int(0, 3),
+        stretch: this.rng.range(0.90, 1.06), align: 0.30,
+        color: this._smokeColor(this.rng.range(0.55, 0.95), this.rng.range(0.2, 0.85), this._dustAlbedo),
+        alpha: (0.145 + 0.170 * a) * (0.75 + 0.4 * build) * this._pop, fadeIn: 0.02, decay: 1.25,
       });
     }
     // dense root right under the tyre — same reason as tyreSmoke: without it the sheared wisps
     // spread into separate scraps with clear air between them
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < Math.round(3 * heavy); i++) {
       this.smoke.emit({
-        pos: [pos.x + this.rng.range(-0.30, 0.30), pos.y + this.rng.range(0.02, 0.18), pos.z + this.rng.range(-0.30, 0.30)],
+        pos: [pos.x + this.rng.range(-0.30, 0.30), py + this.rng.range(0.02, 0.18), pos.z + this.rng.range(-0.30, 0.30)],
         vel: [
           vel.x * (carry * 0.5) + lx * this.rng.range(-1.8, 1.8),
           this.rng.range(0.9, 2.4),
           vel.z * (carry * 0.5) + lz * this.rng.range(-1.8, 1.8),
         ],
-        life: this.rng.range(0.35, 0.70), size: this.rng.range(0.45, 0.78), grow: this.rng.range(1.8, 2.8),
-        rot: this.rng.range(-0.6, 0.6), rotV: this.rng.range(-1.1, 1.1),
-        stretch: this.rng.range(0.82, 1.00), align: 0.16, tile: this.rng.int(0, 3),
-        color: this.rng.bool(0.5) ? '#c6b394' : '#ddd0b6',
-        alpha: 0.19 + 0.20 * a, fadeIn: 0.01, decay: 1.0,
+        life: this.rng.range(0.35, 0.70), size: this.rng.range(0.36, 0.64), grow: this.rng.range(1.8, 2.8),
+        rot: this.rng.range(-1.6, 1.6), rotV: this.rng.range(-1.1, 1.1),
+        stretch: this.rng.range(0.86, 1.00), align: 0.14, tile: this.rng.int(0, 3),
+        color: this._smokeColor(this.rng.range(0.66, 1.0), this.rng.range(0.45, 1.0), this._dustAlbedo),
+        alpha: (0.165 + 0.175 * a) * this._pop, fadeIn: 0.01, decay: 1.0,
       });
     }
     // low sheet flung sideways off the shoulder
-    if (this.rng.bool(0.5)) {
+    for (let q = 0; q < (this.rng.bool(0.55 + 0.35 * scrub) ? 2 : 1); q++) {
       const ang = this.rng.range(0, Math.PI * 2);
       this.smoke.emit({
-        pos: [pos.x + this.rng.range(-0.4, 0.4), pos.y + 0.04, pos.z + this.rng.range(-0.4, 0.4)],
-        vel: [Math.cos(ang) * this.rng.range(2.4, 6.0) + vel.x * 0.42, this.rng.range(0.4, 1.5), Math.sin(ang) * this.rng.range(2.4, 6.0) + vel.z * 0.42],
-        life: this.rng.range(1.2, 2.2), size: this.rng.range(0.65, 1.15), grow: this.rng.range(3.2, 4.6),
-        rot: this.rng.range(-0.5, 0.5), rotV: this.rng.range(-0.6, 0.6), tile: this.rng.int(0, 3),
-        stretch: this.rng.range(1.0, 1.35), align: 0.50,
-        color: '#c3b393', alpha: (0.125 + 0.15 * a) * (0.7 + 0.4 * build), fadeIn: 0.03, decay: 1.4,
+        pos: [pos.x + this.rng.range(-0.4, 0.4), py + 0.04, pos.z + this.rng.range(-0.4, 0.4)],
+        vel: [Math.cos(ang) * this.rng.range(2.0, 5.0) + vel.x * 0.42, this.rng.range(0.4, 1.5), Math.sin(ang) * this.rng.range(2.0, 5.0) + vel.z * 0.42],
+        life: this.rng.range(1.2, 2.2), size: this.rng.range(0.55, 0.98), grow: this.rng.range(3.2, 4.6),
+        rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-0.6, 0.6), tile: this.rng.int(0, 3),
+        stretch: this.rng.range(0.94, 1.14), align: 0.34,
+        color: this._smokeColor(this.rng.range(0.58, 0.80), this.rng.range(0.6, 1.0), this._dustAlbedo),
+        alpha: (0.115 + 0.14 * a) * (0.7 + 0.4 * build) * this._pop, fadeIn: 0.03, decay: 1.4,
       });
+    }
+    // BURNT RUBBER, not only dust. A tyre held sideways on a gravel shoulder is still a tyre being
+    // destroyed: the plume that comes off it is a pale dust cloud with a darker, faster core of
+    // rubber smoke inside it. Without this layer an off-road drift reads as a dust trail behind a
+    // car that happens to be pointing the wrong way, rather than as a slide.
+    if (scrub > 0.12) {
+      const nR = Math.round(2 + 5 * scrub);
+      for (let i = 0; i < nR; i++) {
+        const side = this.rng.sign();
+        this.smoke.emit({
+          pos: [
+            pos.x + lx * side * this.rng.range(0.05, 0.45) + this.rng.range(-0.22, 0.22),
+            py + this.rng.range(0.02, 0.22),
+            pos.z + lz * side * this.rng.range(0.05, 0.45) + this.rng.range(-0.22, 0.22),
+          ],
+          vel: [
+            vel.x * (carry + 0.10) + lx * side * this.rng.range(1.2, 3.4),
+            this.rng.range(1.8, 4.0) + a * 1.4,
+            vel.z * (carry + 0.10) + lz * side * this.rng.range(1.2, 3.4),
+          ],
+          life: this.rng.range(0.45, 1.05) * (0.75 + 0.5 * a),
+          size: this.rng.range(0.26, 0.50), grow: this.rng.range(2.2, 3.2),
+          rot: this.rng.range(-1.4, 1.4), rotV: this.rng.range(-1.6, 1.6), tile: this.rng.int(0, 3),
+          stretch: this.rng.range(0.92, 1.08), align: 0.52,
+          color: this._smokeColor(this.rng.range(0.28, 0.62), this.rng.range(0.5, 1.0), this._rubberAlbedo),
+          alpha: (0.14 + 0.16 * a) * scrub * this._pop, fadeIn: 0.012, decay: 1.3,
+        });
+      }
     }
     // Grit, not shrapnel. Two chunks a frame at 45% put a continuous shower of dark angular
     // shards up the screen behind a Vegas slide, and a car sliding on a shoulder that appears to
@@ -1442,7 +1770,7 @@ export class Effects {
     for (let i = 0; i < 1; i++) {
       if (!this.rng.bool(0.30)) continue;
       this.debris.emit({
-        pos: [pos.x, pos.y + 0.05, pos.z],
+        pos: [pos.x, py + 0.05, pos.z],
         vel: [-vel.x * 0.22 + this.rng.range(-2.5, 2.5), this.rng.range(2, 6), -vel.z * 0.22 + this.rng.range(-2.5, 2.5)],
         life: this.rng.range(0.6, 1.3), size: this.rng.range(0.045, 0.095),
         rot: this.rng.range(0, 6.28), rotV: this.rng.range(-12, 12), tile: this.rng.int(0, 3),
@@ -1598,10 +1926,10 @@ export class Effects {
       ],
       life: this.rng.range(0.9, 1.9), size: this.rng.range(0.24, 0.50) * (0.7 + 0.6 * d),
       grow: this.rng.range(3.2, 4.8),
-      rot: this.rng.range(-0.4, 0.4), rotV: this.rng.range(-1.4, 1.4), tile: this.rng.int(0, 3),
-      stretch: this.rng.range(1.05, 1.45), align: 0.60,
-      color: this.rng.bool(0.55) ? '#4c4950' : '#7d7a80',
-      alpha: 0.14 + 0.22 * d, fadeIn: 0.05, decay: 1.4,
+      rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.4, 1.4), tile: this.rng.int(0, 3),
+      stretch: this.rng.range(0.98, 1.18), align: 0.44,
+      color: this._smokeColor(this.rng.bool(0.55) ? 0.13 : 0.32, 0.8, this._rubberAlbedo),
+      alpha: (0.14 + 0.22 * d) * this._pop, fadeIn: 0.05, decay: 1.4,
     });
     // a hot glow inside the wound while the damage is fresh — the corner is still burning
     if (d > 0.5 && this.rng.bool(0.3)) {
@@ -1634,10 +1962,33 @@ export class Effects {
       }
     }
 
+    this._car = car || null;
+
     const fc = this.scene.fog?.color;
-    if (fc) this._bright = 0.2126 * fc.r + 0.7152 * fc.g + 0.0722 * fc.b;
+    if (fc) {
+      this._bright = 0.2126 * fc.r + 0.7152 * fc.g + 0.0722 * fc.b;
+      // A city swap changes the fog. Re-derive the smoke tint then — and only then: the sampler
+      // walks the whole scene graph, which is thousands of nodes in a night city and is exactly
+      // the kind of per-frame traverse that shows up as a p95 spike rather than a lower mean.
+      const key = (fc.r * 1024 | 0) * 1048576 + (fc.g * 1024 | 0) * 1024 + (fc.b * 1024 | 0);
+      if (key !== this._fogKey) { this._fogKey = key; this._lightDirty = true; }
+    }
+    if (this._lightDirty) {
+      // Value and opacity ride the same signal: light grey smoke washes out against a bright city
+      // and dark grey smoke is swallowed by a black one, so the puffs get lighter and thicker as
+      // the scene gets darker. Smooth, not a step — the old `_bright > 0.42` branch put a cliff
+      // between two cities that are half a stop apart.
+      const b01 = smoothstep(0.20, 0.55, this._bright);
+      this._smokeVal = lerp(0.74, 0.55, b01);
+      // Deliberately a much smaller night boost than round 3's 1.55. Making a puff read against a
+      // dark city is a job for its VALUE, not its opacity: at 1.55 every sprite was individually
+      // opaque, so instead of a cloud you saw twenty separate pale flakes with road between them.
+      this._pop = lerp(1.10, 1.00, b01);
+      this._sampleSceneLight();
+    }
 
     for (const s of this.pools) s.update(dt, wind);
+    this.skid.flush();           // one upload of what the wheels actually wrote this frame
     this.chunks.update(dt);
     this.world.update(dt);       // toppling / tumbling street furniture
     this.decals.update(dt);

@@ -23,6 +23,10 @@ import { clamp, lerp, smoothstep } from '../core/rng.js';
  *   · live state     — needle spring, nitro drain, lap pips, position delta, drift meter,
  *                      countdown, banner queue: a static HUD caps at 65.
  *
+ * THE RESULTS SCREEN lives at the bottom of this file (`_drawResults`). It is deliberately NOT on
+ * this grid: it is the race's end card, it takes the whole frame, and it is cut from the GARAGE's
+ * parts instead — see the long note above it. The race HUD fades out under it (`draw`).
+ *
  * Rasterisation (§7 "aliased, jaggy text or UI edges" → cap 68): the whole HUD is drawn into a
  * backbuffer at SS × CSS pixels and box-filtered down on composite, so every edge — type, plate
  * edges, gauge ticks, needle — gets a real gradient rather than Canvas2D's one-pixel blend step.
@@ -64,6 +68,12 @@ const GREEN = '#39ff88';
 const PAPER = '#e9f1f8';
 const LABEL = 'rgba(178,201,222,0.86)';
 const TAU = Math.PI * 2;
+
+// The results screen's own palette. GOLD is the garage's exact gold (ui/menu.js) — the two screens
+// bracket a race and have to look like the same piece of software.
+const GOLD = '#ffc23a';
+const GOLD_HOT = '#ffe9a8';
+const PODIUM = ['#ffc23a', '#cbd7e4', '#d98b4a'];
 
 // ---------------------------------------------------------------- the grid
 //
@@ -219,6 +229,152 @@ function scrim(ctx, x, y, r, a = 0.5) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
 }
 
+// ---------------------------------------------------------------- results-screen typography
+//
+// Extra optical kerning for the geometric face, on this screen only.
+//
+// The geo C is a 300° circular band on a 0.82 advance: its terminals fall away from the advance
+// line by nearly a tenth of an em, so against a letter whose ink starts hard at x = 0 it leaves a
+// hole the eye reads as a word space. `core/font.js` (HUD piece) carries the diagonal pairs but not
+// the round ones, and ui/menu.js hit exactly this — its round-1 critic read "TRAC TION" off the
+// garage screen. A results screen is a screen of lists set in the geo face, so it needs the same
+// table. It is applied through `rtext`/`rmeasure` rather than by shadowing the module's `drawText`,
+// so not one glyph of the race HUD's tuned layout moves.
+const RKERN = {
+  CT: -0.115, CC: -0.085, CE: -0.062, CA: -0.068, CI: -0.090, CU: -0.062, CL: -0.080, CH: -0.062,
+  CK: -0.068, CR: -0.062, CS: -0.052, CO: -0.044, CY: -0.090, 'C/': -0.090, 'C ': -0.035,
+  AC: -0.058, EC: -0.046, SC: -0.040, LC: -0.044, OC: -0.034, RC: -0.055, TC: -0.052, IC: -0.038,
+  'R/': -0.055, '/C': -0.075, '/ ': -0.035, ' /': -0.035, 'T ': -0.025, ' T': -0.025,
+  PE: -0.018, TI: -0.020, TY: -0.030, LA: -0.024, LO: -0.020,
+};
+
+function rkern(text, size, face) {
+  if (face !== 'geo') return 0;
+  let d = 0;
+  for (let i = 1; i < text.length; i++) {
+    const k = RKERN[text[i - 1] + text[i]];
+    if (k) d += k * size;
+  }
+  return d;
+}
+
+function rmeasure(text, o = {}) {
+  const m = measure(text, o);
+  return { width: Math.max(0, m.width + rkern(String(text), o.size ?? 32, o.face)), height: m.height };
+}
+
+/** drawText(), laying the geo face out glyph by glyph so the kern table can bite. */
+function rtext(ctx, text, o = {}) {
+  const str = String(text);
+  if (o.face !== 'geo' || str.length < 2 || typeof o.color === 'function') return drawText(ctx, str, o);
+  const size = o.size ?? 32;
+  const tracking = o.tracking ?? 0.08;
+  const width = rmeasure(str, o).width;
+  let x = o.align === 'right' ? o.x - width : o.align === 'center' ? o.x - width / 2 : o.x;
+  const sub = { ...o, align: 'left' };
+  for (let i = 0; i < str.length; i++) {
+    if (i > 0) { const k = RKERN[str[i - 1] + str[i]]; if (k) x += k * size; }
+    if (str[i] !== ' ') drawText(ctx, str[i], { ...sub, x, y: o.y });
+    x += measure(str[i], o).width + tracking * size;
+  }
+  return { width, height: size };
+}
+
+/**
+ * The garage's plate: the same leaning parallelogram, chamfered on the top-left and bottom-right.
+ * Identical geometry to ui/menu.js `plate()` so the results panels are cut from the same shape as
+ * the destination list and the stat block the player saw ninety seconds earlier.
+ */
+function cutPath(ctx, x, y, w, h, skew = SKEW, cut = 0) {
+  const s = h * skew;
+  ctx.beginPath();
+  if (cut > 0) {
+    ctx.moveTo(x + s + cut, y);
+    ctx.lineTo(x + w + s, y);
+    ctx.lineTo(x + w, y + h - cut);
+    ctx.lineTo(x + w - cut, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x + s, y + cut);
+  } else {
+    ctx.moveTo(x + s, y); ctx.lineTo(x + w + s, y);
+    ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h);
+  }
+  ctx.closePath();
+}
+
+/** A control-hint key, as drawn on the garage's bottom bar. Returns its width. */
+function keycap(ctx, x, y, txt, minW = 30) {
+  const size = 14, h = 26;
+  const w = Math.max(minW, rmeasure(txt, { size, tracking: 0.14, face: 'geo' }).width + 20);
+  platePath(ctx, x, y - h, w, h, 0.12);
+  ctx.fillStyle = 'rgba(226,238,250,0.14)'; ctx.fill();
+  platePath(ctx, x, y - h, w, h, 0.12);
+  ctx.strokeStyle = 'rgba(200,222,240,0.55)'; ctx.lineWidth = 1.3; ctx.stroke();
+  rtext(ctx, txt, {
+    x: x + w / 2 + h * 0.06, y: y - 8, size, weight: 0.16, tracking: 0.14, align: 'center',
+    color: '#dfeaf6', face: 'geo',
+  });
+  return w;
+}
+
+/**
+ * THE RESULTS LAYOUT — one table, read by the panel and by the finish camera.
+ *
+ * The round-1 results screen was a full-width two-column panel with NO CAR ON IT: the critic's
+ * words were "`_drawResults` is a pure 2D overlay over a darkened cool-down lap, and the player's
+ * teal car is a barely-visible sliver hidden behind the LAP TIMES panel". The fix is a third
+ * column that holds nothing — a STAGE — and a camera that puts the hero car in it.
+ *
+ * Because the composition has to be true on both sides of the glass, this function is the single
+ * source of it: `_drawResults` lays the panels out from it, and main.js's finish camera reads the
+ * same numbers back through `HUD.resultsStageNDC()` and solves for the camera that lands the car
+ * exactly there. Move a number here and the car follows it.
+ */
+export function resultsLayout(VW, VH) {
+  const M = 64, BAR = 92, CUT = 26, RS = 0.077;
+  const barY = VH - BAR;
+  const yT = 250;
+  const panelH = barY - 34 - yT;
+  const innerW = VW - M * 2;
+  // the stage: the right ~30% of the panel band, left empty for the car
+  const stageW = Math.round(innerW * 0.300);
+  const stageX = VW - M - stageW;
+  const usable = innerW - stageW - 30;
+  const leftW = Math.round(usable * 0.585);       // classification
+  const midX = M + leftW + 26;
+  const midW = usable - leftW - 26;               // YOUR RACE + LAP TIMES, stacked
+  const cardAH = Math.round(panelH * 0.44);
+  return {
+    M, BAR, CUT, RS, barY, yT, panelH, innerW,
+    leftW, midX, midW, cardAH, cardBY: yT + cardAH + 20, cardBH: panelH - cardAH - 20,
+    stageX, stageW,
+    // where the car is composed inside the stage: centre, and how wide it should measure
+    carX: stageX + stageW * 0.465,
+    carY: yT + panelH * 0.585,
+    carW: stageW * 0.86,
+  };
+}
+
+/** What goes in a classification row's TIME column. */
+function resultTime(row) {
+  if (row.dnf) return 'DNF';
+  if (row.finished && row.time != null) {
+    return (row.gap == null || row.gap <= 0.005) ? fmtTime(row.time) : `+${fmtSplit(row.gap)}`;
+  }
+  if (row.gapM > 0.5) return `+${Math.round(row.gapM)}m`;
+  return '--';
+}
+
+/** M:SS.CS, dropping the minutes when there are none — a split, not a clock. */
+export function fmtSplit(t) {
+  const v = Math.max(0, t);
+  const m = Math.floor(v / 60);
+  const s = Math.floor(v % 60);
+  const cs = Math.floor((v % 1) * 100);
+  const tail = `${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+  return m > 0 ? `${m}:${tail}` : tail;
+}
+
 /** Label type: the upright geometric face, one call so every label in the HUD matches. */
 function label(ctx, text, x, y, size, color = LABEL, o = {}) {
   return drawText(ctx, text, {
@@ -253,6 +409,7 @@ export class HUD {
     this.countPulse = 0;
     this.msg = null;       // ONE centre-screen slot…
     this.msgQueue = [];    // …everything else waits its turn
+    this.resultsT = 0;     // the classification panel's entrance clock
     this.t = 0;
     this._patches = new Map();   // id → cached static art, see _patch()
     this._glyphs = new Map();    // seven-segment character sprites, see _seg()
@@ -424,6 +581,22 @@ export class HUD {
   }
 
   /**
+   * WHERE THE HERO CAR GOES ON THE RESULTS SCREEN, in the camera's own units.
+   *
+   * The panel reserves its right third for a car (see `resultsLayout`) and main.js's finish camera
+   * has to put one there. Rather than have both files carry the same magic numbers, the layout is
+   * solved once here and handed over as normalised device coordinates plus the fraction of the
+   * frame width the car should measure — which is exactly what a camera solve needs.
+   */
+  resultsStageNDC() {
+    const W = this.w || 1600, H = this.h || 900;
+    const k = Math.min(W / 1600, H / 900);
+    const VW = W / k, VH = H / k;
+    const L = resultsLayout(VW, VH);
+    return { x: (L.carX / VW) * 2 - 1, y: 1 - (L.carY / VH) * 2, w: L.carW / VW };
+  }
+
+  /**
    * Centre-screen shout. ONE slot: a second message never draws on top of the first — it either
    * supersedes it (if the current one is nearly spent) or waits in the queue. Two overlapping
    * banners with mismatched chevrons is a bug, not two-line art.
@@ -467,13 +640,42 @@ export class HUD {
     const res = scale * k;
     if (res !== this._res) { this._res = res; this._flushCache(); }
 
-    this._drawChassis(ctx, s);
-    this._drawCityBanner(ctx, s, VW - GR.M, GR.TOP);
-    this._drawClock(ctx, s, VW / 2, GR.TOP);
-    this._drawGauge(ctx, s, VW, VH);
-    this._drawDrift(ctx, s, GR.M, VH - GR.M, 244, GR.BAND);
-    this._drawMessages(ctx, VW / 2, VH * 0.32);
+    // The race HUD YIELDS to the classification. Two full instrument clusters and a results panel
+    // fighting for the same 1600x900 is not a designed screen — and the speedometer and the nitro
+    // strip sit exactly where the results screen's bottom bar goes. Faded on the panel's own
+    // entrance clock, slightly ahead of it, so the frame is handed over rather than covered up.
+    const resFade = 1 - smoothstep(0, 1, clamp(this.resultsT * 1.7, 0, 1));
+    // …and a SECOND fade, on the flag itself. main.js cuts to a scripted finish camera the instant
+    // the line is crossed (§8's money frame), and an instrument cluster laid over a hero angle is
+    // the round-1 tell: "the camera does not change at all: it is the same chase rig". The clusters
+    // go first so the flag shot is a picture; the FINISH shout stays, because the shout is what the
+    // picture is about, and the panel arrives under it a second later.
+    const flagFade = 1 - smoothstep(0, 1, clamp(((s.finishT ?? 0) - 0.30) / 0.80, 0, 1));
+    const deckFade = Math.min(resFade, flagFade);
+    if (deckFade > 0.004) {
+      ctx.save();
+      ctx.globalAlpha = deckFade;
+      this._drawChassis(ctx, s);
+      this._drawCityBanner(ctx, s, VW - GR.M, GR.TOP);
+      this._drawClock(ctx, s, VW / 2, GR.TOP);
+      this._drawGauge(ctx, s, VW, VH);
+      this._drawDrift(ctx, s, GR.M, VH - GR.M, 244, GR.BAND);
+      ctx.restore();
+    }
+    // …the centre banner outlives them: the panel says FINISHED P6 in 100 px type of its own, so
+    // the shout goes when the PANEL comes, not when the instruments do.
+    // …and the banner takes the fade as an ARGUMENT, not from the context: `_drawMessages` sets
+    // globalAlpha absolutely (it has its own envelope), so an outer alpha would not reach it and
+    // a four-second FINISHED P3 shout would sit at full strength across the panel's headline.
+    // …and it drops down the frame once the flag camera is running. At the vanishing point the
+    // shout collided with the start/finish gantry's own chequered banner — the first capture of
+    // the new flag shot read "FINISHRT / FINISH" — and it was the round-1 complaint anyway: "the
+    // FINISH banner floats alone at the vanishing point with nothing under it". At 0.42 it sits
+    // between the gantry and the car, with the car under it.
+    const msgY = VH * lerp(0.30, 0.42, smoothstep(0, 0.55, s.finishT ?? 0));
+    this._drawMessages(ctx, VW / 2, msgY, resFade);
     if (s.state === 'countdown' && s.countdown != null) this._drawStartLights(ctx, VW / 2, VH * 0.30, s.countdown);
+    if (s.results) this._drawResults(ctx, s.results, VW, VH);
 
     ctx.restore();
 
@@ -547,6 +749,9 @@ export class HUD {
       if (c !== this.lastCount) { this.countPulse = 1; this.lastCount = c; }
     }
     this.countPulse = Math.max(0, this.countPulse - d * 2.6);
+
+    // the classification panel rises once, and is gone the moment the race state is thrown away
+    this.resultsT = s.results ? Math.min(1, this.resultsT + d * 1.05) : 0;
   }
 
   // ---------------------------------------------------------------- the chassis
@@ -1486,11 +1691,11 @@ export class HUD {
    * else) and legibility over a blown-out sky — hence a hot white core with the message colour
    * carried in the halo and rails, never orange ink on an orange sky.
    */
-  _drawMessages(ctx, cx, cy) {
+  _drawMessages(ctx, cx, cy, fade = 1) {
     const m = this.msg;
-    if (!m) return;
+    if (!m || fade <= 0.004) return;
     const t = m.t / m.dur;
-    const a = smoothstep(0, 0.12, t) * (1 - smoothstep(0.68, 1, t));
+    const a = smoothstep(0, 0.12, t) * (1 - smoothstep(0.68, 1, t)) * fade;
     const sc = 1 + (1 - smoothstep(0, 0.25, t)) * 0.28;
     const size = 48;
     const wpx = measure(m.text, { size, tracking: 0.10 }).width;
@@ -1537,6 +1742,524 @@ export class HUD {
       tracking: 0.10, bevel: true, sheen: true,
     });
     ctx.restore();
+  }
+
+  // ---------------------------------------------------------------- the results screen
+  //
+  // A race used to end in a centre-screen banner and an "ENTER · GARAGE" prompt — the coherence
+  // critic's charge, and fair: a product whose race has no result is not one product. This is the
+  // screen that ends it, and it is deliberately built out of the GARAGE's parts, because the garage
+  // is the strongest UI in the game and these two screens bracket every race anyone will ever run:
+  //
+  //   · the same chamfered leaning plate (ui/menu.js `plate()`, PANEL_CUT = 26, ~34 px of lean),
+  //   · the same gold, the same 3 px leading rail on every plate,
+  //   · the same black bottom bar — hazard chevrons along its foot, an orange→cyan hairline along
+  //     its top, control glyphs at the left end and the car's full name at the right end in beveled
+  //     metallic italic. That last one is the garage's signature move and does most of the work of
+  //     making the two screens read as one piece of software,
+  //   · headings in the display italic, every list in the geometric face (§2.6).
+  //
+  // …and, from round 2, a THIRD COLUMN THAT HOLDS NOTHING. The right third of the band is a stage:
+  // the scrim is cut away over it and main.js drives the hero car into the hole under a key and a
+  // rim (`_finishCamera`, `_heroLight`). The panel and the camera solve the same layout — see
+  // `resultsLayout` — so the car lands where the type was laid out around it.
+  //
+  // COST. Six cached patches, four unblurred gradient fills and one erase a frame, plus the
+  // finishing time. The entrance is a per-cluster slide and fade applied at BLIT time (`_patch`'s
+  // tx / alpha), never a repaint, so the panel costs the same on its first frame as on its
+  // thousandth — see the note above `_patch` for why that matters here. The clock is drawn live
+  // because `_seg` blits its own sprites under the identity transform and cannot go inside a patch.
+
+  _drawResults(ctx, r, VW, VH) {
+    const T = clamp(this.resultsT, 0, 1);
+    const L = resultsLayout(VW, VH);
+    const { M, BAR, CUT, RS, barY, yT, panelH, leftW, midX: rightX, midW: rightW,
+      cardAH, cardBY, cardBH, stageX, stageW } = L;
+
+    const rows = r.rows || [];
+    const laps = r.laps || [];
+    const win = r.pos === 1 && !r.dnf;
+    const podium = r.pos <= 3 && !r.dnf;
+    const accent = r.dnf ? RED : win ? GOLD : podium ? AMBER : CYAN;
+    const sig = [
+      VW, VH, r.pos, r.dnf ? 1 : 0, r.time, r.best, r.record, r.recordBeaten ? 1 : 0,
+      r.cityName, r.carName, r.lapCount, laps.map((x) => x.toFixed(2)).join(),
+      rows.map((x) => `${x.pos}${x.name}${x.carName}${x.finished ? 1 : 0}${x.dnf ? 1 : 0}`
+        + `${x.gap == null ? '' : x.gap.toFixed(2)}${Math.round(x.gapM)}`).join('|'),
+    ].join('~');
+
+    // per-cluster entrance. `slide` is the blit offset; `a` the blit alpha.
+    const ease = (delay) => smoothstep(0, 1, clamp((T - delay) / 0.40, 0, 1));
+    const io = ease(0);
+
+    // ---- ground. Four unblurred fills and one erase. The cool-down lap is still running behind
+    // this and is meant to stay faintly visible — an arcade results screen sits ON the race, not
+    // instead of it.
+    ctx.save();
+    ctx.globalAlpha = io;
+    const vg = ctx.createRadialGradient(VW * 0.42, VH * 0.46, VH * 0.24, VW * 0.42, VH * 0.5, VH * 1.15);
+    vg.addColorStop(0, 'rgba(3,6,12,0.62)');
+    vg.addColorStop(0.55, 'rgba(3,6,12,0.84)');
+    vg.addColorStop(1, 'rgba(1,3,7,0.97)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, VW, VH);
+    const tg = ctx.createLinearGradient(0, 0, 0, 300);
+    tg.addColorStop(0, 'rgba(2,5,10,0.92)'); tg.addColorStop(1, 'rgba(2,5,10,0)');
+    ctx.fillStyle = tg; ctx.fillRect(0, 0, VW, 300);
+    const bgg = ctx.createLinearGradient(0, barY - 200, 0, VH);
+    bgg.addColorStop(0, 'rgba(2,4,9,0)'); bgg.addColorStop(0.62, 'rgba(2,4,9,0.72)');
+    bgg.addColorStop(1, 'rgba(1,2,6,0.98)');
+    ctx.fillStyle = bgg; ctx.fillRect(0, barY - 200, VW, VH - barY + 200);
+
+    // ---- THE STAGE. A hole is cut in the scrim over the right third and the hero car is driven
+    // into it (main.js `_finishCamera`, composed off `resultsStageNDC`). `destination-out` is the
+    // only way to get a SOFT hole: clipping to a rectangle leaves a hard edge, and painting light
+    // back over the scrim only greys it. The centre is not fully cleared — 0.90, not 1.0 — and the
+    // hole is kept tight around the car rather than spread over the whole third, so the buildings
+    // behind it stay in the scrim and cannot read as brighter than the subject.
+    const pool = ctx.createRadialGradient(L.carX, L.carY - stageW * 0.02, stageW * 0.08,
+      L.carX, L.carY - stageW * 0.02, stageW * 0.62);
+    pool.addColorStop(0, 'rgba(0,0,0,0.90)');
+    pool.addColorStop(0.42, 'rgba(0,0,0,0.76)');
+    pool.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = pool; ctx.fillRect(stageX - stageW * 0.55, yT - 190, stageW * 1.9, panelH + 300);
+    ctx.globalCompositeOperation = 'source-over';
+    // …and a warm floor pool under it, the garage's turntable light. Drawn ON the frame rather than
+    // into it, so it reads as light in the room rather than as a decal on the road.
+    const floor = ctx.createRadialGradient(L.carX, L.carY + stageW * 0.30, stageW * 0.04,
+      L.carX, L.carY + stageW * 0.30, stageW * 0.62);
+    floor.addColorStop(0, 'rgba(255,196,110,0.20)');
+    floor.addColorStop(0.45, 'rgba(255,170,80,0.085)');
+    floor.addColorStop(1, 'rgba(255,150,60,0)');
+    ctx.fillStyle = floor;
+    ctx.save();
+    ctx.translate(L.carX, L.carY + stageW * 0.30);
+    ctx.scale(1, 0.34);                                   // a pool on the ground, not a halo
+    ctx.translate(-L.carX, -(L.carY + stageW * 0.30));
+    ctx.fillRect(L.carX - stageW * 0.7, L.carY - stageW * 0.6, stageW * 1.4, stageW * 1.8);
+    ctx.restore();
+    ctx.restore();
+
+    // ---- header + headline ------------------------------------------------------------------
+    // NOTE the full-width patches are bounded at exactly 0..VW, not padded outward. `_patch` bakes
+    // at `res` device pixels per design unit and `res * VW` is `W * scale`, which resize() already
+    // holds at or under SS_MAX_EDGE — pad it and the cache canvas crosses 4096 px and falls off the
+    // accelerated path. Nothing on this screen draws outside the frame anyway.
+    const P = 44;
+    this._patch(ctx, 'resHead', 0, -P, VW, 260 + P, `${sig}|head`,
+      (c) => this._resHead(c, r, VW, M, accent, win, podium),
+      { tx: (1 - ease(0)) * -46, alpha: ease(0) });
+
+    // ---- the stage's furniture: the rail that says this third belongs to the panel ------------
+    this._patch(ctx, 'resStage', stageX - P, yT - P, stageW + panelH * RS + P * 2, panelH + P * 2,
+      `${sig}|stg`, (c) => this._resStage(c, r, stageX, yT, stageW, panelH, RS, accent),
+      { tx: (1 - ease(0.16)) * 70, alpha: ease(0.16) });
+
+    // ---- classification --------------------------------------------------------------------
+    this._patch(ctx, 'resTable', M - P, yT - P, leftW + panelH * RS + P * 2, panelH + P * 2, `${sig}|tbl`,
+      (c) => this._resTable(c, r, M, yT, leftW, panelH, RS, CUT),
+      { tx: (1 - ease(0.10)) * -60, alpha: ease(0.10) });
+
+    // ---- the player's own race --------------------------------------------------------------
+    this._patch(ctx, 'resCardA', rightX - P, yT - P, rightW + cardAH * RS + P * 2, cardAH + P * 2, `${sig}|ca`,
+      (c) => this._resCardA(c, r, rightX, yT, rightW, cardAH, RS, CUT, accent),
+      { tx: (1 - ease(0.20)) * 60, alpha: ease(0.20) });
+    // …and its clock, which cannot live in a patch (see the note above).
+    {
+      const eA = ease(0.20);
+      const lx = (ry) => rightX + RS * cardAH * (1 - clamp((ry - yT) / cardAH, 0, 1));
+      const cy = yT + 108;
+      ctx.save();
+      ctx.globalAlpha = eA;
+      this._seg(ctx, r.time != null ? fmtTime(r.time) : '--:--:--', {
+        x: lx(cy) + rightW - 26 + (1 - eA) * 60, y: cy, size: 40, align: 'right',
+        color: r.dnf ? 'rgba(255,110,96,1)' : r.recordBeaten ? '#8ef58a' : CYAN,
+        glow: 14, italic: 0.12, dim: 0.10,
+        dimColor: r.dnf ? 'rgba(120,40,34,1)' : r.recordBeaten ? 'rgba(50,110,50,1)' : 'rgba(90,150,175,1)',
+      });
+      ctx.restore();
+    }
+
+    // ---- lap book ---------------------------------------------------------------------------
+    this._patch(ctx, 'resCardB', rightX - P, cardBY - P, rightW + cardBH * RS + P * 2, cardBH + P * 2, `${sig}|cb`,
+      (c) => this._resCardB(c, r, rightX, cardBY, rightW, cardBH, RS, CUT),
+      { tx: (1 - ease(0.28)) * 60, alpha: ease(0.28) });
+
+    // ---- bottom bar -------------------------------------------------------------------------
+    this._patch(ctx, 'resBar', 0, barY - P, VW, BAR + P, `${sig}|bar`,
+      (c) => this._resBar(c, r, VW, VH, barY, BAR, M),
+      { ty: (1 - ease(0.34)) * 40, alpha: ease(0.34) });
+  }
+
+  /** Top bar and the headline: the ordinal is the biggest thing on the screen, as it should be. */
+  _resHead(ctx, r, VW, M, accent, win, podium) {
+    const y = 26;
+    // P1 badge + wordmark, exactly as the garage sets them
+    platePath(ctx, M, y, 60, 40);
+    const bg = ctx.createLinearGradient(M, 0, M + 60, 0);
+    bg.addColorStop(0, '#ffd968'); bg.addColorStop(1, '#f09a12');
+    ctx.fillStyle = bg; ctx.fill();
+    platePath(ctx, M, y, 60, 40);
+    ctx.strokeStyle = 'rgba(255,240,200,0.85)'; ctx.lineWidth = 1.6; ctx.stroke();
+    drawText(ctx, 'P1', {
+      x: M + 33, y: y + 30, size: 25, weight: 0.22, italic: 0.22, align: 'center', color: '#1b1204',
+    });
+    drawText(ctx, 'NITRO', {
+      x: M + 78, y: y + 31, size: 30, weight: 0.21, italic: 0.24, tracking: 0.10,
+      color: gradientFill([[0, '#ffffff'], [0.55, '#ffd9a2'], [1, ORANGE]]),
+      bevel: true, glow: { color: ORANGE, blur: 16 },
+    });
+    const nw = measure('NITRO', { size: 30, tracking: 0.10 }).width;
+    rtext(ctx, 'CIRCUIT', {
+      x: M + 84 + nw, y: y + 31, size: 22, weight: 0.14, tracking: 0.30, color: CYAN, face: 'geo',
+    });
+    rtext(ctx, 'RESULT', {
+      x: VW - M, y: y + 22, size: 19, weight: 0.16, tracking: 0.26, align: 'right',
+      color: LABEL, face: 'geo',
+    });
+    rtext(ctx, String(r.cityName || '').toUpperCase(), {
+      x: VW - M, y: y + 44, size: 16, weight: 0.15, tracking: 0.18, align: 'right',
+      color: CYAN, face: 'geo',
+    });
+    ctx.strokeStyle = 'rgba(150,190,220,0.22)'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(M, y + 54); ctx.lineTo(VW - M, y + 54); ctx.stroke();
+
+    // ---- the headline. Ordinal in chrome, status word beside it, datum line under that.
+    const ord = r.dnf ? 'DNF' : ordinal(r.pos).toUpperCase();
+    const num = r.dnf ? ord : ord.slice(0, -2), suf = r.dnf ? '' : ord.slice(-2);
+    const NS = 104;
+    const bx = M + 6, by = 224;
+    drawText(ctx, num, {
+      x: bx, y: by, size: NS, weight: 0.215, italic: 0.24,
+      color: gradientFill([[0, '#ffffff'], [0.46, '#f2f7fc'], [0.56, '#93a7bd'], [1, '#f6fafd']]),
+      bevel: true, sheen: true, glow: { color: accent, blur: 34 },
+      shadow: { color: 'rgba(0,0,0,0.8)', dy: 5, blur: 8 },
+    });
+    let hx = bx + measure(num, { size: NS }).width;
+    if (suf) {
+      drawText(ctx, suf, {
+        x: hx + 8, y: by - 44, size: 44, weight: 0.21, italic: 0.24, color: accent,
+        glow: { color: accent, blur: 14 },
+      });
+      hx += 8 + measure(suf, { size: 44 }).width;
+    }
+    chevrons(ctx, hx + 26, by - 96, 3, 8, 22, accent, 0.75);
+    const status = r.dnf ? 'DID NOT FINISH' : win ? 'RACE WINNER' : podium ? 'PODIUM FINISH' : 'CLASSIFIED';
+    drawText(ctx, status, {
+      x: hx + 74, y: by - 46, size: 40, weight: 0.215, italic: 0.23, tracking: 0.10,
+      color: gradientFill([[0, '#ffffff'], [0.5, '#fff0d2'], [1, accent]]),
+      bevel: true, glow: { color: accent, blur: 20 },
+    });
+    const datum = `OF ${r.total || 8}  /  ${String(r.cityName || '').toUpperCase()}  /  `
+      + `${r.dnf ? `LAP ${Math.max(1, r.lapsRun)} OF ${r.lapCount}` : `${r.lapCount} LAPS`}`;
+    rtext(ctx, datum, {
+      x: hx + 78, y: by - 8, size: 15, weight: 0.15, tracking: 0.24, color: LABEL, face: 'geo',
+    });
+    if (r.recordBeaten) {
+      const rw = rmeasure('NEW COURSE RECORD', { size: 15, tracking: 0.24, face: 'geo' }).width + 34;
+      platePath(ctx, VW - 64 - rw, by - 44, rw, 30);
+      ctx.fillStyle = 'rgba(46,120,52,0.85)'; ctx.fill();
+      railOn(ctx, VW - 64 - rw, by - 44, 30, GREEN, 14);
+      rtext(ctx, 'NEW COURSE RECORD', {
+        x: VW - 64 - rw + 24, y: by - 23, size: 15, weight: 0.17, tracking: 0.24,
+        color: '#eaffe9', face: 'geo',
+      });
+    }
+  }
+
+  /**
+   * The stage's furniture. Everything here is drawn AROUND the car, never over it: the leading rail
+   * that says this third is part of the panel, a caption, the driver's own colour swatch, and a
+   * pair of corner brackets cut off the same chamfer as every other plate on the screen. The car
+   * itself is the 3D one, driven into the hole cut in the scrim above.
+   */
+  _resStage(ctx, r, x, y, w, h, S, accent) {
+    const lx = (ry) => x + S * h * (1 - clamp((ry - y) / h, 0, 1));
+    // the rail dies away before it reaches the car's height — a full-height bar down the leading
+    // edge reads as a line ruled ACROSS the car rather than as the edge of a plate
+    railOn(ctx, x, y, h, [[0, GOLD], [0.30, 'rgba(255,194,58,0.30)'], [0.62, 'rgba(255,194,58,0)']],
+      10, S, 4);
+    // caption, at the head of the rail
+    rtext(ctx, 'YOUR MACHINE', {
+      x: lx(y + 26) + 24, y: y + 26, size: 13, weight: 0.16, tracking: 0.30,
+      color: 'rgba(160,186,208,0.92)', face: 'geo',
+    });
+    chevrons(ctx, lx(y + 26) + 24, y + 34, 3, 7, 15, accent, 0.55);
+    // corner brackets — the chamfer of `cutPath`, drawn as two open corners instead of a box, so
+    // the stage is framed without a plate edge cutting across the car's roofline
+    const CUTL = 26;
+    ctx.strokeStyle = 'rgba(150,190,220,0.34)'; ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(x + S * h + 96, y); ctx.lineTo(x + w + S * h, y);
+    ctx.lineTo(x + w + S * h, y + 74);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, y + h - 74); ctx.lineTo(x, y + h);
+    ctx.lineTo(x + w - CUTL - 96, y + h);
+    ctx.stroke();
+    // the foot of the stage: a hairline the car stands on, fading out under it
+    const fg = ctx.createLinearGradient(x, 0, x + w, 0);
+    fg.addColorStop(0, 'rgba(255,194,58,0.55)');
+    fg.addColorStop(0.62, 'rgba(255,194,58,0.16)');
+    fg.addColorStop(1, 'rgba(255,194,58,0)');
+    ctx.strokeStyle = fg; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + 2, y + h - 1); ctx.lineTo(x + w - CUTL - 90, y + h - 1);
+    ctx.stroke();
+  }
+
+  /** The classification — eight rows, the order the race director froze at the flag. */
+  _resTable(ctx, r, x, y, w, h, S, CUT) {
+    const lx = (ry) => x + S * h * (1 - clamp((ry - y) / h, 0, 1));
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.fillStyle = 'rgba(4,8,13,0.93)'; ctx.fill();
+    ctx.save();
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.shadowBlur = 22; ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.strokeStyle = 'rgba(140,172,200,0.42)'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.restore();
+    railOn(ctx, x, y, h, GOLD, 10, S, 4);
+
+    const head = 62;
+    drawText(ctx, 'FINAL STANDINGS', {
+      x: lx(y + 33) + 24, y: y + 33, size: 21, weight: 0.215, italic: 0.22, tracking: 0.12,
+      color: '#f2f7fc', glow: { color: 'rgba(255,194,58,0.5)', blur: 12 },
+    });
+    // Absolute, not fractional. The position numeral is right-aligned at a fixed 52 px, so a
+    // fractional name column collapses onto it the moment the table narrows — which is exactly
+    // what happened when the stage took the panel's right third: the r2 layout put `w · 0.100` at
+    // 58 px and the classification read "1YOU", "2LETTY".
+    const cols = { name: 74, car: Math.max(w * 0.44, 200), time: w - 16 };
+    const hy = y + head - 9;
+    rtext(ctx, 'DRIVER', {
+      x: lx(hy) + cols.name, y: hy, size: 11, weight: 0.15, tracking: 0.30,
+      color: 'rgba(146,172,196,0.85)', face: 'geo',
+    });
+    rtext(ctx, 'MACHINE', {
+      x: lx(hy) + cols.car, y: hy, size: 11, weight: 0.15, tracking: 0.30,
+      color: 'rgba(146,172,196,0.85)', face: 'geo',
+    });
+    rtext(ctx, 'TIME', {
+      x: lx(hy) + cols.time - 22, y: hy, size: 11, weight: 0.15,
+      tracking: 0.30, align: 'right', color: 'rgba(146,172,196,0.85)', face: 'geo',
+    });
+    ctx.beginPath();
+    ctx.moveTo(lx(y + head) + 18, y + head); ctx.lineTo(lx(y + head) + w - 18, y + head);
+    ctx.strokeStyle = 'rgba(150,190,220,0.26)'; ctx.lineWidth = 1.1; ctx.stroke();
+
+    const rows = r.rows || [];
+    const n = Math.max(1, rows.length);
+    const pitch = (h - head - 20) / n;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const ry = y + head + 8 + i * pitch;
+      const rh = pitch - 5;
+      const rl = lx(ry + rh);
+      const you = row.you;
+      const pod = row.pos <= 3 ? PODIUM[row.pos - 1] : null;
+
+      if (you) {
+        // the player's row, in the garage's gold — the one bar of colour on the panel
+        platePath(ctx, rl + 12, ry, w - 26, rh, SKEW);
+        const g = ctx.createLinearGradient(rl, 0, rl + w, 0);
+        g.addColorStop(0, 'rgba(255,196,66,0.96)');
+        g.addColorStop(0.52, 'rgba(255,158,26,0.72)');
+        g.addColorStop(1, 'rgba(255,146,20,0.08)');
+        ctx.fillStyle = g;
+        ctx.shadowBlur = 20; ctx.shadowColor = 'rgba(255,150,24,0.65)';
+        ctx.fill(); ctx.shadowBlur = 0;
+      } else if (i % 2 === 1) {
+        platePath(ctx, rl + 12, ry, w - 26, rh, SKEW);
+        ctx.fillStyle = 'rgba(255,255,255,0.035)'; ctx.fill();
+      }
+      if (pod && !you) railOn(ctx, rl + 12, ry, rh, pod, 8, SKEW, 3);
+
+      const base = ry + rh - Math.round(rh * 0.33);
+      const bl = lx(base);
+      // position numeral in the display face — a rank is a number, and it is set as one
+      drawText(ctx, String(row.pos), {
+        x: bl + 52, y: base, size: 25, weight: 0.215, italic: 0.22, align: 'right',
+        color: you ? '#2a1701' : pod ? pod : 'rgba(176,199,220,0.95)',
+        glow: pod && !you ? { color: pod, blur: 10 } : null,
+      });
+      rtext(ctx, row.name, {
+        x: bl + cols.name, y: base, size: 20, weight: you ? 0.18 : 0.155, tracking: 0.14,
+        color: you ? '#180d01' : '#e2ecf6', face: 'geo',
+      });
+      rtext(ctx, row.carName || '--', {
+        x: bl + cols.car, y: base, size: 13, weight: 0.145, tracking: 0.22,
+        color: you ? 'rgba(38,22,2,0.86)' : 'rgba(150,176,200,0.85)', face: 'geo',
+      });
+      const tval = resultTime(row);
+      drawText(ctx, tval, {
+        x: bl + cols.time - 22, y: base, size: 19, weight: 0.19, italic: 0.18, align: 'right',
+        color: row.dnf ? 'rgba(255,110,96,0.95)' : you ? '#180d01' : row.pos === 1 ? GOLD_HOT : '#cfdeec',
+      });
+    }
+  }
+
+  /** Card one: the player's finishing time against the course record. */
+  _resCardA(ctx, r, x, y, w, h, S, CUT, accent) {
+    const lx = (ry) => x + S * h * (1 - clamp((ry - y) / h, 0, 1));
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.fillStyle = 'rgba(4,8,13,0.93)'; ctx.fill();
+    ctx.save();
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.shadowBlur = 20; ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.strokeStyle = 'rgba(140,172,200,0.40)'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.restore();
+    railOn(ctx, x, y, h, accent, 10, S, 4);
+
+    drawText(ctx, 'YOUR RACE', {
+      x: lx(y + 34) + 24, y: y + 34, size: 19, weight: 0.215, italic: 0.22, tracking: 0.12,
+      color: '#f2f7fc',
+    });
+    rtext(ctx, 'TOTAL', {
+      x: lx(y + 34) + w - 26, y: y + 34, size: 11, weight: 0.15, tracking: 0.30, align: 'right',
+      color: 'rgba(146,172,196,0.85)', face: 'geo',
+    });
+    ctx.beginPath();
+    ctx.moveTo(lx(y + 50) + 18, y + 50); ctx.lineTo(lx(y + 50) + w - 18, y + 50);
+    ctx.strokeStyle = 'rgba(150,190,220,0.24)'; ctx.lineWidth = 1.1; ctx.stroke();
+    // the clock itself is drawn live by _drawResults — this is the window it sits in
+    const wy = y + 62, wh = 60;
+    platePath(ctx, lx(wy + wh) + 18, wy, w - 44, wh, SKEW * 0.5);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fill();
+    platePath(ctx, lx(wy + wh) + 18, wy, w - 44, wh, SKEW * 0.5);
+    ctx.strokeStyle = 'rgba(150,190,220,0.20)'; ctx.lineWidth = 1; ctx.stroke();
+
+    // two data rows: the record, and how this race sat against it
+    const rec = parseClock(r.record);
+    const delta = (rec > 0 && r.time != null && !r.dnf) ? r.time - rec : null;
+    const rowY = [y + h - 54, y + h - 20];
+    const put = (i, k, v, col) => {
+      rtext(ctx, k, {
+        x: lx(rowY[i]) + 26, y: rowY[i], size: 13, weight: 0.15, tracking: 0.26,
+        color: 'rgba(160,186,208,0.9)', face: 'geo',
+      });
+      drawText(ctx, v, {
+        x: lx(rowY[i]) + w - 26, y: rowY[i], size: 21, weight: 0.19, italic: 0.20, align: 'right',
+        color: col, glow: col === GREEN ? { color: GREEN, blur: 12 } : null,
+      });
+    };
+    put(0, 'COURSE RECORD', r.record ? String(r.record) : '--:--', GOLD);
+    put(1, delta == null ? 'AGAINST RECORD' : delta <= 0 ? 'UNDER RECORD BY' : 'OVER RECORD BY',
+      delta == null ? '--' : fmtSplit(Math.abs(delta)), delta == null ? LABEL : delta <= 0 ? GREEN : '#ff8f7a');
+  }
+
+  /** Card two: the lap book, with the best lap called out. */
+  _resCardB(ctx, r, x, y, w, h, S, CUT) {
+    const lx = (ry) => x + S * h * (1 - clamp((ry - y) / h, 0, 1));
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.fillStyle = 'rgba(4,8,13,0.93)'; ctx.fill();
+    ctx.save();
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.shadowBlur = 20; ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.strokeStyle = 'rgba(140,172,200,0.40)'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.restore();
+    railOn(ctx, x, y, h, CYAN, 10, S, 4);
+
+    drawText(ctx, 'LAP TIMES', {
+      x: lx(y + 34) + 24, y: y + 34, size: 19, weight: 0.215, italic: 0.22, tracking: 0.12,
+      color: '#f2f7fc',
+    });
+    const best = r.best;
+    rtext(ctx, best != null ? 'BEST' : 'NO LAP COMPLETED', {
+      x: lx(y + 34) + w - 26, y: y + 34, size: 11, weight: 0.15, tracking: 0.30, align: 'right',
+      color: best != null ? 'rgba(146,172,196,0.85)' : 'rgba(255,140,120,0.85)', face: 'geo',
+    });
+    ctx.beginPath();
+    ctx.moveTo(lx(y + 50) + 18, y + 50); ctx.lineTo(lx(y + 50) + w - 18, y + 50);
+    ctx.strokeStyle = 'rgba(150,190,220,0.24)'; ctx.lineWidth = 1.1; ctx.stroke();
+
+    const laps = r.laps || [];
+    const n = Math.max(1, r.lapCount || laps.length || 1);
+    const pitch = clamp((h - 74) / n, 26, 54);
+    for (let i = 0; i < n; i++) {
+      const t = laps[i];
+      const ry = y + 58 + i * pitch;
+      const rh = pitch - 4;
+      const rl = lx(ry + rh);
+      const isBest = t != null && best != null && Math.abs(t - best) < 1e-6;
+      if (isBest) {
+        platePath(ctx, rl + 18, ry, w - 40, rh, SKEW);
+        const g = ctx.createLinearGradient(rl, 0, rl + w, 0);
+        g.addColorStop(0, 'rgba(57,215,242,0.28)'); g.addColorStop(1, 'rgba(57,215,242,0)');
+        ctx.fillStyle = g; ctx.fill();
+        railOn(ctx, rl + 18, ry, rh, CYAN, 10, SKEW, 3);
+      }
+      const base = ry + rh - Math.round(rh * 0.30);
+      const bl = lx(base);
+      rtext(ctx, `LAP ${i + 1}`, {
+        x: bl + 34, y: base, size: 13, weight: 0.15, tracking: 0.26,
+        color: t == null ? 'rgba(130,152,172,0.55)' : 'rgba(176,199,220,0.92)', face: 'geo',
+      });
+      drawText(ctx, t == null ? '--:--.--' : fmtSplit(t), {
+        x: bl + w - 26, y: base, size: 22, weight: 0.19, italic: 0.20, align: 'right',
+        color: t == null ? 'rgba(120,140,160,0.5)' : isBest ? '#bff3ff' : '#dce8f4',
+        glow: isBest ? { color: CYAN, blur: 14 } : null,
+      });
+      if (isBest) {
+        chevrons(ctx, bl + w - 26 - measure(fmtSplit(t), { size: 22, italic: 0.20 }).width - 34,
+          base - rh * 0.52, 2, 5, 12, CYAN, 0.9);
+      }
+    }
+  }
+
+  /** The bottom bar — the garage's, down to the hazard chevrons along its foot. */
+  _resBar(ctx, r, VW, VH, y, h, M) {
+    const g = ctx.createLinearGradient(0, y, 0, VH);
+    g.addColorStop(0, 'rgba(4,7,13,0.94)'); g.addColorStop(1, 'rgba(2,3,8,0.99)');
+    ctx.fillStyle = g; ctx.fillRect(0, y, VW, h);
+    const rg = ctx.createLinearGradient(0, 0, VW, 0);
+    rg.addColorStop(0, 'rgba(255,146,20,0.9)');
+    rg.addColorStop(0.42, 'rgba(57,215,242,0.6)');
+    rg.addColorStop(1, 'rgba(255,146,20,0.15)');
+    ctx.fillStyle = rg; ctx.fillRect(0, y - 2, VW, 2);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, VH - 7, VW, 7); ctx.clip();
+    ctx.globalAlpha = 0.30;
+    for (let cx = -20; cx < VW; cx += 26) {
+      ctx.fillStyle = GOLD;
+      ctx.beginPath();
+      ctx.moveTo(cx, VH); ctx.lineTo(cx + 11, VH);
+      ctx.lineTo(cx + 20, VH - 7); ctx.lineTo(cx + 9, VH - 7);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+
+    const hy = y + h - 30;
+    let hx = M - 24;
+    // the one action this screen wants, on both keys that do it (core/input.js confirm | cancel)
+    hx += keycap(ctx, hx, hy + 13, 'ENTER', 34) + 6;
+    hx += keycap(ctx, hx, hy + 13, 'ESC', 34) + 14;
+    rtext(ctx, 'GARAGE', {
+      x: hx, y: hy + 5, size: 16, weight: 0.16, tracking: 0.18, color: GOLD_HOT, face: 'geo',
+      glow: { color: ORANGE, blur: 14 },
+    });
+
+    // the car you drove, at the far end of the bar — the garage's own sign-off
+    const name = String(r.carName || '');
+    const MAXW = VW - M - 640;
+    let ns = 46;
+    while (ns > 22 && measure(name, { size: ns, tracking: 0.078 }).width > MAXW) ns -= 1;
+    const nw = measure(name, { size: ns, tracking: 0.078 }).width;
+    const nx = VW - M, ny = y + h - 26;
+    const ug = ctx.createLinearGradient(nx - nw, 0, nx, 0);
+    ug.addColorStop(0, 'rgba(255,201,66,0)'); ug.addColorStop(1, 'rgba(255,201,66,0.9)');
+    ctx.fillStyle = ug; ctx.fillRect(nx - nw, ny + 12, nw, 3);
+    rtext(ctx, 'DRIVEN', {
+      x: nx, y: ny - ns - 8, size: 12, weight: 0.14, tracking: 0.30, align: 'right',
+      color: GOLD, face: 'geo',
+    });
+    drawText(ctx, name, {
+      x: nx, y: ny, size: ns, weight: 0.188, italic: 0.24, tracking: 0.078, align: 'right',
+      color: gradientFill([
+        [0, '#ffffff'], [0.30, '#e9f2fb'], [0.50, '#8fa3ba'], [0.56, '#c9d8e8'], [1, '#f4f8fc'],
+      ]),
+      bevel: true, sheen: true,
+      shadow: { color: 'rgba(0,0,0,0.8)', dy: 4, blur: 7 },
+    });
   }
 
   _drawStartLights(ctx, cx, cy, countdown) {

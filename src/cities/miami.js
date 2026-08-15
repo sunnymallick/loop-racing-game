@@ -91,16 +91,40 @@ const _box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
  * most obvious way to make water look pasted on.
  *
  * `t` is the equirect V of a BackSide sphere: t=0 is the zenith, t=0.5 the horizon, and every
- * 0.005556 of t is one degree. The warm half is deliberately squeezed into the bottom 8° so the
- * 15–30° band a chase camera fills its upper third with lands on indigo rather than on magenta.
+ * 0.005556 of t is one degree.
+ *
+ * COHERENCE PASS — "Miami and Vegas are still too close".
+ *
+ * The previous table squeezed the warm half into the bottom 8° and handed the 15–30° band a chase
+ * camera fills its upper third with to `#472378`→`#812d86` — violet into magenta. Measured over the
+ * twelve Miami captures that landed the sky band at h307 s45 l34 against Las Vegas' h267 s52 l19:
+ * one purple night city photographed twice, and §6.4 caps two swappable cities at 60 EACH. The
+ * landmarks were the only thing telling them apart.
+ *
+ * Miami is dusk. Vegas is night. That is the whole difference and it has to be in the sky, because
+ * the sky is the largest object in the composition:
+ *
+ *   - the 12–36° band (t 0.29–0.43) is now DAYLIGHT — cerulean falling through periwinkle to a
+ *     dusty rose. There is still blue in a Miami sky at this hour and that is what "dusk" means;
+ *     a sky with no daylight left in it is Las Vegas.
+ *   - the magenta is not gone, it is CONFINED: it now lives between about 3° and 9° (t 0.448–0.480)
+ *     where a real sunset's magenta band lives, as a band inside a picture instead of the picture.
+ *   - the zenith stays near-black so the frame keeps its dark end (that was a hard-won round-2
+ *     fix), but it is now a NAVY near-black rather than a violet one, so even the darkest part of
+ *     Miami's sky is a different hue from Vegas' sky.
+ *   - the horizon degree keeps its gold, which is what puts clean near-white back in the frame.
+ *
+ * Below the horizon (t > 0.5) is what the water's reflection panorama samples looking down, so it
+ * runs warm-rose into a deep teal-navy rather than into plum: that is the second half of getting a
+ * saturated turquoise bay instead of a violet one.
  */
 const DUSK_STOPS = [
-  [0.000, '#050b26'], [0.115, '#0a1240'], [0.215, '#151c5e'],
-  [0.290, '#26216e'], [0.345, '#472378'], [0.390, '#812d86'],
-  [0.424, '#bd3789'], [0.448, '#ec477b'], [0.466, '#ff6d5c'],
-  [0.480, '#ff9455'], [0.490, '#ffb96b'], [0.4975, '#ffdda6'],
-  [0.5000, '#ffeac4'],
-  [0.512, '#dd7d7e'], [0.560, '#914968'], [0.700, '#43264c'], [1.0, '#20132c'],
+  [0.000, '#040a24'], [0.115, '#07184a'], [0.215, '#0e2f74'],
+  [0.290, '#1c4f96'], [0.345, '#3f74ac'], [0.390, '#7b8ab4'],
+  [0.424, '#b58fa8'], [0.448, '#df7f96'], [0.466, '#ff7a72'],
+  [0.480, '#ff9a55'], [0.490, '#ffbb6a'], [0.4975, '#ffdfa8'],
+  [0.5000, '#fff0cc'],
+  [0.512, '#e08d76'], [0.560, '#8a5a63'], [0.700, '#2e3350'], [1.0, '#141d33'],
 ].map(([t, hex]) => [t, sColor(hex)]);
 
 function duskAt(t) {
@@ -499,7 +523,10 @@ function sunsetSkyTexture(sunDir) {
     return yy * W + x;
   };
 
-  const gold = sColor('#fff6e2'), coral = sColor('#ffa878'), plum = sColor('#4a2560');
+  // `plum` is the cirrus' shadow side. It used to be #4a2560, a violet, which under a violet sky
+  // was invisible and under the daylight ramp this round would have been the one purple thing left
+  // in the upper frame. A dusk cirrus shadowed against a still-blue sky is a cool slate.
+  const gold = sColor('#fff6e2'), coral = sColor('#ffa878'), plum = sColor('#33406e');
   const img = ctx.createImageData(W, H);
   for (let y = 0; y < H; y++) {
     const t = y / (H - 1);
@@ -513,7 +540,10 @@ function sunsetSkyTexture(sunDir) {
       const col = base.clone();
       const warm = toward * clamp(1 - Math.abs(t - 0.48) / 0.30, 0, 1);
       col.lerp(coral, warm * 0.34);
-      col.lerp(sColor('#132a6e'), (1 - toward) * clamp(1 - Math.abs(t - 0.30) / 0.34, 0, 1) * 0.22);
+      // (coherence pass) 0.22 -> 0.32. The anti-sun half of a dusk sky is the half that still has
+      // the day in it, and this is the term that says so; at 0.22 the chase heading came back a
+      // washed mauve rather than the cerulean the ramp is painting.
+      col.lerp(sColor('#123a86'), (1 - toward) * clamp(1 - Math.abs(t - 0.30) / 0.34, 0, 1) * 0.32);
 
       // cirrus: only between ~2° and ~40° of elevation, densest around 12°
       const band = clamp(1 - Math.abs(t - 0.432) / 0.145, 0, 1);
@@ -599,7 +629,13 @@ function cloudBank(cache, centre, rng) {
     // Widened this round. The crowns are now near-white (a dusk cumulus crown IS the brightest
     // thing in the frame after the sun, and the round-1 captures had almost no clean white in them
     // at all) and the bases are near-black plum, so one cloud carries a full value range on its own.
-    const gold = sColor('#fffaf0'), flank = sColor('#ff8f63'), base = sColor('#2a1440');
+    // (coherence pass) `base` #2a1440 -> #3c2f5e and the lit fraction widened 0.42 -> 0.50. These
+    // cards were authored against a magenta sky, where a near-black plum base read as depth. Under
+    // the daylight dusk ramp they came back as a mud-brown mass sitting on a blue sky — the darkest
+    // thing in the upper frame and the only muddy colour in the city. A dusk cumulus shadowed
+    // against a still-blue sky is a blue-violet, not a black, and more of its flank catches the
+    // sun; the crown stays near-white, which is where this frame's clean top end comes from.
+    const gold = sColor('#fffaf0'), flank = sColor('#ff9468'), base = sColor('#3c2f5e');
     for (let y = 0; y < H; y++) {
       const ny = y / (H - 1);                                    // 0 = cloud top
       for (let x = 0; x < W; x++) {
@@ -611,9 +647,9 @@ function cloudBank(cache, centre, rng) {
         const a = clamp(d * 4.2, 0, 1) * (ny > 0.92 ? clamp((1 - ny) / 0.08, 0, 1) : 1);
         // lit from above: white-gold crowns, coral flanks, near-black plum in the shadowed base
         const shade = clamp(ny * 1.35 + (0.5 - f[i]) * 0.55, 0, 1);
-        const col = shade < 0.42
-          ? gold.clone().lerp(flank, shade / 0.42)
-          : flank.clone().lerp(base, Math.pow((shade - 0.42) / 0.58, 0.85));
+        const col = shade < 0.50
+          ? gold.clone().lerp(flank, shade / 0.50)
+          : flank.clone().lerp(base, Math.pow((shade - 0.50) / 0.50, 0.85));
         img.data[i * 4] = col.r * 255;
         img.data[i * 4 + 1] = col.g * 255;
         img.data[i * 4 + 2] = col.b * 255;
@@ -761,7 +797,7 @@ function convexHull(pts) {
  * Returns `{ group, towers }` — the descriptor list is what paints the water's reflection
  * panorama, so the reflection and the geometry can never disagree.
  */
-const DOWNTOWN_ACCENTS = ['#ff3fa8', '#2fe8d8', '#9a6bff', '#ffc24a'];
+const DOWNTOWN_ACCENTS = ['#ff4f8f', '#26e0a8', '#ff8a5a', '#ffb04a'];
 
 function downtownFacade(cache, key, { tint, haze, seed, accent, emissive = 1.0 }) {
   return mat(cache, `dtfac|${key}`, () => {
@@ -1391,8 +1427,15 @@ function waterMaterial(cache, { sunDir, fogColor }) {
         uSunCol: { value: new THREE.Color('#ffd8a8') },
         uSunDir: { value: new THREE.Vector3(...sunDir).normalize() },
         uReflTint: { value: new THREE.Color('#cfe6ee') },
-        uGlow: { value: new THREE.Color('#5a2a46') },
-        uReflMax: { value: 0.86 },
+        // (coherence pass) the warm rim where the sheet meets its haze curtain, moved off violet
+        // with the fog. #5a2a46 was the last purple thing in the bay.
+        uGlow: { value: new THREE.Color('#5e3040') },
+        // (coherence pass) 0.86 -> 0.78. `k` is how much of the sheet is mirror rather than water;
+        // at 0.86 the outer two thirds of the bay was almost pure reflected sky, so "saturated
+        // turquoise water" was only ever true on the sand bar. Handing 8% of it back to `uBar`
+        // carries the turquoise most of the way to the drop-off, which is where the counterweight
+        // to the strip's pink actually has to live.
+        uReflMax: { value: 0.78 },
         // High on purpose. The last two per cent of the sheet has to arrive at very nearly the
         // colour of the haze standing behind it, or the top of the water is a knife line across
         // the base of the whole skyline -- SS7's "horizon is a hard line between two flat colours".
@@ -1684,7 +1727,7 @@ function shoreline(track, cache, rng, { fogColor }) {
   {
     const wall = new Batch(trimMaterial(cache, '#f6ece0'), { cast: false });
     const cap = new Batch(trimMaterial(cache, '#ffd9c0'), { cast: false });
-    const glow = new Batch(neonMaterial(cache, '#2fe8d8', 1.25), { cast: false });
+    const glow = new Batch(neonMaterial(cache, '#26e0a8', 1.25), { cast: false });
     const rail = new Batch(metalMaterial(cache, '#e8f4f4', 0.55), { cast: false });
     const stride = 3;
     for (let j = 0; j < M; j += stride) {
@@ -2265,9 +2308,25 @@ function wetCarriageway(track, cache, rng, { inSide, outSide }) {
   // Palette is the strip's own: hotel neon first, then the warm half (lamps, lobbies, shopfront
   // glass) because a street of pure neon with no tungsten in it reads as a vapourwave poster
   // rather than as a place.
+  //
+  // COHERENCE PASS — THIS IS THE "SAME WET-ROAD STREAKING" THE WHOLE-GAME CRITIC SAW IN BOTH
+  // MIAMI AND VEGAS, and finding that out took an ablation. The obvious suspect was the
+  // screen-space wet reflection in the atmospherics pass, so it was cut twice (0.62 -> 0.30 ->
+  // 0.20) and then zeroed outright and re-captured: the road came back IDENTICAL. It was never
+  // that pass. It is this run — three laps of emissive ribbon laid on the tarmac at strengths up
+  // to 1.4, drifting from the kerb all the way to the centre line, which the motion blur then
+  // smears into a full-width magenta-and-cyan rainbow with no asphalt visible under it at all.
+  // Grep `streak(` in lasvegas.js: it is empty. Vegas' road colour is entirely the wet pass and
+  // the sign spill, so the one city painting neon onto its own carriageway was this one, and it
+  // was painting Vegas' picture.
+  //
+  // The run stays — a dark strip with no light in the tarmac was a real round-2 fault and §1.3
+  // wants light coming back off a night road — but at roughly half strength, half density, and
+  // held OUT of the racing line: `far` (where a streak's tail has drifted to) no longer reaches
+  // past the outer half of the carriageway on either kerb. What the frame gets back is asphalt.
   const INLAND = [
-    ['#ff2f9d', 1.30], ['#ff2f9d', 1.10], ['#2fe8d8', 1.05], ['#ffd83a', 0.85],
-    ['#8f5fff', 0.80], ['#ffbe86', 1.00], ['#fff0c8', 0.70], ['#ff7a4d', 0.75],
+    ['#ff3f80', 0.72], ['#ff3f80', 0.60], ['#26e0a8', 0.58], ['#ffab3a', 0.47],
+    ['#ff6a4d', 0.44], ['#ffbe86', 0.55], ['#fff0c8', 0.39], ['#ff7a4d', 0.41],
   ];
   const bats = new Map();
   const streak = (color, strength, variant) => {
@@ -2289,7 +2348,7 @@ function wetCarriageway(track, cache, rng, { inSide, outSide }) {
       const [color, base] = sr.pick(INLAND);
       const len = sr.range(34, 92);
       const src = sr.range(0.52, 1.02) * inSide;    // where the reflection meets the kerb
-      const far = sr.range(0.02, 0.58) * inSide;    // ...and where it has drifted to at its tail
+      const far = sr.range(0.36, 0.74) * inSide;    // ...and where it has drifted to at its tail
       const w0 = sr.range(0.055, 0.15);
       const wob = sr.range(-0.10, 0.10);
       const ph = sr.range(0, 6.28);
@@ -2298,30 +2357,36 @@ function wetCarriageway(track, cache, rng, { inSide, outSide }) {
         lat: (t) => lerp(src, far, t * t) + wob * Math.sin(t * 4.1 + ph) * t,
         hw: (t) => w0 * (1 + t * 3.0),
       }));
-      u += sr.range(5, 13) / L;
+      u += sr.range(10, 24) / L;
     }
   }
 
   // ...and a second, longer-wavelength run down the INLAND half: the terrace behind the kerb is
   // not a row of separate signs, it is a continuous wall of lit shopfront, eyebrow neon and lobby
-  // glass, and a continuous source mirrors as a continuous band. These are the streaks that put
-  // colour on the lane the player is actually driving in — the round-2 re-measure block sat there
-  // and read 17 luma against a frame mean of 63.
+  // glass, and a continuous source mirrors as a continuous band.
+  //
+  // (coherence pass) This run used to be described as "the streaks that put colour on the lane the
+  // player is actually driving in", which was solving a problem that no longer exists: that lane
+  // measured 17 luma against a frame mean of 63 when Miami was a dark magenta night, and the city
+  // now runs a frame mean around 100 with only ~11% of it under sRGB 26. Colour in the racing line
+  // is not what this frame is short of; asphalt is. Halved, spread twice as far apart, and its
+  // tails kept in the outer half of the carriageway. It is also the WARM run, so what survives is
+  // tungsten and lobby glass rather than more pink.
   {
     const sr = rng.fork(404);
-    const WARM = ['#ff2f9d', '#ffbe86', '#fff0c8', '#ff2f9d', '#ffd83a', '#8f5fff'];
+    const WARM = ['#ff3f80', '#ffbe86', '#fff0c8', '#ffbe86', '#ffab3a', '#ff6a4d'];
     let u = 0;
     while (u < 1) {
       const len = sr.range(62, 130);
       const src = sr.range(0.62, 0.95) * inSide;
-      const far = sr.range(0.16, 0.52) * inSide;
+      const far = sr.range(0.38, 0.66) * inSide;
       const ph = sr.range(0, 6.28);
-      streak(sr.pick(WARM), sr.range(0.85, 1.25), sr.int(0, 2)).addRaw(laneRibbon(track, {
+      streak(sr.pick(WARM), sr.range(0.42, 0.62), sr.int(0, 2)).addRaw(laneRibbon(track, {
         u0: u, u1: u - len / L, segs: Math.max(12, Math.round(len / 6)), lift: 0.058,
         lat: (t) => lerp(src, far, t * t) + 0.07 * Math.sin(t * 4.6 + ph) * t,
         hw: (t) => sr.range(0.07, 0.13) * (1 + t * 1.9),
       }));
-      u += sr.range(20, 46) / L;
+      u += sr.range(36, 82) / L;
     }
   }
 
@@ -2334,10 +2399,14 @@ function wetCarriageway(track, cache, rng, { inSide, outSide }) {
     while (u < 1) {
       const len = sr.range(70, 140);
       const src = sr.range(0.72, 0.98) * outSide;
-      const far = sr.range(0.26, 0.66) * outSide;
+      // (coherence pass) tail pulled back out of the racing line with the two inland runs, and the
+      // strength trimmed a third. This one keeps the most of its old value on purpose: it is the
+      // ONLY light source on the beach half of the road, it is a single continuous turquoise band
+      // rather than a rainbow, and turquoise is the hue Vegas does not own.
+      const far = sr.range(0.42, 0.72) * outSide;
       const w0 = sr.range(0.06, 0.13);
       const ph = sr.range(0, 6.28);
-      streak('#2fe8d8', sr.range(1.0, 1.4), sr.int(0, 2)).addRaw(laneRibbon(track, {
+      streak('#26e0a8', sr.range(0.68, 0.95), sr.int(0, 2)).addRaw(laneRibbon(track, {
         u0: u, u1: u - len / L, segs: Math.max(12, Math.round(len / 6)), lift: 0.052,
         lat: (t) => lerp(src, far, t * t) + 0.06 * Math.sin(t * 5.2 + ph) * t,
         hw: (t) => w0 * (1 + t * 1.8),
@@ -2387,7 +2456,7 @@ function wetCarriageway(track, cache, rng, { inSide, outSide }) {
  * Local origin sits on the ground at the FRONT face, +Z pointing at the road.
  */
 function decoHotel(bats, {
-  w = 34, h = 17, d = 24, r = 5.0, seed = 1, wall = '#f8d9e4', neon = '#ff2f9d',
+  w = 34, h = 17, d = 24, r = 5.0, seed = 1, wall = '#f8d9e4', neon = '#ff3f80',
   nameIndex = 0, curveSide = 1, awningColor = null,
 }) {
   const rng = new RNG(seed * 37 + 11);
@@ -2646,7 +2715,7 @@ function causeway(cache, { night, waterY }) {
     emissive: new THREE.Color('#8fb6c8'), emissiveIntensity: 0.30,
   })), { cast: false });
   const lamp = new Batch(neonMaterial(cache, '#ffe6b8', 4.2), { cast: false });
-  const edge = new Batch(neonMaterial(cache, '#2fe8d8', 2.6), { cast: false });
+  const edge = new Batch(neonMaterial(cache, '#26e0a8', 2.6), { cast: false });
 
   const W = 26;
   const PROFILE = [[-360, 5], [-170, 10], [0, 16.5], [130, 23], [220, 29], [370, 34],
@@ -2747,7 +2816,7 @@ function causeway(cache, { night, waterY }) {
       lamp.add(new THREE.SphereGeometry(0.62, 8, 6), sx * (W / 2 - 1.1), y + 7.7, z);
       if (z > 40) lamps.push({ v: new THREE.Vector3(sx * (W / 2 - 1.1), y + 7.7, z), color: '#ffe6b8', size: 26 });
     }
-    if (z > 40) lamps.push({ v: new THREE.Vector3(0, y + 2.0, z), color: '#2fe8d8', size: 34, a: 0.42 });
+    if (z > 40) lamps.push({ v: new THREE.Vector3(0, y + 2.0, z), color: '#26e0a8', size: 34, a: 0.42 });
   }
   for (const pz of [220, 520]) lamps.push({ v: new THREE.Vector3(0, deckY(pz) + 88, pz), color: '#ffe6b8', size: 60 });
 
@@ -2883,20 +2952,27 @@ export const def = {
   night: true,
   landmarkU: 0.015,              // the approach that frames the causeway down Ocean Drive
   look: {
-    accent: '#ff2f9d',
+    accent: '#ff3f80',
     lampColor: '#ffe2b4',
     // Ocean Drive after a five-minute afternoon squall: damp, not flooded. This is also the knob
     // that decides how much of the strip's neon comes back up off the tarmac, which is where the
     // frame's darkest half gets its colour from — see `wetLook` below.
-    wet: 0.34,
+    // (coherence pass) 0.34 -> 0.24. This is the BUILD-time half of the same decision: it sets how
+    // deep the puddles pool in the road texture's ruts and how hard the kerbside reflection ribbons
+    // are laid. Ocean Drive twenty minutes after a squall, not Las Vegas Boulevard.
+    wet: 0.24,
     // What the CAMERA sees of the sky is `sunsetSkyDome` (see the long note on it above); this
     // block is now only the PMREM source for car paint, chrome, glass and the wet road. It is
     // therefore tuned as a reflection probe rather than as a picture: a deep blue zenith so the
     // top of every car body carries a cool sky reflection, a hot band at the horizon so the flanks
     // pick up the sunset, and clouds turned right down because a bright cloud in a probe is just a
     // milky patch smeared over the clearcoat.
+    // (coherence pass) `horizon` was #f486ae — a hot pink. Every car in Miami therefore carried a
+    // pink band round its flanks and a pink smear on its glass, which is a third of why the city
+    // photographed as "magenta everything". A coral-peach probe puts the SUNSET on the flanks
+    // instead of the neon, and the deep blue zenith still puts a cool sky on the roof and bonnet.
     sky: {
-      top: '#1a44c8', horizon: '#f486ae', haze: '#ffb070', ground: '#2c2038',
+      top: '#1a44c8', horizon: '#f0a288', haze: '#ffc98c', ground: '#2c2038',
       sunDir: SKY_SUN, sunColor: '#ffe6bc', clouds: 0.52, seed: 303,
     },
     // Low and out over the water, i.e. roughly abeam of the ocean-drive straight rather than
@@ -2907,7 +2983,13 @@ export const def = {
     // 1.2 in its brightest channel, rides up the ACES shoulder and comes out white — which is the
     // whole reason the strip photographed as pale grey buildings wearing pink neon. At 2.9 a
     // flamingo wall lands around sRGB (222,130,153): still bright, still clearly lit, still pink.
-    sun: { color: '#ffd2a0', intensity: 2.90, dir: [0.34, 0.33, -0.88] },
+    // (coherence pass) 2.90 -> 2.35, because the walls changed underneath it. The number above was
+    // solved for a FLAMINGO wall (albedo ≈ 0.62 in its brightest channel); the deco frontages are
+    // now near-white plaster at ≈ 0.96, so the same key drives them a full stop further up the ACES
+    // shoulder and hands back the exact "pale grey buildings wearing pink neon" this round is
+    // trying to cure. 2.35 lands a cream wall around sRGB (232,220,202): clean, clearly sunlit,
+    // still holding its own texture instead of clipping to paper.
+    sun: { color: '#ffd2a0', intensity: 2.35, dir: [0.34, 0.33, -0.88] },
     // Golden-hour haze, not a lens flare. The auto rig derives ~1.0 from a low bright key, which
     // is four times what this frame can carry.
     shafts: { strength: 0.20, glow: 0.16 },
@@ -2967,26 +3049,40 @@ export const def = {
     // "Damp, not flooded" is what the comment above says this city is, so these are the numbers for
     // that: still wetter than LA (0.30 vs 0.075), still selective enough that the deco neon streaks
     // and the sunset does not, and the frame's dark half is now the ROAD rather than a light show.
+    // (coherence pass, round 2 of it) Trimmed again, and for the same reason as last time: judged
+    // as one of four cities rather than on its own, the mirrored strip was STILL the loudest thing
+    // in the bottom half of every Miami frame, and a carriageway carrying a magenta-and-cyan
+    // reflection rainbow is the Las Vegas frame whatever the sky above it is doing. Strength ×0.67
+    // and the threshold up 0.10 leaves only the hottest neon tubes streaking; everything dimmer —
+    // the shopfronts, the lamps, the sunset — now stays where it is and lets the asphalt be
+    // asphalt. Vegas runs 0.27 × gain 1.28 at threshold 0.80; Miami now runs 0.20 × 1.35 at 0.68,
+    // i.e. clearly the drier of the two, which is what "damp, not flooded" was supposed to mean.
     wetLook: {
-      strength: 0.30,
+      strength: 0.20,
       spread: 0.008,      // <- the cap fix. the derived default dithers at width; this does not.
-      gain: 1.55,
+      gain: 1.35,
       // Above the sunset's own value and below the neon's, so the strip mirrors and the sky does
       // not. (0.34 put the whole dusk gradient into the tarmac, which is where the rainbow came
       // from.)
-      threshold: 0.58,
+      threshold: 0.68,
       knee: 0.52,
-      patch: 0.72,        // dry patches: the asphalt has to keep showing through
+      patch: 0.66,        // dry patches: the asphalt has to keep showing through
       patchScale: 0.048,
       fresnel: 3.0,
-      band: 0.52,
+      band: 0.44,
     },
     // Mid-value dusty rose, NOT a pastel: far geometry darkens toward it instead of blowing out.
     // Pushed further out this round (260/2700 → 330/3300): at the old numbers the sea was 84 % fog
     // colour by the time it reached the horizon, which is precisely how a saturated turquoise ocean
     // arrives on screen as a steel-grey band. It is also a touch more violet, so the far skyline
     // resolves toward indigo rather than toward mauve and keeps the frame's darkest silhouette.
-    fog: { color: '#9a5c8e', near: 330, far: 3300 },
+    // (coherence pass) …and then warmed off the violet axis. #9a5c8e is a rose-VIOLET, and it is
+    // what every mid- and far-distance surface in the city dissolved into — palms, hotels, the far
+    // causeway, the top of the bay. A city whose haze is violet reads as a purple city no matter
+    // what its sky does, which is the trap Las Vegas already occupies. #a8707a is the same value
+    // and the same dustiness, rotated to a warm rose so distance goes PEACH: it sits under the new
+    // sky ramp's 9–14° band instead of fighting it, and it leaves violet to Vegas.
+    fog: { color: '#a8707a', near: 330, far: 3300 },
     haze: { max: 0.30 },
     ground: { color: '#cdae82', accent: '#e6d0a2' },
     // Same defect Las Vegas had, found in the same pass: right of the carriageway in the drift
@@ -3001,10 +3097,29 @@ export const def = {
     // slab joints and the car's own contact shadow in it.
     groundGlowColor: '#7a6a72',
     groundGlow: 1.40,
+    // (coherence pass) uHiChroma 0.34 -> 0.16. That knob adds chroma to the highlight band, and in
+    // a city whose brightest surfaces are pink neon it does one thing: it drives every hot pixel
+    // toward pure magenta — the hotel frontages, the lamp pools, the reflections, even the white
+    // deco stucco once the neon spill lands on it. Miami's brights are supposed to be the sunset
+    // and clean white plaster; they need the highlight band left alone to stay that colour.
     grade: {
-      uSaturation: 1.30, uExposure: 1.0, uContrast: 1.14,
-      uBlackPoint: 1.35, uVignette: 0.22, uHiChroma: 0.34,
+      // (round 3) uExposure 1.0 -> 0.92, the pre-tonemap half of the car-paint fix. Miami is a dusk
+      // city, so its shoulder problem is milder than Vegas' — but the upper body panels of the
+      // hero car still arrive above the ACES knee (measured on `miami-muscle-chase.png`: the roof
+      // and deck read as pale blue-white with the twin stripes barely separable from the paint
+      // around them), and -0.12 stop is what puts them back under it. The sunset and the deco
+      // plaster lose nothing they should have kept: they were the two things riding highest.
+      uSaturation: 1.26, uExposure: 0.92, uContrast: 1.14,
+      uBlackPoint: 1.35, uVignette: 0.22, uHiChroma: 0.16,
     },
+    // (round 3) See `_applyEnv` in src/main.js for what this knob is and why it had to exist. Miami
+    // works out at 1.25 x 1.09 x 2.32 = 3.15 — lower than Vegas because it is a day city by the
+    // rig's own reckoning — but its probe still contains a blown sunset AND a mile of neon, and
+    // the two together were putting a milky sheen across the whole upper half of every car body.
+    // 0.72 is a much softer cut than Vegas' 0.45 on purpose: the sky reflection on the upper panels
+    // and the dark ground reflection on the lower ARE the clearcoat here (§1.6.3) and Miami has a
+    // real sky to reflect, so it keeps most of it.
+    paintEnv: 0.72,
     bloom: { strength: 1.05, radius: 0.66, threshold: 0.56 },
   },
   track: {
@@ -3034,11 +3149,30 @@ export const def = {
   blocks: {
     spacing: 42, offset: 46, jitter: 10,
     minW: 15, maxW: 28, minH: 18, maxH: 62,
-    wallColors: ['#ef9db6', '#78d5bb', '#f7d69c', '#dda9d6', '#9fdcc9'],
+    // (coherence pass) CLEAN WHITE DECO. Ocean Drive is a row of WHITE stucco hotels that wear
+    // pink and turquoise as neon tubing, awning stripes and eyebrow trim — the white is the ground
+    // the colour is read against. The old set had no white in it at all: five pastels, three of
+    // them pink or lilac, so the strip arrived on screen as a pink terrace under a pink sky and
+    // the frame had no clean top end. Whites and creams lead now, with one blush and one mint kept
+    // as the occasional painted frontage; the pink is all in `neonColors` and the trim, where it
+    // belongs, and it finally has something to be pink AGAINST.
+    wallColors: ['#f6f2e6', '#fbf8f0', '#eef1ea', '#f2dee2', '#e2efe6'],
     glassColors: ['#1b4658', '#23596c', '#173c50'],
-    litColors: ['#ffd8ec', '#c6f4ff', '#fff0c4'],
-    neonColors: ['#ff2f9d', '#2fe8d8', '#ffd83a', '#8f5fff'],
-    lowColors: ['#f4a3bd', '#74d4b8', '#ffd79a', '#ffb185', '#bfa9ea'],
+    litColors: ['#ffe6f2', '#d6f6ff', '#fff2cc'],
+    // (coherence pass) MIAMI'S NEON IS NOT VEGAS' NEON. Held up side by side the two palettes were
+    // the same three hues within a few degrees — Miami #ff2f9d/#2fe8d8/#ffd83a against Vegas
+    // #ff2fd0/#2fe0ff/#ffc21e — plus a violet (#8f5fff) that is the exact centre of Vegas' whole
+    // identity. Two cities lit by the same tubes cannot be told apart at a glance whatever their
+    // architecture is doing. Miami's set is now rotated WARM and GREEN and the violet is gone:
+    //   rose #ff3f80   (a hotel-neon pink, not an electric magenta)
+    //   aqua #26e0a8   (green-leaning turquoise — the sea's hue, not Vegas' blue-cyan)
+    //   amber #ffab3a  (a warm marquee bulb, not Vegas' lemon gold)
+    //   coral #ff6a4d  (replaces the violet outright)
+    // Vegas keeps magenta / electric cyan / lemon gold against black; Miami reads rose / aqua /
+    // amber against white plaster and a blue dusk. Same swap is applied everywhere these hues are
+    // used in this file — signs, gantries, banners, gates, billboards, downtown accents.
+    neonColors: ['#ff3f80', '#26e0a8', '#ffab3a', '#ff6a4d'],
+    lowColors: ['#f7f2e4', '#fdfaf2', '#f4dee6', '#dff0e4', '#ffe8cc'],
     signs: ['OCEAN', 'DECO', 'CAFE', 'SURF', 'PALMS', 'CLUB', 'LIDO', 'MOJITO'],
     litRatio: 0.44, setbackChance: 0.66, accentChance: 0.72,
     style: 'artdeco', lowStyle: 'stucco',
@@ -3053,7 +3187,7 @@ export const def = {
   },
   props: {
     lampStyle: 'colonial', lampSpacing: 25, lampHeight: 7.4, lampTwin: true,
-    lampBanners: ['#ff2f9d', '#2fe8d8', '#ffd83a'],
+    lampBanners: ['#ff3f80', '#26e0a8', '#ffab3a'],
     // This file plants every palm in the city (see the palm run in `landmarks()`). The kit's own
     // run scatters on a 9–23 m gap down BOTH kerbs, which round 1 read as "palms and streetlamps
     // marching in perfect lockstep down both sides of the boulevard to the vanishing point" —
@@ -3069,14 +3203,14 @@ export const def = {
     hydrantColor: '#ffd23a',
     planterColor: '#e8dcc4',
     streetNames: ['OCEAN DR', 'COLLINS AVE', 'LINCOLN RD', '5TH ST', 'WASHINGTON', 'BISCAYNE'],
-    carColors: ['#f4f2ec', '#ff5fa8', '#2fd8e0', '#ffd83a', '#1d2a3a', '#c8322a', '#7f5fff'],
+    carColors: ['#f4f2ec', '#ff5fa8', '#2fd8b4', '#ffab3a', '#1d2a3a', '#c8322a', '#7f5fff'],
     billboards: [
-      { u: 0.600, side: IN, text: 'MIAMI', sub: 'BEACH', color: '#ff2f9d', offset: 24, h: 8 },
-      { u: 0.700, side: IN, text: 'NEON', sub: 'NIGHTS', color: '#2fe8d8', offset: 22 },
-      { u: 0.838, side: OUT, text: 'MARINA', sub: 'BAYFRONT', color: '#ffd83a', offset: 32 },
-      { u: 0.420, side: IN, text: 'ART DECO', sub: 'DISTRICT', color: '#8f5fff', offset: 26 },
+      { u: 0.600, side: IN, text: 'MIAMI', sub: 'BEACH', color: '#ff3f80', offset: 24, h: 8 },
+      { u: 0.700, side: IN, text: 'NEON', sub: 'NIGHTS', color: '#26e0a8', offset: 22 },
+      { u: 0.838, side: OUT, text: 'MARINA', sub: 'BAYFRONT', color: '#ffab3a', offset: 32 },
+      { u: 0.420, side: IN, text: 'ART DECO', sub: 'DISTRICT', color: '#ff6a4d', offset: 26 },
     ],
-    gates: [{ u: 0.385, color: '#ff2f9d' }, { u: 0.655, color: '#2fe8d8' }],
+    gates: [{ u: 0.385, color: '#ff3f80' }, { u: 0.655, color: '#26e0a8' }],
     boostPads: [
       { u: 0.160, lateral: 0 }, { u: 0.310, lateral: 0.42 }, { u: 0.470, lateral: -0.42 },
       { u: 0.680, lateral: 0 }, { u: 0.905, lateral: 0.35 },
@@ -3169,7 +3303,7 @@ export const def = {
     // (clean white to push the pinks against), not a third of the strip.
     const walls = ['#ff8fae', '#4fcfb1', '#ff8fae', '#ffcb84', '#4fcfb1', '#ff9a72',
       '#c4b6f0', '#fff2e0'];
-    const neons = ['#ff2f9d', '#2fe8d8', '#ff2f9d', '#8f5fff', '#2fe8d8', '#ffd83a'];
+    const neons = ['#ff3f80', '#26e0a8', '#ff3f80', '#ff6a4d', '#26e0a8', '#ffab3a'];
     out.push(decoStrip(track, cache, {
       u0: 0.895, u1: 0.225, side: IN, rng: rng.fork(11), walls, neons, seedBase: 100,
       skip: [ALLEYS[0], ALLEYS[1]],
@@ -3187,7 +3321,7 @@ export const def = {
       const s = track.at(0.500);
       const tower = landmarkTower({
         h: 118, w: 30, crown: 'lantern', night, cache, seed: 31,
-        wall: '#fdf0dc', glass: '#1d4a5e', litColor: '#ffe6c0', accent: '#ff2f9d',
+        wall: '#fdf0dc', glass: '#1d4a5e', litColor: '#ffe6c0', accent: '#ff3f80',
         litRatio: 0.45, style: 'artdeco', flood: '#ffd0e8',
       });
       tower.position.copy(s.pos).addScaledVector(s.right, IN * 118).setY(0);
@@ -3264,7 +3398,7 @@ export const def = {
             local.position.set(px, waterAt(px, pz) - 0.5, pz);
             local.rotation.y = yawBase + mr.range(-0.06, 0.06);
             local.updateMatrix();
-            const acc = mr.pick(['#2fd8e0', '#ff2f9d', '#ffd83a']);
+            const acc = mr.pick(['#2fd8b4', '#ff3f80', '#ffab3a']);
             yacht(stamped(bats(acc), local.matrix), {
               len: mr.range(17, 38), seed: row * 31 + k * 7 + (sx > 0 ? 1 : 2),
             });
@@ -3346,7 +3480,7 @@ export const def = {
         return b;
       };
       const hr = rng.fork(55);
-      const colors = ['#ff2f9d', '#2fd8e0', '#ffd83a', '#8f5fff', '#ff6a3d', '#4fe08a'];
+      const colors = ['#ff3f80', '#2fd8b4', '#ffab3a', '#ff6a4d', '#ff6a3d', '#4fe08a'];
       let u = 0.02;
       let i = 0;
       while (u < 0.99) {
@@ -3416,7 +3550,7 @@ export const def = {
     {
       const g = new THREE.Group();
       const pr = rng.fork(133);
-      const upColors = ['#ff2f9d', '#2fe8d8', '#ff2f9d', '#8f5fff'];
+      const upColors = ['#ff3f80', '#26e0a8', '#ff3f80', '#ff6a4d'];
       const lens = new Map();
       const lensBatch = (color) => {
         let b = lens.get(color);
@@ -3530,7 +3664,7 @@ export const def = {
       // the wet tarmac plus the seawall line behind it stacked into a three-deep bar of blown-out
       // cyan that ate the kerb, the sidewalk and the promenade behind them. At 0.95 it is a lit
       // edge that the wet road picks up, which is all it was ever for.
-      const line = new Batch(neonMaterial(cache, '#2fe8d8', 0.95), { cast: false });
+      const line = new Batch(neonMaterial(cache, '#26e0a8', 0.95), { cast: false });
       const stud = new Batch(neonMaterial(cache, '#ffb8e0', 1.6), { cast: false });
       const N = 320;
       for (let k = 0; k < N; k++) {
@@ -3570,7 +3704,7 @@ export const def = {
           if (br.bool(0.07)) continue;
           const roll = br.next();
           const b = roll < 0.12
-            ? waterBarrier({ len: 2.0, cache, seed: s.index * 5 + 3, color: '#2fd8e0' })
+            ? waterBarrier({ len: 2.0, cache, seed: s.index * 5 + 3, color: '#2fd8b4' })
             : jerseyBarrier({ len: 4, cache, seed: s.index * 7 + 1 });
           b.position.copy(s.pos).setY(s.pos.y + br.range(-0.03, 0.02));
           b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.04, 0.04);
@@ -3595,8 +3729,8 @@ export const def = {
     {
       const g = new THREE.Group();
       const ar = rng.fork(211);
-      const cyan = new Batch(neonMaterial(cache, '#2fe8d8', 2.7), { cast: false });
-      const pink = new Batch(neonMaterial(cache, '#ff2f9d', 2.7), { cast: false });
+      const cyan = new Batch(neonMaterial(cache, '#26e0a8', 2.7), { cast: false });
+      const pink = new Batch(neonMaterial(cache, '#ff3f80', 2.7), { cast: false });
       const amber = new Batch(neonMaterial(cache, '#ffb020', 2.9), { cast: false });
 
       /**
@@ -3682,7 +3816,7 @@ export const def = {
 
       for (const br of track.branches) {
         const isRamp = br.kind === 'ramp';
-        const accent = isRamp ? '#ffb020' : '#2fe8d8';
+        const accent = isRamp ? '#ffb020' : '#26e0a8';
         const u = br.enterU;
         const s = track.at(u);
         const yaw = Math.atan2(s.tan.x, s.tan.z) + IN * Math.PI / 2;
@@ -3696,7 +3830,7 @@ export const def = {
             w: ar.range(17, 25), d: ar.range(15, 21), h: ar.range(9.5, 14.5),
             seed: Math.round(u * 977) * 7 + (sx > 0 ? 1 : 2), night,
             wallColor: ar.pick(['#f8dce6', '#d4f0e6', '#fdf2dc', '#e8ddf6']),
-            signColor: ar.pick(['#ff2f9d', '#2fe8d8', '#ffd83a']),
+            signColor: ar.pick(['#ff3f80', '#26e0a8', '#ffab3a']),
             signText: ar.pick(['CLUB', 'MOJITO', 'LIDO', 'CAFE', 'SURF', 'PALMS']),
             style: 'stucco', cache,
           });

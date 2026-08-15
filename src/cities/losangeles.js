@@ -1403,7 +1403,34 @@ function streetCar({ kind = 'sedan', variant = 0, tint = null, mats, cache }) {
 
 const SUN_AZ = Math.atan2(-0.30, 0.91);      // atan2(x, z) of look.sun.dir — see below
 
-/** The ochre inversion layer: dense at the skyline, gone by 12 degrees, brightest toward the sun. */
+/**
+ * The ochre inversion layer: dense at the skyline, thinning out by ~26 degrees, and — the point of
+ * this round — very nearly the SAME layer whichever way the camera is pointed.
+ *
+ * COHERENCE PASS. The whole-game critic caught Los Angeles showing three different times of day in
+ * three captures: cyan midday down the boulevard, orange dusk in the drift, pink-and-teal dusk at
+ * the landmark. Measured over the twelve LA captures, the sky band ran h168 s17 l42 facing away
+ * from the sun and h13 s37 l42 facing into it — not a grade drift and not a per-capture seed, but
+ * pure AZIMUTH. Two terms produced all of it: `skyCanvas`'s sun-glow disc (a 75-degree radial wedge
+ * of `sunColor` composited `lighter` over the dome, which simply repaints the sky orange on the sun
+ * side and leaves it untouched on the other) and this layer, which used to nearly vanish away from
+ * the sun and pile up under it.
+ *
+ * A city is one hour or it is not a city, so the warm half of LA's complementary pair now comes
+ * from a layer that is present at EVERY heading:
+ *   - the density exponent goes 2.2 -> 1.80, which lifts the layer's useful top from about 12
+ *     degrees to about 22. That matters because the ridge line closes the bottom 16 degrees of the
+ *     chase frame: with the old profile there was nothing but bare turquoise dome above the hills,
+ *     which is exactly the "cyan midday" reading. There is now an ochre inversion sitting on the
+ *     crest in that frame too — 54% dense at 3 degrees, 39% at 8, 23% at 14, 12% at 20 and gone by
+ *     26, so the layer reads as a LAYER with turquoise sky above it rather than as a wash. (1.30
+ *     was tried first and measured: it pushed the ochre past 26 degrees, took the whole visible
+ *     dome with it, and cost LA the cold half of its complementary pair — one time of day, but a
+ *     monochrome one. §2.1 wants three to five hues, and the turquoise is one of them.)
+ *   - the azimuthal boost goes (0.82 + 0.50·sunlit) -> (0.94 + 0.20·sunlit), i.e. a 1.21x swing
+ *     instead of 1.61x. The sun side is still the warmer side — it should be — but it is now the
+ *     same sky lit differently rather than a different sky.
+ */
 function smogBandTexture(seed) {
   const w = 512, h = 128;
   const { c, ctx } = canvas(w, h);
@@ -1413,23 +1440,23 @@ function smogBandTexture(seed) {
   const sunU = ((SUN_AZ / (Math.PI * 2)) % 1 + 1) % 1;
   for (let y = 0; y < h; y++) {
     const v = y / (h - 1);                        // 0 = top of the band, 1 = the skyline itself
-    // density profile: nothing at the top, a soft inversion shoulder, then a hard pile-up at the
+    // density profile: thin at the top, a soft inversion shoulder, then a hard pile-up at the
     // horizon line. The shoulder is what makes it read as a LAYER and not as a gradient.
-    const base = Math.pow(v, 2.2) * 0.99;
+    const base = Math.pow(v, 1.80) * 0.99;
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      // azimuthal term: within ~70 deg of the sun the layer glows and thickens
+      // azimuthal term: within ~70 deg of the sun the layer glows and thickens — but only just.
       const du = Math.abs(((x / w - sunU + 0.5) % 1 + 1) % 1 - 0.5);
       const sunlit = Math.pow(1 - smoothstep(0.0, 0.24, du), 1.5);
       const wisp = 0.72 + (f[i] - 0.5) * 0.9;     // torn horizontal structure in the layer
-      const a = clamp(base * wisp * (0.82 + sunlit * 0.5), 0, 1);
+      const a = clamp(base * wisp * (0.94 + sunlit * 0.20), 0, 1);
       // PRE-COMPENSATED, and it has to be. Measured through the whole chain, a flat ochre band of
       // (240,176,132) lands on screen as (221,133,159) — the grade's saturation lift pulls green
       // out and the mauve shadow lift puts blue back in, so painting the colour you want gets you
       // magenta smog. Pushing the source toward yellow lands it on the warm ochre it should be.
       img.data[i * 4] = 250 + sunlit * 5;
-      img.data[i * 4 + 1] = 202 + sunlit * 30 - (1 - v) * 14;
-      img.data[i * 4 + 2] = 96 + sunlit * 30 + (1 - v) * 34;
+      img.data[i * 4 + 1] = 202 + sunlit * 14 - (1 - v) * 14;
+      img.data[i * 4 + 2] = 96 + sunlit * 14 + (1 - v) * 34;
       img.data[i * 4 + 3] = a * 255;
     }
   }
@@ -1645,7 +1672,28 @@ export const def = {
   look: {
     accent: '#ff7a1e',
     lampColor: '#ffcc86',
-    wet: 0,
+    /**
+     * A DRY road with a grazing sheen, which is not the same thing as `wet: 0`.
+     *
+     * §1.1's midday reference road is "dark near-black asphalt, wet-looking with a broad specular
+     * sheen" — that sheen is the sky sitting in the asphalt at glancing angles, and it is present
+     * on a bone-dry road at any hour. At `wet: 0` the atmospherics pass' reflection term drops to
+     * its 0.075 floor and nothing at all comes back off the far half of the carriageway, so LA's
+     * road had no idea what colour the sky above it was — a large part of why the frame read as a
+     * day sky stitched onto a night ground.
+     *
+     * 0.10 with the cone held tight is the sheen and not a mirror: the derived Schlick exponent
+     * stays at its dry 4.8 so only the far, most-grazing third of the road picks anything up, and
+     * the threshold stays high enough that only the sky and a genuine specular hit clear it. The
+     * previous round's mistake was the opposite one — `wet: 0` but on the SHARED defaults, which
+     * had the widest smear in the game — and that is exactly why `wetLook` is spelled out here
+     * rather than left derived.
+     */
+    wet: 0.10,
+    wetLook: {
+      strength: 0.16, spread: 0.010, gain: 1.22, threshold: 0.90, knee: 0.42,
+      patch: 0.88, patchScale: 0.060, fresnel: 5.2, band: 0.40,
+    },
     /**
      * MEASURED, not assumed. The sky dome is a 3400 m sphere carrying an equirect gradient whose
      * stops sit at 90 deg (`top`), 14 deg (`horizon`) and 0 deg (`haze`) — but the chase camera's
@@ -1660,10 +1708,30 @@ export const def = {
      * do: the sun's own radial glow (a 75 deg wedge of `sunColor` composited over the turquoise,
      * so the sky is warm toward the sun and cold away from it), the smog band mesh built in
      * landmarks(), and the ochre fog every distant layer dissolves into.
+     *
+     * COHERENCE PASS — "one city, one time of day". Three numbers here were the other half of the
+     * three-skies fault (see `smogBandTexture`):
+     *
+     *   sunColor  #ffc07e -> #b1703f. `skyCanvas` composites this as a radial wedge 75 degrees
+     *             across with `lighter`, at alpha 0.8 near the disc and 0.13 over most of the
+     *             wedge. At (255,192,126) that wedge ADDS up to (33,25,16) across the entire
+     *             visible sky whenever the camera turns toward the sun, which is what took the
+     *             turquoise to h13 orange in the drift capture; at (177,112,63) it adds (23,15,8),
+     *             a warming rather than a repaint. The disc still reads as a sun because the disc
+     *             itself runs at alpha 0.95.
+     *   horizon   #31c8ae -> #34bfa9. This stop IS the sky in a driving frame, and a 61%-saturation
+     *             tropical cyan at l49 is a midday colour whatever else is in the picture — but
+     *             only just: taking it to #3ab3a4 alongside the smog change measured as having
+     *             removed the turquoise from the city altogether, so it comes back most of the way.
+     *             LA at six o'clock is turquoise THROUGH SMOG, and the smog is the layer's job.
+     *   clouds    0.34 -> 0.12. The dome's painted fbm cloud field is baked at fixed azimuths, so
+     *             it is by construction a different sky in every heading — and this city already
+     *             carries 26 parallaxing cloud cards at 1150-2150 m that do the job properly. The
+     *             dome keeps just enough to stop the gradient reading as a flat wash.
      */
     sky: {
-      top: '#0d8f92', horizon: '#31c8ae', ground: '#6b4a30',
-      haze: '#ff9c52', sunDir: [-0.30, 0.28, 0.91], sunColor: '#ffc07e', clouds: 0.34, seed: 101,
+      top: '#0d8590', horizon: '#34bfa9', ground: '#6b4a30',
+      haze: '#ff9c52', sunDir: [-0.30, 0.28, 0.91], sunColor: '#b1703f', clouds: 0.12, seed: 101,
     },
     // Sun azimuth 108 deg — broadside to BOTH long straights, and that is the whole point.
     // Round 1 put it down the road axis: the specular glitter path then runs straight up the
@@ -1673,16 +1741,60 @@ export const def = {
     // parapet lit, the other in mauve shade, palm shadows striped across the carriageway, and the
     // ridge modelled by its own canyons. Elevation 16 deg gives shadows four times the height of
     // whatever throws them.
-    sun: { color: '#ffcf94', intensity: 4.05, dir: [-0.30, 0.28, 0.91] },
+    /**
+     * DAYLIGHT RIG — rebalanced in the per-city grade pass, and this is the fix for the one gap
+     * the whole-game critic named: "the only DAY city is the darkest frame in the game".
+     *
+     * Measured over the twelve LA captures: meanLum 0.228 against Miami 0.382, NYC 0.320 and
+     * Vegas 0.336, with 53.5% of the non-HUD frame under luma 0.16. The sky, the hills, the
+     * stucco and the skyline were all bright; the road and the off-road plane were night. That is
+     * two stitched exposures, not one graded picture.
+     *
+     * It was not the grade — it was the RATIO. A 16-degree sun casts shadows three and a half
+     * times the height of whatever throws them, so on a boulevard walled by 22–82 m blocks most
+     * of the ground in any given frame is in shade, and everything in shade was lit by hemisphere
+     * 0.94 + fill 0.44 + omni 0.62 against a key of 4.05 — about a 1:5 shade-to-key ratio, which
+     * is a clear-sky-no-atmosphere number. Los Angeles in August is a hazy basin: the sky is a
+     * 180-degree turquoise softbox and the ground bounces ochre back up into everything, and the
+     * real ratio at golden hour is nearer 1:2.5.
+     *
+     * So: hemisphere ×2.2, fill ×1.6, the omni floor ×1.7, and the key comes DOWN 12% to pay for
+     * part of it. The sun is still far and away the key — one flank of every car and every parapet
+     * is still lit and the other is still in shade, palm shadows still stripe the carriageway —
+     * but the shade now has the sky's colour in it instead of being a hole.
+     *
+     * (Why the key has to come down at all: engine.applyLook derives exposure by normalising
+     * `sun*0.8 + ambient*0.5 + fill*0.3`, so raising the fills alone buys back less than it
+     * spends. Trading 0.50 of key for 1.16 of hemisphere lands the same derived exposure with
+     * two and a bit times the light in the shadows.)
+     */
+    sun: { color: '#ffcf94', intensity: 3.75, dir: [-0.30, 0.28, 0.91] },
     ambient: {
-      sky: '#8fd2e6', ground: '#8f6647', intensity: 0.94,
+      // The hemisphere IS the turquoise sky as far as every up-facing surface is concerned, and
+      // it is the term that has to reach the carriageway and the off-road plane. Desaturated a
+      // little on the way up: at 2.10 the old #8fd2e6 tipped grey asphalt frankly green.
+      sky: '#a6d6e4', ground: '#8f6a4c', intensity: 2.00,
       // fill from the anti-sun side, carrying the turquoise zenith into the shaded flank
-      fill: { color: '#79c6dd', intensity: 0.44, dir: [0.34, 0.40, -0.88] },
+      fill: { color: '#8fd0e2', intensity: 0.76, dir: [0.34, 0.40, -0.88] },
     },
-    // Violet bounce in the shade: at golden hour everything out of the sun is lit by that
-    // turquoise sky and nothing else, so the shadows go cool and the frame gets its complement.
-    shadowTint: '#70486a',
-    shadowFill: 0.62,
+    // Rose bounce in the shade. Two jobs: it is the omnidirectional floor that keeps a wall
+    // facing away from BOTH the sun and the sky off zero, and it is the city's shadow signature.
+    // Rotated warm off the old mauve because the four cities were landing 207-263 deg — all of
+    // them blue-to-violet — so shadow hue was measuring as a shared grade artefact rather than as
+    // four separate places. Miami keeps cyan, NYC blue, Vegas violet; the day city takes the warm
+    // rose that a golden-hour bounce off ochre hillside and warm stucco actually is.
+    shadowTint: '#6f5a72',
+    // (round 3) 0.78 -> 0.90, and this is the near-miss §7 cap the round-2 critique flagged rather
+    // than applied: "the off-track shoulder in la-supercar-drift.png measures luminance sd of
+    // 2.7-4.2 over 300x200 blocks at rgb(36,43,44) — effectively flat colour on ~20% of the frame".
+    // Raycast (`.la_probe.mjs`) names it: it is the kit's 6 km ground plane, in the shadow of the
+    // storefront row, so the ONLY light on it is this omnidirectional floor. The plane's texture is
+    // not missing — parking aprons, service strips, oil stains, grain — it is being multiplied by a
+    // light level so low that its whole albedo range collapses into four or five sRGB code values.
+    // Lifting the floor by half a stop puts that same range back across ~15 code values, which is
+    // the difference between a surface and a flat colour, and it does it without touching the key,
+    // so the sunlit half of the frame is unchanged.
+    shadowFill: 0.90,
     /**
      * Smog, and enough of it to matter — but MEASURED against where the camera actually stands,
      * not against where the landmark was sited.
@@ -1700,14 +1812,42 @@ export const def = {
      * meshes carrying their own baked haze, so the far end of the stack does not move at all.
      */
     fog: { color: '#e8c096', near: 175, far: 2100 },
-    ground: { color: '#7f6b4e' },
+    // The second half of the same fix. `groundTexture` builds its "broad patches of a second
+    // surface" from `accent`, and with no accent named it falls back to `tint * 0.72` — i.e. the
+    // patches are the same colour 28% darker, which is the one kind of variation that disappears
+    // completely once the surface is in shadow. LA's off-road ground is dirt lots WITH concrete
+    // parking aprons on them, so naming the apron gives the plane a second surface that differs in
+    // hue as well as value and survives being lit by nothing but bounce.
+    ground: { color: '#86735a', accent: '#cbbfa4' },
     sidewalk: '#b3a893',
     grade: {
-      uSaturation: 1.34, uExposure: 1.0, uContrast: 1.14,
-      // mauve shadows, not navy: uLift is a multiplier on the shadow band, and the old #131024
-      // pulled 6% more blue than red through it, which quietly turned the turquoise sky into a
-      // flat mid-blue and every shadow into night.
-      uLift: '#241428', uGain: '#ffe6c6', uVignette: 0.26,
+      uSaturation: 1.34, uExposure: 1.05,
+      /**
+       * CONTRAST AND BLACK POINT — the other half of "the day city is the darkest frame".
+       *
+       * The grade chain runs an S-curve (`uContrast`) and then a toe (`uBlackPoint` biases both
+       * its exponent and the true black it subtracts) as the last two things before the sRGB
+       * encode. Both are calibrated for a NIGHT frame, where the job is to keep asphalt between
+       * neon reflections at zero. Traced with real numbers: a sunlit LA carriageway arrives at
+       * the S-curve near 0.027 linear, comes out of it at 0.011, and the toe then multiplies THAT
+       * by 0.11 — a 9x cut applied to the largest surface in the frame. Ninety percent of the
+       * road's value was being removed after the lighting was already correct.
+       *
+       * 1.14 -> 1.02 takes the derived S-curve from 1.267 (all but the 1.34 ceiling) to 1.14, and
+       * uBlackPoint 0.60 takes the toe exponent from 1.30 to 1.08 and the subtracted black from
+       * 0.0058 to 0.0035. Neither switches anything off: the frame still has a true black point
+       * (measured pure-black area stays under 0.1%) and the darkest 1% still lands in the teens,
+       * which is where the reference's day frames sit. What comes back is the band between "true
+       * black" and "midtone" — i.e. shadow DETAIL, which is the thing a day city cannot do
+       * without. Vegas and NYC keep their harder settings; this is a per-city number and it is
+       * supposed to be.
+       */
+      uContrast: 1.06, uBlackPoint: 0.66,
+      // Rose shadows. uLift is a unit-luminance MULTIPLIER on the shadow band, so this is a hue
+      // rotation with no brightness cost — and now that the shadows carry real light it survives
+      // to screen as chroma instead of as a two-code-value difference in a near-black. Matched to
+      // `shadowTint` above so the scene light and the grade agree about what colour LA's shade is.
+      uLift: '#2e1b30', uGain: '#ffe6c6', uVignette: 0.22,
     },
     bloom: { strength: 0.88, radius: 0.60, threshold: 0.74 },
   },
@@ -1722,7 +1862,14 @@ export const def = {
     // stucco and sidewalk were all bright — a neutral-grey night road under a golden-hour sky.
     // #3a is 0.043 in linear, which is a darker albedo than coal; real asphalt is 0.10-0.15, and a
     // 16-degree sun rakes it warm. This is that number, with the blue bias (#3a38**3c**) taken out.
-    surface: { tint: '#4a453d', lanes: 3, centerLine: 'double-yellow', worn: 0.78 },
+    // (grade pass) #4a45 -> #5d56, i.e. 0.068 -> 0.105 linear: the bottom of the real asphalt band
+    // rather than a fifth of the way below it. The road is the single largest surface in every
+    // frame of the one DAY city, so its albedo is the highest-leverage number in this file for the
+    // "57% of the frame under luma 0.16" measurement — and a boulevard that has been bleaching in
+    // the sun since the 1930s is not fresh-laid binder. Everything the generator draws on top
+    // (aggregate, chippings, tar seams, polished wheel tracks) is a multiplier, so they all get
+    // proportionally more room to show as well.
+    surface: { tint: '#514f4c', lanes: 3, centerLine: 'double-yellow', worn: 0.78 },
     bank: 0.05,
     crossings: 8,
     sidewalkWidth: 5.2,
@@ -1999,21 +2146,49 @@ export const def = {
         const scrubMat = new THREE.MeshStandardMaterial({
           vertexColors: true, roughness: 1, metalness: 0, flatShading: true, envMapIntensity: 0.22,
         });
+        /**
+         * u, side, lateral setback, len, depth, height, seed.
+         *
+         * `side` is the track's `right`, and on this lap `right` points OUT of the loop
+         * everywhere — the route is a single clockwise circuit, so `+1` is the open basin and
+         * `-1` is the infield the road comes back around. THAT is the constraint these six rows
+         * live under, and two of them were breaking it.
+         *
+         * FOUND BY MEASUREMENT, not by eye (`tools/_la_overlap.mjs` raycasts straight down onto
+         * 400 stations of the centreline, both kerbs and all three branches and reports any
+         * landmark terrain above the road): the 480x330 knoll at u=0.192 and the 320x240 at
+         * u=0.145 were both sited ~330 m into the infield, which on a loop only ~450 m across
+         * puts them straight over the far side of it. Measured, the first sat up to 135 m above
+         * the carriageway across u=0.36 to u=0.46 and the second up to 83 m near u=0.49, and
+         * their scrub batches — 460 unlit cards each, hung on the hill's own height field —
+         * floated over the road as black hexagons in every frame from u=0.42 to u=0.46.
+         *
+         * It is also the whole of the "1 of 48 captures renders a completely black world" defect:
+         * la-muscle-drift ends at (798, 9.4, -372) with the drift camera 4.8 m inside the u=0.192
+         * knoll's east flank. Hiding that one mesh and re-rendering the same frame returns
+         * rgb(94,63,57) — an ordinary lit road — so the sim was never the problem.
+         *
+         * Both move OUT into the basin. The rule for anything added here: the footprint must
+         * clear every station of the route (`tools/_la_knoll2.mjs`, which inflates the rectangle
+         * by the worst case of the +-0.30 rad yaw jitter before measuring), and the six between
+         * them have to ring the basin rather than pile up on one flank — east of the double
+         * apex, north of the boulevard twice, south beyond the flood channel, and two on the run
+         * home.
+         */
         for (const [u, side, lat, w, d, hh, sd] of [
-          // These two sit just outside the sightline kept open for the hillside letters — close
-          // enough to the axis that their dark crests run in under the letters and give them
-          // something to read against, far enough that they never mask them.
-          //
-          // Their setback is not free: a knoll 480 m wide placed 196 m off the kerb reaches 44 m
-          // PAST the road centreline, which is why round 2's landmark capture at u=0.15 put the
-          // camera inside a hillside and filled 70% of the frame with featureless orange. Every
-          // row below now clears the carriageway by at least 90 m at its widest corner.
-          [0.192, -1, 336, 480, 330, 112, 3],
+          // east of the double apex: the mass that closes the boulevard's far end
+          [0.300, 1, 430, 480, 330, 112, 3],
+          // the two that flank the opening straight, outside the sightline kept open for the
+          // hillside letters — close enough to the axis that their dark crests run in under the
+          // letters and give them something to read against, far enough that they never mask them
           [0.212, 1, 344, 440, 300, 92, 11],
           [0.115, 1, 300, 300, 220, 58, 17],
-          [0.145, -1, 330, 320, 240, 72, 37],
-          [0.905, 1, 285, 380, 260, 82, 23],
-          [0.955, -1, 250, 320, 230, 60, 29],
+          // south, beyond the flood channel: what you see over the parapet on the shortcut
+          [0.480, 1, 340, 380, 270, 78, 37],
+          [0.905, 1, 320, 380, 260, 82, 23],
+          // west, over the top of the last sweeper — measured at 130 m of clearance, where the
+          // infield siting this replaces stood 33 m above the kerb at u=0.760
+          [0.820, 1, 320, 320, 230, 60, 29],
         ]) {
           const s = track.at(u);
           // face the road: local +Z is the front slope, so it has to point back down the kerb
