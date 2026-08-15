@@ -17,7 +17,9 @@ const argv = process.argv.slice(2);
 const has = (k) => argv.includes(`--${k}`);
 const arg = (k, d = null) => { const i = argv.indexOf(`--${k}`); return i === -1 ? d : argv[i + 1]; };
 
-const CITIES = has('quick') ? ['la'] : ['la', 'vegas', 'miami', 'nyc'];
+const ALL_CITIES = ['la', 'vegas', 'miami', 'nyc'];
+// --quick trims the per-city load test, but never the car x city matrix below — see the note there.
+const CITIES = has('quick') ? ['la'] : ALL_CITIES;
 const CARS = ['tuner', 'muscle', 'suv', 'supercar'];
 
 const results = [];
@@ -172,7 +174,11 @@ async function main() {
     check('car cannot escape the track bounds', inBounds < 2.0, `|lateral| ${inBounds.toFixed(2)}`);
 
     // ---------------------------------------------------------------- every car in every city
-    console.log('\n── car × city matrix ──');
+    // The heading now states its ACTUAL coverage. Under --quick this is LA x 4 cars, not 16
+    // combinations, and it used to print a bare "car × city matrix" that implied otherwise — a
+    // label overstating its own coverage is worse than no check, because it stops anyone looking.
+    // Run without --quick for the full 4x4.
+    console.log(`\n── car × city matrix (${CITIES.length}x${CARS.length} = ${CITIES.length * CARS.length}${has('quick') ? ', --quick: LA only — run without --quick for all 16' : ''}) ──`);
     for (const city of CITIES) {
       for (const car of CARS) {
         let ok = true, msg = '';
@@ -189,21 +195,44 @@ async function main() {
 
     // ---------------------------------------------------------------- menu
     console.log('\n── menu ──');
+    // Drive the menu through REAL KEY EVENTS, not by calling its internals.
+    // This section used to call menu._move() / _start() directly, which meant it never exercised
+    // Input.pressed() — and Input.pressed() was broken such that it could NEVER return true, so the
+    // garage did not respond to the keyboard at all. Every check here passed while the screen was
+    // completely dead to a player. A test that bypasses the input layer cannot detect input bugs.
     const menu = await h.page.evaluate(async () => {
       const G = window.__GAME;
       await G.scenario('menu');
       const opened = G.game.state === 'menu' && G.game.menu.open_;
-      const before = G.game.menu.carIndex;
-      G.game.menu._move(1);
-      const moved = G.game.menu.carIndex !== before;
-      G.game.menu._cycleColor();
-      G.game.menu._start();
-      const started = G.game.state === 'racing';
-      return { opened, moved, started };
+
+      // synthesise a real keydown/keyup pair and let the game consume it through Input
+      // game.update() calls input.update() itself, so do NOT also call it here — an extra call
+      // rotates the edge-detection snapshot a second time and eats the keypress before the menu
+      // ever sees it. One dispatch, one game tick.
+      const key = (code) => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
+        G.game.update(1 / 60);
+        window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true }));
+        G.game.update(1 / 60);
+      };
+
+      const beforeCar = G.game.menu.carIndex;
+      key('ArrowRight');
+      const movedByKey = G.game.menu.carIndex !== beforeCar;
+
+      const beforeCity = G.game.menu.cityIndex;
+      key('ArrowDown');
+      key('ArrowRight');
+      const cityByKey = G.game.menu.cityIndex !== beforeCity;
+
+      key('Enter');
+      const startedByKey = G.game.state === 'racing';
+      return { opened, movedByKey, cityByKey, startedByKey };
     });
     check('menu opens', menu.opened);
-    check('menu navigates between cars', menu.moved);
-    check('menu starts a race (no dead end)', menu.started);
+    check('menu navigates between cars VIA KEYBOARD', menu.movedByKey);
+    check('menu changes destination VIA KEYBOARD', menu.cityByKey);
+    check('menu starts a race VIA KEYBOARD (no dead end)', menu.startedByKey);
 
     // ---------------------------------------------------------------- performance
     console.log('\n── performance ──');

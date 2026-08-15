@@ -55,6 +55,18 @@ export class Input {
   }
 
   update(dt) {
+    // EDGE DETECTION. `prev` has to hold the PREVIOUS frame's key set for the whole of this frame,
+    // because every consumer — the garage (`menu.update`), the finish prompt — is called by
+    // Game.update() *after* this method. Both branches used to end with `prev = new Set(keys)`,
+    // which snapshots the key set that pressed() is about to be compared against: keys and prev
+    // were then identical for the rest of the frame and `pressed()` could never return true for
+    // anything. The garage did not respond to the keyboard at all — no navigate, no colour, no
+    // ENTER to start — and nothing caught it, because functest drives the menu by calling
+    // `menu._move()` / `menu._start()` directly rather than through a key. So the snapshot is
+    // promoted at the TOP of the frame instead, and the new one taken alongside it.
+    this.prev = this._pending || new Set();
+    this._pending = new Set(this.keys);
+
     if (this.scripted) {
       const s = this.scripted;
       this.throttle = s.throttle || 0;
@@ -65,7 +77,6 @@ export class Input {
       // scripted steer is applied raw so tests are exactly reproducible
       this.steer = s.steer || 0;
       this._steerSmooth = this.steer;
-      this.prev = new Set(this.keys);
       return;
     }
 
@@ -99,8 +110,6 @@ export class Input {
     this.throttle = thr; this.brake = brk;
     this.nitro = nit; this.handbrake = hb;
     this.lookBack = this.any(KEYMAP.lookBack);
-
-    this.prev = new Set(this.keys);
   }
 
   _gamepad() {

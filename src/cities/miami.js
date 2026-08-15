@@ -2952,16 +2952,30 @@ export const def = {
     // into that half — it is §1.3's "every light source draws a long reflection down the stone,
     // doing most of the work of making the night read as expensive" — and unlike lifting the
     // ambient it costs the black point nothing, because the dry patches stay exactly as dark.
+    // (coherence pass) …AND THEN PULLED BACK, because it took Vegas' identity with it.
+    //
+    // Judged in isolation, 0.62 / threshold 0.34 was defensible: it put light back into a dark
+    // lower half. Judged as one of four cities in one game, it was the loudest instance of "one
+    // piece's good idea applied globally until it stopped being an idea". Measured against the
+    // city that OWNS the wet-neon-mirror look, Miami had overtaken it — Vegas runs 0.27 strength
+    // at a 0.80 threshold (only an actual neon tube clears the bar); Miami ran 0.62 at 0.34, which
+    // is not a selective mirror but a full mirror, so every hue on the strip smeared across the
+    // whole carriageway and the bottom half of every Miami frame came back as the same magenta and
+    // cyan rainbow as the bottom half of every Vegas frame. Two cities that could be swapped is a
+    // §6.4 cap on both of them, and the road stopped reading as a road.
+    //
+    // "Damp, not flooded" is what the comment above says this city is, so these are the numbers for
+    // that: still wetter than LA (0.30 vs 0.075), still selective enough that the deco neon streaks
+    // and the sunset does not, and the frame's dark half is now the ROAD rather than a light show.
     wetLook: {
-      strength: 0.62,
-      spread: 0.008,      // <- the cap fix. 0.070 (the derived default) dithers; this does not.
-      gain: 2.05,
-      // Threshold dropped from 0.72 to 0.34: the point is no longer only that neon mirrors, it is
-      // that the whole damp carriageway carries §1.1's "broad specular sheen" of the sunset above
-      // it. At 0.72 nothing but a neon tube cleared the bar and the road between reflections was a
-      // featureless black wedge across the bottom 45 % of every frame.
-      threshold: 0.34,
-      knee: 0.34,
+      strength: 0.30,
+      spread: 0.008,      // <- the cap fix. the derived default dithers at width; this does not.
+      gain: 1.55,
+      // Above the sunset's own value and below the neon's, so the strip mirrors and the sky does
+      // not. (0.34 put the whole dusk gradient into the tarmac, which is where the rainbow came
+      // from.)
+      threshold: 0.58,
+      knee: 0.52,
       patch: 0.72,        // dry patches: the asphalt has to keep showing through
       patchScale: 0.048,
       fresnel: 3.0,
@@ -2975,7 +2989,18 @@ export const def = {
     fog: { color: '#9a5c8e', near: 330, far: 3300 },
     haze: { max: 0.30 },
     ground: { color: '#cdae82', accent: '#e6d0a2' },
-    groundGlow: 0.22,
+    // Same defect Las Vegas had, found in the same pass: right of the carriageway in the drift
+    // capture the sand measured rgb(6,20,22) — a black wedge with the road ending at a hard edge
+    // over it. A sand lot at dusk is NOT unlit; it holds the last of the sky and the spill off the
+    // Deco frontages. The tint is named here rather than inherited from `fog.color`, because the
+    // fog is a saturated dusty rose and a rose ground under a rose sky flattens the whole frame —
+    // this is the warm grey that sand actually goes at this hour.
+    // Measured on the drift capture: 0.22 (round 3) put the lot at rgb(6,20,22), 2.4 turns it into
+    // a daylight beach that out-values the carriageway. 1.4 lands it at about rgb(35,32,24) — dark
+    // enough that the road and the neon still own the frame, light enough that the sand has grain,
+    // slab joints and the car's own contact shadow in it.
+    groundGlowColor: '#7a6a72',
+    groundGlow: 1.40,
     grade: {
       uSaturation: 1.30, uExposure: 1.0, uContrast: 1.14,
       uBlackPoint: 1.35, uVignette: 0.22, uHiChroma: 0.34,

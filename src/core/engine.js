@@ -316,12 +316,22 @@ export class Engine {
     a.uHazeDesat.value = mix2(0.38, 0.22);
 
     // ---- wet road ---------------------------------------------------------------------------
-    // §2.2 makes a reflective road mandatory at night, and the reference's *daylight* road is
-    // "wet-looking with a broad specular sheen" too — so every city gets some, floored well above
-    // zero, and the two neon cities get a lot. `look.wet` is the city's own 0..1 knob.
+    // §2.2 makes a reflective night road mandatory, and the reference's *daylight* road keeps a
+    // "broad specular sheen" too. `look.wet` is the city's own 0..1 knob, and everything derived
+    // here now actually SCALES with it.
+    //
+    // (coherence pass) It did not before, and that was the single loudest incoherence in the
+    // sixteen-frame set. Vegas, NYC and Miami each authored an explicit `wetLook`; LA — the one
+    // daylight city, `wet: 0` — was the only city left on these defaults, and the defaults were a
+    // 0.20 floor with the WIDEST spread in the game (0.075, six to nine times any authored city's).
+    // So the driest city got the longest, softest mirror smears: a golden-hour boulevard under a
+    // turquoise sky over a road that reflected like black glass at midnight, and the sky and the
+    // ground disagreed about what time of day it was. A dry road is not a mirror with the gain
+    // turned down — it is a TIGHT grazing specular, so the spread comes down with the wetness as
+    // well as the strength, and the day threshold goes up so only a genuine highlight streaks.
     const wet = clamp(look.wet ?? 0, 0, 1);
     const w = look.wetLook || {};
-    a.uWet.value = clamp(w.strength ?? (0.20 + wet * 0.62) * mix2(0.85, 1.05), 0, 2.2);
+    a.uWet.value = clamp(w.strength ?? (0.075 + wet * 0.68) * mix2(0.85, 1.05), 0, 2.2);
     // The streak takes the city's accent, pulled most of the way back to white so a magenta sign
     // still reflects magenta — this only biases the tail of the smear.
     a.uWetTint.value.copy(unitTint(col(look.accent, 0xffffff), mix2(0.14, 0.30)))
@@ -341,15 +351,19 @@ export class Engine {
     // toe's job, not the threshold's — pushing the threshold to 0.9 to get a black road (tried, r3
     // interim) simply deleted the reflections, and the wet vertical streaks are the single most
     // expensive-looking thing in a night frame.
-    a.uWetThresh.value = w.threshold ?? mix2(0.70, 0.66);
+    a.uWetThresh.value = w.threshold ?? lerp(mix2(0.94, 0.80), mix2(0.70, 0.66), wet);
     a.uWetKnee.value = w.knee ?? (0.40 + wet * 0.45);
-    a.uWetSpread.value = w.spread ?? (0.075 - wet * 0.030);
-    a.uWetGain.value = w.gain ?? mix2(1.55, 2.45);
+    // Tight when dry, broad when soaked. This is the term that draws the long vertical smear, so
+    // it is the term that has to know whether there is any water on the road.
+    a.uWetSpread.value = w.spread ?? (0.010 + wet * 0.038);
+    a.uWetGain.value = w.gain ?? lerp(mix2(1.15, 1.70), mix2(1.55, 2.45), wet);
     // Dry patches matter as much as wet ones — a uniformly wet road is a lake, and the asphalt
     // texture underneath has to keep showing through or the road stops reading as a road.
     a.uWetPatch.value = w.patch ?? clamp(0.86 - wet * 0.10, 0.55, 0.90);
     a.uWetPatchScale.value = w.patchScale ?? 0.055;
-    a.uWetFresnel.value = w.fresnel ?? (wet > 0.4 ? 2.4 : 3.6);
+    // Dry asphalt only catches a reflection at a real grazing angle, so the Schlick exponent goes
+    // up as the water goes away and the sheen retreats to the far half of the road where it belongs.
+    a.uWetFresnel.value = w.fresnel ?? lerp(4.8, 2.4, smooth(0.15, 0.55, wet));
 
     // ---- light shafts --------------------------------------------------------------------
     // A city can force them with look.shafts; otherwise they scale with how strong and how *low*

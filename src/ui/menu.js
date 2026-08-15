@@ -114,6 +114,22 @@ const IDENT_X = 470;             // left edge of the class chip / paint row / st
 const PANEL_LEAN = 34;           // absolute px of lean on the right-hand column's plates
 const PANEL_CUT = 26;            // chamfer on their top-left / bottom-right corners
 
+/**
+ * How much of the vehicle kit's ground-bounce fill each dark-body role gets back under showroom
+ * light. See the block in `_dampEnv` for why it is taken away in the first place. `rubber` and
+ * `cabin` are deliberately absent: a tyre has to stay the darkest big thing on the car, and the
+ * cabin has its own three lamps and is scaled DOWN, not up.
+ */
+const UNDER_LIFT = {
+  trim: 2.6,       // rockers, valances, bumpers, tail panels — the "full-length slot"
+  plastic: 2.6,    // over-fenders, arch liners, diffusers
+  well: 3.6,       // inner fenders: the darkest, and four holes at the corners of the frame
+  cavity: 2.2,     // grille backs, pipe bores, shut gaps — still holes, just not voids
+  housing: 2.3,    // lamp housings
+  metal: 2.0,      // vent fins, blower cases
+  carbon: 2.2,
+};
+
 const STAT_COLORS = [
   ['SPEED', 'speed', '#ff2f6d', '#ff9fc0'],
   ['TRACTION', 'traction', '#c33cff', '#f0aaff'],
@@ -121,12 +137,26 @@ const STAT_COLORS = [
 ];
 
 // Room. +Z is toward the camera; the hero wall is at zBack.
-const ROOM = { hx: 9.6, zBack: -8.6, zFront: 10.4, h: 5.5 };
+// zFront was 10.4 and the lens now stands at z ≈ 9.4–10.8 (see CAM): the bay has to be deep enough
+// that the rig — and the 1.4 m the intro dolly pulls back on top of it — is still inside its own
+// room. Everything else in the shell derives from FLOOR, so the floor markings, the ceiling and the
+// truss run all follow the new depth without a second edit.
+const ROOM = { hx: 9.6, zBack: -8.6, zFront: 13.8, h: 5.5 };
 const FLOOR = { w: 19.2, d: ROOM.zFront - ROOM.zBack, zc: (ROOM.zFront + ROOM.zBack) / 2 };
 const TT = { r: 3.15, y: 0.17 };            // turntable radius + deck height
 
-// Camera rig. Fixed three-quarter front; the TURNTABLE is what moves.
-const CAM = { r: 8.5, h: 2.02, az: 0.40, tgt: new THREE.Vector3(0, 0.86, 0.05) };
+/**
+ * Camera rig. Fixed three-quarter front; the TURNTABLE is what moves.
+ *
+ * Round 4 puts a longer lens on it: 34° from 10.15 m instead of 40° from 8.5 m. Same subject size
+ * in frame (tan20°·8.5 ≈ tan17°·10.15), materially less wide-angle stretch — at 8.5 m the muscle
+ * car's nose was 6.1 m from the lens and its tail 10.9 m, a 1.8:1 near/far ratio that made the
+ * front clip loom over the rest of the car. At 10.15 m it is 1.6:1. That matters here specifically
+ * because the front clip is the weakest part of every one of the four bodies (see the note on
+ * SHUTLINE FILL): a shorter lens was magnifying the one region that cannot take magnification, and
+ * a press three-quarter is shot on a portrait lens for exactly this reason.
+ */
+const CAM = { r: 9.55, h: 2.02, az: 0.40, tgt: new THREE.Vector3(0, 0.86, 0.05) };
 /**
  * Hero yaw. The camera sits at azimuth CAM.az, so the angle the lens makes with the car's nose is
  * |HERO_YAW − CAM.az|. Round 1 ran −0.62, i.e. 58° — that is a *side* view with a hint of nose, and
@@ -146,7 +176,7 @@ const GARAGE_LOOK = {
   sky: { haze: '#10202a' },
   sun: { color: '#ffd0a0', intensity: 2.05, dir: [-0.46, 0.60, 0.65] },
   ambient: {
-    sky: '#7fb6d8', ground: '#3b2b21', intensity: 0.90,
+    sky: '#7fb6d8', ground: '#4a382a', intensity: 1.08,
     fill: { color: '#79a8d0', intensity: 0.22, dir: [0.5, 0.4, -0.6] },
   },
   fog: { color: '#0b1218', near: 26, far: 160 },
@@ -1298,29 +1328,34 @@ function buildGarage() {
   group.add(key); group.add(key.target);
 
   /**
-   * Split a lamp into a short line of weaker lamps.
+   * ---- WHY THERE IS NO LONGER A `spread()` HELPER HERE -------------------------------------------
    *
-   * Three has no area lights, and the car's clearcoat is roughness 0.07 — so a single spot lands a
-   * specular lobe a few pixels across at ten to fifty times the bloom knee, and the bloom pass turns
-   * each one into the blue-white blob that was sitting on the front fender, the B-pillar and both
-   * arches. Ablating bloom removed every one of them, which is the proof: they are not reflections,
-   * they are one hot pixel each, smeared.
+   * Round 3 split the key, the rim and the flank each into a bar of three lamps to fake an area
+   * light, on the reasoning that a single spot against a clearcoat of roughness 0.07 lands a
+   * specular lobe far over the bloom knee and the bloom pass smears it into a blue-white blob.
    *
-   * Same total diffuse energy spread over a 2 m bar of emitters gives a specular that is a soft
-   * BAND at a third of the peak — a softbox, built out of the only tool the renderer has. Only the
-   * original lamp casts the shadow, so the contact shadow stays one crisp shape.
+   * That reasoning was already obsolete when it shipped: the same round raised the bloom knee to
+   * 3.40 (GARAGE_LOOK) *and* added the showroom gloss pass that rolls the clearcoat to 0.26 and the
+   * chrome to 0.38 for the duration of the garage. Both of those kill the blob at its source. What
+   * the six extra lamps were still doing was costing frames — and this is measured on the real GPU,
+   * which nothing in this project had ever pointed at the menu:
+   *
+   *     lights  38 → 89.5 ms/frame (11 fps)      lights 18 → 31.8 ms (32 fps)
+   *     lights  14 → 25.8 ms (39 fps)            lights 12 → 24.4 ms (41 fps)
+   *
+   * ~3.4 ms per light, because this is a forward renderer: every one of them is another iteration
+   * of the light loop in every fragment of a room that fills the frame, and the turntable's planar
+   * Reflector pays for the whole rig a second time. §3.5 wants ≥ 50 fps and §7 caps any piece at 70
+   * below it, and `tools/perf.mjs` only ever measures race scenarios, so the garage has been sitting
+   * under that cap unmeasured since it was built. The rig below is the same PICTURE — key, rim,
+   * flank, fills, two washes, two practicals — with every duplicate lamp removed and the intensity
+   * folded back into the lamp it was split from.
    */
-  const spread = (src, n, dx, dz, dy = 0) => {
-    for (let i = 0; i < n; i++) {
-      const f = (i + 1) / (n + 1) - 0.5;
-      const s = new THREE.SpotLight(src.color, src.intensity * 0.62, src.distance,
-        src.angle * 1.06, Math.min(1, src.penumbra + 0.12), 2);
-      s.position.set(src.position.x + dx * f, src.position.y + dy * f, src.position.z + dz * f);
-      s.target.position.copy(src.target.position);
-      group.add(s); group.add(s.target);
-    }
-  };
-  spread(key, 2, 1.9, -1.5, 0.5);
+  // 168 × 2.24 — the key plus the two lamps it used to be split into, folded back into one. The
+  // three sat within 2 m of each other aimed at the same point, so their contribution at the car was
+  // very close to additive; measured, dropping to 232 cost the car 30% of its mean luminance.
+  key.intensity = 452;
+  key.penumbra = 0.70;
 
   // RIM — cool, from behind and screen-right, grazing. Its whole job is one bright edge down the
   // roofline and the rear shoulder so the car separates from the teal brick by LIGHT and not by
@@ -1336,8 +1371,9 @@ function buildGarage() {
   rimLight.shadow.bias = -0.0005;
   rimLight.shadow.normalBias = 0.02;
   rimLight.shadow.radius = 2.2;
+  rimLight.intensity = 106;
+  rimLight.penumbra = 0.94;
   group.add(rimLight); group.add(rimLight.target);
-  spread(rimLight, 2, -2.3, 1.0, -0.9);
 
   // A back-LEFT cool edge at a third of the rim's strength: without it the nose sits against an
   // unlit wall. Grazing, low, and far too weak to refill the cavity the two keys carve out.
@@ -1346,11 +1382,13 @@ function buildGarage() {
   rimL.target.position.set(-1.0, 0.78, 0.30);
   group.add(rimL); group.add(rimL.target);
 
-  // Practicals under the tubes. `distance` is set so the falloff window closes ~1.3 m below the
-  // fixture: they light the ceiling deck and the top of the walls — which is what makes the tubes
-  // read as real fittings — and contribute exactly nothing at floor level.
-  for (const [x, y, z] of tubePos) {
-    const p = new THREE.PointLight(new THREE.Color('#ffe2b8'), 30, 3.4, 2);
+  // Practicals under the tubes — TWO of the four fittings, not all four. They exist so the tube
+  // housings have a pool of light under them and the ceiling deck is not flat; the two the frame
+  // can see do that job, and the two behind the lens were paying full per-fragment cost for a
+  // contribution nothing in frame receives. Windowed by `distance` so the falloff closes ~1.3 m
+  // below the fixture and nothing reaches floor level.
+  for (const [x, y, z] of [tubePos[2], tubePos[3]]) {
+    const p = new THREE.PointLight(new THREE.Color('#ffe2b8'), 62, 3.4, 2);
     p.position.set(x, y - 0.14, z);
     group.add(p);
   }
@@ -1364,8 +1402,11 @@ function buildGarage() {
   // Four washes, not three. The left quarter of the frame — the shutter, the bench end, the brick
   // behind the tile fan — fell to near black, and §1.4's room is a teal wall the car is separated
   // FROM: a black void behind the selector is a backdrop, not a garage.
-  for (const [x, inten, col] of [[-8.4, 78, '#a8dcd8'], [-4.2, 96, '#bfe4e0'], [0.6, 104, '#cfe8e4'], [5.8, 88, '#ffd7a8']]) {
-    const w = new THREE.SpotLight(new THREE.Color(col), inten, 15, 0.74, 1.0, 2);
+  // TWO washes, each opened from 0.74 to 1.02 rad so the pair covers the span the four used to.
+  // Four narrow cones down one flat wall and two wide ones down the same wall differ by a gradient
+  // nobody can see and by 2 × 3.4 ms a frame, which everybody can.
+  for (const [x, inten, col] of [[-6.0, 176, '#b6e0dc'], [2.6, 188, '#d8e8e2']]) {
+    const w = new THREE.SpotLight(new THREE.Color(col), inten, 16, 1.02, 1.0, 2);
     w.position.set(x, 4.90, ROOM.zBack + 2.6);
     w.target.position.set(x, 1.25, ROOM.zBack + 0.05);
     group.add(w); group.add(w.target);
@@ -1378,17 +1419,105 @@ function buildGarage() {
   // below; a rake from chest height does the exact opposite — it made the rocker and the lower door
   // the brightest paint on the car and left the shoulder and the roof in shade, which is the value
   // order of a car lit from a pit, not a car lit in a showroom.
-  const flank = new THREE.SpotLight(new THREE.Color('#ffcaa8'), 70, 22, 0.52, 0.78, 2);
-  flank.position.set(6.6, 3.60, 4.60);
+  // Round 4: 70 → 92 and up to 4.05 m. The lens moved back to 9.55 m and up ~0.22 m, so the flank
+  // it has to model is both further away (inverse-square costs ~35% at the new distance) and seen
+  // at a steeper rake. Same light, re-aimed at the same job.
+  const flank = new THREE.SpotLight(new THREE.Color('#ffcaa8'), 268, 26, 0.62, 0.90, 2);
+  flank.position.set(6.9, 4.05, 4.80);
   flank.target.position.set(0.30, 1.02, -0.20);
   group.add(flank); group.add(flank.target);
-  spread(flank, 2, -1.2, -2.4, 0.9);
 
-  // and a low warm bounce off the floor into the sills, so the underside is dark but not dead
-  const bounce = new THREE.SpotLight(new THREE.Color('#ffc79c'), 8, 12, 0.80, 1.0, 2);
-  bounce.position.set(3.2, 0.30, 4.4);
-  bounce.target.position.set(0.0, 0.60, 0.0);
-  group.add(bounce); group.add(bounce.target);
+  /**
+   * ---- SHUTLINE FILL — round 4's headline fix, and the one the standing verdict is about --------
+   *
+   * The verdict: "the hero car is a set of floating panels with open gaps you can see through — a
+   * full-length slot between the greenhouse and the rocker, a front clip of disconnected slabs with
+   * a raw open box end." The first half of that is a lighting fact, not a topology fact, and it is
+   * measured rather than argued:
+   *
+   *   · `probe_gap` casts one ray per 2 px from this exact lens at the car and looks for a MISS that
+   *     is enclosed on all four sides by hits. Muscle: 0 such pixels. Supercar: 26 px total, all of
+   *     it the real slot under the rear wing. There is no hole in the bodywork to see through.
+   *   · `probe_dark` measures the same frame over a raycast mask of the car: 7.3% of the hero car's
+   *     pixels render below luminance 8/255 and 19.4% below 30 — and those pixels are SOLID,
+   *     near-black trim. The rocker on the muscle car is a 2.30 m bar in #14161b set 80 mm inboard
+   *     of the flank; the front valance, the arch liners and the bumper backs are the same family.
+   *
+   * A 2 m band of luminance-4 pixels between two lit panels is indistinguishable from a slot cut
+   * through the car, whatever the geometry underneath is doing. Every lamp in this room was aimed at
+   * or above the beltline — key at 5.3 m, flank at 3.6 m, rim at 4.1 m, all raking DOWN — so the one
+   * region that had no light on it at all was the one region the verdict is about.
+   *
+   * Three sources, all from below the beltline on the lens side, all windowed by `distance` so they
+   * are spent before they reach the deck a metre out from the tyres:
+   *
+   *   · SILL — screen right and low, raking along the rocker and the lower door. It gives the
+   *     rocker a top-to-bottom gradient, which is the single cue that says "recessed panel" rather
+   *     than "hole".
+   *   · CLIP — screen left, at bumper height, aimed into the front clip. The stacked bumper /
+   *     valance / grille boxes are the "raw open box end"; lit from the front-left they separate by
+   *     VALUE and read as a stack of pressings instead of one black cutout with a lid on it.
+   * Neither casts a shadow (they are stand-ins for bounce, and bounce does not throw a hard shadow),
+   * neither is split into a bar of lamps (the surfaces they are for are 0.6-roughness satin plastic
+   * with no specular lobe tight enough to need softening, and every extra lamp in this room costs
+   * ~3.4 ms a frame — see the rig note above), and neither touches the grounding: the three contact
+   * decals are alpha-black `MeshBasicMaterial` quads drawn over the deck with their own renderOrder,
+   * so no amount of added light can lift them. The wheel arches are left to the env cards below
+   * rather than given a third lamp — an arch liner faces down and inboard, which is where a
+   * non-occluded environment reaches and a spot does not.
+   */
+  // Aimed UP, from 0.34 m — the height of a floor kicker on a studio floor, not of a lamp. The
+  // recess this has to reach is under the door's lower lip and faces down and out; a source above it
+  // lights the lip and leaves the slot behind it exactly as black as it found it. A rising ray gets
+  // in under the lip, which is the whole trick, and it costs nothing on the deck because by the time
+  // the cone clears the car it is above the floor.
+  const sillFill = new THREE.SpotLight(new THREE.Color('#ffd0a6'), 46, 11.5, 0.66, 1.0, 2);
+  sillFill.position.set(4.35, 0.34, 5.30);
+  sillFill.target.position.set(0.10, 0.80, -0.15);
+  group.add(sillFill); group.add(sillFill.target);
+
+  // Mounted at 1.85 m and aimed DOWN into the clip rather than level with it: at bumper height the
+  // cone carried on past the nose and printed a torch-beam patch on the open floor in front of the
+  // car, which is the tell that a fill light is a light and not a bounce. From above the beam is
+  // spent on the bodywork and whatever runs past it lands under the car, where it is already dark.
+  const clipFill = new THREE.SpotLight(new THREE.Color('#ffdcbb'), 23, 10.0, 0.54, 1.0, 2);
+  clipFill.position.set(-1.55, 1.85, 6.60);
+  clipFill.target.position.set(-0.30, 0.62, 2.05);
+  group.add(clipFill); group.add(clipFill.target);
+
+  /**
+   * ---- BOUNCE CARDS -----------------------------------------------------------------------------
+   *
+   * Two big soft cards on the lens side of the car, BEHIND the camera's own eyepoint (the rig sits
+   * at z ≈ 8.3; these are at 9.6 and 9.1) so they can never appear in frame. They emit nothing that
+   * the shading pass can see — what they are for is the ENV PROBE, which is captured from inside the
+   * car at (0, 1.32, 0.15) and previously had a floor-to-lens hemisphere made of unlit concrete.
+   *
+   * That matters because an environment map in three.js is not occluded: it reaches into a recess
+   * the spot rig cannot. So the cards do the half of the job the shutline fill cannot — they put a
+   * broad, low, warm reflection into the underside of every panel lip, the back of the bumper stack
+   * and the inboard face of the rocker, which is what makes those surfaces read as METAL IN SHADOW
+   * rather than as a gap. Held at 1.05 / 0.75 emissive: enough to be the brightest thing in the
+   * lower hemisphere of the probe, far too little to compete with the two softboxes above.
+   */
+  const cardMat = new THREE.MeshStandardMaterial({
+    color: 0x0d1013, emissive: new THREE.Color('#ffe3c4'), emissiveIntensity: 1.05,
+    roughness: 0.9, metalness: 0, side: THREE.DoubleSide,
+  });
+  const cardMatL = cardMat.clone();
+  cardMatL.emissive = new THREE.Color('#ffdcc0');
+  cardMatL.emissiveIntensity = 0.75;
+  for (const [mat, w, hgt, pos, rx, ry] of [
+    [cardMat, 7.2, 2.1, [2.9, 1.05, 9.60], 0.30, Math.PI - 0.30],
+    [cardMatL, 5.6, 1.7, [-3.4, 0.92, 9.10], 0.26, Math.PI + 0.34],
+  ]) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, hgt), mat);
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.rotation.order = 'YXZ';
+    m.rotation.y = ry; m.rotation.x = rx;
+    m.castShadow = false; m.receiveShadow = false;
+    group.add(m);
+  }
   /**
    * ---- CABIN RIG — round 3's headline fix -------------------------------------------------------
    *
@@ -1427,24 +1556,31 @@ function buildGarage() {
    * across a 1 m box is the difference between a fill and a flashbulb.
    */
   const cabinRig = new THREE.Group();
-  const cabinDome = new THREE.PointLight(new THREE.Color('#ffd2a2'), 0.94, 2.4, 1);
+  // TWO lamps, not three. The DECK lamp (cool, low and aft, for the parcel shelf through the
+  // backlight) is the one of the three the hero lens can least see — it sits behind the seat backs
+  // on a three-quarter FRONT — and at ~3.4 ms a frame it was the most expensive thing in the cabin.
+  // The dome's distance is opened from 2.4 to 2.9 m so its tail reaches the shelf instead.
+  const cabinDome = new THREE.PointLight(new THREE.Color('#ffd2a2'), 1.06, 2.9, 1);
   const cabinScreen = new THREE.PointLight(new THREE.Color('#ffdfc0'), 0.50, 1.8, 1);
-  const cabinDeck = new THREE.PointLight(new THREE.Color('#a9c8e6'), 0.40, 1.8, 1);
-  for (const l of [cabinDome, cabinScreen, cabinDeck]) { l.castShadow = false; cabinRig.add(l); }
+  for (const l of [cabinDome, cabinScreen]) { l.castShadow = false; cabinRig.add(l); }
   group.add(cabinRig);
 
-  // and one narrow can on the workbench, so the tool wall has a reason to be visible
-  const benchLight = new THREE.SpotLight(new THREE.Color('#ffd9a6'), 26, 9, 0.55, 0.9, 2);
-  benchLight.position.set(-3.4, 3.9, ROOM.zBack + 1.9);
-  benchLight.target.position.set(-3.4, 1.7, ROOM.zBack + 0.2);
-  group.add(benchLight); group.add(benchLight.target);
+  // The bench can is gone: the left wall wash above already opens wide enough to cover the bench and
+  // the pegboard, and a ninth spot for one prop is not affordable in a forward renderer.
 
   // Room ambience, kept deliberately mean. A hemisphere light is never occluded, so every unit of
   // it lands on the deck under the car as brightly as it lands on open floor — it is the single
   // biggest reason a hero car floats. 0.22 is enough to keep shadows coloured instead of crushed.
-  const hemi = new THREE.HemisphereLight(new THREE.Color('#527f9c'), new THREE.Color('#241a12'), 0.44);
+  // Round 4: 0.44 → 0.78, and the ground half warmed and lifted. The old value was chosen when the
+  // grounding under the car was whatever the lights left behind, and a never-occluded term really
+  // was the reason a hero car floated. The grounding is now three alpha-black decals drawn OVER the
+  // deck with their own renderOrder — nothing in the light rig can touch them — so the hemisphere is
+  // free to do the job it is actually good at: reaching the recesses (arch liners, the inboard face
+  // of the rocker, the back of the bumper stack) that a spot cannot get into at any intensity, and
+  // which are exactly the surfaces the standing verdict calls holes.
+  const hemi = new THREE.HemisphereLight(new THREE.Color('#6d9ab5'), new THREE.Color('#3b2c1f'), 0.78);
   group.add(hemi);
-  const amb = new THREE.AmbientLight(new THREE.Color('#1b2a38'), 0.22);
+  const amb = new THREE.AmbientLight(new THREE.Color('#1b2a38'), 0.30);
   group.add(amb);
 
   // ---- volumetrics ----------------------------------------------------------------------------
@@ -1569,7 +1705,6 @@ function buildGarage() {
       const f = cabinFit(bp);
       cabinDome.position.fromArray(f.dome);
       cabinScreen.position.fromArray(f.screen);
-      cabinDeck.position.fromArray(f.deck);
     },
 
     /**
@@ -2109,6 +2244,8 @@ export class Menu {
     this.focusT = 1;
     this.colorFlash = 0;
     this.statShown = [0, 0, 0];
+    this._statWant = [0, 0, 0];
+    this._sig = null;               // force the first frame of every visit to repaint
     this.tileT = VEHICLE_IDS.map(() => 0);
     this.cityT = CITY_IDS.map(() => 0);
     this.cityBusy = false;
@@ -2179,9 +2316,11 @@ export class Menu {
       const canvas2 = shootThumb(renderer, this.thumbRig, this.thumbRT, car, v.blueprint.dims);
       if (!mine) disposeObject(car);
       this.thumbs[id] = { canvas: canvas2, color };
+      this._thumbGen = (this._thumbGen || 0) + 1;
     } catch (e) {
       console.warn('tile render failed, falling back to silhouette', e);
       this.thumbs[id] = { canvas: null, color: this._wantColor(id) };
+      this._thumbGen = (this._thumbGen || 0) + 1;
     }
   }
 
@@ -2199,6 +2338,8 @@ export class Menu {
     this.spinKick = -Math.PI * 1.45;
     this.spin = HERO_YAW;
     this.statShown = [0, 0, 0];
+    this._statWant = [0, 0, 0];
+    this._sig = null;               // force the first frame of every visit to repaint
     this.tileT = VEHICLE_IDS.map(() => 0);
     this._ensureStage();
     this._enterStage();
@@ -2277,12 +2418,26 @@ export class Menu {
     if (g.car) g.car.visible = carWasVisible !== false;
   }
 
-  /** Swap the world over to the garage: hide the city (and with it, the city's whole light rig). */
+  /**
+   * Swap the world over to the garage: hide the city (and with it, the city's whole light rig).
+   *
+   * …and the DARK lights. Hiding `city.group` takes the city's lamps out of the light list, but the
+   * FX pools live at scene root: five crash/nitro point lights parked at intensity 0 plus the
+   * nitrous jet's own lamp under the car. A light at intensity 0 emits nothing and still costs a
+   * full iteration of the fragment light loop in every material in the room — measured at ~3.4 ms
+   * each on an M1 Pro, so six of them were ~20 ms of a 90 ms frame producing no photons at all.
+   * Hidden by object (never by touching intensity, which is the FX system's state) and put straight
+   * back on close.
+   */
   _enterStage() {
     const g = this.game;
     if (!this.stage) return;
     if (g.city) g.city.group.visible = false;
     for (const c of g.aiCars) c.visible = false;
+    this._darkLights = [];
+    g.engine.scene.traverse((o) => {
+      if (o.isLight && o.visible && !(o.intensity > 0)) { o.visible = false; this._darkLights.push(o); }
+    });
     this.stage.group.visible = true;
     g.engine.scene.fog = this.stage.fog;
     g.engine.applyLook(GARAGE_LOOK);
@@ -2398,8 +2553,37 @@ export class Menu {
         if (seen.has(m)) continue;
         const cc = (m.clearcoat ?? 0) > 0.3 && m.clearcoatRoughness < 0.15;
         const mirror = (m.metalness ?? 0) >= 0.55 && (m.roughness ?? 1) < 0.24;
-        if (!isGlass && !cc && !mirror && !isCabin) continue;
+        const lift = UNDER_LIFT[m.userData.underRole];
+        if (!isGlass && !cc && !mirror && !isCabin && !lift) continue;
         seen.add(m);
+        /**
+         * ---- THE DARK TRIM, RE-LIT FOR A LIT ROOM ---------------------------------------------
+         *
+         * This is the other half of the SHUTLINE FILL fix, and it is here rather than in the light
+         * rig because no lamp can fix it. The rocker, the valance, the arch liners and the bumper
+         * backs are 2–6% albedo satin black; `kit.js darkTrimMaterial` knows that and gives them a
+         * small EMISSIVE ground-bounce term (`UNDER_ROLE[role].fill`) so they read as dark surfaces
+         * with a floor under them instead of as holes.
+         *
+         * That term is then scaled by `UNDER.fill`, which `setBodyTint` derives from how NIGHT the
+         * look is — and the look this stage hands it (GARAGE_MIRROR: fog #0a1116, sun 0.80) computes
+         * as fully night, so `UNDER.fill` lands at 0.42. The garage is not a night street: it is a
+         * lit room with four strip fixtures, two softboxes, a key, a rim and now a bounce bank in
+         * it. Telling the vehicle kit otherwise takes 58% off the one term that keeps the lower half
+         * of every car off zero, which is most of the reason a solid rocker photographs as a slot.
+         *
+         * So the roles that model dark bodywork get their bounce put back (and the wells, the
+         * darkest of them, a little more than back), plus enough env weighting to catch the bounce
+         * cards. Recorded per material and restored on close exactly like the rest of this pass, so
+         * the race still gets the night-tuned values the cities were graded against.
+         */
+        if (lift && !isGlass && !isCabin) {
+          save(m, ['emissiveIntensity', 'envMapIntensity']);
+          if (m.emissive) m.emissiveIntensity = (m.emissiveIntensity || 0) * lift;
+          if (m.envMapIntensity !== undefined) m.envMapIntensity *= 1.45;
+          m.needsUpdate = true;
+          if (!cc && !mirror) continue;
+        }
         if (isGlass) {
           save(m, ['opacity', 'depthWrite', 'side', 'color', 'envMapIntensity',
             'clearcoatRoughness', 'clearcoat', 'roughness']);
@@ -2498,6 +2682,8 @@ export class Menu {
     const g = this.game;
     this._setHeadGlow(true);
     this._restoreMaterials();
+    for (const l of this._darkLights || []) l.visible = true;
+    this._darkLights = [];
     if (this.stage) this.stage.group.visible = false;
     if (g.city) {
       g.city.group.visible = true;
@@ -2585,7 +2771,9 @@ export class Menu {
     const spec = getVehicle(VEHICLE_IDS[this.carIndex]).spec;
     const want = [spec.stats.speed, spec.stats.traction, spec.stats.accel];
     const k = 1 - Math.exp(-7.5 * dt);
-    for (let i = 0; i < 3; i++) this.statShown[i] = lerp(this.statShown[i], want[i] * smoothstep(0.05, 0.75, this.intro), k);
+    // kept on the instance so draw() can ask "is this bar still moving?" without recomputing it
+    this._statWant = want.map((v) => v * smoothstep(0.05, 0.75, this.intro));
+    for (let i = 0; i < 3; i++) this.statShown[i] = lerp(this.statShown[i], this._statWant[i], k);
 
     // ---- turntable ---------------------------------------------------------------------------
     // The hero angle breathes ±14° so the car is never presented flat, and a swap arrives as a
@@ -2625,7 +2813,13 @@ export class Menu {
     // blueprint's own dimensions and eased, so a swap dollies rather than cuts.
     const dims = getVehicle(VEHICLE_IDS[this.carIndex]).blueprint.dims;
     const fitR = CAM.r * clamp((0.58 * dims.length + 1.35 * dims.height) / 4.91, 0.86, 1.24);
-    const fitH = 0.86 * dims.height + 0.80;
+    // Eye height up ~0.22 m on round 3. Two reasons, both about the bodywork rather than the room:
+    // from 2.02 m the lens sat level with the beltline, which is the one elevation that looks
+    // straight INTO the recess under the door and along the underside of the front bumper — the two
+    // black bands the critic read as slots. A press three-quarter is shot from just above the
+    // shoulder line so the eye rides the hood and the roof, which are the continuous surfaces on
+    // every one of the four cars.
+    const fitH = 0.86 * dims.height + 1.02;
     const fitT = TT.y + dims.height * 0.52;
     this._fitR = this._fitR === undefined ? fitR : lerp(this._fitR, fitR, 1 - Math.exp(-6 * dt));
     this._fitH = this._fitH === undefined ? fitH : lerp(this._fitH, fitH, 1 - Math.exp(-6 * dt));
@@ -2646,7 +2840,7 @@ export class Menu {
     // frame the car right-of-centre so the fan and the name block have their own air
     cam.rotateY(0.050);
     cam.rotateX(-0.052);
-    cam.fov = 40 + punch * 3.2;
+    cam.fov = 34 + punch * 2.6;
     cam.updateProjectionMatrix();
 
     g.engine.grade.uniforms.uBoost.value = 0;
@@ -2758,12 +2952,16 @@ export class Menu {
 
   // ---------------------------------------------------------------- 2D layer
 
-  _ensureBuf(W, H) {
+  _ensureBuf(W, H, hq) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const scale = Math.max(dpr, Math.min(2.5,
-      4096 / Math.max(1, W), 4096 / Math.max(1, H), Math.sqrt(9.2e6 / Math.max(1, W * H))));
+    const scale = hq ? Math.max(dpr, Math.min(2.5,
+      4096 / Math.max(1, W), 4096 / Math.max(1, H), Math.sqrt(9.2e6 / Math.max(1, W * H)))) : dpr;
     this._bscale = scale;
-    if (scale <= dpr + 1e-3) { this.buf = null; this.bctx = null; return; }
+    // The canvas OBJECT is kept when the low path turns the buffer off — only the context reference
+    // is dropped, which is what everything downstream branches on. Releasing a 4000 × 2250 canvas at
+    // the start of every transition and allocating a fresh one 0.6 s later is 36 MB of churn per
+    // car swap, and the reallocation lands on the exact frame the settled high-quality pass runs.
+    if (scale <= dpr + 1e-3) { this.bctx = null; return; }
     const bw = Math.floor(W * scale), bh = Math.floor(H * scale);
     if (!this.buf) this.buf = document.createElement('canvas');
     if (this.buf.width !== bw || this.buf.height !== bh) { this.buf.width = bw; this.buf.height = bh; }
@@ -2775,7 +2973,55 @@ export class Menu {
     const hud = this.game.hud;
     const W = hud?.w || window.innerWidth;
     const H = hud?.h || window.innerHeight;
-    this._ensureBuf(W, H);
+
+    /**
+     * ---- REPAINT ONLY WHEN THE PANEL CHANGES ----------------------------------------------------
+     *
+     * This is a 1600 × 900 (up to 3200 × 1800 at dpr 2) full-screen canvas layer, and rewriting it
+     * hands the compositor a whole new texture every frame. Measured on the real GPU with the
+     * garage on screen — the numbers `tools/perf.mjs` never produced because it only ever measured
+     * race scenarios:
+     *
+     *     3D only, no 2D layer ....................... 12.5 ms   (82 fps)
+     *     + 2D redrawn straight to the UI canvas ..... 26.9 ms   (38 fps)
+     *     + 2D redrawn via the 2.5× supersample buf ... 48.2 ms  (21 fps)
+     *
+     * The supersample buffer's cost is the composite, not the pixels: 2400², 3200² and 4000² all
+     * land within 1.5 ms of each other, and dropping the intermediate canvas is worth 20 ms on its
+     * own. But the panel's CONTENT only changes when something on it moves, so the real answer is
+     * not to repaint at all. The canvas keeps its last frame if nothing touches it.
+     *
+     * `_sig` is every value the eight draw calls below read. Unchanged → return, and the frame
+     * costs nothing. Changed → repaint; and if the change is a live transition (a car swap, the
+     * intro, a stat bar still chasing) repaint at device scale, which is 20 ms cheaper, then do one
+     * final SUPERSAMPLED pass the moment everything settles. So the frame a screenshot or a
+     * standing player sees is always the high-quality one, and the frames nobody is looking at
+     * closely are the cheap ones.
+     *
+     * The three metronome animations this layer used to run — a scan sweep down the whole frame, a
+     * sheen crawling across the selected tile, a pulsing confirm hint — are gone, and not only for
+     * the cost. Each was a full-screen repaint at 60 Hz to animate something nothing had triggered.
+     * They are now driven by `focusT` / `tileT` / `intro`, so the sweep happens when the menu opens,
+     * the sheen crosses the tile you just selected, and the confirm hint brightens when focus lands
+     * on it. Motion that answers an input reads as responsiveness; motion on a timer reads as a
+     * screensaver, and the room behind the panel already carries the idle life (turntable sweep,
+     * dust, the bad ballast in tube 2, the extractor fan).
+     */
+    const moving = this.intro < 1 || this.swapT < 1 || this.focusT < 1 || this.colorFlash > 0
+      || this.tileT.some((v, i) => Math.abs(v - (i === this.carIndex ? 1 : 0)) > 0.002)
+      || this.cityT.some((v, i) => Math.abs(v - (i === this.cityIndex ? 1 : 0)) > 0.002)
+      || this.statShown.some((v, i) => Math.abs(v - this._statWant[i]) > 0.002);
+    const sig = [
+      W, H, moving ? 0 : 1, this.carIndex, this.cityIndex, this.colorIndex, this.focus,
+      this.cityBusy ? 1 : 0, this._thumbGen || 0,
+      this.intro.toFixed(3), this.swapT.toFixed(3), this.focusT.toFixed(3), this.colorFlash.toFixed(3),
+      this.tileT.map((v) => v.toFixed(3)).join(), this.cityT.map((v) => v.toFixed(3)).join(),
+      this.statShown.map((v) => v.toFixed(3)).join(),
+    ].join('|');
+    if (sig === this._sig) return;
+    this._sig = sig;
+
+    this._ensureBuf(W, H, !moving);
     const ctx = this.bctx || this.ctx;
     const scale = this.bctx ? this._bscale : Math.min(window.devicePixelRatio || 1, 2);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -2839,9 +3085,12 @@ export class Menu {
     ctx.fillStyle = hgrad(ctx, VW - 480, VW, [[0, 'rgba(3,6,12,0)'], [1, 'rgba(3,6,12,0.70)']]);
     ctx.fillRect(VW - 480, 0, 480, VH);
 
-    // a slow scan sweep — the panel is a screen, and it is alive
-    const sy = ((this.t * 0.10) % 1) * (VH + 300) - 150;
-    ctx.globalAlpha = 0.05 * io;
+    // One scan sweep, ridden down the frame by the INTRO rather than by a metronome: the panel
+    // powering on, not a screensaver. Gone by the time the menu is settled, which is also what lets
+    // the whole layer stop repainting (see draw()).
+    const iw = this.intro;
+    const sy = (iw < 1 ? iw : 1) * (VH + 300) - 150;
+    ctx.globalAlpha = 0.05 * io * (1 - smoothstep(0.72, 1, iw));
     ctx.fillStyle = vgrad(ctx, sy - 120, sy + 120, [[0, 'rgba(120,200,255,0)'], [0.5, 'rgba(140,215,255,1)'], [1, 'rgba(120,200,255,0)']]);
     ctx.fillRect(0, sy - 120, VW, 240);
     ctx.globalAlpha = 1;
@@ -2877,7 +3126,8 @@ export class Menu {
     drawText(ctx, 'GARAGE', {
       x: rx, y: y + 22, size: 19, weight: 0.16, tracking: 0.26, align: 'right', color: LABEL, face: 'geo',
     });
-    const blink = (Math.sin(this.t * 4.2) > 0) ? 1 : 0.25;
+    // brightens as focus lands on this column and holds — an answer to an input, not a blink
+    const blink = 0.62 + 0.38 * smoothstep(0, 1, this.focusT);
     ctx.globalAlpha = blink;
     drawText(ctx, this.focus === 'car' ? 'SELECT VEHICLE' : 'SELECT DESTINATION', {
       x: rx, y: y + 44, size: 16, weight: 0.15, tracking: 0.18, align: 'right',
@@ -2979,7 +3229,8 @@ export class Menu {
         ctx.globalAlpha = ap * sel;
         ctx.fillStyle = hgrad(ctx, x, x + w * 0.62, [[0, 'rgba(255,182,50,0.30)'], [1, 'rgba(255,140,16,0.0)']]);
         ctx.fillRect(x - 40, y, w + 80, h);
-        const sw = ((this.t * 0.42) % 1.6) - 0.3;
+        // the sheen crosses the tile as it BECOMES selected, once, and then stops on it
+        const sw = -0.3 + smoothstep(0, 1, sel) * 1.55;
         ctx.globalAlpha = ap * sel * 0.26;
         ctx.fillStyle = hgrad(ctx, x + w * (sw - 0.22), x + w * (sw + 0.22),
           [[0, 'rgba(255,240,200,0)'], [0.5, 'rgba(255,240,200,1)'], [1, 'rgba(255,240,200,0)']]);
@@ -3418,7 +3669,7 @@ export class Menu {
       const last = i === hints.length - 1;
       if (last) {
         // the confirm hint pulses — the one action the screen actually wants
-        ctx.globalAlpha = io * (0.62 + 0.38 * (0.5 + 0.5 * Math.sin(this.t * 3.4)));
+        ctx.globalAlpha = io * (0.74 + 0.26 * smoothstep(0, 1, this.focusT));
       }
       drawText(ctx, label, {
         x: hx, y: hy + 5, size: 15, weight: 0.15, tracking: 0.16,

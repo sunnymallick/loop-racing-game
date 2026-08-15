@@ -995,7 +995,13 @@ export class Track {
     // curbs: the red/white striped rumble strip seen in every reference frame
     if (curb) {
       const cm = new THREE.MeshStandardMaterial({ map: curbStripeTexture(), roughness: 0.62, metalness: 0.0 });
-      for (const side of [-1, 1]) strip(side, S.roadEdge, S.curbOut, cm, { vScale: 0.62 });
+      // vScale is the tile rate ALONG the road, and it is an aliasing budget as much as a look.
+      // At 0.62 the red/white diagonal repeated every 1.6 m; a 1.2 m strip seen from a chase camera
+      // is a few pixels tall a hundred metres out, so at that rate the stripe went under a pixel
+      // per band and shimmered into the dotted moiré the round-3 critic called on New York's
+      // shoulder. 0.34 puts the band at ~3 m — still a rumble strip, but above the Nyquist limit
+      // for the distance the eye actually reads it at.
+      for (const side of [-1, 1]) strip(side, S.roadEdge, S.curbOut, cm, { vScale: 0.34 });
     }
     // gutter / parking lane: worn asphalt the car can legally slide onto.
     // `preGamma` because this is the strip that measured rgb(6,3,4) in round 2 — see its docs.
@@ -1009,18 +1015,38 @@ export class Track {
       });
       for (const side of [-1, 1]) strip(side, S.curbOut, S.gutterOut, gm, { vScale: 0.06, uA: 0, uB: 1.4 });
     }
+    // THE OFF-ROAD FLOOR.
+    //
+    // A night city has no real lights in it — everything past the headlamps is emissive geometry,
+    // which lights nothing. The carriageway is fine, because the road material carries a dim
+    // self-lit copy of its own aggregate (`emissiveIntensity: night ? 0.52`) and the gutter carries
+    // 0.20. Round 3 gave the sidewalk, the kerb face and the apron NOTHING — so at the kerb the
+    // frame fell off a cliff from lit tarmac to rgb(19,8,37), and the Vegas drift capture read as
+    // "the road ribbon ends at a hard edge and the car hangs over pure black with no surface at
+    // all" (§2.1). This is the floor that keeps the shoulder a surface.
+    //
+    // It is deliberately BELOW the road's: the carriageway must stay the brightest thing on the
+    // ground or the racing line stops reading. Sidewalk 0.30, kerb face 0.34 (it is the edge the
+    // eye tracks), apron 0.24 — all far under the ~0.6 bloom threshold, so none of it glows.
+    const floorLit = (m, k) => {
+      if (!surface.night) return m;
+      m.emissiveMap = m.map;
+      m.emissive = new THREE.Color(0xffffff);
+      m.emissiveIntensity = k;
+      return m;
+    };
     // raised sidewalk with a real kerb face
     if (sidewalk && sidewalkWidth > 0) {
       // as with the road: V already counts tiles, so `repeat` must stay 1 (see buildRoad above)
       const st = sidewalkTexture({ tint: sidewalkTint });
       st.map.wrapS = st.roughnessMap.wrapS = THREE.ClampToEdgeWrapping;
-      const wm = new THREE.MeshStandardMaterial({
+      const wm = floorLit(new THREE.MeshStandardMaterial({
         map: st.map, roughnessMap: st.roughnessMap, roughness: 1, envMapIntensity: 0.85,
-      });
-      const km = new THREE.MeshStandardMaterial({
+      }), 0.30);
+      const km = floorLit(new THREE.MeshStandardMaterial({
         map: st.map, roughnessMap: st.roughnessMap, roughness: 1, envMapIntensity: 0.85,
         color: new THREE.Color(0xb4b0aa),
-      });
+      }), 0.34);
       for (const side of [-1, 1]) {
         strip(side, S.gutterOut, S.kerbTop, km, { vScale: 0.55, uA: 0, uB: 0.06 });
         strip(side, S.kerbTop, S.walkOut, wm, { vScale: 1 / Math.max(2.5, sidewalkWidth) });
@@ -1029,10 +1055,10 @@ export class Track {
     // apron: a graded verge that ties the raised street into the ground plane
     if (shoulder) {
       const asp = asphalt({ seed: 41, tint: preGamma(surface.apronTint || '#6b6459') });
-      const shMat = new THREE.MeshStandardMaterial({
+      const shMat = floorLit(new THREE.MeshStandardMaterial({
         map: asp.map, roughnessMap: asp.roughnessMap, normalMap: asp.normalMap, roughness: 1,
         envMapIntensity: 0.9,
-      });
+      }), 0.24);
       for (const side of [-1, 1]) {
         strip(side, S.walkOut, S.apronLip, shMat, { vScale: 0.05, uA: 0, uB: 0.1 });
         strip(side, S.apronLip, S.apronOut, shMat, { vScale: 0.05, uA: 0.1, uB: 3 });

@@ -183,9 +183,31 @@ class Game {
     this.race.attachCars(this.aiCars, { effects: this.effects, scene: this.engine.scene });
     this.effects.clear();
     this.state = 'racing';
+    this._finishT = 0;
+    this._finishPrompt = false;
     this.time = 0;
     this._snapCamera();
     return this;
+  }
+
+  /**
+   * Race → garage. The exact inverse of the teardown `startRace()` already does on a restart, so
+   * the two paths cannot drift apart: detach the director's line group and plumes, drop the
+   * opponents, clear the FX director, then hand the scene to the menu (which hides the city,
+   * swaps in the garage look and re-lights the hero car in `_enterStage`).
+   */
+  toGarage() {
+    this.state = 'menu';
+    this._finishT = 0;
+    this._finishPrompt = false;
+    this.race?.detachCars?.();
+    for (const c of this.aiCars) { this.engine.scene.remove(c); disposeObject(c); }
+    this.aiCars = [];
+    this.race = null;
+    this.effects.clear();
+    this.hud.msg = null;
+    this.hud.msgQueue = [];
+    this.menu.open();
   }
 
   // ---------------------------------------------------------------- simulation
@@ -344,6 +366,25 @@ class Game {
       if (this.race.state === 'finished' && this.state !== 'finished') this.state = 'finished';
     }
 
+    // (coherence pass) CLOSE THE LOOP. Menu → race worked; race → menu did not exist. `state` was
+    // set to 'finished', the director announced FINISH and then WINNER / FINISHED Pn, and nothing
+    // anywhere consumed either: the car drove a cool-down lap for ever, with no result, no prompt
+    // and no key that got you back to the garage. Whatever else is true of the pieces, a game you
+    // cannot leave the end of is not one product. This is the minimum that makes it a loop — the
+    // designed results screen it deserves is still a build round (see the report).
+    if (this.state === 'finished') {
+      this._finishT = (this._finishT ?? 0) + dt;
+      // after the FINISH / position banners have had the slot (1.5 s + 4.0 s)
+      if (!this._finishPrompt && this._finishT > 5.8) {
+        this._finishPrompt = true;
+        this.hud.message('ENTER  ·  GARAGE', 999, '#ffc23d');
+      }
+      if (this._finishT > 1.0 && (this.input.pressed('confirm') || this.input.pressed('cancel'))) {
+        this.toGarage();
+        return;
+      }
+    }
+
     // ---- audio ----
     if (this.audio.enabled) {
       const v = this.audio.engine('player', getVehicle(this.carId).spec);
@@ -450,11 +491,19 @@ class Game {
     // Mid-slide the rig lifts and backs off: a three-second drift lays down a wall of tyre smoke,
     // and a camera at bumper height sits INSIDE it (§6.2 is judged on drift frames — the car has to
     // clear its own plume).
-    const back = 6.0 + speed01 * 3.2 * (1 - flame * 0.55) + gPull
-      - flame * 3.10 - kick * 1.20 + b.drift * 2.1;
+    // (coherence pass) THE HERO HAS TO BE THE SUBJECT. Across all sixteen chase frames the player
+    // car measured ~11% of the frame width and in half of them it could not be told apart from the
+    // opponents around it; §1 has the reference car "large, bright and unmistakably the subject".
+    // The rig already knows how to do this — the nitrous dive (`-flame * …` below) produces the one
+    // framing in the whole set where the car is unmistakably the hero — so ordinary driving is
+    // moved most of the way toward it: base distance 6.0 → 5.0, speed pull-back 3.2 → 2.3, and the
+    // FOV trimmed with it (see `targetFov`), which together put ~1.35× more car on screen. The
+    // nitrous term is scaled by the same ratio so the boost framing itself does not change.
+    const back = 5.0 + speed01 * 2.3 * (1 - flame * 0.55) + gPull
+      - flame * 1.95 - kick * 0.90 + b.drift * 1.7;
     // Still ABOVE the jet's axis — the plume needs an elevation angle or it projects down its own
     // centreline — but roughly two metres lower than round 3's tower.
-    const up = 2.30 + speed01 * 0.50 + flame * 0.35 + kick * 0.35 + b.drift * 1.15;
+    const up = 2.05 + speed01 * 0.42 + flame * 0.35 + kick * 0.35 + b.drift * 1.00;
     // Under nitrous the rig swings out to one side: §8 asks for a REAR THREE-QUARTER on the
     // plume, and sitting on the axis foreshortens the jet into a bright blob behind the bumper.
     // (The jet's own screen-space governor pays for whatever foreshortening survives — see
@@ -683,7 +732,9 @@ class Game {
     // Under nitrous the aim point pulls back toward the car: with the rig swung out to the side,
     // a distant lead point cancels most of the offset and the shot goes back to being end-on.
     const lookTarget = b.pos.clone()
-      .addScaledVector(chase, (5.4 + speed01 * 4.6) * (1 - flame * 0.74))
+      // (coherence pass) scaled with the shorter rig — a lead point 10 m up the road from a camera
+      // only 7 m behind the car pushes the car down into the bottom of the frame.
+      .addScaledVector(chase, (4.4 + speed01 * 3.6) * (1 - flame * 0.74))
       .setY(b.pos.y + 1.05 + flame * 0.15);
     lookTarget.lerp(b.pos.clone().setY(b.pos.y + 0.95), smoothstep(0.2, 0.8, b.drift) * 0.45);
     // (nitrous piece, r5) COMPOSE THE SHOT AROUND THE JET. With the rig swung out to a rear
@@ -738,7 +789,10 @@ class Game {
 
     // FOV: a violent snap on ignition (fast lerp while surging), then a held wide angle.
     // ...driven off `flame` as well as `boost` so a spooling SUV also gets the wide-angle read.
-    const targetFov = 54 + smoothstep(0.08, 1.0, speed01) * 14 + boost * 4 + flame * 4 + kick * 14;
+    // (coherence pass) 54→68 was a 100-degree horizontal angle at speed, which is what shrank the
+    // hero to a chip in the middle of the road. Trimmed to 52→63 alongside the shorter rig; the
+    // boost/kick terms keep their full authority, so a nitrous frame still snaps wide.
+    const targetFov = 52 + smoothstep(0.08, 1.0, speed01) * 11 + boost * 4 + flame * 4 + kick * 14;
     this.camFov = lerp(this.camFov, targetFov, 1 - Math.exp(-(6 + surge * 26) * dt));
     cam.fov = this.camFov + (this.effects.fovKick || 0);   // impact punch (fx piece)
     cam.updateProjectionMatrix();

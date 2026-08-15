@@ -59,6 +59,17 @@
  *   escGrip/escLead  stability control: grip handed back to the REAR axle once the angle passes
  *               slipMax, fed with where the angle will be escLead seconds from now so a flick is
  *               caught instead of watched. This, not a yaw-rate servo, is why it cannot spin.
+ *               escGrip IS NO LONGER AN AMOUNT OF GRIP. It was — a flat 0.8 or 1.0 added to the
+ *               rear's budget — and having an authority number with no relationship to how much
+ *               grip the car was short of is half of why the recovery latch kept migrating between
+ *               classes for four rounds (the supercar is mid-engined, a·gripFront > b·gripRear, so
+ *               it is divergent with its rear tyres completely intact and needs half again what
+ *               the tuner does). physics.js now derives the required figure from this table's own
+ *               geometry — a·μf / b·μr, the line above which the yaw moment is restoring — and
+ *               escGrip only scales the MARGIN past it. Turning it down can make the ESC gentler;
+ *               it can no longer make it insufficient. Same for `driftGrip`, `driftFade` and
+ *               `hbGrip`: they still cut the rear as hard as they always did while the driver is
+ *               asking for a slide, and none of them can hold one once the driver has let go.
  *   driftHold   1/s of bounded torque holding the yaw rate at the value that SUSTAINS whatever
  *               angle the car currently has — the tiny corrections a real driver makes and a
  *               keyboard cannot. It damps the balance; it never names an angle.

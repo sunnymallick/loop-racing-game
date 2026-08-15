@@ -4,7 +4,7 @@ import { RNG, clamp, lerp, smoothstep } from '../core/rng.js';
 import { concrete, brick, skyTexture, sprite, canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas } from '../core/textures.js';
 import { roundedBox } from '../vehicles/kit.js';
 import { Track, boostStripTexture, curbStripeTexture, sColor, preGamma } from './track.js';
-import { drawText, textCanvas } from '../core/font.js';
+import { drawText, measure, textCanvas } from '../core/font.js';
 
 /**
  * Shared city construction kit.
@@ -166,6 +166,68 @@ function mergeStatic(group, chunk = 110) {
 
 /** Public name for the chunked merge — see the API note at the top of this file. */
 export const mergeGroup = mergeStatic;
+
+// ---------------------------------------------------------------- generated signage: two rules
+//
+// Both of these exist because round 3 shipped four cities whose most prominent signs were wrong in
+// ways nobody can see in a contact sheet and nobody can miss at full resolution.
+
+/**
+ * Draw a centred label that is GUARANTEED to fit inside `[x0..x1]`, shrinking it if it does not.
+ *
+ * `measure()` reports the LAYOUT ADVANCE only. It does not include the italic shear — which pushes
+ * the top of the last glyph `italic x size` further right — and it does not include the pen that
+ * `weight` strokes around the silhouette. Sizing a sign by eye against the advance is exactly how
+ * the SHORTCUT gantry, the brightest sign in New York, came to read "SHORTCU" in all four frames:
+ * at size 62 the word is 446 px of advance, 11 px of lean and 7 px of pen on a 512 px board whose
+ * border already eats the last twelve.
+ *
+ * Every generated sign in the kit and in the four city files goes through here, so no city can
+ * introduce a longer street name, hotel or destination and silently clip a glyph off the end.
+ */
+export function fitText(ctx, text, { x0, x1, y, size, min = 9, ...o }) {
+  const tracking = o.tracking ?? 0.08;
+  const italic = o.italic ?? 0;
+  const face = o.face ?? 'display';
+  const smallCaps = o.smallCaps ?? false;
+  const advance = (s) => measure(text, { size: s, tracking, face, smallCaps }).width;
+  // advance + lean + a 12% allowance for the pen (a heavy weight strokes `outer` on both sides)
+  const ink = (s) => advance(s) + (italic + 0.12) * s;
+  const box = Math.max(1, x1 - x0);
+  let s = size;
+  const w = ink(s);
+  if (w > box) s = Math.max(min, (s * box) / w);
+  // Centre the INK, not the advance: the shear only ever extends to the right.
+  return drawText(ctx, text, {
+    ...o, x: (x0 + x1) / 2 - (italic * s) / 2, y, size: s,
+    align: 'center', tracking, italic, face, smallCaps,
+  });
+}
+
+/**
+ * A flat sign as TWO back-to-back single-sided faces rather than one double-sided plane.
+ *
+ * A `DoubleSide` plane viewed from behind draws its texture MIRRORED — the back face samples the
+ * same UVs through a flipped winding — so every string on it reads in reverse. Round 3 shipped
+ * New York with "TS 24" hanging over the street on the El, reversed street blades on one whole
+ * kerb, and the LA gantry reading "NWOTNWOD / TIXE TXEN". The two faces are offset along their
+ * normal so whichever one you are looking at is the nearer, and the far one is occluded.
+ *
+ * @param geo   the plane geometry (shared by both faces)
+ * @param mat   the material (may stay DoubleSide; the pair makes its back face unreachable)
+ * @param gap   half-separation in metres
+ */
+export function twoSidedSign(geo, mat, gap = 0.02) {
+  const g = new THREE.Group();
+  for (const face of [0, Math.PI]) {
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.y = face;
+    m.position.z = face ? -gap : gap;
+    m.castShadow = false;
+    g.add(m);
+  }
+  return g;
+}
 
 /**
  * PROP BATCH — one collector for everything the city repeats, which then picks the cheaper of
@@ -358,6 +420,12 @@ export class LightBank {
     this.group.name = 'lightBank';
     this.proxies = [];
     this._p = new THREE.Vector3();
+    // update() runs every frame. These used to be a fresh array, a fresh Set and two fresh
+    // `filter` results per frame per city — a few hundred short-lived objects a second whose only
+    // job is to be collected. Reused buffers instead; nothing here escapes the method.
+    this._live = [];
+    this._want = [];
+    this._incoming = [];
   }
 
   /** Take every PointLight under `root` out of the lighting loop and into the bank. */
@@ -397,8 +465,10 @@ export class LightBank {
   update(camera, dt = 1 / 60, snap = false) {
     if (!this.sources.length) return;
     const cp = camera.position ?? camera;
-    const live = [];
+    const live = this._live;
+    live.length = 0;
     for (const s of this.sources) {
+      s._wanted = false;
       if (s.light.intensity <= 0) continue;
       const d = Math.sqrt((s.pos.x - cp.x) ** 2 + (s.pos.y - cp.y) ** 2 + (s.pos.z - cp.z) ** 2);
       if (d >= s.reach) continue;                       // contributes exactly zero
@@ -408,18 +478,25 @@ export class LightBank {
       live.push(s);
     }
     live.sort((a, b) => a._score - b._score);
-    const want = live.slice(0, this.budget);
-    const wanted = new Set(want);
+    // Membership rides on the source itself (`_wanted` / `_bound`) rather than on a per-frame Set.
+    const want = this._want;
+    want.length = 0;
+    for (let i = 0; i < live.length && i < this.budget; i++) {
+      live[i]._wanted = true;
+      live[i]._bound = false;
+      want.push(live[i]);
+    }
 
     // keep bindings that are still wanted; free the rest as they fade out
-    const bound = new Set();
     for (const p of this.proxies) {
-      if (p.src && wanted.has(p.src)) bound.add(p.src);
+      if (p.src && p.src._wanted) p.src._bound = true;
     }
-    const incoming = want.filter((s) => !bound.has(s));
+    const incoming = this._incoming;
+    incoming.length = 0;
+    for (const s of want) if (!s._bound) incoming.push(s);
     const step = snap ? 1 : Math.min(1, this.fadeRate * dt);
     for (const p of this.proxies) {
-      const keep = p.src && wanted.has(p.src);
+      const keep = p.src && p.src._wanted;
       if (!keep) {
         p.k += (0 - p.k) * step;
         if (p.k < 0.02 || snap) {
@@ -1625,8 +1702,18 @@ export function palmTree({ h = 11, seed = 1, lean = 0.12, cache = null }) {
   g.add(trunk);
   const top = curve.getPointAt(1);
 
+  // (coherence pass) THE UNDERSIDE OF A FROND IS NOT BLACK. A frond is a flat double-sided blade
+  // whose normals point sideways, so whenever the camera is under a crown — every LA drift and
+  // landmark frame, where a palm stands between the rig and the sky — the visible face's normal is
+  // turned away from the key and the frond renders at rgb(17,22,26): a scatter of hard black shards
+  // across a bright turquoise sky, which is the single most artificial thing in the LA set and is
+  // §2.1's "shadows never crush to pure black" broken in the most visible place in the frame.
+  // Real palm fronds are thin and translucent — the sun comes THROUGH them — so the material
+  // carries a small self-lit floor in its own leaf hue. Far below the day bloom threshold (~1.40 in
+  // exposure-normalised units), so nothing here glows; it only stops the black.
   const frondMat = mat(cache, 'frond', () => new THREE.MeshStandardMaterial({
     color: 0x357a3a, roughness: 0.72, side: THREE.DoubleSide,
+    emissive: 0x1c3a1e, emissiveIntensity: 1.0,
   }));
   const fb = new Batch(frondMat, { receive: false });
   const n = rng.int(10, 14);
@@ -2073,16 +2160,19 @@ export function shortcutGate({
     ctx.fillStyle = '#0d1a12'; ctx.fillRect(0, 0, 512, 160);
     ctx.strokeStyle = color; ctx.lineWidth = 7; ctx.strokeRect(9, 9, 494, 142);
     ctx.fillStyle = color;
-    for (let i = 0; i < 3; i++) {                        // chevron cluster on the left
-      const x = 34 + i * 44;
+    // Chevron cluster on the left, narrowed from round 3's so the word gets two thirds of the
+    // board instead of overlapping the first chevron on the left AND the border on the right.
+    for (let i = 0; i < 3; i++) {
+      const x = 26 + i * 34;
       ctx.beginPath();
-      ctx.moveTo(x, 30); ctx.lineTo(x + 40, 80); ctx.lineTo(x, 130);
-      ctx.lineTo(x + 16, 130); ctx.lineTo(x + 56, 80); ctx.lineTo(x + 16, 30);
+      ctx.moveTo(x, 34); ctx.lineTo(x + 31, 80); ctx.lineTo(x, 126);
+      ctx.lineTo(x + 13, 126); ctx.lineTo(x + 44, 80); ctx.lineTo(x + 13, 34);
       ctx.closePath(); ctx.fill();
     }
-    drawText(ctx, label, {
-      x: 320, y: 106, size: 62, weight: 0.19, italic: 0.18, align: 'center',
-      color: '#f6fbf4', tracking: 0.10, glow: { color, blur: 20 },
+    // 'SHORTCUT' at 62 overruns the board by 55 px — see fitText's doc. 'JUMP' still gets 62.
+    fitText(ctx, label, {
+      x0: 150, x1: 490, y: 106, size: 62, weight: 0.19, italic: 0.18,
+      color: '#f6fbf4', tracking: 0.10, glow: { color, blur: 16 },
     });
     grain(ctx, 512, 160, 5, rng);
     const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
@@ -2182,8 +2272,9 @@ export function billboard({
   for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.moveTo(-60 + i * 150, 256); ctx.lineTo(30 + i * 150, 0); ctx.lineTo(70 + i * 150, 0); ctx.lineTo(-20 + i * 150, 256); ctx.closePath(); ctx.fill(); }
   ctx.restore();
   ctx.strokeStyle = color; ctx.lineWidth = 6; ctx.strokeRect(10, 10, 492, 236);
-  drawText(ctx, text, { x: 256, y: 140, size: 74, weight: 0.20, italic: 0.24, align: 'center', color, glow: { color, blur: 26 }, tracking: 0.10 });
-  if (sub) drawText(ctx, sub, { x: 256, y: 196, size: 30, weight: 0.17, italic: 0.20, align: 'center', color: '#e8eef6', tracking: 0.16 });
+  // 'HOLLYWOOD' at 74 is 638 px of ink on a 512 px poster — it lost three letters off both ends.
+  fitText(ctx, text, { x0: 24, x1: 488, y: 140, size: 74, weight: 0.20, italic: 0.24, color, glow: { color, blur: 26 }, tracking: 0.10 });
+  if (sub) fitText(ctx, sub, { x0: 24, x1: 488, y: 196, size: 30, weight: 0.17, italic: 0.20, color: '#e8eef6', tracking: 0.16 });
   const tex = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
   // FrontSide + a mirrored twin: a DoubleSide poster reads backwards from behind.
   const panelMat = new THREE.MeshStandardMaterial({
@@ -2510,7 +2601,7 @@ export function streetSign({ cache = null, seed = 1, text = 'MAIN ST', cross = '
       }
       ctx.closePath(); ctx.fill();
       ctx.strokeStyle = '#f2efe6'; ctx.lineWidth = 5; ctx.stroke();
-      drawText(ctx, 'STOP', { x: 64, y: 78, size: 34, weight: 0.22, align: 'center', color: '#f6f2e8', tracking: 0.06 });
+      fitText(ctx, 'STOP', { x0: 14, x1: 114, y: 78, size: 34, weight: 0.22, color: '#f6f2e8', tracking: 0.06 });
       grain(ctx, 128, 128, 5, new RNG(2));
       return new THREE.MeshStandardMaterial({
         map: toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping }),
@@ -2526,7 +2617,8 @@ export function streetSign({ cache = null, seed = 1, text = 'MAIN ST', cross = '
       const { c, ctx } = canvas(256, 64);
       ctx.fillStyle = '#1c5c34'; ctx.fillRect(0, 0, 256, 64);
       ctx.strokeStyle = '#e8f0e4'; ctx.lineWidth = 3; ctx.strokeRect(5, 5, 246, 54);
-      drawText(ctx, text, { x: 128, y: 44, size: 30, weight: 0.16, align: 'center', color: '#f0f6ee', tracking: 0.08 });
+      // 'COLLINS AVE' / 'LAS VEGAS BLVD' overran a 256 px blade at a fixed 30.
+      fitText(ctx, text, { x0: 12, x1: 244, y: 44, size: 30, weight: 0.16, color: '#f0f6ee', tracking: 0.08 });
       grain(ctx, 256, 64, 5, new RNG(6));
       return new THREE.MeshStandardMaterial({ map: toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping }), roughness: 0.7, side: THREE.FrontSide });
     });
@@ -2538,7 +2630,7 @@ export function streetSign({ cache = null, seed = 1, text = 'MAIN ST', cross = '
       const { c, ctx } = canvas(256, 64);
       ctx.fillStyle = '#1c5c34'; ctx.fillRect(0, 0, 256, 64);
       ctx.strokeStyle = '#e8f0e4'; ctx.lineWidth = 3; ctx.strokeRect(5, 5, 246, 54);
-      drawText(ctx, cross, { x: 128, y: 44, size: 28, weight: 0.16, align: 'center', color: '#f0f6ee', tracking: 0.08 });
+      fitText(ctx, cross, { x0: 12, x1: 244, y: 44, size: 28, weight: 0.16, color: '#f0f6ee', tracking: 0.08 });
       grain(ctx, 256, 64, 5, new RNG(7));
       return new THREE.MeshStandardMaterial({ map: toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping }), roughness: 0.7, side: THREE.FrontSide });
     });
@@ -2792,9 +2884,20 @@ export function hillsideSign({
   const n = word.length;
   const cell = 128;
   const { c, ctx } = canvas(cell * n, 176);
+  // Each letter is split onto its own quad by UV, so a glyph wider than its cell does not get
+  // clipped — it bleeds onto the NEIGHBOURING board. At 130 the W and the M did exactly that.
+  // The size is solved once for the widest glyph in the word and then used for all of them: a
+  // hillside sign is nine boards of equal HEIGHT and varying width, so per-letter fitting (which
+  // would shrink the W to 72% of the H) is the one thing that would look wrong here.
+  const usable = cell - 8;
+  let size = 130;
+  for (const ch of word) {
+    const w = measure(ch, { size: 130, tracking: 0.08 }).width + 0.12 * 130;
+    if (w > usable) size = Math.min(size, (130 * usable) / w);
+  }
   for (let i = 0; i < n; i++) {
     drawText(ctx, word[i], {
-      x: cell * (i + 0.5), y: 146, size: 130, weight: 0.26, align: 'center', color: '#f4f0e6',
+      x: cell * (i + 0.5), y: 146, size, weight: 0.26, align: 'center', color: '#f4f0e6',
     });
   }
   // panel wear: the boards are sheet metal, sun-bleached and streaked
@@ -3185,10 +3288,10 @@ export function marqueeArch({
   ctx.fillStyle = grd; ctx.fillRect(0, 0, 1024, 512);
   ctx.strokeStyle = color; ctx.lineWidth = 12; ctx.strokeRect(18, 18, 988, 476);
   ctx.strokeStyle = accent; ctx.lineWidth = 5; ctx.strokeRect(38, 38, 948, 436);
-  drawText(ctx, 'WELCOME TO', { x: 512, y: 130, size: 56, weight: 0.19, italic: 0.14, align: 'center', color: '#f4ecff', tracking: 0.22 });
-  drawText(ctx, text, { x: 512, y: 250, size: 92, weight: 0.22, italic: 0.20, align: 'center', color, tracking: 0.08, glow: { color, blur: 26 } });
-  drawText(ctx, sub, { x: 512, y: 386, size: 108, weight: 0.24, italic: 0.22, align: 'center', color: accent, tracking: 0.06, glow: { color: accent, blur: 34 } });
-  drawText(ctx, 'NEVADA', { x: 512, y: 452, size: 34, weight: 0.17, italic: 0.14, align: 'center', color: '#f4ecff', tracking: 0.30 });
+  fitText(ctx, 'WELCOME TO', { x0: 56, x1: 968, y: 130, size: 56, weight: 0.19, italic: 0.14, color: '#f4ecff', tracking: 0.22 });
+  fitText(ctx, text, { x0: 56, x1: 968, y: 250, size: 92, weight: 0.22, italic: 0.20, color, tracking: 0.08, glow: { color, blur: 26 } });
+  fitText(ctx, sub, { x0: 56, x1: 968, y: 386, size: 108, weight: 0.24, italic: 0.22, color: accent, tracking: 0.06, glow: { color: accent, blur: 34 } });
+  fitText(ctx, 'NEVADA', { x0: 56, x1: 968, y: 452, size: 34, weight: 0.17, italic: 0.14, color: '#f4ecff', tracking: 0.30 });
   const tex = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
   const boardW = span * 0.74, boardH = boardW * 0.5;
   const board = new THREE.Mesh(
@@ -3693,8 +3796,9 @@ export function overpass({
   const { c, ctx } = canvas(512, 256);
   ctx.fillStyle = '#12572f'; ctx.fillRect(0, 0, 512, 256);
   ctx.strokeStyle = '#eef4ea'; ctx.lineWidth = 6; ctx.strokeRect(14, 14, 484, 228);
-  drawText(ctx, sign, { x: 256, y: 118, size: 62, weight: 0.17, align: 'center', color: '#f2f8f0', tracking: 0.06 });
-  drawText(ctx, 'NEXT EXIT', { x: 256, y: 196, size: 38, weight: 0.16, align: 'center', color: '#dfe8dc', tracking: 0.14 });
+  // 'DOWNTOWN' / 'HOLLYWOOD' both touched the white border at a fixed 62.
+  fitText(ctx, sign, { x0: 30, x1: 482, y: 118, size: 62, weight: 0.17, color: '#f2f8f0', tracking: 0.06 });
+  fitText(ctx, 'NEXT EXIT', { x0: 30, x1: 482, y: 196, size: 38, weight: 0.16, color: '#dfe8dc', tracking: 0.14 });
   grain(ctx, 512, 256, 6, new RNG(12));
   const st = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
   // Back-to-back single-sided faces: a DoubleSide board reads mirrored from behind, which is
@@ -4012,10 +4116,17 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     // At night nothing in the rig reaches the ground plane past the kerbs, and round 2 measured
     // exactly that: "NYC's ground outside the roadway is a pure black void with storefronts
     // floating on it". A city at night sits in its own sodium glow, so the plane carries a dim
-    // self-lit copy of itself, tinted with the city's fog colour.
+    // self-lit copy of itself.
+    //
+    // The tint defaults to the FOG colour, and for Vegas that default is the whole bug: Vegas fogs
+    // in #150726, a colour with 0.4% relative luminance, so `groundGlow` could be turned up to 14
+    // and the plane still measured rgb(21,8,54) with eleven code values of texture in it — a void,
+    // not a surface (§2.1). Turning the knob harder was never going to work; the knob was the
+    // wrong colour. `groundGlowColor` lets a city name the light its ground is actually sitting
+    // in — sodium, casino spill, moon — independently of what it fogs to.
     if (night) {
       groundMat.emissiveMap = gt.map;
-      groundMat.emissive = new THREE.Color(L.fog.color);
+      groundMat.emissive = new THREE.Color(L.groundGlowColor || L.fog.color);
       groundMat.emissiveIntensity = L.groundGlow ?? 0.85;
     }
   }
@@ -4555,6 +4666,9 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   // lit exactly like a running frame.
   lightBank.update(spawnS.pos.clone().setY(spawnS.pos.y + 2), 1, true);
   let lastT = null;
+  // Hoisted: update() runs every frame for the life of the city, and `new THREE.Vector3(...)`
+  // inside it was one throwaway object per frame per city forever. Normalised once here.
+  const sunDir = new THREE.Vector3(...L.sun.dir).normalize();
   // Where the `landmark` capture should start from: far enough back on the approach to the hero
   // landmark that it is dead ahead for the whole shot (§8's "a framing that includes the city's
   // primary landmark"). main.js reads this for `scenario('landmark')`.
@@ -4570,7 +4684,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     update(t, camera) {
       sky.position.set(camera.position.x, 0, camera.position.z);
       sun.target.position.set(camera.position.x, 0, camera.position.z);
-      sun.position.copy(sun.target.position).addScaledVector(new THREE.Vector3(...L.sun.dir).normalize(), 300);
+      sun.position.copy(sun.target.position).addScaledVector(sunDir, 300);
       // landmark animation (marquee bulb chase, beam pulse). These drive MATERIALS, not meshes,
       // so they keep working after mergeStatic() has collapsed the scene graph.
       for (let i = 0; i < lmAnims.length; i++) lmAnims[i](t);

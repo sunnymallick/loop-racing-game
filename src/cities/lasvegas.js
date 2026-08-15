@@ -2852,12 +2852,22 @@ export const def = {
     // omnidirectional floor that keeps those faces at a dim violet instead of at black.
     shadowTint: '#381c58',
     shadowFill: 0.86,
-    // The off-road ground plane self-lights in the fog colour. At 7.0 it was the brightest
-    // *large* surface in most frames — a lilac field either side of the road that pulled the
-    // whole picture up off black and left nothing for the neon to be bright AGAINST. The brief
-    // is three hues on NEAR-BLACK; this is what buys the near-black back without reopening the
-    // "storefronts floating on a void" hole that pushed it to 7.0 in the first place.
-    groundGlow: 4.40,
+    // THE OFF-ROAD GROUND.
+    //
+    // This used to self-light in the fog colour (#150726) and the round-3 critic called the result
+    // exactly right: "the road ribbon ends at a hard edge and the car, its smoke and its skid
+    // trail hang over pure black with no surface at all". Measured, the shoulder was rgb(21,8,43)
+    // with an eleven-code-value spread — a void.
+    //
+    // The trap here is that the knob everyone reached for does not work. #150726 carries 0.4%
+    // relative luminance, so multiplying it by 4.4, by 7 (round 2's setting, rejected as "a lilac
+    // field") or even by 14 moves the plane by four code values in red and green and simply turns
+    // it blue. The fix is the COLOUR, not the gain: the Strip's ground sits in casino spill, which
+    // is a real violet with luminance in it, and at 2.2 that reads as tarmac — texture, parking
+    // slabs, the car's shadow — while staying darker than the carriageway, which is what keeps
+    // the neon bright against a near-black frame.
+    groundGlowColor: '#3b2458',
+    groundGlow: 3.80,
     sky: {
       // Black desert sky. The horizon carries a low bruise of city-glow and nothing else — the
       // glow disc in skyCanvas() is 42% of the dome's height, so a bright `sunColor` here washes

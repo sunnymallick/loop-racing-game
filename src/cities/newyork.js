@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   buildCity, dumpster, scaffold, trashCan, lightPool, mergeGroup, PropBatch,
+  fitText as fitSign, twoSidedSign,
 } from './kit.js';
 import { roundedBox } from '../vehicles/kit.js';
 import {
@@ -398,6 +399,15 @@ const box = (w, h, d, r = 0) => (r > 0 ? roundedBox(w, h, d, r, 1) : new THREE.B
 
 /** `new THREE.Mesh` that understands palette references. */
 const mesh = (geo, material) => new THREE.Mesh(geo, resolve(material, geo));
+
+/**
+ * `twoSidedSign` that also speaks this file's material references.
+ *
+ * The kit helper takes a real material; half the lettered things in this city are atlas CELLS,
+ * which have to be resolved first (and resolving remaps the geometry's UVs — which is exactly why
+ * both faces have to share one geometry, as they do).
+ */
+const twoSided = (geo, material, gap) => twoSidedSign(geo, resolve(material, geo), gap);
 
 /** add(group, geo, material, x,y,z, ry) — `material` may be a palette reference. */
 function put(group, geo, material, x = 0, y = 0, z = 0, ry = 0, opts = {}) {
@@ -2247,9 +2257,8 @@ function shopSignMat(M, { text, color, night }) {
   return atlas.cell(`${text}|${color}`, (ctx) => {
     ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, 256, 64);
     ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.strokeRect(4, 4, 248, 56);
-    const size = Math.min(38, 300 / Math.max(4, text.length));
-    drawText(ctx, text, {
-      x: 128, y: 46, size, align: 'center', color, tracking: 0.12,
+    fitSign(ctx, text, {
+      x0: 12, x1: 244, y: 46, size: 38, color, tracking: 0.12,
       glow: { color, blur: 12 },
     });
   });
@@ -2502,8 +2511,9 @@ function streetBlade(M, { text = 'W 42 ST', cross = '8 AVE', night = true, seed 
   const blade = (t) => atlas.cell(t, (ctx) => {
     ctx.fillStyle = '#0f5c3a'; ctx.fillRect(0, 0, 256, 64);
     ctx.strokeStyle = '#f2f4f0'; ctx.lineWidth = 3.5; ctx.strokeRect(5, 5, 246, 54);
-    const size = Math.min(34, 340 / Math.max(5, t.length));
-    drawText(ctx, t, { x: 128, y: 44, size, align: 'center', color: '#f4f6f2', tracking: 0.10, face: 'geo' });
+    // `340 / length` was a guess and it was wrong for the long ones: BROADWAY, LEXINGTON and
+    // HOUSTON ST all ran under the white border. fitText measures the real ink.
+    fitSign(ctx, t, { x0: 13, x1: 243, y: 44, size: 34, color: '#f4f6f2', tracking: 0.10, face: 'geo' });
     grain(ctx, 256, 64, 4, new RNG(t.length + 3));
   });
   const oneWay = atlas.cell('\u0000oneway', (ctx) => {
@@ -2511,17 +2521,20 @@ function streetBlade(M, { text = 'W 42 ST', cross = '8 AVE', night = true, seed 
     ctx.fillStyle = '#eef1ee';
     ctx.beginPath(); ctx.moveTo(232, 32); ctx.lineTo(196, 12); ctx.lineTo(196, 52); ctx.closePath(); ctx.fill();
     ctx.fillRect(30, 26, 168, 12);
-    drawText(ctx, 'ONE WAY', { x: 96, y: 24, size: 17, align: 'center', color: '#0e1116', tracking: 0.1, face: 'geo' });
+    fitSign(ctx, 'ONE WAY', { x0: 34, x1: 194, y: 24, size: 17, color: '#0e1116', tracking: 0.1, face: 'geo' });
   });
   put(g, new THREE.CylinderGeometry(0.075, 0.09, 4.2, 8), post, 0, 2.1, 0, 0, { cast: false });
-  const a = mesh(new THREE.PlaneGeometry(2.15, 0.54), blade(text));
-  a.position.set(0.95, 3.9, 0); a.castShadow = false;
+  // Fifty-two corner signs, half of them on the kerb the car passes on its LEFT — i.e. read from
+  // the back. A single DoubleSide plane made every one of those mirrored, which is what put
+  // reversed street names down one whole side of the round-3 chase frame.
+  const a = twoSided(new THREE.PlaneGeometry(2.15, 0.54), blade(text));
+  a.position.set(0.95, 3.9, 0);
   g.add(a);
-  const b = mesh(new THREE.PlaneGeometry(1.75, 0.54), blade(cross));
-  b.position.set(0, 3.35, 0.78); b.rotation.y = Math.PI / 2; b.castShadow = false;
+  const b = twoSided(new THREE.PlaneGeometry(1.75, 0.54), blade(cross));
+  b.position.set(0, 3.35, 0.78); b.rotation.y = Math.PI / 2;
   g.add(b);
-  const o = mesh(new THREE.PlaneGeometry(1.5, 0.38), oneWay);
-  o.position.set(0.62, 2.62, 0); o.castShadow = false;
+  const o = twoSided(new THREE.PlaneGeometry(1.5, 0.38), oneWay);
+  o.position.set(0.62, 2.62, 0);
   g.add(o);
   void seed;
   return g;
@@ -2667,7 +2680,7 @@ function elStation(track, M, { u, night, deck = 10.2, len = 62 }) {
     const { c, ctx } = canvas(256, 64);
     ctx.fillStyle = '#0b1f14'; ctx.fillRect(0, 0, 256, 64);
     ctx.fillStyle = '#12603c'; ctx.fillRect(4, 4, 248, 56);
-    drawText(ctx, '42 ST', { x: 128, y: 46, size: 34, align: 'center', color: '#f2f6f0', tracking: 0.14, face: 'geo' });
+    fitSign(ctx, '42 ST', { x0: 12, x1: 244, y: 46, size: 34, color: '#f2f6f0', tracking: 0.14, face: 'geo' });
     const t = toTexture(c, { srgb: true });
     return new THREE.MeshStandardMaterial({
       map: t, emissiveMap: t, emissive: new THREE.Color(0xffffff),
@@ -2701,10 +2714,12 @@ function elStation(track, M, { u, night, deck = 10.2, len = 62 }) {
     for (let i = -3; i <= 3; i++) {
       put(g, new THREE.SphereGeometry(0.28, 8, 6), lamp, px, cy - 0.55, i * (len / 7), 0, { cast: false });
       if (i % 2 === 0) {
-        const nb = mesh(new THREE.PlaneGeometry(2.4, 0.62), nameMat);
+        // Back-to-back faces, and yawed by the platform's own side so the front face looks IN
+        // over the track bed. At a fixed +PI/2 the far platform's blades faced away from the
+        // street and read mirrored (see twoSidedSign).
+        const nb = twoSided(new THREE.PlaneGeometry(2.4, 0.62), nameMat);
         nb.position.set(px - sx * 1.6, cy - 1.1, i * (len / 7));
-        nb.rotation.y = Math.PI / 2;
-        nb.castShadow = false;
+        nb.rotation.y = -sx * Math.PI / 2;
         g.add(nb);
       }
     }
@@ -2740,10 +2755,9 @@ function elStation(track, M, { u, night, deck = 10.2, len = 62 }) {
     }
     put(g, box(4.4, 3.4, 4.0), wall, px + sx * 12.6, 1.7, zStair, 0, opt);
     put(g, box(5.2, 0.4, 4.8), rust, px + sx * 12.6, 3.6, zStair, 0, opt);
-    const eb = mesh(new THREE.PlaneGeometry(3.2, 0.86), nameMat);
+    const eb = twoSided(new THREE.PlaneGeometry(3.2, 0.86), nameMat);
     eb.position.set(px + sx * (12.6 - 2.3), 2.8, zStair - 0.1);
     eb.rotation.y = -sx * Math.PI / 2;
-    eb.castShadow = false;
     g.add(eb);
     put(g, new THREE.SphereGeometry(0.34, 8, 6), lamp, px + sx * 10.4, 3.3, zStair, 0, { cast: false });
     // and the green globe on its post at the foot of the stair
@@ -2759,10 +2773,14 @@ function elStation(track, M, { u, night, deck = 10.2, len = 62 }) {
   // THE BLADE. Slung under the rail deck, straight across the street, facing the traffic: a lit
   // green-and-white station name is the one piece of a New York El that a driver actually sees,
   // and it is dead centre of the chase frame.
+  //
+  // These are the signs the round-3 critic caught reading "TS 24" in both crash frames. The group
+  // is yawed to the track tangent, so a plane left at rotation 0 faces the way the car is GOING —
+  // the camera behind it only ever sees the back of a DoubleSide plane, i.e. the texture mirrored.
+  // Two back-to-back single-sided faces read correctly from both approaches.
   for (const z of [-len * 0.30, len * 0.06, len * 0.40]) {
-    const blade = mesh(new THREE.PlaneGeometry(11.5, 2.6), nameMat);
+    const blade = twoSided(new THREE.PlaneGeometry(11.5, 2.6), nameMat, 0.03);
     blade.position.set(0, deck - 1.9, z);
-    blade.castShadow = false;
     g.add(blade);
     put(g, box(12.2, 0.3, 0.4), rust, 0, deck - 0.5, z, 0, opt);
     for (const hx of [-5.0, 5.0]) put(g, box(0.14, 1.5, 0.14), rust, hx, deck - 1.2, z, 0, opt);
@@ -2789,7 +2807,33 @@ export const def = {
   look: {
     accent: '#ffc21e',
     lampColor: '#ffcb8c',
-    wet: 0.60,
+    // A WET street. §2.2 makes a reflective road mandatory at night and round 3 measured this one
+    // as "dry matte asphalt that reflects nothing" — the lowest-scoring thing in the city. At 0.60
+    // the road's roughness map only came down to ~0.5 and the kerbside streaks were laid at 60%
+    // strength, which in a canyon whose shopfronts are dim and warm (not neon) amounts to nothing.
+    //
+    // `wet` is not just a post-process knob: it is read at BUILD time by the road surface texture
+    // (puddles pool in the ruts, roughness 0.42 → 0.13), by `envMapIntensity` on the carriageway,
+    // and by the density and strength of the kerbside reflection ribbons. Raising it is what puts
+    // the deli windows, the El's lamps and the SHORTCUT gantry into the tarmac.
+    wet: 0.88,
+    wetLook: {
+      // Tuned for a blue hour rather than for neon: the things worth reflecting here are warm and
+      // only just above the road's own brightness, so the threshold comes down and the gain goes
+      // up, and `patch` stays high so there is dry asphalt between the wet runs (a uniformly wet
+      // road is a lake). `spread` is tight — long soft smears read as haze, not as water.
+      // (coherence pass) LEFT ALONE, deliberately, and here is the measurement so the next person
+      // does not re-open it. strength × gain across the four cities reads LA 0.09, Vegas 0.35,
+      // Miami 0.47, NYC 1.95, so on paper this city is five times wetter than the one that owns the
+      // wet-neon look and it was the obvious next thing to trim. It is not: NYC does not read as a
+      // second Vegas the way Miami did — it reads as a rainy blue hour, which is its own place —
+      // and the flat warm wash on the near carriageway that prompted the look is NOT this term.
+      // Ablated directly (tools/_coh_nycroad.mjs): with uWet forced to 0 AND the spill pass off,
+      // that patch still measures rgb(150,123,99) over a 99–152 range. It is the sodium lamp pools
+      // on the tarmac itself, and if it wants more aggregate in it that is a road-surface job.
+      strength: 0.66, gain: 2.95, threshold: 0.54, knee: 0.52, spread: 0.030,
+      patch: 0.80, patchScale: 0.070, fresnel: 2.5,
+    },
     // Blue hour, not midnight: a luminous cobalt sky with a pale band at the horizon is what gives
     // the canyon and the spire a silhouette to read against. Vegas owns black-sky neon.
     sky: {

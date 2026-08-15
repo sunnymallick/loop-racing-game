@@ -48,6 +48,19 @@ import { clamp, lerp, smoothstep } from '../core/rng.js';
  *
  * Plus one recovery rule: while scraping a barrier the model refuses to drive into it and steers
  * itself along the wall, so a bad line costs speed instead of ending the race pinned to a barrier.
+ *
+ * ── THE ONE INVARIANT THIS FILE IS REQUIRED TO HOLD ────────────────────────────────────────────
+ * With the driver's hands straight, no handbrake and no lock, the slip angle has exactly ONE
+ * equilibrium and it is zero — from any angle, any speed, any surface, any pedal.
+ *
+ * That property has been broken and re-fixed four times, on a different car each round (slip-angle
+ * servo → two-sided assist damper → signed ESC lead → ungated drift machinery), because a single
+ * scripted capture per car only catches whichever class happens to have fallen into the well this
+ * time. `node tools/drifttest.mjs` sweeps the property instead: 4 classes × 8 release angles × 3
+ * speeds × 6 pedal positions × 2 surfaces × both signs, plus real handbrake flicks, in under a
+ * second. IF YOU TOUCH THE REAR AXLE'S GRIP, THE COUNTER-STEER ASSIST OR THE YAW HOLD, RUN IT.
+ * It also asserts the other half of the contract — all four classes still reach and hold a real
+ * drift angle — because a car that recovers instantly because it can no longer slide is worse.
  */
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -86,6 +99,7 @@ export class VehicleBody {
     this.slide = 0;              // 0..1 any sliding tyre (drift OR wheelspin) — for smoke/squeal
     this.driftDir = 1;           // +1 = sliding through a right-hander, -1 = mirror
     this.commit = 0;             // 0..1 filtered driver commitment (throttle/lock/handbrake)
+    this.driftAsk = 0;           // 0..1 the same, HANDS ONLY — the licence to sustain a slide
     this.grounded = true;
     this.airborne = 0;
     this.vy = 0;                 // vertical velocity for ramps/jumps
@@ -131,7 +145,7 @@ export class VehicleBody {
   reset(pos, yaw) {
     this.pos.copy(pos); this.yaw = yaw;
     this.vel.set(0, 0, 0); this.yawRate = 0; this.speed = 0; this.groundSpeed = 0;
-    this.drift = 0; this.slide = 0; this.commit = 0;
+    this.drift = 0; this.slide = 0; this.commit = 0; this.driftAsk = 0;
     this.slip = 0; this.slipAllow = 0; this.slipTarget = 0;
     this.vy = 0; this.y = pos.y;
     this.boost = 0; this.steerAngle = 0; this.steerVisual = 0; this.assist = 0;
@@ -346,6 +360,15 @@ export class VehicleBody {
     this.slipAllow = allow;
     this.slipTarget = -dir * allow;
 
+    // ---------------------------------------------------------------- chassis geometry
+    // Up here, not down in the tyre loop, because the stability control below is a statement about
+    // WHERE THE CoG SITS BETWEEN THE AXLES: the grip it has to hand back is a·μf / b·μr, and that
+    // ratio is the difference between a car that winds itself straight and one that does not.
+    const L = this.opts.wheelbase ?? 2.8;
+    const a = L * (1 - p.weightFront);          // CoG → front axle
+    const b = L * p.weightFront;                // CoG → rear axle
+    const inertia = Math.max(0.5, p.yawInertia);
+
     // ---------------------------------------------------------------- axle friction budgets
     // Longitudinal load transfer: braking loads the front and unloads the rear (turn-in bite and
     // trailing-throttle oversteer), power does the reverse (traction, and understeer on exit).
@@ -365,6 +388,57 @@ export class VehicleBody {
     // and the angle it holds is still whatever the moment balance decides.
     const biteF = 1 + p.driftBite * this.rearBeyond;
 
+    // ================================ DRIFT AUTHORITY ==========================================
+    // THE LICENCE TO PUT SLIP IN. This is the round-4 fix, and it is a fix to the SHAPE of the
+    // model rather than to a number, because rounds 1–3 were all the same bug wearing a different
+    // term and the third one came back on a fourth class.
+    //
+    //   round 1  a slip-angle servo drove β to a table value
+    //   round 2  the counter-steer damper was two-sided, so it wound lock back INTO a closing slide
+    //   round 3  the ESC lead was signed, so a collapsing angle withdrew the grip that was closing it
+    //   round 4  ...the muscle car, then the supercar, then the tuner. Same signature every time:
+    //            capture ends nearly straight, 1.5 s of straight input and it is back at ~19°.
+    //
+    // Each fix removed one term that pushed the angle open with nobody asking. The latch kept
+    // coming back because the *structure* guarantees one. `esc` is the only term that can shrink a
+    // big angle, and it is silent below `allow` — while `kinetic` below and `driftHold` in the tyre
+    // loop ran unconditionally. A dead band on the only restoring term, wrapped around dynamics
+    // that diverge inside that band, does not have a fixed point at β = 0. It has one just above
+    // `allow`, wherever the first few percent of the ESC ramp happen to cancel that class's own
+    // divergence. WHICH class falls into it is a coincidence of its numbers — which is exactly why
+    // fixing it on the muscle car moved it to the supercar and fixing it there moved it here.
+    //
+    // So the drift machinery is now spent from driver COMMITMENT, the same currency `allow` is
+    // bought with: what the driver has not asked for, the car does not do. Hands straight, no
+    // handbrake, no lock, and what is left underneath is a plain bicycle model with its rear tyres
+    // intact, plus the floor further down that guarantees even a mid-engined car is restoring at
+    // every angle. The ESC stops being the only thing between the car and a permanent slide and
+    // goes back to being a backstop. Pull the handbrake or put lock on and every bit of it is back
+    // at full strength — which is why the captures still reach the same angles they did.
+    //
+    // The currency is the HANDS, not the throttle. `commit` — which buys `allow` — counts part
+    // throttle as part commitment, and that is right for how much angle the ESC should tolerate
+    // from a driver who is still on the power. It is wrong as a licence to SUSTAIN an angle:
+    // throttle with the wheel dead straight is the exact definition of "the driver asked for
+    // nothing", and it is 0.30 of commitment for free. Letting that license the slide loop left
+    // the tuner holding 18° of slip on dirt at full throttle with its hands straight — the same
+    // latch, bought with the one input the recovery check keeps held down. A slide is asked for
+    // with the handbrake or with lock; the throttle only decides how much of one you get.
+    //
+    // Note what is NOT gated: the friction circle. Power oversteer still steps the tail out under
+    // throttle alone exactly as before (§6.2 scores it, and `powerOversteer` is a per-class number
+    // for it) — what has changed is that with the wheel straight it no longer feeds itself for ever.
+    // The handbrake also counts IMMEDIATELY rather than through the 0.14 s filter: pulling it is
+    // not an ambiguous request, and the flick has to break the axle away on the very first frame.
+    const askRaw = clamp(hb * 0.95 + into * 0.85 + counter * 1.0 * lockLeft, 0, 1);
+    this.driftAsk = lerp(this.driftAsk, askRaw, 1 - Math.exp(-7 * dt));
+    // The ramp is deliberately low and narrow. It has to be at FULL authority for a driver holding
+    // a third of a turn of opposite lock — that is a drifter balancing the car, and at 0.18–0.55 a
+    // steady 0.45 of lock only bought 0.82, which quietly trimmed the tuner's held angle from
+    // 13–27° to 2–12° in tools/_handling_sim.mjs. It only has to be ZERO for hands that are
+    // actually straight, and that is exactly where `askRaw` is zero anyway.
+    const auth = Math.max(smoothstep(0.10, 0.40, this.driftAsk), hb);
+
     // The rear's friction circle. Everything that makes a car oversteer lives in this one number,
     // which is why `rearGrip` is in the telemetry: it is the drift, quantified.
     const circle = Math.sqrt(Math.max(0.02, 1 - Math.pow(clamp(rearLoad * p.powerOversteer, 0, 0.99), 2)));
@@ -375,7 +449,16 @@ export class VehicleBody {
     // and the round-3 tuner/supercar captures tank-slapped off the road. `rearBeyond` is 0 right
     // up to the peak (normal cornering is untouched) and ramps over the next 2×αpeak, so this is
     // a continuous curve keyed off the tyre's own state, never a state flag.
-    const kinetic = 1 - p.driftFade * this.rearBeyond * (0.35 + 0.65 * throttle);
+    //
+    // ...and it is DRIFT MACHINERY, so it is bought with `auth` above. Kinetic fade is a positive
+    // feedback loop by construction — more angle spends more of the rear's grip, less grip opens
+    // more angle — and it is the loop that makes a slide self-sustaining, which is the whole point
+    // of it while the driver is committed. With the driver's hands straight it is the loop that
+    // makes a slide PERMANENT, and no amount of tuning downstream of it can fix that; a positive
+    // feedback loop with a dead-banded controller around it always parks somewhere. The floor is
+    // deliberately not zero: a lifted, straightened car still loses a little grip to a hot sliding
+    // tyre, so the recovery decays rather than snapping.
+    const kinetic = 1 - p.driftFade * this.rearBeyond * (0.35 + 0.65 * throttle) * lerp(0.22, 1, auth);
     // `driftGrip` floors what the ENGINE can take away — that floor is what makes a power slide a
     // slide and not a spin. The handbrake is allowed under it: pulling it must genuinely break the
     // rear away, or a flick does nothing.
@@ -415,7 +498,87 @@ export class VehicleBody {
     // ESC allows is already a spin, and §6.2 caps the whole piece at 45 if it can spin at all.
     const guard = smoothstep(p.slipMax + 8, p.slipMax + 22, slipDeg0);
     const rec = clamp(this.recover, 0, 1);
-    rearCut = clamp(rearCut + esc * p.escGrip + guard * 0.9 + rec * 0.5, 0.05, 1.6);
+
+    // HOW MUCH GRIP IS "ENOUGH" IS DERIVED, NOT TUNED. Once both axles are past their peak each one
+    // delivers its whole budget, so the yaw moment collapses to b·μr − a·μf·cos δ and the sign of
+    // that expression is the entire question: above `stabCut` the car winds itself straight, below
+    // it the tail keeps going no matter what else the model does.
+    //
+    // `escGrip` used to be a flat ADDITIVE number — hand back 0.8, or 1.0, of extra grip — with no
+    // relationship to how much grip this car was actually short of. So "is the ESC strong enough"
+    // was a per-class coincidence, and that is the other half of why this bug migrates: the
+    // supercar is mid-engined (a·gripFront 2.05 > b·gripRear 1.84), i.e. it is divergent even with
+    // its rear tyres completely intact, and it needs half again as much grip back as the tuner,
+    // which is naturally stable. Computing the number from this car's geometry and this frame's
+    // load transfer means every class — and any class added later — gets exactly as much as its own
+    // numbers say it needs. `escGrip` keeps its per-class flavour as the size of the margin past
+    // neutral, but it can no longer be *insufficient*, because the floor under it is the car's own
+    // stability condition rather than a constant somebody typed.
+    const stabCut = (a * muF * Math.cos(this.steerAngle)) / Math.max(1e-3, b * muR);
+    const escFull = clamp(stabCut * (1.18 + 0.18 * p.escGrip), 0.05, 1.9);
+
+    // ── THE INVARIANT, STATED ONCE, IN THE ONE NUMBER THAT GOVERNS IT ──────────────────────────
+    // A driver who has not asked for a slide is never given a rear axle below the line that makes
+    // the car divergent. That is the whole fix in a sentence, and it is what stops this bug from
+    // having a fifth round: `stabFloor` is not a tuned constant, it is THIS car's own stability
+    // condition, so it holds for the four classes in the table and for any class added later
+    // without anybody having to notice.
+    //
+    // Everything above it stays exactly as it was. The friction circle still lets the engine eat
+    // the rear's grip, the kinetic fade still makes a sliding tyre grip less than a gripping one,
+    // the handbrake still collapses the axle outright — those are what make a slide a slide, and
+    // with the licence bought (`auth` = handbrake, or lock, or steering into it) the floor is not
+    // there at all and the numbers below run untouched. It only exists in the state the recovery
+    // check describes: hands straight, nothing asked for, and an angle the car has to give back.
+    //
+    // The margin is what sets the recovery RATE, not merely its sign: at 1.06 the restoring moment
+    // at a big angle is the difference of two numbers within 6% of each other, which is a car that
+    // technically converges and visibly does not. 1.25 is a real one.
+    //
+    // Gated on the car being SIDEWAYS BY ITS OWN CLASS'S DEFINITION. Without a gate a 25% floor
+    // under the rear applies to gentle cornering too, where it is 25% of extra understeer nobody
+    // asked for — the supercar's `stabCut` is 1.12, so its floor sits above a fully gripping rear
+    // axle and would otherwise be live every time the car is pointed straight. `driftOn` is the
+    // angle at which this class already calls it a drift (5–7°, against the 2–4° a steady corner
+    // runs), which is exactly the line this floor should wake up on, and it scales with the class
+    // instead of being another constant. Deliberately keyed off the ANGLE and not off tyre
+    // saturation: the friction circle cuts the rear's budget at ANY slip angle, so the divergence
+    // starts well before either tyre is past its peak — gating on saturation moved the muscle
+    // car's latch from 19° down to 8° instead of removing it.
+    const sideways = smoothstep(p.driftOn * 0.5 * DEG2RAD, p.driftOn * 1.5 * DEG2RAD, Math.abs(slip0));
+    // It ramps the MARGIN, never the weight. A ramp on the weight is how you build another dead
+    // band: blend a 1.25 floor in at 78% and the effective margin is 1.07, the restoring moment is
+    // the difference of two numbers 7% apart, and the car parks on the shoulder of the ramp exactly
+    // the way it used to park on the shoulder of `allow` (measured: the muscle car moved its latch
+    // from 19° to 8.4° and called it progress). Ramping the margin instead keeps every point on the
+    // curve strictly restoring — the ramp only decides how HARD, never whether.
+    const need = stabCut * lerp(1.03, 1.25, sideways);
+    const stabFloor = Math.min(need, 1.9);
+    // The WEIGHT is `1 - auth`, and that does leave a marginal band at part licence — half a floor
+    // is roughly a neutral car, so a driver holding a third of the lock can sit at a steady angle.
+    // That is not the bug; that IS a drift, and §6.2 asks for exactly it ("held with counter-steer
+    // rather than spinning out"). The bug is a car holding an angle at licence ZERO, and at zero
+    // this is the full floor with a real margin on it.
+    const floorW = 1 - auth;
+    if (floorW > 0.001 && stabFloor > rearCut) rearCut = lerp(rearCut, stabFloor, floorW);
+    // A REAL ESC CANNOT INVENT GRIP; it takes it off the end that has too much. There is a state
+    // where the rear alone cannot reach the line however much is handed back: standing on the
+    // brakes puts so much load on the front (`loadShift` 0.40 on the muscle car moves μf to 1.82
+    // and μr to 0.68) that `need` comes out at 2.1 — past anything a tyre could plausibly deliver,
+    // so the ceiling clips it and the invariant quietly fails. That is the same shape of hole the
+    // flat `escGrip` had: an authority ceiling that has nothing to do with what the car needs.
+    // What the rear cannot deliver comes off the FRONT, which reaches the same place from the
+    // other side — and understeer is the right failure mode for a car nobody is steering.
+    const frontTrim = Math.min(1, 1.9 / Math.max(1e-3, need));
+    const trimW = Math.max(floorW, guard, rec * 0.6);
+    if (frontTrim < 1 && trimW > 0.001) muF *= lerp(1, frontTrim, trimW);
+    // The ESC only ever hands grip BACK — it must never take any away, or it becomes another way to
+    // start a slide. So each authority blends toward its target and keeps the larger of the two.
+    if (escFull > rearCut) rearCut = lerp(rearCut, escFull, esc);
+    const back = Math.max(guard, rec * 0.6);
+    const escHard = clamp(escFull * 1.3, 0.05, 1.9);
+    if (back > 0.001 && escHard > rearCut) rearCut = lerp(rearCut, escHard, back);
+    rearCut = clamp(rearCut, 0.05, 1.9);
     // One last low-pass on the friction budget itself (~30 ms). Rear grip is the drift, quantified,
     // and it is read by the squeal, the smoke rate and the skid ribbons: it has to be a curve.
     this.rearGrip = rearCut = lerp(this.rearGrip, rearCut, 1 - Math.exp(-32 * dt));
@@ -423,10 +586,6 @@ export class VehicleBody {
     muR *= rearCut;
 
     // ---------------------------------------------------------------- lateral + yaw dynamics
-    const L = this.opts.wheelbase ?? 2.8;
-    const a = L * (1 - p.weightFront);          // CoG → front axle
-    const b = L * p.weightFront;                // CoG → rear axle
-    const inertia = Math.max(0.5, p.yawInertia);
     const gate = smoothstep(0.5, 4.0, Math.hypot(vLong, vLat));   // parked cars don't rotate
     const kinW = 1 - smoothstep(3, 12, absV);                     // car-park steering blend
     const alphaPeak = Math.max(0.04, p.alphaPeak);
@@ -489,7 +648,25 @@ export class VehicleBody {
       // off and centring the wheel winds the car straight instead of parking it in a slide.
       const sinB = vLat / vRef, cosB = Math.abs(vLong) / vRef;
       const sustain = (aLatT * cosB - this.aLong * sinB) / vRef;   // yaw rate that holds this angle
-      const holdW = driftW * clamp(1 - esc * 2.6, 0, 1);
+      // ...and "while the driver is COMMITTED" is what the paragraph above has always claimed it
+      // does, but there was no commitment term in the weight — only the drift-angle ramp and the
+      // ESC's release. So with the hands straight and part throttle, any angle over `driftOn` was
+      // PINNED: this term drives the yaw rate to `sustain`, the rate at which dβ/dt is exactly
+      // zero, which is the round-1 slip-angle servo rebuilt out of a rate damper. It is why the
+      // tuner's re-divergence stopped dead at 18.9° instead of running away — the car was not
+      // recovering slowly, it was being held there.
+      //
+      // ONE-SIDED, like the assist damper above and the ESC lead below it, and for the third time
+      // for the same reason. Pulling the yaw rate toward `sustain` while the angle is OPENING slows
+      // the opening — that is a damper, it is what catches the overshoot after a flick, and it is
+      // safe with anybody's hands on the wheel. Pulling it toward `sustain` while the angle is
+      // CLOSING slows the recovery — that is a hold, and a hold is only ever the driver's to ask
+      // for. So the opening side is always available and the closing side is bought with `auth`:
+      // balance the car on the throttle and the lock and it holds the slide for you exactly as
+      // before; let go of it and the closing side simply is not there to park the car with.
+      const dBeta = sustain - this.yawRate;                        // dβ/dt, the angle's own rate
+      const opening = dBeta * (sinB >= 0 ? 1 : -1) > 0;
+      const holdW = driftW * clamp(1 - esc * 2.6, 0, 1) * (opening ? 1 : auth);
       if (holdW > 0.001) {
         this.yawRate = lerp(this.yawRate, sustain, 1 - Math.exp(-p.driftHold * holdW * h));
       }
@@ -728,6 +905,10 @@ export class VehicleBody {
       drift: +this.drift.toFixed(3),
       slide: +this.slide.toFixed(3),
       commit: +this.commit.toFixed(3),
+      // The drift licence, hands only. Read it next to `slipDeg`: an angle that persists while
+      // this is near zero is the latch this model has now been fixed for four rounds, and it is
+      // the one number that makes that visible in a trace instead of only in a scripted capture.
+      driftAsk: +this.driftAsk.toFixed(3),
       steerDeg: +(this.steerAngle * RAD2DEG).toFixed(2),
       counterDeg: +(this.assist * RAD2DEG).toFixed(2),
       frontDeg: +(this.steerVisual * RAD2DEG).toFixed(2),

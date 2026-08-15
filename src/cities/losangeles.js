@@ -1717,7 +1717,12 @@ export const def = {
     // resurfacing patches and polished wheel tracks into this surface, but every one of them is a
     // MULTIPLIER on the base colour, and at #2b it all multiplied down into a near-black plane.
     // A sun 16 degrees off the deck rakes across asphalt and lifts it toward warm grey anyway.
-    surface: { tint: '#3a383c', lanes: 3, centerLine: 'double-yellow', worn: 0.78 },
+    // (coherence pass) …and lifted again, and WARMED. Measured across the sixteen-frame set, LA's
+    // near carriageway came back at rgb(20,20,18): the darkest surface in a frame whose sky, hills,
+    // stucco and sidewalk were all bright — a neutral-grey night road under a golden-hour sky.
+    // #3a is 0.043 in linear, which is a darker albedo than coal; real asphalt is 0.10-0.15, and a
+    // 16-degree sun rakes it warm. This is that number, with the blue bias (#3a38**3c**) taken out.
+    surface: { tint: '#4a453d', lanes: 3, centerLine: 'double-yellow', worn: 0.78 },
     bank: 0.05,
     crossings: 8,
     sidewalkWidth: 5.2,
