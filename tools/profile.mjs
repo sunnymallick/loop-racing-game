@@ -42,6 +42,8 @@ async function measure(page, frames, mutate) {
     if (mutName === 'nospill') for (const p of byName('spill')) p.enabled = false;
     if (mutName === 'nosmaa') for (const p of byName('smaa')) p.enabled = false;
     if (mutName === 'noatmos') for (const p of byName('atmos')) p.enabled = false;
+    // Toggling shadowMap.enabled forces every shadow map to regenerate on the next frame; the
+    // warm-up discard below covers it, but only because it happens before the sample starts.
     if (mutName === 'noshadow') e.renderer.shadowMap.enabled = false;
     if (mutName === 'half') e.resize(W / 2, H / 2);
     // The 2D HUD is drawn to a separate overlay canvas and never touches WebGL, so every ablation
@@ -51,9 +53,14 @@ async function measure(page, frames, mutate) {
     if (mutName === 'nohud') { hudDraw = g.hud.draw; g.hud.draw = () => {}; }
     if (mutName === 'noblur') {
       // Neutralise canvas2D shadowBlur everywhere without editing the HUD source.
-      const proto = Object.getPrototypeOf(g.hud.ctx);
+      //
+      // On the PROTOTYPE, not on `g.hud.ctx`. The HUD draws into a supersampled backbuffer and only
+      // composites onto the visible canvas, and it bakes art into offscreen patch and sprite
+      // canvases besides — so an own property on the visible context is a no-op that this row used
+      // to report as a 40 fps saving (it was reading the drive-position drift fixed above).
+      const proto = CanvasRenderingContext2D.prototype;
       blurDesc = Object.getOwnPropertyDescriptor(proto, 'shadowBlur');
-      Object.defineProperty(g.hud.ctx, 'shadowBlur', { configurable: true, get: () => 0, set: () => {} });
+      Object.defineProperty(proto, 'shadowBlur', { configurable: true, get: () => 0, set: () => {} });
     }
 
     g.input.setScripted({ throttle: 1, steer: 0.05, nitro: false });
@@ -88,7 +95,7 @@ async function measure(page, frames, mutate) {
     e.renderer.shadowMap.enabled = true;
     e.renderer.info.reset = realReset;
     if (hudDraw) g.hud.draw = hudDraw;
-    if (blurDesc) delete g.hud.ctx.shadowBlur;
+    if (blurDesc) Object.defineProperty(CanvasRenderingContext2D.prototype, 'shadowBlur', blurDesc);
     g.input.clearScripted();
     return { fps: 1000 / mean, ms: mean, ...info };
   }, [frames, mutate, W, H]);
@@ -120,10 +127,18 @@ async function main() {
 
     for (const city of CITIES) {
       await load(h.page, { city, car: CAR });
-      await scenario(h.page, 'chase');
       console.log(`── ${city} ──`);
       let base = null;
       for (const [label, mut] of MUTATIONS) {
+        // RESET THE DRIVE BEFORE EVERY ROW. `measure` free-runs the car forward for N frames, so
+        // without this each row starts where the previous one stopped and every ablation is timed
+        // on a DIFFERENT stretch of track. The bill varies by more along a lap than most of these
+        // passes cost, so the deltas came out ordered by row index rather than by expense: rows
+        // late in the list read +30 to +40 fps whatever they ablated, and "no post chain" — which
+        // removes strictly more work than any row below it — read NEGATIVE. Two waves of
+        // optimisation were aimed at the HUD and the atmosphere pass on the strength of those
+        // numbers. Re-scenarioing puts every row on the same corner of the same lap.
+        await scenario(h.page, 'chase');
         await h.page.evaluate(([w, hh]) => window.__GAME.setSize(w, hh), [W, H]);
         const r = await measure(h.page, FRAMES, mut);
         if (!base) base = r.fps;

@@ -118,10 +118,36 @@ const _box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
  * runs warm-rose into a deep teal-navy rather than into plum: that is the second half of getting a
  * saturated turquoise bay instead of a violet one.
  */
+/*
+ * GRADE-DISCIPLINE PASS — "Miami and Vegas are still too close", round three of that argument, and
+ * this time with the elevations measured rather than assumed.
+ *
+ * The previous table is a good DUSK RAMP and it was still producing a magenta city, because of
+ * where a driving frame actually samples it. The chase camera sits 1.8 m off the road with a 62°
+ * vertical FOV pitched a few degrees down, so its upper third is the 5–22° elevation band — t 0.38
+ * to 0.47 — and the daylight blue the last pass added lived at t 0.29–0.39, which is 20–38°. From
+ * 150 m up the sky measured hsl(212–218) at all twelve headings; from the driver's seat the same
+ * sky measured hue 299–312 with green crushed to 20. The blue was real and it was simply never in
+ * the picture.
+ *
+ * So the whole ramp moves DOWN about eight degrees, and the mauve-to-magenta shoulder that used to
+ * occupy 9–17° is deleted rather than moved:
+ *
+ *   - 14–28° (t 0.345–0.424) is now unambiguous DAYLIGHT — cerulean falling to a pale sea-blue.
+ *     This is the band the frame is actually built on, and "more daylight in the sky" is the whole
+ *     instruction for this city.
+ *   - the warm half starts at 9° and goes rose → coral → orange → gold in eight degrees, which is
+ *     what a real sunset band is: narrow, low, and directly over the water.
+ *   - there is no magenta stop left anywhere in the sky. Miami's magenta is NEON — it belongs on
+ *     the hotel frontages and in the road's reflection of them, where it reads as Ocean Drive
+ *     rather than as Las Vegas Boulevard, and it now has a blue sky and white plaster to be read
+ *     against instead of a magenta slab that matched it.
+ *   - the zenith stays navy so the frame keeps its dark end.
+ */
 const DUSK_STOPS = [
-  [0.000, '#040a24'], [0.115, '#07184a'], [0.215, '#0e2f74'],
-  [0.290, '#1c4f96'], [0.345, '#3f74ac'], [0.390, '#7b8ab4'],
-  [0.424, '#b58fa8'], [0.448, '#df7f96'], [0.466, '#ff7a72'],
+  [0.000, '#04102c'], [0.115, '#082058'], [0.215, '#12408a'],
+  [0.290, '#1e5ba4'], [0.345, '#3c81be'], [0.390, '#69a3c9'],
+  [0.424, '#9dbfc9'], [0.448, '#d3a79e'], [0.466, '#f4907a'],
   [0.480, '#ff9a55'], [0.490, '#ffbb6a'], [0.4975, '#ffdfa8'],
   [0.5000, '#fff0cc'],
   [0.512, '#e08d76'], [0.560, '#8a5a63'], [0.700, '#2e3350'], [1.0, '#141d33'],
@@ -538,8 +564,14 @@ function sunsetSkyTexture(sunDir) {
       let dx = Math.abs(x / W - sunX); if (dx > 0.5) dx = 1 - dx;
       const toward = Math.pow(clamp(1 - dx * 2.0, 0, 1), 1.5);
       const col = base.clone();
-      const warm = toward * clamp(1 - Math.abs(t - 0.48) / 0.30, 0, 1);
-      col.lerp(coral, warm * 0.34);
+      // (grade-discipline pass) 0.34 -> 0.22, and the falloff tightened from 0.30 to 0.20 of t
+      // (54° to 36°). This is the only azimuthal term left in Miami's sky, and it is what decides
+      // whether the city photographs as one hour or as several: at 0.34 across 54° the sun's half
+      // of the sky was a different colour from the anti-sun half at any camera heading. Narrower
+      // and weaker, the coral now sits where a real sunset's forward scatter sits — low and near
+      // the sun — and the daylight blue survives at every heading above about 12°.
+      const warm = toward * clamp(1 - Math.abs(t - 0.48) / 0.20, 0, 1);
+      col.lerp(coral, warm * 0.22);
       // (coherence pass) 0.22 -> 0.32. The anti-sun half of a dusk sky is the half that still has
       // the day in it, and this is the term that says so; at 0.22 the chase heading came back a
       // washed mauve rather than the cerulean the ramp is painting.
@@ -635,7 +667,11 @@ function cloudBank(cache, centre, rng) {
     // thing in the upper frame and the only muddy colour in the city. A dusk cumulus shadowed
     // against a still-blue sky is a blue-violet, not a black, and more of its flank catches the
     // sun; the crown stays near-white, which is where this frame's clean top end comes from.
-    const gold = sColor('#fffaf0'), flank = sColor('#ff9468'), base = sColor('#3c2f5e');
+    // (grade-discipline pass) base #3c2f5e -> #4a5c82. The shadowed underside of a cumulus is the
+    // colour of the sky it is sitting under, and this city's sky is now a daylight blue rather than
+    // a violet dusk. A violet base under a blue sky is the one muddy colour in the upper frame and
+    // it is also, exactly, the hue Las Vegas owns.
+    const gold = sColor('#fffaf0'), flank = sColor('#ff9468'), base = sColor('#4a5c82');
     for (let y = 0; y < H; y++) {
       const ny = y / (H - 1);                                    // 0 = cloud top
       for (let x = 0; x < W; x++) {
@@ -1092,7 +1128,12 @@ function downtown(cache, centre, rMax, rng, { fogColor }) {
       mat(cache, `dthaze|${bi}`, () => {
         const { c, ctx } = canvas(8, 256);
         const gr = ctx.createLinearGradient(0, 0, 0, 256);
-        const s = 0.10 + bi * 0.20;
+        // (grade-discipline pass) 0.10 + 0.20·bi -> 0.08 + 0.14·bi. These three curtains are drawn
+        // in `look.fog.color` — a dusty rose — at renderOrder -11..-9, i.e. IN FRONT of the sunset
+        // dome, so at the old alphas (up to 0.75 at their base) they were painting a rose veil over
+        // the bottom fifteen degrees of the sky: most of what a chase camera sees. They exist to
+        // stop the skyline bands meeting on hard edges, and they still do that at half the alpha.
+        const s = 0.08 + bi * 0.14;
         gr.addColorStop(0.00, css(fog, 0));
         gr.addColorStop(0.55, css(fog, s * 0.35));
         gr.addColorStop(0.86, css(fog, s));
@@ -2960,7 +3001,16 @@ export const def = {
     // (coherence pass) 0.34 -> 0.24. This is the BUILD-time half of the same decision: it sets how
     // deep the puddles pool in the road texture's ruts and how hard the kerbside reflection ribbons
     // are laid. Ocean Drive twenty minutes after a squall, not Las Vegas Boulevard.
-    wet: 0.24,
+    // (grade-discipline pass) 0.24 -> 0.14. The post-process mirror was trimmed twice already; this
+    // is the BUILD-time half, and it is the half that was still drawing the magenta-and-cyan rainbow
+    // across the whole carriageway in `miami-muscle-chase`. `wet` is read by the road texture
+    // (puddle depth in the ruts, roughness), by `envMapIntensity` on the carriageway, and by the
+    // density and strength of the kerbside reflection ribbons the kit lays under a lit frontage —
+    // and it is those ribbons, not the screen-space pass, that were laying continuous coloured
+    // streaks the full width of the road. At 0.14 Ocean Drive is damp asphalt with the neon coming
+    // back in discrete streaks under the tubes themselves, which is what §1.3 describes and what
+    // leaves the full mirror to Las Vegas.
+    wet: 0.14,
     // What the CAMERA sees of the sky is `sunsetSkyDome` (see the long note on it above); this
     // block is now only the PMREM source for car paint, chrome, glass and the wet road. It is
     // therefore tuned as a reflection probe rather than as a picture: a deep blue zenith so the
@@ -2972,7 +3022,14 @@ export const def = {
     // photographed as "magenta everything". A coral-peach probe puts the SUNSET on the flanks
     // instead of the neon, and the deep blue zenith still puts a cool sky on the roof and bonnet.
     sky: {
-      top: '#1a44c8', horizon: '#f0a288', haze: '#ffc98c', ground: '#2c2038',
+      // (grade-discipline round 2) top '#1a44c8' -> '#2f5bb4'. This stop is the PROBE ZENITH, and
+      // an up-facing car panel sees almost nothing else: `_applyEnv` lands the probe on paint at
+      // ~2.3x, so the deck lid and roof of the hero car were effectively a mirror of one very
+      // saturated blue (hue 226, s0.77). Measured, that is what held the mint muscle car at hue
+      // 198 in Miami against the same car's 172 in LA — the four-city body-panel test this round
+      // is judged on. Hue 218 at s0.59 is still a deep dusk cerulean and still puts a cool sky
+      // reflection on the upper panels (§1.6.3), it just stops being the only colour they have.
+      top: '#2f5bb4', horizon: '#f0a288', haze: '#ffc98c', ground: '#2c2038',
       sunDir: SKY_SUN, sunColor: '#ffe6bc', clouds: 0.52, seed: 303,
     },
     // Low and out over the water, i.e. roughly abeam of the ocean-drive straight rather than
@@ -3004,7 +3061,12 @@ export const def = {
     // and this — not the grade — is why. The hue of the shadows is unaffected, because the grade
     // takes uLift's HUE from this colour and its amount from elsewhere.
     ambient: {
-      sky: '#4fd4e4', ground: '#3c2a52', intensity: 0.58,
+      // (grade-discipline round 2) hue held at 187, saturation 0.73 -> 0.63. The INTENSITY is the
+      // right one (it was solved for "pink + cyan = grey" two rounds ago and is left alone); what
+      // was still too much is the chroma, because this colour is also what the grade derived its
+      // shadow tint from until this round named `uLift` explicitly. As a light it can now be just
+      // the sea and the zenith bouncing up, rather than a cyan gel over the whole city.
+      sky: '#63d0dc', ground: '#3c2a52', intensity: 0.58,
       fill: { color: '#9deaf4', intensity: 0.22, dir: [-0.62, 0.36, 0.56] },
     },
     shadowTint: '#4a3168',
@@ -3109,7 +3171,31 @@ export const def = {
       // and deck read as pale blue-white with the twin stripes barely separable from the paint
       // around them), and -0.12 stop is what puts them back under it. The sunset and the deco
       // plaster lose nothing they should have kept: they were the two things riding highest.
-      uSaturation: 1.26, uExposure: 0.92, uContrast: 1.14,
+      /**
+       * THE NEUTRAL ANCHOR (grade-discipline round 2) — and Miami's version of it was an omission
+       * rather than a value.
+       *
+       * With no `uLift` named, `applyLook` derives the shadow tint from `ambient.sky`, and this
+       * city's hemisphere is '#4fd4e4' — a 66%-saturation tropical cyan. Normalised by luminance
+       * (which is what the engine does to it) that is a multiplier of (0.473, 1.135, 1.215): a
+       * 27% RED CUT on the whole shadow band, which is still half-strength at mid-grey. Measured
+       * on `miami-muscle-chase`, the mint hero car's body panel came back at hue 197 against the
+       * same car's 172 in LA, and the carriageway at hue 219 — i.e. the grade was steering every
+       * neutral and every warm surface in the city toward the hemisphere's cyan.
+       *
+       * The cyan hemisphere itself is NOT the problem and is deliberately untouched: a turquoise
+       * sky bounce is a real light, it is what makes Miami's shade read cool against the sunset,
+       * and light is where a city's identity is supposed to live. What was wrong is that the same
+       * colour was ALSO being run as a multiplier on albedo. '#5d7079' normalises to
+       * (0.868, 1.029, 1.105) — a quarter of the chroma, same cool direction, so the shade stays
+       * teal and the white deco plaster and the pink stucco stay white and pink.
+       *
+       * uSaturation 1.26 -> 1.20 (the engine multiplies by 0.90, so this asks for 1.08) for the
+       * same reason: the sunset, the turquoise water and the neon are saturated because of what
+       * they ARE, not because the last pass in the chain pushes everything.
+       */
+      uSaturation: 1.20, uExposure: 0.92, uContrast: 1.14,
+      uLift: '#5d7079',
       uBlackPoint: 1.35, uVignette: 0.22, uHiChroma: 0.16,
     },
     // (round 3) See `_applyEnv` in src/main.js for what this knob is and why it had to exist. Miami
@@ -3119,8 +3205,25 @@ export const def = {
     // 0.72 is a much softer cut than Vegas' 0.45 on purpose: the sky reflection on the upper panels
     // and the dark ground reflection on the lower ARE the clearcoat here (§1.6.3) and Miami has a
     // real sky to reflect, so it keeps most of it.
-    paintEnv: 0.72,
-    bloom: { strength: 1.05, radius: 0.66, threshold: 0.56 },
+    // (grade-discipline round 2) 0.72 -> 0.62, paying for the same measurement as `sky.top` above.
+    // The clearcoat is not being switched off — 0.62 still leaves the sunset banding down the
+    // flanks and the dark ground reflection under them — but the probe is a blown sunset over a
+    // mile of pink neon, and at 0.72 it was out-weighing the paint's own albedo on every panel
+    // that faces up.
+    paintEnv: 0.62,
+    // (grade-discipline pass) 0.56 -> 0.66 threshold, strength 1.05 -> 0.92. This was the lowest
+    // bloom threshold of the four cities, on the city with the most emissive area per frame, so
+    // every lit shopfront, awning tube, lamp head and window row cleared the bar and their haloes
+    // merged into the pink veil that covered the upper half of the frame. Vegas — the city that is
+    // SUPPOSED to be a light show — runs 0.64/1.20 and gets away with it because its background is
+    // black. Miami's background is white plaster and a blue sky, and both of those need the bloom
+    // off them to read as clean.
+    bloom: { strength: 0.92, radius: 0.66, threshold: 0.66 },
+    // (grade-discipline pass) pinned rather than derived. The spill pass adds a neon's own colour
+    // onto whatever is near it, and on a terrace of WHITE stucco that is the one pass that can undo
+    // the white. 0.42 rolloff takes it off anything already lit — the plaster, the sunset, the hero
+    // car — and leaves it doing the job it exists for: the dark shopfront reveal beside a tube.
+    spill: { strength: 0.20, rolloff: 0.42 },
   },
   track: {
     width: 12.5,

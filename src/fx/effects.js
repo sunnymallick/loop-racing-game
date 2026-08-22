@@ -24,15 +24,51 @@ const UP = new THREE.Vector3(0, 1, 0);
 // How far a smoke tint may stray from neutral: the largest per-channel deviation from white once
 // the tint has been normalised to unit luminance.
 //
-// Round 4 cuts this from 0.30 to 0.18. 0.30 is the right number for the light, and the wrong one
-// for the IMAGE: the grade this game ships lifts saturation and pushes a warm gain, so a puff that
-// leaves here 30% warm arrives on screen as salmon pink. At 3x into la-muscle-crash the plume read
-// as pink confetti — the exact "falling confetti, not smoke" note — even though the sampler was
-// doing the physically right thing. Smoke has to stay legibly GREY and merely lean toward the key.
-const SMOKE_CHROMA = 0.18;
+// Round 4 cut this from 0.30 to 0.18; round 5 cuts it again, to 0.06, because 0.18 was still
+// arriving on screen as pink. MEASURED, on `la-muscle-drift.png` at 4x: the plume rendered at
+// (174,125,150) / (161,113,134) / (153,108,122) — R > B > G, ~28 % saturation, hue ≈ 330°. That is
+// magenta, in the city whose key light is a warm golden sun, so the tint the sampler produces is
+// not what lands in the frame.
+//
+// The reason is the grade, and it is not a bug in the grade — it is what the grade is FOR. Smoke
+// leaves here as a mid-value near-neutral, which is exactly the input `post.js` treats as a
+// candidate for colour: `uVibrance` multiplies chroma hardest where saturation is LOWEST, and the
+// split-tone then lifts the shadow band toward `uLift` (#8fc4ff, cool blue). Warm smoke keeps its
+// red, gains blue from the lift, and comes out with green as the low channel — magenta. Any
+// deviation from neutral this piece emits arrives amplified and hue-rotated.
+//
+// So the tint's job is only to LEAN. At 0.06 the plume is a grey the eye reads as grey; the scene
+// still reads through it because the value and the opacity (`_smokeVal`, `_pop`) still ride the
+// city's brightness, and those cannot be hue-rotated by anything downstream.
+const SMOKE_CHROMA = 0.06;
+// How hard `_smokeColor` leans a puff away from the colour the grade is about to add to it. See
+// the long note there for what was measured and what it is correcting.
+const GRADE_UNDO = 0.26;
+
+// The crash rig (see crashRig()). `T` is the window it is live for — the same 0.85 s the crash
+// aim point and the camera's crash weighting use, so the whole crash camera moves as one thing.
+// `DIST` is how far the lens ends up from the car however far sideways it has had to step: the car
+// is 4.2–4.8 m long and at 8.4 m with a 51° lens it fills about a third of the frame width, which
+// leaves the shower, the debris and the damaged corner room to read without shrinking the hero.
+// `BACK_MIN` keeps some of that distance along the road even when the sideways step has eaten all
+// of it, so the shot never collapses to pure side-on. `LIFT` looks down into the shower rather
+// than across it. `PULL` is deliberately short of 1: a little of the chase rig's own swing
+// survives, so a crash mid-corner is not shot dead square.
+const CRASH_RIG_T = 0.85;
+const CRASH_RIG_DIST = 8.4;
+const CRASH_RIG_BACK_MIN = 4.6;
+const CRASH_RIG_LIFT = 2.9;
+const CRASH_RIG_PULL = 0.78;
+// How far across the road the rig may stand, in the track's own -1..1 lateral units.
+const CRASH_RIG_LAT = 1.0;
 // The one smoke colour that is NOT the scene's: a puff sitting inside the fireball is lit by the
 // fireball, and it has to stay warm even in a magenta city.
 const FIRELIT = new THREE.Color('#c99a72');
+// The daylight key every impact lamp in this file is authored against — Los Angeles' rig, measured
+// by `_sampleSceneLight` as key + 0.5·fill, which is within 2% of the number `engine.applyLook`
+// derives its exposure from. A city with half this much light gets proportionally weaker lamps.
+// See the long note in `_sampleSceneLight`.
+const LIGHT_REF_KEY = 3.35;
 const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
 /**
@@ -180,11 +216,18 @@ export class Effects {
     // the shadow the sky fills is, and every puff picks a point between them. Both are unit
     // luminance, so they are pure hue — the VALUE of a puff stays where it was authored.
     this._bright = 0.4;          // scene luminance proxy, drives the smoke value and opacity
+    this._keyLevel = LIGHT_REF_KEY;  // how much light this city puts on a car — see _sampleSceneLight
+    this._lightGain = 1;             // …as a multiplier on every impact lamp authored below
     this._litTint = new THREE.Color(1, 1, 1);
     this._shadeTint = new THREE.Color(1, 1, 1);
     this._tint = new THREE.Color();          // scratch handed to ParticleSystem.emit()
-    this._dustAlbedo = new THREE.Color().setRGB(1.24, 1.00, 0.66);  // road dust / dirt, unit lum
-    this._rubberAlbedo = new THREE.Color().setRGB(0.92, 0.90, 1.00);
+    // Albedos are held close to neutral for the same reason SMOKE_CHROMA is: the grade's vibrance
+    // term amplifies exactly this band of low saturation, so a dust that leaves here 24 % warm
+    // arrives orange-pink. Dust still reads as dust — it is warmer than the tyre smoke beside it,
+    // which is the only comparison the eye actually makes.
+    this._dustAlbedo = new THREE.Color().setRGB(1.10, 1.005, 0.85);  // road dust / dirt, unit lum
+    this._rubberAlbedo = new THREE.Color().setRGB(0.97, 0.965, 1.02);
+    this._gradeGuard = 0;        // how hard this city's grade pushes smoke off grey — see below
     this._smokeVal = 0.62;       // base linear value of a mid-grey puff in this city
     this._pop = 1;               // opacity multiplier — a dark city needs thicker smoke to read
     this._lightDirty = true;
@@ -212,6 +255,7 @@ export class Effects {
     this._damageSide = 1;
     this._damageT = 0;
     this._dents = 0;             // permanent deformations applied to the bodywork this run
+    this._tears = 0;             // panels peeled open this run — capped, see `_damageCorner`
     this._damageAt = null;       // car-space centre of the last wound — the damage trail vents here
     this._lastDentAt = null;     // world XZ of the last dent — keeps repeat hits from stacking
     this._paint = '#c0c4cc';
@@ -229,7 +273,7 @@ export class Effects {
     // thing that builds the car's bounding volumes, because that first query happens mid-crash
     if (car) prewarmSceneQueries(car);
     // a freshly built car carries no wounds, so the trail must not keep venting from the old one's
-    this._damageAt = null; this._dents = 0; this._lastDentAt = null; this.damage = 0;
+    this._damageAt = null; this._dents = 0; this._tears = 0; this._lastDentAt = null; this.damage = 0;
     if (car?.userData?.paintMaterial) this._paint = `#${car.userData.paintMaterial.color.getHexString()}`;
   }
 
@@ -296,6 +340,33 @@ export class Effects {
     let kl = L(kr, kg, kb), sl = L(sr, sg, sb);
     if (kl < 1e-4) { kr = sr; kg = sg; kb = sb; kl = sl; }        // no key at all: sky is the key
     if (sl < 1e-4) { sr = kr; sg = kg; sb = kb; sl = kl; }
+    // ---- HOW MUCH LIGHT THIS CITY ACTUALLY PUTS ON A CAR ----------------------------------
+    // This is the number every impact lamp is authored against, and the reason it has to exist is
+    // the round-2 verdict: "the whole lower-left third fogs to flat yellow-white, the player car
+    // reads as a colorless white/lavender ghost, the struck taxi is a featureless emissive slab".
+    //
+    // The cause is not bloom (`engine.applyLook` already holds the threshold at 1.18–1.40 in
+    // exposure-normalised units, well clear of a lit panel) — it is plain over-exposure. The
+    // engine normalises exposure so that "a white surface in full key light" is 1.0 in EVERY city,
+    // which means an impact lamp of a fixed candela lands at wildly different screen values: the
+    // same 33-candela pool that is a warm accent under a Los Angeles sun (key 3.4) is nearly two
+    // and a half stops over white on a New York night street (key 1.4). Measured with
+    // `tools/_fx_crashlight.mjs` on the §8 crash frame: total impact irradiance at the car was
+    // 2.8x the city key in NYC — the panels could not be anything but clipped.
+    //
+    // So the rig is expressed as a RATIO of the key instead. `_lightGain` is the city's key over a
+    // daylight reference, and `_light()` multiplies every peak by it, so "peak 13" means the same
+    // fraction-of-white on the bodywork in all four cities. The exponent is short of 1 on purpose,
+    // the same partial normalisation the engine's own exposure uses: a fire at night really is
+    // brighter than a fire at noon, it just must not be five stops brighter.
+    // …and the FLOOR is not cosmetic. Las Vegas' light rig sums to 0.25 because the Strip is lit
+    // almost entirely by emissive signage, which this sampler deliberately does not count (see the
+    // note above the traverse) — but the engine does not lift its exposure to match (measured:
+    // 0.79 in Vegas against 0.81 in LA, because the night ceiling clamps it), so a lamp scaled by
+    // the rig alone comes out three times too dim there. Half of daylight is the floor: at the
+    // night cities' higher exposure that lands within ~25% of the daylight reading on screen.
+    this._keyLevel = clamp(kl + 0.5 * sl, 0.25, 14);
+    this._lightGain = clamp(Math.pow(this._keyLevel / LIGHT_REF_KEY, 0.85), 0.55, 1.25);
     // Each source is reduced to unit luminance FIRST and mixed by weight afterwards. Mixing by
     // energy instead lets the sun (intensity 3) bury the hemisphere fill, and the shadow side of
     // the plume then comes out the same warm cream as the lit side — no form, just a flat tint.
@@ -309,8 +380,32 @@ export class Effects {
       const hl = Math.max(1e-4, L(fog.r, fog.g, fog.b));
       hr = fog.r / hl; hg = fog.g / hl; hb = fog.b / hl;
     }
+    // HOW HARD THIS CITY'S GRADE WILL PUSH SMOKE TOWARD MAGENTA. See `_smokeColor`.
+    //
+    // `post.js` tints the shadow band by `mix(col, col * uLift, pow(1 - l, 1.4) * uLiftAmount)`,
+    // and each city picks its own `uLift` hue. Measured on the drift captures: Los Angeles and
+    // Miami — the two warm-aired cities — lift their shadows MAUVE, and a neutral plume comes out
+    // of them at R/G = 1.20 in display space. New York and Las Vegas lift cool and their plumes
+    // come out white with no help at all.
+    //
+    // A warm haze and a mauve shadow lift are the same art-direction decision seen from two ends
+    // (a warm frame wants a cool-magenta shadow to hold the complement), so the haze colour — which
+    // this already has — predicts the pull. `hr - hb` on the unit-luminance haze is 0.88 in LA,
+    // 0.92 in Miami and about -2 in both night cities, which is exactly the split that needs
+    // correcting and exactly the two cities that need none.
     // 0 by day, 1 in a city whose only light is its own signage
     const n = 1 - clamp((this._bright - 0.08) / 0.42, 0, 1);
+    // HOW MUCH GRADE UNDO THIS CITY NEEDS. See `_smokeColor` for what is being undone.
+    //
+    // Two terms, both measured rather than reasoned:
+    //   `hr - hb`   how warm the city's air is. It is 0.88 in LA and 0.92 in Miami — the two cities
+    //               whose plumes come out warm-magenta — and about -2 in both night cities, whose
+    //               plumes are already white. A warm key is what makes a warm highlight tint.
+    //   daylight    at one fixed strength LA (full sun) lands neutral while Miami (dusk) overshoots
+    //               to yellow-green: a dusk grade simply has less authority over something as bright
+    //               as a sunlit plume. Riding the daylight factor this function already computes
+    //               puts both right.
+    this._gradeGuard = clamp(hr - hb, 0, 1) * (0.30 + 0.70 * (1 - n));
     const wK = 1.0 - 0.55 * n, hK = 0.25 + 1.10 * n;     // lit side: key, plus haze at night
     const hS = 0.45 + 1.20 * n;                          // shadow side: sky, and more haze
     this._litTint.setRGB(
@@ -347,11 +442,42 @@ export class Effects {
   _smokeColor(rel = 1, shade = 0.5, albedo = null) {
     const c = this._tint.copy(this._litTint).lerp(this._shadeTint, clamp(shade, 0, 1));
     if (albedo) { c.r *= albedo.r; c.g *= albedo.g; c.b *= albedo.b; }
-    // A puff is never brighter than the light falling on it. Smoke that clips to white stops being
-    // a volume and becomes a paper cut-out you can point at individually — which is exactly the
-    // "falling confetti" the critique named, and it is what a near-white sprite at 50% opacity over
-    // a dark night road looks like.
-    return c.multiplyScalar(Math.min(this._smokeVal * rel, 0.86));
+    // THE GRADE UNDO. Lean the puff away from the colour the frame is about to add to it, so what
+    // lands on screen is the grey this function computed rather than the colour the grade wants.
+    //
+    // WHAT WAS MEASURED. Ablating `post.js` one uniform at a time on `la-muscle-drift` and
+    // re-sampling the same seven plume pixels: everything except the split-tone leaves the plume
+    // magenta, and a sunlit plume lands in the HIGHLIGHT half of that split, where `uGain` carries
+    // the key light's own colour. Los Angeles' key is a golden sun, so a neutral puff is multiplied
+    // warm and then run through pre-saturation, vibrance and display saturation — three stages that
+    // between them multiply whatever chroma is left by about 1.6. R comes up, B follows the sky
+    // fill back in, and GREEN is left as the low channel in every city that has the problem: LA at
+    // R/G 1.20, Miami at 1.07, Las Vegas violet at B/G 2.3. New York, whose key is a cool white
+    // moon, comes out white with no correction at all.
+    //
+    // So the correction is: green back up, red and blue slightly down, re-normalised to the
+    // luminance it came in with — a pure hue rotation that can never change how bright a puff is.
+    // The same correction `losangeles.js` already makes by hand for its own textures ("painting the
+    // colour you want gets you the wrong one"). Smoke needs it more than anything else in the frame
+    // because it is the only large area of flat mid-value in a picture that is otherwise all
+    // texture: the eye reads a hue shift on a plume instantly and cannot see it on asphalt.
+    //
+    // `_gradeGuard` is how much this city needs — see `_sampleSceneLight`.
+    const gg = this._gradeGuard;
+    if (gg > 0.01) {
+      const l0 = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+      c.setRGB(
+        c.r * (1 - 0.31 * GRADE_UNDO * gg),
+        c.g * (1 + GRADE_UNDO * gg),
+        c.b * (1 - 0.23 * GRADE_UNDO * gg),
+      );
+      const l1 = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+      if (l1 > 1e-4) c.multiplyScalar(l0 / l1);
+    }
+    // A puff is never brighter than the light falling on it, so there is still a ceiling — but the
+    // ceiling is well above 1. See `_smokeVal`: the plume has to sit ABOVE the grade's shadow band
+    // or the grade decides its hue for it, and 0.86 was inside that band in all four cities.
+    return c.multiplyScalar(Math.min(this._smokeVal * rel, 1.60));
   }
 
   /**
@@ -380,7 +506,7 @@ export class Effects {
    * that only sparks should not permanently bend the car) and rate-limited so a long grinding
    * scrape cannot chew the bodywork to nothing.
    */
-  _damageCorner(worldPoint, nrm, tan, s) {
+  _damageCorner(worldPoint, nrm, tan, s, vx = 0, vz = 0) {
     if (s < 0.26 || this._dents >= 8) return;
     // A car pinned against one barrier fires crash() repeatedly; without this, six dents stack on
     // the same 40 cm of panel and punch a crater through the car.
@@ -401,8 +527,12 @@ export class Effects {
     // more than a realistic one: the corner now folds far enough to break the highlight running
     // down the flank, which is what actually reads.
     const hit = this.body.dent(worldPoint, dir, tan, {
-      radius: 0.62 + s * 0.52,
-      depth: (0.085 + s * 0.135) * scale,
+      radius: 0.68 + s * 0.58,
+      // Round 5 deepens this again, from 0.085+0.135s to 0.13+0.21s. Round 3's note was right about
+      // the direction and short on the amount: at 0.22 m the crease still did not break the
+      // highlight running down the flank in a 1600x900 chase frame, and "the body is pristine" came
+      // back a second time. At 0.34 m on a heavy hit the shoulder line visibly steps.
+      depth: (0.13 + s * 0.21) * scale,
       tile: s > 0.62 ? 2 : (this.rng.bool(0.6) ? 0 : 1),
       rng: this.rng,
     });
@@ -433,6 +563,43 @@ export class Effects {
     // contact on the barrier plane — that sits on the car's own centreline, which put every lamp
     // out of range and was why the first cut of this never fired in a real race.
     this._breakLampAt(hit.clone().applyMatrix4(M), dir, tan, s);
+
+    // TEAR A PANEL OPEN. The dent above changes the car's SHADING; this changes its OUTLINE, which
+    // is the half of "vehicle response" a chase-distance frame can actually show. A flap of the
+    // struck skin peels backward out of the flank, its normals swing through ~90°, and a matching
+    // painted panel is thrown off the same spot — so the piece that left and the hole it left are
+    // the same event rather than two unrelated effects. Only on a real hit: a graze that sparks must
+    // not shred the bodywork.
+    if (s > 0.46 && this._tears < 2) {
+      const tip = this.body.tear(hit.clone().applyMatrix4(M), dir, tan, {
+        radius: 0.34 + s * 0.20,
+        lift: 0.15 + s * 0.13,
+        length: 0.55 + s * 0.32,
+        rng: this.rng,
+        tile: this.rng.bool(0.5) ? 2 : 0,
+      });
+      if (tip) {
+        this._tears++;
+        const wt = tip.applyMatrix4(M);
+        // the wound now vents from the tear, which is the part of the damage that is visible
+        this._damageAt = { x: tip.x, y: clamp(tip.y, 0.25, 1.1), z: tip.z };
+        // …and the metal that used to be there leaves, in the car's own paint
+        for (let i = 0; i < 2; i++) {
+          this.chunks.emit('panel', {
+            pos: [wt.x + this.rng.range(-0.12, 0.12), wt.y + this.rng.range(0.0, 0.22), wt.z + this.rng.range(-0.12, 0.12)],
+            // most of the car's velocity, so the panel tumbles ALONGSIDE the car through the
+            // frames the crash is judged on instead of being left forty metres behind in one
+            vel: [
+              dir.x * -this.rng.range(1.4, 3.8) - tan.x * this.rng.range(1.0, 3.4) + vx * 0.72,
+              this.rng.range(2.4, 5.0),
+              dir.z * -this.rng.range(1.4, 3.8) - tan.z * this.rng.range(1.0, 3.4) + vz * 0.72,
+            ],
+            size: this.rng.range(0.22, 0.36), color: this._shardColor(this._paint),
+            spin: this.rng.range(6, 15), life: this.rng.range(6.5, 9.5),
+          });
+        }
+      }
+    }
 
     // THE SECOND STATION. A barrier hit at 120 mph is not a point event: the car arrives at an
     // angle, the leading corner takes it, and then the whole flank grinds down the wall as the car
@@ -501,19 +668,63 @@ export class Effects {
     // centreline — over a metre inboard of the kerb line where street furniture actually stands.
     // Probing there found nothing in three cities out of four. The world contact is out past the
     // car's own flank, along -normal.
-    _cp.set(p[0] - nrm.x * 1.15, p[1], p[2] - nrm.z * 1.15);
-    // First: does the thing that was hit come away whole? A bin, a cone, a hydrant, a news box, a
-    // sign or a post is fully contained by the contact cylinder and is therefore knocked out of the
-    // city and toppled. A kerb, a wall or a facade never is, and only gets crushed.
-    const loose = this.world.detach(_cp, nrm, {
-      radius: 0.85 + s * 0.55, rng: this.rng, speed: clamp(s, 0, 1.1),
-    });
-    const hit = this.world.crush(_cp, nrm, {
-      radius: 0.90 + s * 0.60,
-      depth: 0.18 + s * 0.38,
-      lean: 0.45 + s * 1.05,
-      rng: this.rng,
-    }) || loose;
+    //
+    // …and ONE probe out there is not enough. Instrumented across the four crash captures, the
+    // single point at 1.15 m found something in Los Angeles and nothing in Las Vegas, Miami or New
+    // York — three cities out of four scoring zero on a fifteen-point dimension because the prop
+    // the car was grinding past was 0.4 m further out, or half a car length ahead of the reported
+    // contact. So the probe is now a short SEARCH: three stand-offs across the width of the car's
+    // flank, and at each one the contact itself plus a step forward and back along the wall. It
+    // stops at the first thing it finds, and every step is bounded by the same bounding-sphere
+    // reject the single probe already used, so a miss costs one sphere test per candidate.
+    let loose = null, hit = null;
+    const OUT = [1.15, 0.72, 1.68];
+    const ALONG = [0, -1.1, 1.1];
+    for (let oi = 0; oi < OUT.length && !hit; oi++) {
+      for (let ai = 0; ai < ALONG.length && !hit; ai++) {
+        const d = ALONG[ai], o = OUT[oi];
+        _cp.set(p[0] - nrm.x * o + tan.x * d, p[1], p[2] - nrm.z * o + tan.z * d);
+        // First: does the thing that was hit come away whole? A bin, a cone, a hydrant, a news box,
+        // a sign or a post is fully contained by the contact cylinder and is therefore knocked out
+        // of the city and toppled. A kerb, a wall or a facade never is, and only gets crushed.
+        //
+        // Only tried on the two probes nearest the reported contact: `detach` has to walk the
+        // vertices of every candidate it does not reject to prove containment, which is an order
+        // of magnitude more work than `crush`'s bounded pass, and running it nine times inside the
+        // single frame of an impact is exactly the kind of thing that shows up as a p95 spike.
+        if (oi === 0 && ai < 2) {
+          loose = this.world.detach(_cp, nrm, {
+            radius: 0.85 + s * 0.55, rng: this.rng, speed: clamp(s, 0, 1.1),
+          });
+        }
+        hit = this.world.crush(_cp, nrm, {
+          radius: 0.90 + s * 0.60,
+          depth: 0.18 + s * 0.38,
+          lean: 0.45 + s * 1.05,
+          rng: this.rng,
+        }) || loose;
+      }
+    }
+    // …and if the grid found nothing, ASK. The grid reaches about three metres, and in New York
+    // that is not far enough: the barrier the §8 crash drives into is part of the road ribbon,
+    // which this system must never bend, and the nearest pavement furniture is 4.1 m out. One
+    // bounding-sphere sweep (see `WorldDamage.nearest`) finds it for less than the grid costs, and
+    // only runs on the frames the grid has already missed — so the city that scored zero on a
+    // fifteen-point dimension now sheds a news box or folds a parking meter like the other three.
+    if (!hit) {
+      const near = this.world.nearest(
+        _cp.set(p[0] - nrm.x * 1.2, p[1], p[2] - nrm.z * 1.2), 4.2 + s * 1.6,
+      );
+      if (near) {
+        _cp.copy(near);
+        loose = this.world.detach(_cp, nrm, {
+          radius: 0.85 + s * 0.55, rng: this.rng, speed: clamp(s, 0, 1.1),
+        });
+        hit = this.world.crush(_cp, nrm, {
+          radius: 0.90 + s * 0.60, depth: 0.18 + s * 0.38, lean: 0.45 + s * 1.05, rng: this.rng,
+        }) || loose;
+      }
+    }
     if (!hit) return;
     // fragments and dust belong at the thing that was struck, not at the car
     p = [_cp.x, p[1], _cp.z];
@@ -661,7 +872,12 @@ export class Effects {
     // exactly what a cotton ball is. Fourteen puffs at 0.30–0.62 m growing 2.5x occupy the same
     // volume, cost LESS fill (area goes as size squared), overlap into one torn mass, and each one
     // is small enough that the shader's shear actually turns it into a wisp.
-    const n = amount > 0.55 ? 16 : 11;
+    // Round 5: fewer puffs, each carrying more optical depth. The plume was reading as a field of
+    // individually legible pale scraps strewn over twenty metres of road — "falling confetti" — and
+    // the cure for that is NOT more sprites, it is fewer sprites that overlap. Sixteen puffs at
+    // alpha 0.18 spread over a 6 m fan are sixteen objects; eleven at alpha 0.24 inside a 3 m fan
+    // are one cloud. It also buys back the fill rate the crash work below spends.
+    const n = amount > 0.55 ? 11 : 8;
     const spd = Math.hypot(vel.x, vel.z);
     // At 100 mph a puff left standing at the contact patch is 40 m behind the car by the time it
     // has grown. Real tyre smoke is entrained in the car's wake, so each puff is launched with a
@@ -688,11 +904,11 @@ export class Effects {
     // one second, so the plume was a set of individually legible scraps with night road between
     // them. Tyre smoke boils UP out of a contact patch and is dragged back by the car; it does not
     // spray sideways like a garden sprinkler.
-    const spread = 0.42 + 0.58 * amount;
+    const spread = 0.30 + 0.46 * amount;
     for (let i = 0; i < n; i++) {
       const side = this.rng.sign();
-      const off = this.rng.range(0.06, 0.70) * spread;
-      const fan = this.rng.range(1.4, 4.2) * spread;
+      const off = this.rng.range(0.05, 0.58) * spread;
+      const fan = this.rng.range(0.9, 2.9) * spread;
       const wisp = this.rng.bool(0.60);
       this.smoke.emit({
         pos: [
@@ -706,7 +922,7 @@ export class Effects {
           this.rng.range(1.7, 3.8) + amount * 1.7,
           vel.z * carry + lz * side * fan + this.rng.range(-1.6, 1.6),
         ],
-        life: (wisp ? this.rng.range(0.38, 0.85) : this.rng.range(0.80, 1.45))
+        life: (wisp ? this.rng.range(0.34, 0.72) : this.rng.range(0.70, 1.22))
           * (0.68 + 0.5 * amount + 0.3 * build),
         size: (wisp ? this.rng.range(0.30, 0.52) : this.rng.range(0.46, 0.72)) * (0.85 + 0.45 * build),
         grow: wisp ? this.rng.range(1.9, 2.8) : this.rng.range(2.4, 3.4),
@@ -730,7 +946,7 @@ export class Effects {
         ),
         // thinner per puff, more puffs: the same optical depth built out of overlapping sprites
         // instead of individually readable ones
-        alpha: (wisp ? 0.175 + 0.205 * amount : 0.230 + 0.265 * amount)
+        alpha: (wisp ? 0.215 + 0.255 * amount : 0.290 + 0.320 * amount)
           * (0.75 + 0.40 * build) * this._pop,
         fadeIn: 0.012, decay: wisp ? 1.35 : 1.15,
       });
@@ -739,7 +955,7 @@ export class Effects {
     // above spread out into separate scraps with clear air between them, and a plume made of
     // separate scraps reads as litter rather than smoke. These are small, slow, overlapping and
     // short-lived: they pile up under the tyre and hand off to the wisps as those pull away.
-    for (let i = 0; i < (amount > 0.18 ? 7 : 4); i++) {
+    for (let i = 0; i < (amount > 0.18 ? 5 : 3); i++) {
       this.smoke.emit({
         pos: [pos.x + this.rng.range(-0.30, 0.30), py + this.rng.range(0.02, 0.16), pos.z + this.rng.range(-0.30, 0.30)],
         vel: [
@@ -754,7 +970,7 @@ export class Effects {
         tile: this.rng.int(0, 3),
         color: this._smokeColor(this.rng.range(0.82, 1.0), this.rng.range(0.55, 1.0),
           dirt ? this._dustAlbedo : null),
-        alpha: (0.215 + 0.245 * amount) * this._pop,
+        alpha: (0.290 + 0.300 * amount) * this._pop,
         fadeIn: 0.01, decay: 1.0,
       });
     }
@@ -768,8 +984,8 @@ export class Effects {
       const a = this.rng.range(0, Math.PI * 2);
       this.smoke.emit({
         pos: [pos.x + this.rng.range(-0.4, 0.4), py + 0.05, pos.z + this.rng.range(-0.4, 0.4)],
-        vel: [Math.cos(a) * this.rng.range(2.6, 6.4) * spread + vel.x * 0.48, this.rng.range(0.5, 1.6), Math.sin(a) * this.rng.range(2.6, 6.4) * spread + vel.z * 0.48],
-        life: this.rng.range(1.0, 1.9) * (0.7 + 0.4 * build),
+        vel: [Math.cos(a) * this.rng.range(1.5, 4.0) * spread + vel.x * 0.48, this.rng.range(0.5, 1.6), Math.sin(a) * this.rng.range(1.5, 4.0) * spread + vel.z * 0.48],
+        life: this.rng.range(0.85, 1.5) * (0.7 + 0.4 * build),
         size: this.rng.range(0.40, 0.66), grow: this.rng.range(2.4, 3.4),
         rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-0.5, 0.5),
         stretch: this.rng.range(0.92, 1.06), align: 0.40,
@@ -798,7 +1014,7 @@ export class Effects {
           rot: this.rng.range(-0.8, 0.8), rotV: this.rng.range(-1.4, 1.4),
           stretch: this.rng.range(1.05, 1.30), align: 0.72, tile: this.rng.int(0, 3),
           // torn straight off the patch and out into the open air: full key light, brightest layer
-          color: this._smokeColor(this.rng.range(1.10, 1.38), this.rng.range(0, 0.28),
+          color: this._smokeColor(this.rng.range(0.98, 1.18), this.rng.range(0, 0.28),
             dirt ? this._dustAlbedo : null),
           alpha: (0.13 + 0.15 * amount) * (0.72 + 0.28 * this._pop),
           fadeIn: 0.008, decay: 1.7,
@@ -954,7 +1170,7 @@ export class Effects {
         // soot and shredded plastic, the pale fraction is road dust and coolant flash.
         color: isDark
           ? this._smokeColor(this.rng.range(0.22, 0.40), this.rng.range(0.55, 1.0))
-          : this._smokeColor(this.rng.range(0.85, 1.30), this.rng.range(0.05, 0.60)),
+          : this._smokeColor(this.rng.range(0.80, 1.10), this.rng.range(0.05, 0.60)),
         // Deliberately thin — the shower and the fire are the subject, the smoke is the frame —
         // and thinner still the further out a puff starts. The puffs at the RIM of the cloud have
         // nothing behind them to overlap with, so at a uniform alpha they are the ones you read
@@ -1344,32 +1560,46 @@ export class Effects {
     // Everything below is anchored to the contact point and its surface normal: the lamps sit a
     // little PROUD of the wall (along +n, toward the car) so the barrier face, the car's flank and
     // the road all take the flash, instead of the wall shadowing itself.
-    // FLASH: the moment of contact, near-white. Deliberately ~50 ms — it is for the frame the
+    //
+    // EVERY PEAK BELOW IS IN LOS ANGELES CANDELA and is multiplied by `_lightGain` on the way into
+    // `_light()`. The whole rig is budgeted against ONE number: the total irradiance the three
+    // lamps put on the struck panel at the moment §8 captures the frame, which
+    // `tools/_fx_crashlight.mjs` measures directly. Round 2 shipped that at ~10x the city key on
+    // the flank and 2.8x at the car's centre, and the result was the standing verdict — the car a
+    // white ghost, the struck taxi a featureless slab, the crumple and the scuff this piece spends
+    // most of its budget on erased by the light that was meant to show them. The budget is now
+    // ~1.2x the key on the panel: the corner is plainly the brightest bodywork in the frame and
+    // plainly on fire, but it is still PAINT, and the spark streaks — which are additive and
+    // self-luminous — are left as the only thing in frame that clips.
+    //
+    // FLASH: the moment of contact, near-white. Deliberately ~40 ms — it is for the frame the
     // player sees live, and it must be OUT before the §8 crash capture at +0.2 s or the whole
-    // quarter of the screen blows to white.
-    this._lightAt(p, nrm, 0.10, 0.50, '#fff4e0', 20 + 78 * big, 0.045,
+    // quarter of the screen blows to white. It is also further off the bodywork than round 2's
+    // (45 cm out, 75 cm up rather than 10/50): a hard lamp inside the panel's own half-metre is
+    // pure 1/r² singularity, and moving it out is worth more than turning it down.
+    this._lightAt(p, nrm, 0.45, 0.75, '#fff4e0', 9 + 22 * big, 0.040,
       { dist: 13 + 10 * s, ease: 2.0, slot: this.CRASH_FLASH });
     // BURN: the fireball. Holds, then decays over most of a second — this is the lamp that is
     // still burning at the +0.2 s the crash frame is captured, so the panels read orange.
-    // …but its peak is deliberately lower than round 3's and its cutoff longer: a tight bright
-    // lamp 40 cm off the flank blows the near panels to white, which was the other half of "the
-    // car is not readable". A softer, wider burn LIGHTS the bodywork instead of erasing it.
-    // …and it is now a NEAR lamp, not a bright one. A 20-candela point light 35 cm off the flank
-    // puts ~50x a street lamp's illuminance on the struck panel: the corner comes out as an
-    // undifferentiated orange-white mass, which erases the very crumple and scuff this piece just
-    // spent its budget putting there. Weak and close reads as "lit by the fire"; strong and close
-    // reads as "the panel is gone".
-    this._lightAt(p, nrm, 0.30, 0.52, heavy ? '#ff9c3c' : '#ffb257', 2.6 + 6.0 * big, 0.55 + 0.55 * s,
+    // Weak and close reads as "lit by the fire"; strong and close reads as "the panel is gone",
+    // and round 2 was strong and close. It now stands off ~1.1 m from the contact, which puts the
+    // near and far ends of the struck corner within a stop of each other instead of four — the
+    // gradient ACROSS the dent is what makes the dent visible, and a singularity flattens it.
+    this._lightAt(p, nrm, 0.75, 0.85, heavy ? '#ff9c3c' : '#ffb257', 1.5 + 3.4 * big, 0.60 + 0.55 * s,
       { dist: 9 + 5 * s, hold: 0.05 + 0.05 * s, ease: 1.30, flick: 1, slot: this.CRASH_BURN });
     // POOL: the wide wash — the tarmac, the barrier face and whatever prop is standing next to the
     // hit all read warm instead of staying flat purple, which is the single most expensive-looking
     // thing this effect does. Hung high and set well out over the road, so its 1/r² singularity is
-    // in open air rather than on the bodywork or on the asphalt right under it.
-    // …and this is the lamp that carries the frame's drama, so it is the one that stays strong.
-    // Its distance from the bodywork (nearly two metres out and most of two up) is what lets it be
-    // strong: the falloff across the car is gentle, so it lights the panels rather than clipping
-    // them, while the barrier, the tarmac and any prop standing next to the hit all go warm.
-    this._lightAt(p, nrm, 1.85, 1.70, '#ff8636', 11 + 26 * big, 0.75 + 0.5 * s,
+    // in open air rather than on the bodywork or on the asphalt right under it — and this is the
+    // lamp that carries the frame's drama, so it is the one that keeps most of its energy. It puts
+    // roughly two thirds of its irradiance on the ROAD under the contact (2 m away) and a third on
+    // the car (4 m away), which is the split that reads as a pool of firelight rather than a
+    // spotlight on the car — and it is the one lamp that KEPT its energy, because "the shower casts
+    // a genuine warm pool of light on the asphalt" is the thing round 2 was scored up for and
+    // dimming the whole rig uniformly threw it away. Sanity check on the numbers: it lands ~4x the
+    // city key on the tarmac directly under it, which on asphalt (albedo ~0.07) is a warm patch at
+    // about a quarter of display white — a pool, nowhere near a clip.
+    this._lightAt(p, nrm, 2.40, 1.70, '#ff8636', 10.0 + 20.0 * big, 0.75 + 0.5 * s,
       { dist: 22 + 14 * s, hold: 0.06, ease: 1.45, flick: 0.7, slot: this.CRASH_POOL });
 
     // ---- the smoke layer, immediately: this is what makes it read as an impact, not a firework.
@@ -1492,7 +1722,7 @@ export class Effects {
           size: this.rng.range(0.38, 0.80), grow: this.rng.range(2.8, 4.0),
           rot: this.rng.range(-1.6, 1.6), rotV: this.rng.range(-0.8, 0.8), tile: this.rng.int(0, 3),
           stretch: this.rng.range(0.92, 1.10), align: 0.40,
-          color: this._smokeColor(this.rng.bool(0.4) ? this.rng.range(0.28, 0.44) : this.rng.range(0.86, 1.22),
+          color: this._smokeColor(this.rng.bool(0.4) ? this.rng.range(0.28, 0.44) : this.rng.range(0.82, 1.06),
             this.rng.range(0.15, 0.95)),
           alpha: (0.118 + 0.140 * s) * this._pop
             * this.rng.range(0.7, 1.2) * (1 - 0.45 * (rad / 1.7)),
@@ -1600,7 +1830,7 @@ export class Effects {
     // amount of particle work fixes that — the panel has to change. This caves the struck corner
     // in along the impact normal with a crease running down the slide direction, and scuffs the
     // car's own skin there to torn paint over bare metal. Both persist for the rest of the run.
-    this._damageCorner(_v1.set(p[0], p[1], p[2]), nrm, tan, s);
+    this._damageCorner(_v1.set(p[0], p[1], p[2]), nrm, tan, s, vx, vz);
     // …and the world takes its share of it: whatever was struck bends away and sheds its own bits.
     if (s > 0.30) this._damageWorld(p, nrm, tan, s, vx, vz);
     this.damage = clamp(this.damage + 0.30 + big * 0.75, 0, 1);
@@ -1806,8 +2036,13 @@ export class Effects {
    * a fireball does not begin dying the instant it is born, and without the plateau the lamp is
    * down to 3% by the +0.2 s the crash frame is captured, which is exactly why round 2's impact
    * looked unlit. `flick` adds a deterministic fire wobble so a burning contact patch breathes.
+   *
+   * `peak` is in LOS ANGELES CANDELA: every call site authors the number it wants under a daylight
+   * key and `_lightGain` rescales it for the city actually being rendered, so an impact is the same
+   * fraction of white on the bodywork at midday and at midnight. See `_sampleSceneLight`.
    */
   _light(pos, color, peak, dur, dist = 24, { slot = null, y = 0.3, hold = 0, ease = 2.4, flick = 0 } = {}) {
+    peak *= this._lightGain;
     let best;
     if (slot !== null) {
       best = this.lights[slot];
@@ -1845,6 +2080,82 @@ export class Effects {
   }
 
   fovPunch(d) { this._fovKickV += d * 16; }
+
+  /**
+   * WHERE THE CRASH IS SHOT FROM. main.js hands this the chase rig's wanted position for the
+   * frame; for the 0.85 s after an impact it is pulled toward a rig laid out on the ROAD instead
+   * of on the car.
+   *
+   * THE BUG THIS REPLACES. Round 1 shipped a per-frame occluder search: raycast the whole city
+   * from the car to the rig, and if something was in the way, climb / step sideways / dolly in
+   * until it was not. The NYC crash captures still came back with the player car "visually CUT IN
+   * HALF" by a flat column across frame centre — and instrumenting it showed why. The search was
+   * not failing; it was reporting CLEAR. Its two probes went to the car's origin and to the
+   * contact point, and the slab that bisected the car threaded neatly between them: at the NYC
+   * contact, 3 of 7 points spread over the car's silhouette were blocked while both of the probes
+   * the search actually made were not. Occlusion of a 4.5 m car eight metres from the lens is an
+   * AREA question and two rays cannot answer it.
+   *
+   * And the occluder was not something the rig wandered into. main.js's wall sits at |lateral|
+   * 1.52 — half a road width OUTSIDE the barrier line — so a car pinned against it is off the
+   * road, while the rig is clamped to 1.12 to keep it inside the barriers. The clamp therefore
+   * put the rig three to four metres inboard of the car with the kerb, the barrier and whatever
+   * the city has built on the shoulder directly between the two. Measured at the NYC contact:
+   * with the rig 3.8 m inboard, 3 of 7 silhouette points blocked; on the car's own lateral,
+   * straight back down the road, none of the ones that read.
+   *
+   * So the fix is not a better search, it is not standing there in the first place — and the
+   * search is gone. That matters twice over, because one ray against a merged city is 6.8 ms in
+   * LA and 12.3 ms in NYC (measured, `tools/_fx_occ_r4.mjs`), and it was being fired EVERY FRAME
+   * for the half second after every impact — ~50 of them per crash, one to two crashes per 300
+   * frames of tools/perf.mjs. It was the largest single term in this piece's p95.
+   *
+   * What replaces it is one `track.nearest()` — an arc-length table lookup, ~50 distance tests:
+   *
+   *   · the rig sits back down the road's OWN tangent, not behind the car's heading. A car that
+   *     has just hit something is yawing hard, and a rig chasing that yaw swings outboard into the
+   *     scenery — it is what aimed the lens into the NYC slab. The road direction is stable
+   *     through the whole spin, so the shot holds still while the car moves inside it.
+   *   · it stands no further out than the road's own edge, so it is never in the scenery the car
+   *     has been pushed into (see the note on CRASH_RIG_LAT below), while keeping the SIDE of the
+   *     road the crash happened on.
+   *   · it holds a fixed distance to the car rather than fixed offsets, so stepping in off the
+   *     shoulder does not also shrink the hero.
+   *   · and it lifts, because a crash seen from slightly above is the shot: the shower is thrown
+   *     out along the barrier at knee height and from road level the car's own body hides it.
+   *
+   * Blended, not snapped — `w` eases from 1 at contact to 0 at the end of the window, so the rig
+   * settles onto the crash line over ~0.15 s and is back on the chase rig by the time the car is
+   * driving again.
+   */
+  crashRig(want, carPos, track, hintU = null) {
+    if (this.crashT >= CRASH_RIG_T || !track) return;
+    const w = 1 - this.crashT / CRASH_RIG_T;
+    const e = w * w * (3 - 2 * w);
+    const n = track.nearest(carPos, hintU);
+    const s = n.sample;
+    // …and never further out than the road's own edge. This is the half of the fix that the
+    // measurements insisted on: main.js's wall sits at |lateral| 1.52, which in every city is
+    // beyond the barrier and INSIDE the scenery — palms and a parked truck in LA, an elevated
+    // pier in NYC. Standing the rig on the car's own lateral there put a palm trunk 0.5 m from
+    // the lens. Held to the road edge, the same eight frames measure 0 blocked silhouette points
+    // in LA, Vegas and Miami and 1 in NYC (`tools/_fx_occ_r8.mjs`), against 1–5 out in the
+    // scenery. The sign is kept, so the rig stays on the side of the road the car crashed on.
+    const lat = Math.sign(n.lateral || 1) * Math.min(Math.abs(n.lateral), CRASH_RIG_LAT);
+    const across = (lat - n.lateral) * track.halfWidth;
+    // HOLD THE DISTANCE, NOT THE OFFSETS. Stepping five metres across the road on top of a fixed
+    // eight metres back puts the lens 9.6 m from the car, and at that range the hero is 19 % of
+    // the frame width — the damage, the torn quarter and the wheel that has been knocked out of
+    // line all stop reading, which is most of what §6.6 scores. So the along-track leg is solved
+    // for whatever the sideways step leaves: the rig ends up the same distance from the car
+    // wherever it has had to stand, just at a different angle to it. The floor keeps it from
+    // collapsing to a pure side-on shot when the car is a long way off the road.
+    _v1.copy(carPos).addScaledVector(s.right, across);
+    const leg = Math.sqrt(Math.max(0, CRASH_RIG_DIST * CRASH_RIG_DIST - across * across));
+    _v1.addScaledVector(s.tan, -Math.max(CRASH_RIG_BACK_MIN, leg));
+    _v1.y = carPos.y + CRASH_RIG_LIFT;
+    want.lerp(_v1, CRASH_RIG_PULL * e);
+  }
 
   hitStop(d, dip = 0.24) {
     this._hitStopT = Math.max(this._hitStopT, d);
@@ -1904,7 +2215,11 @@ export class Effects {
     const d = this.damage;
     const spd = Math.hypot(car.vel.x, car.vel.z);
     this._damageT += dt;
-    const every = 1 / (14 + 26 * d);
+    // Round 5 raises the rate and the opacity together. §6.6 asks for a damage STATE, and the state
+    // has to be legible in a still taken 0.2 s after the hit as well as in motion — at 14–40
+    // puffs/s at alpha 0.14 the wound put about three visible sprites in that frame, which reads
+    // as nothing at all.
+    const every = 1 / (20 + 34 * d);
     if (this._damageT < every) return;
     this._damageT = 0;
     const f = car.forward, r = car.right;
@@ -1924,13 +2239,31 @@ export class Effects {
         this.rng.range(1.4, 3.0),
         car.vel.z * 0.55 + this.rng.range(-0.9, 0.9),
       ],
-      life: this.rng.range(0.9, 1.9), size: this.rng.range(0.24, 0.50) * (0.7 + 0.6 * d),
+      life: this.rng.range(0.9, 1.9), size: this.rng.range(0.26, 0.54) * (0.8 + 0.7 * d),
       grow: this.rng.range(3.2, 4.8),
       rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.4, 1.4), tile: this.rng.int(0, 3),
       stretch: this.rng.range(0.98, 1.18), align: 0.44,
       color: this._smokeColor(this.rng.bool(0.55) ? 0.13 : 0.32, 0.8, this._rubberAlbedo),
-      alpha: (0.14 + 0.22 * d) * this._pop, fadeIn: 0.05, decay: 1.4,
+      alpha: (0.22 + 0.30 * d) * this._pop, fadeIn: 0.05, decay: 1.4,
     });
+    // A paler second layer boiling off the same wound. One value of smoke is a decal; two values
+    // rolling over each other is a plume, and the pale one is what carries the shape at distance.
+    if (d > 0.35) {
+      this.smoke.emit({
+        pos: [car.pos.x + ox + this.rng.range(-0.26, 0.26), car.pos.y + oy + this.rng.range(0.15, 0.55), car.pos.z + oz + this.rng.range(-0.26, 0.26)],
+        vel: [
+          car.vel.x * 0.48 + this.rng.range(-1.1, 1.1),
+          this.rng.range(2.0, 4.0),
+          car.vel.z * 0.48 + this.rng.range(-1.1, 1.1),
+        ],
+        life: this.rng.range(0.7, 1.5), size: this.rng.range(0.30, 0.58) * (0.8 + 0.6 * d),
+        grow: this.rng.range(2.8, 4.0),
+        rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.2, 1.2), tile: this.rng.int(0, 3),
+        stretch: this.rng.range(0.94, 1.12), align: 0.40,
+        color: this._smokeColor(this.rng.range(0.62, 0.92), 0.35),
+        alpha: (0.14 + 0.22 * d) * this._pop, fadeIn: 0.06, decay: 1.5,
+      });
+    }
     // a hot glow inside the wound while the damage is fresh — the corner is still burning
     if (d > 0.5 && this.rng.bool(0.3)) {
       this.glow.emit({
@@ -1979,7 +2312,31 @@ export class Effects {
       // the scene gets darker. Smooth, not a step — the old `_bright > 0.42` branch put a cliff
       // between two cities that are half a stop apart.
       const b01 = smoothstep(0.20, 0.55, this._bright);
-      this._smokeVal = lerp(0.74, 0.55, b01);
+      // THE VALUE IS WHAT DECIDES THE COLOUR — this is the actual fix for the pink plume, and it
+      // is not a colour change at all.
+      //
+      // Ablated on `la-muscle-drift` by neutralising one grade term at a time and re-sampling the
+      // same seven smoke pixels: pre-saturation, display saturation, vibrance, shadow gain and the
+      // highlight gain all leave the plume magenta. Zeroing `uLiftAmount` — the SHADOW TINT — takes
+      // it straight to neutral, (165,119,147) → (141,138,127). Los Angeles grades its shadows
+      // mauve (`losangeles.js` says so in as many words at line 1454), the tint is applied as
+      // `mix(col, col * uLift, pow(1 - l, 1.4) * 0.6)`, and the plume's own luminance put it deep
+      // inside that band. The grade was choosing the smoke's hue, and no tint this file emits could
+      // outvote it — which is exactly why the same lavender turned up in four different cities.
+      //
+      // So the plume climbs out of the band instead. `pow(1 - l, 1.4)` is 0.67 at l = 0.25 and 0.07
+      // at l = 0.85: brightening the puff by half a stop cuts the tint it receives by most of an
+      // order of magnitude. It is also what §1.5 describes — "a white puff of tire smoke" — and it
+      // costs nothing, because the puff's SHADE side still sits low enough to take the city's
+      // shadow colour, which is the split that gives a cloud its form.
+      //
+      // Note the direction: BRIGHTER in a bright city, which is the opposite of what round 3 had.
+      // Round 3's argument was about contrast — pale smoke washes out against a bright road — and
+      // it is the weaker argument. A plume in midday sun really is close to white and a plume lit
+      // only by street lamps really is dim, and the value that makes the smoke keep its own hue in
+      // LA is the same value that makes it read as sunlit. New York, which grades its shadows a
+      // cool near-neutral, was already coming out white at 1.0 and does not need the lift.
+      this._smokeVal = lerp(1.05, 1.38, b01);
       // Deliberately a much smaller night boost than round 3's 1.55. Making a puff read against a
       // dark city is a job for its VALUE, not its opacity: at 1.55 every sprite was individually
       // opaque, so instead of a cloud you saw twenty separate pale flakes with road between them.
@@ -2037,7 +2394,8 @@ export class Effects {
     this.body.clear();           // un-dent the car and drop its scuff patches
     this.world.clear();          // …un-bend whatever it hit and stand its props back up
     this.damage = 0; this._damageT = 0; this.impacts = 0; this.crashT = 99;
-    this._scrapeJudder = 0; this._dents = 0; this._lastDentAt = null; this._damageAt = null;
+    this._scrapeJudder = 0; this._dents = 0; this._tears = 0;
+    this._lastDentAt = null; this._damageAt = null;
     this._queue.length = 0;
     for (const sl of this.lights) { sl.l.intensity = 0; sl.dur = 0; sl.peak = 0; }
     this.shake = 0; this.shakePeak = 0; this.timeScale = 1;

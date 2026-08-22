@@ -21,8 +21,11 @@ import { drawText } from '../core/font.js';
  *
  *     MAGENTA #ff2fd0   GOLD #ffc21e   CYAN #2fe0ff
  *
- * Nothing in this city is green, red, or white-neutral. That is the identity test in §6.4:
- * swap this palette into LA/Miami/NYC and it would look absurd, which is the point.
+ * …plus two accents that are placed by hand rather than dealt round the city: BULB #ffefd2, the
+ * white incandescent chase every real cabinet carries, and GREEN #2bff8f on the over-road gates
+ * and one sign face (§1.3 names green torus gates as the reference night frame's signature).
+ * That is the identity test in §6.4: swap this palette into LA/Miami/NYC and it would look
+ * absurd, which is the point.
  *
  * The route is one long dead-straight boulevard (THE STRIP) followed by a fast constant-radius
  * sweeper, a back straight with a chicane, and a tight west-end hairpin — so the corner menu is
@@ -45,6 +48,23 @@ const MAGENTA = '#ff2fd0';
 const GOLD = '#ffc21e';
 const CYAN = '#2fe0ff';
 const HUES = [MAGENTA, GOLD, CYAN];
+/**
+ * THE FOURTH TUBE — deliberately NOT in `HUES`.
+ *
+ * §1.3 describes the reference's night frame precisely: "three enormous green neon torus gates
+ * arcing over the road, glowing hard enough to bloom, with visible light spill on the wall
+ * behind them… the palette is deliberately three-colour neon — green, magenta, blue-white".
+ * Green is the reference's signature over-road colour and this city had none of it: measured on
+ * the r1 sweep, 0.00% of `vegas-muscle-chase` sat in the 60–180 degree hue range, while 60% sat
+ * in a single 30-degree bin.
+ *
+ * It stays out of `HUES` on purpose. That array is indexed `% 3` in eighteen places (pylons,
+ * marquees, coves, chases, kerb washes, sky beams), so adding a fourth member would re-deal the
+ * whole city's colour and put green on everything. Green is placed by hand instead, on the two
+ * things §1.3 actually names: gates arcing over the road, and one sign face. Magenta, gold and
+ * cyan are still the city; green is the accent that proves it is a palette and not a filter.
+ */
+const GREEN = '#2bff8f';
 /**
  * THE WHITE POINT.
  *
@@ -2895,7 +2915,7 @@ export const def = {
     // AmbientLight is omnidirectional: at 68% saturation this one was painting violet onto every
     // surface in the city from every direction at once, including the four cars.
     shadowTint: '#2f2a46',
-    shadowFill: 0.80,      // see the note on `ambient` below — the black in "near black"
+    shadowFill: 0.72,      // see the note on `ambient` below — the black in "near black"
     // THE OFF-ROAD GROUND.
     //
     // This used to self-light in the fog colour (#150726) and the round-3 critic called the result
@@ -2919,7 +2939,7 @@ export const def = {
       // Black desert sky. The horizon carries a low bruise of city-glow and nothing else — the
       // glow disc in skyCanvas() is 42% of the dome's height, so a bright `sunColor` here washes
       // the entire upper sky magenta and the stars vanish, which is the opposite of the brief.
-      top: '#000005', horizon: '#0a0419', ground: '#050309', haze: '#1d0722',
+      top: '#000005', horizon: '#0a0419', ground: '#050309', haze: '#1e1027',
       sunDir: [0.85, -0.06, 0.5], sunColor: '#4a0e33', clouds: 0.0, stars: 2.6, seed: 202,
     },
     // A violet moon at 0.24 is barely a light — but it is the only light that reaches a car in
@@ -2969,7 +2989,14 @@ export const def = {
     // the same warm cast at a third of the chroma: still unmistakably the Strip's own light, still
     // the complement of the violet moon that §2.1 asks for, but a teal car stays teal under it.
     ambient: {
-      sky: '#33304c', ground: '#1d1a2c', intensity: 0.80,
+      // (grade-discipline pass) 0.80 -> 0.68. Miami has just been moved off near-black-with-neon
+      // and onto a daylight dusk, which only separates the two cities if THIS one actually holds
+      // the near-black end. Measured across the r0 sweep, Vegas ran 40-45 % of frame under sRGB 26
+      // against Miami's 15-25 %; a further eighth of a stop off the one term that lights every
+      // up-facing surface whether or not a sign is near it widens that gap without touching a
+      // single emissive. The floor that keeps an unlit wall a surface rather than a hole is
+      // `groundGlow` (3.80, on its own colour) and it is deliberately untouched.
+      sky: '#33304c', ground: '#1d1a2c', intensity: 0.68,
       fill: { color: '#ffd9ae', intensity: 1.15, dir: [-0.72, 0.18, 0.66] },
     },
     // (round 3) The other half of the same gap. The SpillPass adds the neon's own colour back onto
@@ -2987,7 +3014,17 @@ export const def = {
     // the twin white stripes separate from the paint and the panels keep their own value. Vegas
     // gets the hardest cut of the four because it is the only city whose probe is 100% emissive.
     paintEnv: 0.45,
-    fog: { color: '#150726', near: 150, far: 2000 },
+    // (grade-discipline round 2) '#150726' -> '#170f26'. Same value (relative luminance moves by
+    // 0.002, so `nightness` and the derived exposure are unchanged), saturation 0.69 -> 0.43.
+    //
+    // This colour is what every surface past 150 m dissolves into AND — via `applyLook` — the
+    // city's midtone balance, so at 69% chroma it was a violet gel over the entire mid- and
+    // far-ground: the measured "78% of the frame's chroma inside one hue window" was mostly this,
+    // the hemisphere and the shadow lift, not the neon. Desaturating it drops the whole dim
+    // background BELOW the chroma threshold instead of parking it in one bin, which is what leaves
+    // the magenta/gold/cyan/green tubes as the only saturated things in frame — §1.3's
+    // "cool deep blue-gray ambient… three-colour neon against near-black stone".
+    fog: { color: '#170f26', near: 150, far: 2000 },
     // The off-road plane's albedo, desaturated with the rest of the violet wash: a parking apron
     // under casino spill is a warm-grey concrete lit violet, not violet concrete. Value unchanged
     // so the shoulder still sits darker than the carriageway.
@@ -3031,7 +3068,43 @@ export const def = {
        * colour.
        */
       uHiChroma: 0.16,
-      uLift: '#040110', uGain: '#fff2fb', uVignette: 0.36,
+      /**
+       * THE NEUTRAL ANCHOR — and this one line was, measured, the largest colour term in the whole
+       * city. It was `#040110`.
+       *
+       * `applyLook` does `unitTint(uLift, 0.92)`, which divides the colour by its own LUMINANCE
+       * before using it as a shadow multiplier. Blue carries 7.2% of luminance, so a blue-black
+       * hex normalises to something enormous: (4,1,16) comes out as a multiplier of
+       * **(1.43, 0.42, 5.49)**. The grade then applies it as `mix(col, col*uLift, shadow*0.62)`
+       * over a WIDE shadow band (`pow(1-l, 1.4)`, still 0.5 at mid-grey), so a road pixel at
+       * luma 0.11 was being multiplied by (1.23, 0.69, 3.40).
+       *
+       * That is the whole of "Vegas is a single-hue wash": measured on `vegas-muscle-chase`, the
+       * asphalt read rgb(54,17,67) at 0.59 saturation — a violet road, not asphalt — the mint
+       * muscle car's body panel read hue 266 instead of its own 172, 60% of every chroma pixel in
+       * the frame sat in ONE 30-degree bin, and the yellow/green bins were at 0.00%. GOLD tubes
+       * lighting a wall came back magenta because their green was cut by a third and their blue
+       * multiplied by three, and CYAN came back blue for the same reason. The city's own three
+       * hues could not survive its own grade.
+       *
+       * `#646786` normalises to (0.960, 0.986, 1.259) — a shadow multiplier of about (0.98, 1.00,
+       * 1.11) on a dark road pixel. Vegas' shade is still indigo, because a 1.11x blue lift on the
+       * darkest third of the frame IS a cool shadow, and `shadowTint`, the violet moon and the
+       * hemisphere all still say so in the LIGHT. What it no longer does is repaint neutral albedo:
+       * near-black asphalt stays near-black asphalt, white bulb chases stay white, and a gold tube
+       * is allowed to be gold. Identity moves back into the emissives, which is where a city whose
+       * only light source is signage should have been carrying it all along.
+       *
+       * (The hex is mid-value on purpose — only its RATIO is read, and at #04-ish values 8-bit
+       * rounding moves the derived multiplier by 30%.)
+       */
+      uLift: '#646786',
+      // Vibrance is a chroma push aimed specifically at the pixels that have LEAST of it — i.e. at
+      // the asphalt, the concrete and the white stripes, the three surfaces that are supposed to be
+      // the neutral the neon is seen against. The night default is 0.30. On the most saturated
+      // scene in the game it is the wrong knob to run at full.
+      uVibrance: 0.15,
+      uGain: '#fff2fb', uVignette: 0.36,
     },
     // Threshold up and radius in: round 5's 0.57/0.72 ate its own sign faces — the WELCOME
     // marquee resolved as a pink rectangle with a white smear where the words should be. Only
@@ -3108,12 +3181,18 @@ export const def = {
       { u: U(120), side: 1, text: 'VIVA', sub: 'NITRO', color: MAGENTA, offset: 20 },
       { u: U(690), side: -1, text: 'ALL IN', sub: 'NO LIMIT', color: GOLD, offset: 22 },
       { u: U(1360), side: 1, text: 'ROYALE', sub: 'CASINO', color: CYAN, offset: 20 },
-      { u: U(1980), side: -1, text: 'JACKPOT', sub: 'MEGA', color: GOLD, offset: 24 },
+      // the one green sign face — the fourth tube, on the back straight where the gates are not
+      { u: U(1980), side: -1, text: 'JACKPOT', sub: 'MEGA', color: GREEN, offset: 24 },
       { u: U(2760), side: 1, text: 'HIGH ROLLER', sub: '24 HRS', color: MAGENTA, offset: 22 },
     ],
+    // Two of the six go GREEN — see the note on `GREEN` at the top of the file. The gate at 620 m
+    // is the one the chase capture drives under and the one at 2180 m closes the back straight, so
+    // the accent is on the two arches most likely to be in frame rather than hidden down the lap.
+    // `gt.color` is read three times (the torus itself, the reflection band it lays across the wet
+    // road, and the pool its legs stand in), so each of these puts its hue in the tarmac too.
     gates: [
-      { u: U(400), color: CYAN }, { u: U(620), color: MAGENTA },
-      { u: U(1100), color: GOLD }, { u: U(1720), color: CYAN },
+      { u: U(400), color: GREEN }, { u: U(620), color: CYAN },
+      { u: U(1100), color: GOLD }, { u: U(1720), color: GREEN },
       { u: U(2180), color: MAGENTA }, { u: U(2560), color: CYAN },
     ],
     boostPads: [

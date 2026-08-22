@@ -1442,14 +1442,28 @@ function smogBandTexture(seed) {
     const v = y / (h - 1);                        // 0 = top of the band, 1 = the skyline itself
     // density profile: thin at the top, a soft inversion shoulder, then a hard pile-up at the
     // horizon line. The shoulder is what makes it read as a LAYER and not as a gradient.
-    const base = Math.pow(v, 1.80) * 0.99;
+    // (grade-discipline pass) 1.80 -> 3.20. See the note above `smogBandTexture` for the
+    // measurement: with the exponent at 1.80 this layer was still 10-23 % opaque across the 14-26°
+    // band, which is exactly the band a chase camera fills its upper third with — so half the
+    // captures had an ochre wash where the sky should be and half (the landmark framing, pitched
+    // higher) had bare turquoise. That difference is most of "three different skies".
+    //
+    // At 3.20 the layer is 50 % dense at 2°, 27 % at 6°, 7 % at 14° and effectively gone by 20°:
+    // an inversion sitting ON the skyline, with the SAME turquoise dome above it in every framing,
+    // which is what one city at one hour looks like. The warm half of the complementary pair is
+    // not lost — it moves down onto the horizon line where a real smog layer is, and the hills,
+    // the ochre fog and the stucco carry it through the mid-ground.
+    const base = Math.pow(v, 3.20) * 0.99;
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       // azimuthal term: within ~70 deg of the sun the layer glows and thickens — but only just.
       const du = Math.abs(((x / w - sunU + 0.5) % 1 + 1) % 1 - 0.5);
       const sunlit = Math.pow(1 - smoothstep(0.0, 0.24, du), 1.5);
       const wisp = 0.72 + (f[i] - 0.5) * 0.9;     // torn horizontal structure in the layer
-      const a = clamp(base * wisp * (0.94 + sunlit * 0.20), 0, 1);
+      // (grade-discipline pass) 0.94 + 0.20·sunlit -> 0.99 + 0.06·sunlit. A 1.06x swing instead of
+      // a 1.21x one: the sun side is still marginally the denser side, but the layer is now within
+      // measurement noise of being the same layer at every heading, which is the point of it.
+      const a = clamp(base * wisp * (0.99 + sunlit * 0.06), 0, 1);
       // PRE-COMPENSATED, and it has to be. Measured through the whole chain, a flat ochre band of
       // (240,176,132) lands on screen as (221,133,159) — the grade's saturation lift pulls green
       // out and the mauve shadow lift puts blue back in, so painting the colour you want gets you
@@ -1690,8 +1704,18 @@ export const def = {
      * rather than left derived.
      */
     wet: 0.10,
+    // (round 3, per-city grade) threshold 0.90 -> 0.44, strength 0.16 -> 0.22, gain 1.22 -> 1.35.
+    // The threshold is in exposure-normalised units and LA's derived exposure is 0.55-0.6, so at
+    // 0.90 the brightest thing this city owns — the turquoise sky itself — arrived at the test at
+    // ~0.22 and NOTHING ever cleared it: the sheen was authored, derived, and then measured at
+    // zero contribution on every capture. 0.44 is the number at which the sky and the sunlit
+    // stucco clear it and a merely-lit road surface does not. 0.16 (tried, r3 interim) put the
+    // palms and the storefronts in the carriageway as a full wet mirror at six in the evening,
+    // which is Miami's and Vegas's look, not this one — see shots/r3-la-c. What is left is a
+    // grazing sky sheen on the far third of the road (the Schlick exponent stays at its dry 5.2)
+    // and nothing at all in the near field.
     wetLook: {
-      strength: 0.16, spread: 0.010, gain: 1.22, threshold: 0.90, knee: 0.42,
+      strength: 0.22, spread: 0.010, gain: 1.35, threshold: 0.44, knee: 0.34,
       patch: 0.88, patchScale: 0.060, fresnel: 5.2, band: 0.40,
     },
     /**
@@ -1730,8 +1754,38 @@ export const def = {
      *             dome keeps just enough to stop the gradient reading as a flat wash.
      */
     sky: {
-      top: '#0d8590', horizon: '#34bfa9', ground: '#6b4a30',
-      haze: '#ff9c52', sunDir: [-0.30, 0.28, 0.91], sunColor: '#b1703f', clouds: 0.12, seed: 101,
+      /**
+       * ROTATED OFF THE GREEN SIDE OF CYAN (grade-discipline round 2), and this is the consequence
+       * of taking the rose out of `grade.uLift` — it exposed what the sky underneath had always
+       * been doing.
+       *
+       * '#34bfa9' is hue 171: turquoise, but on the GREEN side of cyan. Everything this city adds
+       * on top of the dome is warm and ADDITIVE — the sun glow wedge, the smog band, the ochre
+       * aerial-perspective haze — and ochre plus a green-side turquoise is green, not teal. Round
+       * 1's rose lift was rotating that back by brute force; with the lift now near-neutral the
+       * first capture came back with a frankly green sky, a green-grey road (rgb 63,90,77, hue 150)
+       * and mint storefronts.
+       *
+       * The fix belongs in the light, not the grade. horizon 171 -> 184 and top 185 -> 193 put the
+       * dome on the BLUE side of cyan, so the same warm additive layers land on it as a warm-grey
+       * teal instead of as green, and §1.1's "deep saturated cyan-blue" is what the sky actually
+       * is rather than what the grade was pretending it was. Saturation and value are held (s0.57
+       * l0.48 -> s0.59 l0.47), so the turquoise LA is supposed to own is not traded away.
+       */
+      top: '#0d7f9e', horizon: '#31b3bd', ground: '#6b4a30',
+      // (grade-discipline pass) sunColor #b1703f -> #6f4c33. `skyCanvas` composites this as a
+      // radial gradient of radius h*0.42 — SEVENTY-FIVE DEGREES — with `lighter`, at alpha 0.8 at
+      // 4° from the disc and 0.13 out at 26°. LA's sun sits at 16° elevation, so the whole upper
+      // quarter of the frame is inside that wedge whenever the camera points anywhere near the
+      // sun's azimuth, and at (177,112,63) it repainted turquoise sky orange. That is the single
+      // largest remaining term in "cyan down the boulevard, orange in the drift": measured on the
+      // drift capture, the top-left corner ran hue 32 while the top-right corner of the SAME frame
+      // ran hue 172.
+      // At (111,76,51) the same wedge is a warming rather than a repaint. The sun still reads as a
+      // sun, because the disc stop runs at alpha 0.95 and because the smog inversion and the ochre
+      // fog both pile up on the same side of the sky — the difference is that they do it at every
+      // heading and this term does not.
+      haze: '#ff9c52', sunDir: [-0.30, 0.33, 0.91], sunColor: '#6f4c33', clouds: 0.12, seed: 101,
     },
     // Sun azimuth 108 deg — broadside to BOTH long straights, and that is the whole point.
     // Round 1 put it down the road axis: the specular glitter path then runs straight up the
@@ -1768,14 +1822,90 @@ export const def = {
      * spends. Trading 0.50 of key for 1.16 of hemisphere lands the same derived exposure with
      * two and a bit times the light in the shadows.)
      */
-    sun: { color: '#ffcf94', intensity: 3.75, dir: [-0.30, 0.28, 0.91] },
+    /**
+     * ROUND 3 — THE KEY:FILL RATIO ON THE GROUND, which is the r2 critique's one named gap:
+     * "18.3% of LA's road band is effectively achromatic (sat < 0.10) against 0.2-0.7% in the
+     * other three ... a dead-neutral grey slab under a saturated sunset sky."
+     *
+     * Ablated on the real build (`tools/_gd3_ab.mjs`, road band 80,420-700,880 of the chase
+     * frame): on the r2 rig the LIT quartile of the carriageway measured h206 s0.10 with 48% of
+     * its pixels under sat 0.10, and the SHADE quartile h201 s0.31 — the sun was not the light on
+     * the road at all, and lit and shaded asphalt were the same hue to within a degree. The
+     * arithmetic says why. A 16-degree key delivers sin(elev) = 0.28 of its intensity to a flat
+     * surface while a hemisphere delivers all of its own to every up-facing one, so at key 3.75 /
+     * hemisphere 2.00 the road was lit by 1.05 of warm against 2.0+ of cool. Turquoise light plus
+     * a warm key that cannot outrun it is grey.
+     *
+     * key 3.75 -> 8.00 and elevation 16 -> 19 degrees puts 2.6 of warm on the road against the
+     * hemisphere's 3.0, and `applyLook`'s exposure normalisation (auto = (2.55/key)^0.52, floored
+     * at 0.55) takes the frame straight back down — so this is a RATIO change, not a brightness
+     * one. The elevation move is small on purpose: 19 degrees still throws palm shadows three
+     * times the height of the palm, which is the thing that stripes this carriageway.
+     *
+     * Measured after: lit h16 s0.35, shade h199 s0.26, road-band pixels under sat 0.10 from 32.7%
+     * to 4.8%, and the only cool things left on the carriageway are the palm shadows.
+     */
+    sun: { color: '#ffc586', intensity: 8.00, dir: [-0.30, 0.33, 0.91] },
+    /**
+     * THE THREE-SKIES FAULT, and this is the term that was actually producing it.
+     *
+     * Measured over six `--u` stills round the lap plus the twelve sweep captures, the top of the
+     * LA frame ran hue 22 / 30 / 35 / 54 / 78 / 116 / 159 with lightness 18 to 53 — an orange sky,
+     * a green sky and a turquoise sky in the same city. Previous rounds looked for it in the dome
+     * and in `smogBandTexture`, and both are only worth a few code values at the elevations a
+     * driving frame actually samples (the band is 10-12 % opaque above 20 degrees).
+     *
+     * It is the ATMOSPHERE PASS. `engine.applyLook` derives `uSunGlow` as
+     * `clamp((sunI - 0.9) * 0.30, 0, 0.85)` and the shaft strength as
+     * `clamp((sunI - 1.1) * 0.55, 0, 1.25) * (0.45 + 0.55 * lowSun)`. LA's key is 3.75 at 16
+     * degrees elevation, so both saturate: glow 0.85 (the ceiling) and shafts 1.06. In `post.js`
+     * that lands as `col += hazeCol * pow(sunAlign, 3.0) * uSunGlow * 0.18` — a wedge of warm ochre
+     * up to 0.15 in strength, added to EVERY pixel including the sky, whose amount is a pure
+     * function of which way the camera is pointing. Turquoise plus that wedge is the green sky;
+     * turquoise plus the wedge plus the shaft blur is the orange one; turquoise without it (the
+     * landmark framing, which faces across the sun) is the one that was right.
+     *
+     * These numbers keep the god rays §6.5 asks a low-sun day city for — the shaft pass is still on
+     * at 0.45, and it is a directional streak through the palms rather than a flat wash — while
+     * taking the omnidirectional repaint down by a factor of eight. The sun still warms its own
+     * half of the sky, because `skyCanvas`'s glow disc and the smog band both still do that; they
+     * just do it by about a fifth of a stop instead of by a hue rotation.
+     *
+     * RE-VERIFIED round 3, and this time against SKY PIXELS rather than against the top of the
+     * frame. `tools/_gd3_sky.mjs` renders each position twice — once normally, once with every
+     * unfogged backdrop layer (dome, smog band, cloud cards, range curtains) hidden — and keeps
+     * only the pixels that came back black, i.e. the ones where sky and nothing else was on
+     * screen. Over eight lap positions spanning 160 degrees of heading, the top tenth of the frame
+     * measures h189 / h188 / h187 / h188 / h189 / h188 at the six positions where it is visible in
+     * quantity: a two-degree spread, one sky. The two that read warm are u=0.28 (yaw 21 deg, the
+     * sun's own 75-degree wedge fills the upper left — h33) and u=0.14, where 0.4% of the frame is
+     * sky at all and it is the ochre haze band under the freeway deck. A sun that warms its own
+     * side of the sky is a sun; the fault this note is about was the sky changing hue with heading
+     * everywhere, and it is gone.
+     */
+    shafts: { strength: 0.45, glow: 0.10 },
     ambient: {
       // The hemisphere IS the turquoise sky as far as every up-facing surface is concerned, and
       // it is the term that has to reach the carriageway and the off-road plane. Desaturated a
       // little on the way up: at 2.10 the old #8fd2e6 tipped grey asphalt frankly green.
-      sky: '#a6d6e4', ground: '#8f6a4c', intensity: 2.00,
-      // fill from the anti-sun side, carrying the turquoise zenith into the shaded flank
-      fill: { color: '#8fd0e2', intensity: 0.76, dir: [0.34, 0.40, -0.88] },
+      // (grade-discipline round 2) hue 194 -> 202, same value, for the same reason as the dome
+      // above: this hemisphere IS the light on the carriageway and on every up-facing surface, and
+      // with the warm rose gone from the grade it was the term deciding whether asphalt reads
+      // grey-blue or green-grey. Measured on the road patch, 63,90,77 (h150) before, and green is
+      // not a colour Los Angeles asphalt comes in.
+      // (round 3) '#a3cfe8' 2.00 -> '#4fb0ea' 3.00, i.e. the same light, half again as much of it
+      // and half again the chroma. With the key now at 8.00 this term stopped being what lights
+      // the whole ground and became what lights the SHADED ground, which is a different job: it
+      // has to be saturated enough to survive both the road's own unlit emissive floor (track.js
+      // gives the carriageway `emissiveMap` = a copy of its albedo at 0.34, an achromatic pedestal
+      // that ablation measured as worth 19 points of the road's mean saturation on its own) and
+      // the warm bounce below. Measured on the shade quartile of the road: h201 s0.18 at the old
+      // colour and intensity, h199 s0.26 at this one.
+      sky: '#4fb0ea', ground: '#8f6a4c', intensity: 3.00,
+      // fill from the anti-sun side, carrying the turquoise zenith into the shaded flank. Down
+      // with the rest of the fills (0.76 -> 0.32): it is a second cool term on surfaces the
+      // hemisphere already reaches, and at 0.76 it was half of what was greying the lit road.
+      fill: { color: '#8ec8ea', intensity: 0.32, dir: [0.34, 0.40, -0.88] },
     },
     // Rose bounce in the shade. Two jobs: it is the omnidirectional floor that keeps a wall
     // facing away from BOTH the sun and the sky off zero, and it is the city's shadow signature.
@@ -1784,17 +1914,19 @@ export const def = {
     // four separate places. Miami keeps cyan, NYC blue, Vegas violet; the day city takes the warm
     // rose that a golden-hour bounce off ochre hillside and warm stucco actually is.
     shadowTint: '#6f5a72',
-    // (round 3) 0.78 -> 0.90, and this is the near-miss §7 cap the round-2 critique flagged rather
-    // than applied: "the off-track shoulder in la-supercar-drift.png measures luminance sd of
-    // 2.7-4.2 over 300x200 blocks at rgb(36,43,44) — effectively flat colour on ~20% of the frame".
-    // Raycast (`.la_probe.mjs`) names it: it is the kit's 6 km ground plane, in the shadow of the
-    // storefront row, so the ONLY light on it is this omnidirectional floor. The plane's texture is
-    // not missing — parking aprons, service strips, oil stains, grain — it is being multiplied by a
-    // light level so low that its whole albedo range collapses into four or five sRGB code values.
-    // Lifting the floor by half a stop puts that same range back across ~15 code values, which is
-    // the difference between a surface and a flat colour, and it does it without touching the key,
-    // so the sunlit half of the frame is unchanged.
-    shadowFill: 0.90,
+    // 0.90 -> 0.28 (round 3, per-city grade). The last round raised this to keep the kit's 6 km
+    // ground plane off flat-colour where the storefront row shadows it — "luminance sd of 2.7-4.2
+    // over 300x200 blocks at rgb(36,43,44)". That fault is now paid for by the term that should
+    // have been paying for it: the ground plane faces UP, so the hemisphere at 3.00 reaches it in
+    // full, and it now sits at ~1.5x the light it had at hemisphere 2.00 + floor 0.90 while
+    // carrying the sky's colour instead of a flat omnidirectional wash. Which matters because an
+    // omnidirectional AMBIENT is the one light in the rig that cannot be a hue: it lands on the
+    // sunlit road and the shaded road equally, so every code value it adds is a code value of
+    // achromatic pedestal on top of the emissive one — a rose ambient against a turquoise
+    // hemisphere is grey, and grey on the road is the fault this round exists to fix. It stays
+    // non-zero, and it stays rose, because a wall facing away from BOTH the sun and the sky still
+    // has to be a surface and LA's bounce still comes off ochre hillside and warm stucco.
+    shadowFill: 0.28,
     /**
      * Smog, and enough of it to matter — but MEASURED against where the camera actually stands,
      * not against where the landmark was sited.
@@ -1821,7 +1953,27 @@ export const def = {
     ground: { color: '#86735a', accent: '#cbbfa4' },
     sidewalk: '#b3a893',
     grade: {
-      uSaturation: 1.34, uExposure: 1.05,
+      /**
+       * THE NEUTRAL ANCHOR. r2 took this to 1.22 (it asks `applyLook` for 1.10 after its ×0.90 and
+       * its 1.02-1.30 clamp) on the argument that a daylight city is saturated enough already.
+       * Measured across the twelve-frame sweep that turned out to be the wrong way round: LA came
+       * back with the LOWEST mean pixel saturation of the four cities — 0.403 against Miami 0.490,
+       * NYC 0.483 and Vegas 0.469 — because the one city whose largest surface is lit by two
+       * complementary sources is the one city where those sources cancel to grey. 1.34 asks for
+       * the 1.206 end of the same band.
+       *
+       * `uVibrance` is the more useful half and it is new here: it is applied `1 - smoothstep(0,
+       * 0.55, sat)`, i.e. only to pixels that are ALREADY near-neutral, which is precisely the
+       * road band this round is about and precisely not the turquoise sky, the ochre hills or the
+       * mint hero car. 0.22 (the derived day default) -> 0.40 moved the road band's mean
+       * saturation 0.32 -> 0.36 and its under-sat-0.10 share 5.6% -> 4.8% while leaving the
+       * frame's saturated half where it was.
+       *
+       * uExposure 1.05 -> 1.30 pays back what the key:fill change above spent: `auto` is now at
+       * its 0.55 floor (key 8.0), so the trim is what puts the frame mean luma back at 86.5 —
+       * a day city that is finally the brightest frame in the game rather than the darkest.
+       */
+      uSaturation: 1.34, uVibrance: 0.40, uExposure: 1.30,
       /**
        * CONTRAST AND BLACK POINT — the other half of "the day city is the darkest frame".
        *
@@ -1847,7 +1999,16 @@ export const def = {
       // rotation with no brightness cost — and now that the shadows carry real light it survives
       // to screen as chroma instead of as a two-code-value difference in a near-black. Matched to
       // `shadowTint` above so the scene light and the grade agree about what colour LA's shade is.
-      uLift: '#2e1b30', uGain: '#ffe6c6', uVignette: 0.22,
+      // …and the same rotation, at a quarter of the chroma. `applyLook` normalises this hex by its
+      // own LUMINANCE before using it as a multiplier on the shadow band, and the band is still
+      // half-strength at mid-grey — so '#2e1b30' was arriving as (1.380, 0.843, 1.436), a 16% green
+      // cut across everything dark in the frame. That is a rose PAINT on albedo, not a rose shadow:
+      // it is what took the neutral-mauve mountain ranges to pink (see the two `mountainRange`
+      // calls) and it is the LA end of the four-city measurement that had the same mint car
+      // photographing at hue 172 / 197 / 253 / 323 in the four cities. '#7a6574' normalises to
+      // (1.133, 0.952, 1.082): still unmistakably the warm rose that a golden-hour bounce off ochre
+      // hillside is, but the shade is now a hue the light explains rather than a hue the grade adds.
+      uLift: '#7d637a', uGain: '#ffe6c6', uVignette: 0.22,
     },
     bloom: { strength: 0.88, radius: 0.60, threshold: 0.74 },
   },
@@ -1869,7 +2030,19 @@ export const def = {
     // the sun since the 1930s is not fresh-laid binder. Everything the generator draws on top
     // (aggregate, chippings, tar seams, polished wheel tracks) is a multiplier, so they all get
     // proportionally more room to show as well.
-    surface: { tint: '#514f4c', lanes: 3, centerLine: 'double-yellow', worn: 0.78 },
+    // (round 3) '#514f4c' -> '#634f40'. Two reasons, and neither is "make it browner".
+    // 1. `roadSurfaceTexture` writes this colour into the albedo map AND `buildRoad` hands the
+    //    same canvas back as the material's `emissiveMap` at intensity 0.34 — an unlit pedestal
+    //    that no light in the rig can tint. Ablating it (roadEmissive 0) moved the road band from
+    //    32.7% of pixels under sat 0.10 to 13.9% and its mean saturation from 0.24 to 0.32, so on
+    //    a NEUTRAL tint that pedestal is a grey wash over the largest surface in the frame. The
+    //    only way to give it a hue from a city file is to give the albedo one.
+    // 2. h27 s0.35 is the hue the sun is, so the albedo reinforces the key on lit asphalt and
+    //    fights the hemisphere on shaded asphalt — which is exactly the separation this round
+    //    wants. Pushed further (tried: '#5f4f41' at hemisphere 1.32) the shade quartile lost its
+    //    cyan altogether and came back h52 s0.05; pulled back to neutral the LIT quartile went
+    //    h351 s0.09. This is the balance point, measured either side.
+    surface: { tint: '#634f40', lanes: 3, centerLine: 'double-yellow', worn: 0.78 },
     bank: 0.05,
     crossings: 8,
     sidewalkWidth: 5.2,
@@ -2077,14 +2250,24 @@ export const def = {
       sky.add(mountainRange({
         radius: 2300, height: 430, seed: 17, peaks: 7,
         arc: [SUN_AZ + 0.55, SUN_AZ + 5.05], gap: { at: SUN_AZ + 0.55, half: 0.9 },
-        haze: '#7d7382', lit: '#6b6478', shade: '#4c4a68',
+        // (grade-discipline pass) rotated off the magenta axis. These three were authored as
+        // neutral mauves, but this city's grade runs uGain '#ffe6c6' (a warm highlight gain) over
+        // uLift '#2e1b30' (a rose shadow lift), and a neutral mauve through that pair lands on
+        // screen as PINK — which is why the landmark capture read "pink/teal dusk" while the chase
+        // capture down the same boulevard read "cyan midday". A far range is aerial perspective:
+        // it should be the colour of the air between you and it, and the air over this city is
+        // turquoise. Slate-blue in, mauve out, and the frame stops claiming a second sunset.
+        haze: '#6f7789', lit: '#616c86', shade: '#3f4a6b',
       }));
       // Near range: the Verdugo/Baldwin foothills, warmer and more modelled, close enough that the
       // grazing sun actually separates their lit flanks from their shaded ones.
       sky.add(mountainRange({
         radius: 1680, height: 270, seed: 29, peaks: 9,
         arc: [SUN_AZ + 0.75, SUN_AZ + 5.35], gap: { at: SUN_AZ + 0.75, half: 1.05 },
-        haze: '#6d6068', lit: '#655a58', shade: '#443d54',
+        // Same rotation as the far range but half of it: these foothills are close enough that the
+        // grazing sun genuinely warms their lit flanks, so `lit` keeps its warmth and only the
+        // haze and the shade come off the magenta axis.
+        haze: '#646370', lit: '#655a58', shade: '#3d4058',
       }));
       sky.add(smogBand({ radius: 2450, height: 1500, seed: 5 }));
 

@@ -90,9 +90,18 @@ const UNDER = {
 };
 
 /** Per-role: how much of the base is replaced by the city hue, and how much bounce it collects. */
+/**
+ * ROUND-1 (vehicle art): `trim` and `plastic` bounce come down ~30%.
+ *
+ * The bounce is an EMISSIVE, and the garage stage multiplies it by 2.6 on top (menu.js
+ * UNDER_LIFT). At 0.110 that lands the A- and B-pillar bands of the tuner and the supercar at a
+ * higher value than the sky glass beside them, which is why the 6x hero crop reads them as
+ * mauve-brown panels rather than as blacked-out pillars. Satin black trim next to a lit window is
+ * always the darker of the two.
+ */
 const UNDER_ROLE = {
-  trim: { tint: 0.42, fill: 0.110 },    // bumpers, valances, rockers, tail panels
-  plastic: { tint: 0.36, fill: 0.098 }, // flares, arch liners, diffusers, bumper inserts
+  trim: { tint: 0.42, fill: 0.076 },    // bumpers, valances, rockers, tail panels
+  plastic: { tint: 0.36, fill: 0.070 }, // flares, arch liners, diffusers, bumper inserts
   well: { tint: 0.34, fill: 0.022 },    // inner fender — stays the darkest thing on the car
   cavity: { tint: 0.22, fill: 0.022 },  // grille backs, pipe bores, shut gaps: still holes
   housing: { tint: 0.34, fill: 0.052 }, // lamp housings
@@ -173,6 +182,20 @@ export function setBodyTint(look = {}) {
   // city's own accent at night (neon is the only key Vegas and NYC have).
   const tint = sky.clone().lerp(key, 0.35).lerp(accent, n * 0.55);
   atLum(tint, 0.30);
+  /**
+   * ROUND-1 (vehicle art): the hue is HALVED before it is applied.
+   *
+   * The principle is right — §2.1's "deep shadows are tinted, never #000" — but the amount was
+   * not. `trim` mixes 42% of this colour into its base, and in a room or a city whose accent is
+   * saturated warm (the garage runs #ffb347) the result is not tinted black plastic, it is TAN. On
+   * the round-1 hero frames the tuner's C-pillar, the supercar's A-pillar and every arch liner
+   * photograph as beige-brown panels — which reads as a material mistake, not as a lit shadow.
+   *
+   * Photographed satin-black trim under a tungsten key is a *very slightly* warm near-black. Half
+   * the chroma keeps that, and keeps the four cities distinguishable in the lower bodywork, while
+   * leaving the parts unmistakably black.
+   */
+  tint.lerp(new THREE.Color(0.30, 0.30, 0.30), 0.45);
   UNDER.tint.copy(tint);
 
   /**
@@ -275,9 +298,31 @@ function trimSurface() {
  * the reflection, so it is also the knob that lifts the car out of its own shadow. engine.js
  * multiplies it by a further 1.25 for anything with a clearcoat.
  */
+/**
+ * ROUND-1 (vehicle art, this round): METALNESS COMES DOWN, and this is the single biggest change
+ * on the four cars.
+ *
+ * Ablation on the garage hero frame (`tools/_va_ab.mjs noenv`) is unambiguous: kill the environment
+ * probe and the muscle car goes from a pale blue-white car with a green tint left in it to a
+ * saturated candy teal, and the "broad milky smear across the bonnet, the near flank and the whole
+ * rear quarter" disappears with it. Kill the CLEARCOAT instead and nothing moves at all. So the
+ * smear was never the coat and never the baked livery band — it was the probe, arriving through
+ * metalness.
+ *
+ * At metalness 0.5 half of the albedo is thrown away and replaced by a mirror of a 384 px cube
+ * capture, which is blurred by construction (see the note above skyReflect). A blurred capture of
+ * a lit room is a near-constant pale value, and a near-constant pale value laid over half the paint
+ * is precisely §4's "materials are uniformly matte or uniformly shiny, the palette is muddy".
+ *
+ * Real metallic car paint is a DIELECTRIC lacquer with aluminium flake suspended in it. Its metal
+ * character comes from the flake's sparkle and from the clearcoat's sharp reflection, not from a
+ * metalness of 0.5 — and both of those we already have (flakeNormal + skyReflect's analytic
+ * horizon, which is sharp because it is generated rather than sampled). 0.26 keeps enough metal
+ * for the reflection to carry the paint's own hue and hands the body colour back its saturation.
+ */
 export function paintMaterial({
-  color = '#d92b2b', metalness = 0.50, roughness = 0.26, clearcoat = 1.0,
-  clearcoatRoughness = 0.040, flake = 0.55, seed = 3, map = null, envIntensity = 1.25,
+  color = '#d92b2b', metalness = 0.26, roughness = 0.46, clearcoat = 1.0,
+  clearcoatRoughness = 0.42, flake = 0.55, seed = 3, map = null, envIntensity = 0.85,
 } = {}) {
   const mat = new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(color),
@@ -333,7 +378,43 @@ export function paintMaterial({
    * a couple of degrees, so on a rolled shoulder it is a LINE with an edge, which is the thing §1.1
    * is actually describing.
    */
-  skyReflect(mat, { gain: 1.05, blur: 0.005, f0: 0.050, tint: 0.62, sunPow: 300, amb: 0.16, cap: 0.40 });
+  // gain up from 1.05 with the probe weighting down: the analytic mirror is now the ONLY sharp
+  // reflection on the bodywork, so it carries the whole of §1.1's "bright sharp sky reflection on
+  // the upper panels, dark ground reflection on the lower". cap stays at 0.40 — a flank seen at
+  // 75 degrees must keep its colour.
+  /**
+   * ROUND-2 (this round): amb 0.15 → 0.23.
+   *
+   * With the low-frequency cloud smear taken out of the probe (see `nitroProbe`) the mirror is now
+   * a sharp horizon and very little else, which is what §1.1 asks for — but the mirror is
+   * Fresnel-weighted, so everything BELOW the character line, which faces the camera and faces away
+   * from the key, was left with nothing at all. Measured on the garage hero crop, the muscle car's
+   * whole rocker band from the front arch to the sill came back under rgb(12,14,18): §2.1's "deep
+   * shadows are tinted, never #000" failing on a fifth of the car's side. The sky's DIFFUSE
+   * irradiance is what lights that in the real world and it carries the paint's own hue, so the
+   * lower body gets a value and a colour back without any of it being white.
+   */
+  /**
+   * …and sunPow 300 → 580, which is the OTHER half of the milky-wash verdict.
+   *
+   * The glare term is `uSkySun * pow(dot(R, sunDir), sunPow)` and in daylight uSkySun is authored to
+   * luminance 3.4. At power 300 that lobe is about six degrees wide, and six degrees of REFLECTION
+   * direction across a crowned bonnet is a third of the panel — so the supercar's nose in the
+   * garage hero shot carried a 250 x 100 px patch clipped past 1.0, which the bloom pass then threw
+   * a halo off. That is not the sharp specular §1.6.3 wants, it is a headlamp in fog.
+   *
+   * At 580 the lobe is under three degrees: a hard bright GLINT that slides along a shoulder line as
+   * the car turns, with the paint either side of it intact. Highlights still blow out on purpose
+   * (§1.6.2) — they just no longer erase the panel they are sitting on.
+   */
+  // gain/cap up: with the basecoat and the lacquer both sampling the city probe at a blurred mip
+  // (see the note in muscle.js) the analytic horizon is now the ONLY sharp reflection on the car,
+  // so it has to carry the whole of §1.1's "bright sharp sky reflection … dark ground below".
+  skyReflect(mat, { gain: 1.34, blur: 0.005, f0: 0.050, tint: 0.62, sunPow: 580, amb: 0.23, cap: 0.44 });
+  // …and the highlight shoulder, registered LAST so it sees the finished value (see specCeiling).
+  // 1.52 sits under every bloom threshold the engine will run, so painted bodywork can reach white
+  // in the frame but can never become a bloom source.
+  specCeiling(mat, { knee: 0.92, max: 1.52 });
   _paintMats.add(mat);
   mat.addEventListener('dispose', () => _paintMats.delete(mat));
   tonePaint(mat);
@@ -507,6 +588,42 @@ export function flareBand(mat, { color = [0.105, 0.112, 0.126] } = {}) {
 }
 
 /**
+ * THE ARCH RETURN — what turns a rounded fender edge into a stamped OPENING.
+ *
+ * `loftTub` already bends the metal in behind the lip: between the lip radius and the tyre crown
+ * the surface turns a full `inset` inboard, and past the tyre it rolls into the barrel of the well.
+ * Geometrically that is right, and it still photographed wrong — at 5x on the garage hero shot the
+ * fender simply rolled over and dissolved, because the return flange is PAINT lit by the same sky
+ * as the door skin next to it, so it came back the same value as the flank and there was no line
+ * anywhere that said "the bodywork ends here".
+ *
+ * A real arch has one: the lip is the last thing the sky reaches and everything behind it is roofed
+ * by the lip's own overhang, so 30 mm past the edge the metal is two stops down. `aWell` is the
+ * tub's own displacement weight — 0 exactly at the lip, 1 deep in the barrel — so ramping the
+ * albedo and the specular down across it draws that overhang shadow onto the return, with the lip
+ * itself left at full paint value. The result is a bright edge with a dark crescent under it, which
+ * is the cue §6.1 is asking for when it says the tyre must sit INSIDE an opening.
+ *
+ * It costs one float per vertex on geometry that already carries `aFlare`, and no draw call: the
+ * ramp is four ALU ops inside the paint program the body was compiling anyway.
+ */
+export function archReturn(mat, { depth = 0.30, rough = 0.55 } = {}) {
+  const n = (x) => x.toFixed(4);
+  return patchShader(mat, `arch|${n(depth)}|${n(rough)}`, (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aWell;\nvarying float vWell;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvWell = aWell;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vWell;')
+      .replace('#include <map_fragment>', `#include <map_fragment>
+	float wShade = smoothstep( 0.015, 0.26, vWell );
+	diffuseColor.rgb *= mix( 1.0, ${n(depth)}, wShade );`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+	roughnessFactor = mix( roughnessFactor, ${n(rough)}, wShade );`);
+  });
+}
+
+/**
  * Chain onBeforeCompile patches onto one material.
  *
  * Three gives a material a single onBeforeCompile hook, so the moment two effects want the shader
@@ -619,12 +736,32 @@ vec3 nitroProbe( vec3 R ) {
 	col *= mix( 1.0, 0.68, smoothstep( 0.10, 0.95, h ) );          // sky deepens toward the zenith
 	float bw = uSkyP.z + ${n(blur * 1.6)};
 	col = mix( col, uSkyHaze, exp( -( h * h ) / ( bw * bw ) ) * 0.94 );   // the hot horizon band
-	// cumulus break-up, so the upper reflection is a SKY and not a vertical gradient
-	float cl = sin( R.x * 4.7 + R.z * 3.1 ) * sin( R.z * 6.3 - R.x * 2.2 ) * sin( R.x * 1.7 - R.z * 1.9 );
-	col += uSkyHaze * smoothstep( 0.06, 0.60, cl ) * sky * ${n(Math.max(0.0, 0.42 - blur * 3.0))};
-	// kerb / lane / lamp streaks in the ground half — a dark mirror is still a mirror
-	float gs = sin( R.x * 8.0 + R.z * 4.0 ) * sin( R.z * 6.0 - R.x * 2.0 );
-	col += uSkyHaze * smoothstep( 0.55, 1.0, gs ) * ( 1.0 - sky ) * uSkyP.w;
+	/**
+	 * CUMULUS BREAK-UP — and the round-1 verdict "the env reflection is an enormous soft
+	 * low-frequency smear … a milky white bloom wash across the front fender and door that erases
+	 * the panel surface entirely. It reads as dirty frosted plastic, not clearcoat."
+	 *
+	 * This term was it. R is a unit vector, so R.x and R.z each span [-1,1]; at the old frequencies
+	 * (4.7 / 6.3 / 1.7) the product completed under two cycles across the WHOLE hemisphere, i.e.
+	 * the "clouds" were two blobs the size of the sky. Reflected off a rolled fender that maps a
+	 * 90-degree sweep of directions onto 30 cm of panel, one blob covers the entire fender — and at
+	 * amplitude 0.40 on a haze colour authored to luminance 1.58, it covered it in near-white. The
+	 * paint's own hue lost, no horizon edge anywhere, and nothing that moves with the camera in a
+	 * way that reads as a mirror.
+	 *
+	 * Three changes, all in the same direction: the frequencies go up ~4x so a panel carries SEVERAL
+	 * cloud edges rather than sitting inside one, the amplitude comes down to a quarter so the cloud
+	 * modulates the sky instead of replacing it, and the whole term is faded out below h = 0.16 so
+	 * the horizon band underneath stays the hard bright LINE §1.1 asks for.
+	 */
+	float cl = sin( R.x * 18.3 + R.z * 12.7 ) * sin( R.z * 24.1 - R.x * 8.9 ) * sin( R.x * 6.7 - R.z * 9.3 );
+	col += uSkyHaze * smoothstep( 0.16, 0.74, cl ) * sky * smoothstep( 0.05, 0.30, h )
+		* ${n(Math.max(0.0, 0.125 - blur * 0.9))};
+	// kerb / lane / lamp streaks in the ground half — a dark mirror is still a mirror. Same
+	// treatment: at 8/6 these were broad bright washes lying across the lower flank, which is the
+	// half of the car §1.1 wants DARK. Tight and sparse now, so they read as reflected lane paint.
+	float gs = sin( R.x * 27.0 + R.z * 14.0 ) * sin( R.z * 21.0 - R.x * 7.0 );
+	col += uSkyHaze * smoothstep( 0.74, 1.0, gs ) * ( 1.0 - sky ) * uSkyP.w * 0.62;
 	col += uSkySun * pow( max( dot( R, uSkySunDir ), 0.0 ), ${n(sunPow)} );
 	return col * uSkyP.x;
 }`)
@@ -683,6 +820,69 @@ ${amb > 0 ? `	/**
   });
 }
 
+/**
+ * The probe's uniforms, exported for the builder probes in tools/_va3_*.mjs (ablation: set
+ * `uSkyP.value.x = 0` and the analytic mirror is gone without a recompile). Shipped code never
+ * writes them except through `tuneProbe` below.
+ */
+export const SKY_UNIFORMS = SKYU;
+
+/**
+ * ------------------------------------------------------------- THE PAINT'S HIGHLIGHT ROLL-OFF
+ *
+ * ROUND-3 VERDICT, the one gap: "Garage: blown. On la-muscle-menu.png a soft white-cyan bar the
+ * width of the whole car smears across roof, C-pillar and rear quarter and clips to pure white,
+ * erasing both racing stripes; on la-suv-menu.png the entire hood and upper door blow to white."
+ *
+ * Measured (`tools/_va3_sweep.mjs menu muscle`), it is not the mirror probe and not the albedo:
+ * with the paint's base colour crushed to 10% of authored the hood box still reads 178/255, and
+ * with the bloom pass switched off the same box reads 92. The bar is BLOOM, and the thing feeding
+ * it is the paint's own DIRECT specular. The showroom key is a spot at intensity 452 about four
+ * metres away, i.e. ~28 units of irradiance; through a dielectric F0 of 0.04 and a GGX lobe at
+ * roughness 0.30 that lands the highlight around 10 in linear HDR, five times the highest bloom
+ * threshold the engine will accept (it clamps to 1.95 — see the report note). Every panel whose
+ * normal passes through the half-vector therefore becomes a bloom SOURCE, and UnrealBloom's wide
+ * mips smear it across the whole car.
+ *
+ * §7 has a cap for precisely this: "bloom with no emissive source → 60". Car paint is not an
+ * emitter. So the body materials get a highlight shoulder: below `knee` nothing changes at all,
+ * above it the value rolls off asymptotically to `max`, which is authored BELOW the bloom
+ * threshold for everything that is not supposed to glow. Highlights still blow out on purpose
+ * (§1.6.2) — they reach white in the frame — they just stop being able to throw a halo across the
+ * panel they are sitting on, so the stripes underneath survive and the paint keeps its hue.
+ *
+ * Chrome and glass keep a higher ceiling than paint: a bumper catching the sun IS allowed a little
+ * halo, and that is the one place on a car where a bloom source is honest.
+ *
+ * One shared uniform pair so the whole car can be re-weighted in one write (and swept live from a
+ * builder probe); the per-material knee/ceiling are literals, so materials of a class still share
+ * one program.
+ */
+const CEILU = { uCeil: { value: new THREE.Vector2(1.0, 1.0) } };   // x scales knee, y scales max
+
+export const CEIL_UNIFORMS = CEILU;
+
+export function specCeiling(mat, { knee = 0.95, max = 1.60 } = {}) {
+  const n = (x) => (Math.round(x * 1e4) / 1e4).toFixed(4);
+  return patchShader(mat, `ceil|${n(knee)}|${n(max)}`, (shader) => {
+    Object.assign(shader.uniforms, CEILU);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform vec2 uCeil;')
+      .replace('#include <opaque_fragment>', `{
+	float ceilL = max( outgoingLight.r, max( outgoingLight.g, outgoingLight.b ) );
+	float ceilK = ${n(knee)} * uCeil.x;
+	float ceilM = max( ${n(max)} * uCeil.y, ceilK + 1e-3 );
+	if ( ceilL > ceilK ) {
+		float over = ceilL - ceilK;
+		float span = ceilM - ceilK;
+		// Reinhard shoulder: continuous in value AND slope at the knee, asymptotic to ceilM.
+		outgoingLight *= ( ceilK + over * span / ( over + span ) ) / ceilL;
+	}
+}
+#include <opaque_fragment>`);
+  });
+}
+
 /** Re-point the mirror probe at a city. Colours only — no recompile, no new draw call. */
 function tuneProbe(look, n) {
   const sk = look.sky || {};
@@ -699,28 +899,50 @@ function tuneProbe(look, n) {
    * "every light source draws a long reflection" applied to bodywork instead of to cobbles.
    */
   const band = hz.clone().lerp(new THREE.Color(1, 1, 1), 0.45).lerp(accent, n * 0.62);
-  atLum(band, lerp(1.58, 0.86, n));
+  atLum(band, lerp(1.42, 0.86, n));
   SKYU.uSkyHaze.value.copy(band);
 
+  /**
+   * ROUND-3: THE THREE BANDS GET REAL CONTRAST, and the horizon gets a WIDTH.
+   *
+   * Round-2's note back was "none of the four cars shows the bright sky reflection on upper panels
+   * / dark ground reflection on lower that §1.1 names as what separates real car paint from flat
+   * colored plastic". The split existed in the shader but was inaudible: the zenith sat at 0.34
+   * luminance against a 0.042 ground, and the only bright thing — the horizon band — was 0.029 rad
+   * wide, i.e. under two degrees. A deck lid reflects a patch of sky some fifteen degrees above the
+   * horizon, so it never touched the band at all and picked up a dim blue instead. The upper half
+   * of the car was therefore the same value as the lower half.
+   *
+   * Zenith 0.34 → 0.52 and ground 0.042 → 0.026 doubles the sky-above/ground-below contrast, and
+   * the hot band widens from 0.029 to 0.115 rad (~7°) so a panel that crosses the horizon carries a
+   * legible bright STRIPE that travels as the car turns rather than a hairline that aliases. The
+   * band's own luminance comes down (1.58 → 1.42) because it is now four times as wide; the total
+   * energy in the reflection is about where it was, it is simply distributed as a reflection
+   * instead of as a line.
+   */
   const zen = up.clone().lerp(hz, 0.25);
-  atLum(zen, lerp(0.34, 0.050, n));
+  atLum(zen, lerp(0.52, 0.075, n));
   SKYU.uSkyUp.value.copy(zen);
 
   const road = gnd.clone().lerp(accent, 0.18 + n * 0.30);
-  atLum(road, lerp(0.042, 0.028, n));
+  atLum(road, lerp(0.026, 0.020, n));
   SKYU.uSkyGnd.value.copy(road);
 
   const glare = sun.clone();
-  atLum(glare, lerp(3.4, 0.7, n));
+  // 3.4 → 2.6 in daylight. Even at a three-degree lobe the day glare was returning 1.7 through the
+  // paint's Fresnel cap, i.e. clipped over its whole width, so the spot had no falloff and bloomed
+  // as a disc. 2.6 still clips at the centre — which is what a sun glint does — but its shoulders
+  // roll off inside the tonemap instead of outside it.
+  atLum(glare, lerp(2.6, 0.7, n));
   SKYU.uSkySun.value.copy(glare);
 
   const d = look.sun?.dir || [-0.3, 0.3, 0.9];
   SKYU.uSkySunDir.value.set(d[0], d[1], d[2]).normalize();
 
   SKYU.uSkyP.value.set(
-    lerp(1.0, 0.92, n),      // master gain
-    lerp(0.014, 0.030, n),   // horizon half-width — a touch softer at night, where it is haze
-    lerp(0.029, 0.058, n),   // hot-band width
+    lerp(1.15, 0.98, n),     // master gain
+    lerp(0.026, 0.042, n),   // horizon half-width — a touch softer at night, where it is haze
+    lerp(0.115, 0.150, n),   // hot-band width: ~7° of sky, so a rolled panel carries a real stripe
     lerp(0.45, 1.35, n),     // ground streaks: wet neon reflections after dark
   );
 }
@@ -763,9 +985,9 @@ export function glassMaterial({ tint = '#080d13', opacity = 0.80, rough = 0.045 
     });
     m.userData.envAuthored = 1.05;
     m.userData.__envBase = 1.05;
-    return glassSheen(skyReflect(m, {
+    return specCeiling(glassSheen(skyReflect(m, {
       gain: 0.92, blur: 0.006, f0: 0.050, tint: 0.0, sunPow: 340, amb: 0.0, cap: 0.72,
-    }));
+    })), { knee: 1.05, max: 1.95 });
   });
 }
 
@@ -821,11 +1043,34 @@ export function glassSheen(mat, { gain = 1.0 } = {}) {
 	vec3 gV = normalize( vViewPosition * mat3( viewMatrix ) );
 	float gF = pow( clamp( 1.0 - abs( dot( gN, gV ) ), 0.0, 1.0 ), 3.0 );
 	vec3 gR = reflect( -gV, gN );
-	// elevation of what the pane is mirroring: up = room/sky, down = floor
-	float gUp = smoothstep( -0.06, 0.42, gR.y );
-	// two soft bars swept across it, so a 1.2 m screen is not one flat value
-	float gStreak = 0.55 + 0.45 * sin( gR.x * 3.3 + gR.z * 2.1 );
-	float gS = ( 0.26 + 0.74 * gUp ) * ( 0.55 + 0.45 * gStreak );
+	/**
+	 * Elevation of what the pane is mirroring: up = room/sky, down = floor.
+	 *
+	 * ROUND-1 (vehicle art): this used to run smoothstep(-0.06, 0.42) and multiply the whole term,
+	 * so a NEAR-VERTICAL window — whose reflection vector is horizontal, gR.y ≈ 0 — got about a
+	 * tenth of the sheen. That is every side window in the game and the entire glasshouse of the
+	 * truck, which is why the tall car photographs with an open cabin however dark the tint is. A
+	 * vertical pane mirrors the room, not the floor; it is not dark, it is just not mirroring SKY.
+	 * The floor half still falls away, which is what keeps the sweep.
+	 */
+	float gUp = 0.34 + 0.66 * smoothstep( -0.30, 0.42, gR.y );
+	/**
+	 * ROUND-1 (vehicle art): the sweep gets CONTRAST instead of amplitude.
+	 *
+	 * The previous form ran between 0.48 and 1.0 across the whole pane, i.e. it was very nearly a
+	 * constant — and a constant added to a transparent surface is a milky film, not a reflection.
+	 * Raising its amplitude (first attempt this round) only made the film brighter, which is what
+	 * the second hero capture shows: the greenhouse went from open air to frosted plastic.
+	 *
+	 * A photographed screen is mostly DARK with two or three hard bright bars lying across it —
+	 * the room's strip lights, or the sky between clouds. So the bands are thresholded: the pane
+	 * returns 12% of the term almost everywhere and 100% of it inside a band. The interior reads
+	 * between the bands (§7's black-void cap stays clear) and the pane reads as a pane wherever a
+	 * band crosses it.
+	 */
+	float gStreak = 0.5 + 0.5 * sin( gR.x * 3.3 + gR.z * 2.1 );
+	float gBand = smoothstep( 0.34, 0.94, gStreak );
+	float gS = gUp * ( 0.12 + 0.88 * gBand );
 	/**
 	 * Divided by what the pane is ALREADY returning, which is what makes this safe to ship globally.
 	 *
@@ -836,7 +1081,20 @@ export function glassSheen(mat, { gain = 1.0 } = {}) {
 	 * FLOOR under the glass, not a gain on it.
 	 */
 	float gLum = dot( outgoingLight, vec3( 0.30, 0.59, 0.11 ) );
-	outgoingLight += vec3( 0.58, 0.66, 0.80 ) * ( 0.105 + gF * 1.90 ) * gS * ${n(gain)}
+	/**
+	 * ROUND-1 (vehicle art): the FLAT term goes 0.105 → 0.26 and the profile gets more contrast.
+	 *
+	 * The garage hero frame is shot from three-quarter FRONT, so most of the glazing in it is
+	 * WINDSCREEN seen close to face-on — exactly the angle where gF (the grazing term) is near
+	 * zero and this whole expression collapses to the flat constant. At 0.105 that is a fifth of a
+	 * stop over a lit interior, i.e. nothing, and all four cars photograph with an open cabin and
+	 * no pane in front of it. What a photographed screen actually shows face-on is the ROOM lying
+	 * across it — a broad graded sweep, which is what gUp/gStreak already describe; it just was not
+	 * allowed any amplitude. The luminance divisor is untouched, so this is still a floor under
+	 * dark glass rather than a gain on bright glass: on a sunlit Miami screen returning ~1.2 it is
+	 * still under a tenth of a stop.
+	 */
+	outgoingLight += vec3( 0.62, 0.70, 0.85 ) * ( 0.34 + gF * 2.05 ) * gS * ${n(gain)}
 		/ ( 1.0 + gLum * 2.4 );
 	// …and the pane closes up as it turns away from you
 	diffuseColor.a = clamp( diffuseColor.a + ( 1.0 - diffuseColor.a ) * gF * 0.85, 0.0, 1.0 );
@@ -907,11 +1165,48 @@ export function chromeMaterial({ color = '#b3b9c2', rough = 0.16 } = {}) {
     const m = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color(t.color), metalness: 1.0, roughness: t.rough, envMapIntensity: 0.40,
     });
-    return skyReflect(m, {
-      gain: 1.55, blur: t.rough * 0.16, f0: 0.82, tint: 0.90, sunPow: 260 - best * 55, amb: 0.10,
+    /**
+     * ROUND-1 (vehicle art): sunPow 260 → 120. The glare lobe was TOO TIGHT TO SAMPLE.
+     *
+     * pow(dot,260) is about four degrees wide. Wrapped round a 12 mm sill blade or a bumper's
+     * corner radius that puts a full-intensity, over-1.0 highlight inside a single pixel — the
+     * sample lands on it, the next pixel misses, bloom turns each survivor into a dot, and the
+     * result at 5x is a DASHED white line down the rocker of every car in the game. (The same
+     * failure was fixed on the rim lips in round 5 by spreading their lobe; the chrome bar kept
+     * its.) 120 is still a hard glint on a bumper — it just spans three pixels instead of half of
+     * one, so it antialiases like a highlight instead of sparkling like noise.
+     */
+    skyReflect(m, {
+      gain: 1.50, blur: t.rough * 0.16, f0: 0.82, tint: 0.90, sunPow: 120 - best * 22, amb: 0.10,
       cap: 0.98,
     });
+    // A bumper catching the sun is the one honest bloom source on a car, so chrome keeps a ceiling
+    // above the threshold — but a bounded one, so a showroom key cannot turn a grille into a lamp.
+    return specCeiling(m, { knee: 1.30, max: 2.55 });
   });
+}
+
+/**
+ * BLACKOUT — the gloss-black tape/paint on a pillar, a roof rail, a window surround or a B-post.
+ *
+ * ROUND-1 (vehicle art). These bands used to take `darkTrimMaterial`, which is the BUMPER material:
+ * a moulded satin plastic with a grain normal map, authored to hold a value in the deepest, least
+ * lit part of the car. A pillar is the opposite case — it is at the top of the car, at a grazing
+ * angle to a studio key, next to a dark window — and that combination put the tuner's A-, B- and
+ * C-posts and the supercar's A-post at a HIGHER value than the glass beside them, with a visible
+ * vertical grain in them. The 6x hero crop reads them as mauve-brown panels; a real pillar is the
+ * darkest thing in a greenhouse.
+ *
+ * So they get their own surface: near-black, no grain, a hard thin clearcoat, and only the small
+ * generated horizon a black lacquer actually returns. One pooled material shared by every car.
+ */
+export function blackoutMaterial() {
+  return pooled('blackout', () => specCeiling(skyReflect(underbody(new THREE.MeshPhysicalMaterial({
+    color: 0x191c22, metalness: 0.10, roughness: 0.36,
+    specularIntensity: 0.45,
+    clearcoat: 0.55, clearcoatRoughness: 0.10, envMapIntensity: 0.55,
+  }), 'plastic'), { gain: 0.62, blur: 0.02, f0: 0.055, tint: 0.10, sunPow: 240, amb: 0.13, cap: 0.34 }),
+  { knee: 0.85, max: 1.35 }));
 }
 
 /**
@@ -922,10 +1217,30 @@ export function chromeMaterial({ color = '#b3b9c2', rough = 0.16 } = {}) {
  * tint and the smallest bounce, which is exactly what keeps it reading as depth next to the
  * lifted trim around it rather than as the same black paint.
  */
+/**
+ * ROUND-3 (vehicle art). The round-2 verdict named this material without naming it: "the supercar
+ * diffuser mouth is a flat pure-black rectangle". The mouth is the rear extractor's aperture, it is
+ * 1.16 x 0.28 m — the biggest single surface on the back of that car — and it was an untextured
+ * MeshStandardMaterial in one flat colour, which is §7's first hard cap on a large surface.
+ *
+ * A real aperture is not one value: its roof catches the sky, its floor sees the road, and the
+ * pressing inside it has grain. So the cavity now wears the same moulded surface every other dark
+ * part on the car does, plus a hard hemisphere ramp (top ~1.6x, floor ~0.5x) so the recess is
+ * legibly LIT FROM ABOVE, plus the broad sky sheen that gives a black plastic part its form. It is
+ * still the darkest thing on the car by a distance; it is simply a hole with a shape in it now.
+ */
 export function cavityMaterial() {
-  return pooled('cavity', () => underbody(new THREE.MeshStandardMaterial({
-    color: 0x14161c, roughness: 0.90, metalness: 0.18,
-  }), 'cavity'));
+  return pooled('cavity', () => {
+    const s = trimSurface();
+    const m = underbody(new THREE.MeshStandardMaterial({
+      color: 0x14161c, roughness: 0.90, metalness: 0.18,
+      map: s.map, normalMap: s.normalMap, roughnessMap: s.roughnessMap,
+      envMapIntensity: 0.60,
+    }), 'cavity');
+    hemiTint(m, { sky: [1.62, 1.64, 1.72], ground: [0.48, 0.475, 0.52], lo: -0.25, hi: 0.85, y0: 0.12, y1: 1.25, wN: 0.70 });
+    skyReflect(m, { gain: 0.30, blur: 0.20, f0: 0.030, tint: 0.0, sunPow: 12, bumpy: true, amb: 0.34, cap: 0.20 });
+    return specCeiling(m, { knee: 0.80, max: 1.20 });
+  });
 }
 
 /** Semi-gloss dark plastic: lamp housings and the ribs across a lens. */
@@ -980,7 +1295,7 @@ export function stdMaterial({ color = '#808080', rough = 0.7, metal = 0.1, side 
 // pale-gray untextured slabs". Photographed bumper plastic is a 0.05-0.07 albedo material and this
 // was authored a third over that, which under the garage's key put the bumper bar a full stop
 // lighter than the paint it bolts to. Still ~6x the near-black round 3 correctly rejected.
-export function darkTrimMaterial({ color = '#373d49', rough = 0.62 } = {}) {
+export function darkTrimMaterial({ color = '#2e333e', rough = 0.62 } = {}) {
   return pooled(poolKey('trim', color, rough), () => {
     const s = trimSurface();
     const m = underbody(new THREE.MeshPhysicalMaterial({
@@ -1010,7 +1325,7 @@ export function darkTrimMaterial({ color = '#373d49', rough = 0.62 } = {}) {
      * through the moulded grain normal so the sheen breaks up like textured plastic.
      */
     skyReflect(m, { gain: 0.44, blur: 0.10, f0: 0.035, tint: 0.0, sunPow: 34, bumpy: true, amb: 0.44, cap: 0.34 });
-    return m;
+    return specCeiling(m, { knee: 0.85, max: 1.30 });
   });
 }
 
@@ -1026,7 +1341,7 @@ export function plasticMaterial({ color = '#363c47', rough = 0.92 } = {}) {
     }), 'plastic');
     hemiTint(m, { sky: [1.17, 1.19, 1.25], ground: [0.76, 0.75, 0.80] });
     skyReflect(m, { gain: 0.34, blur: 0.16, f0: 0.030, tint: 0.0, sunPow: 18, bumpy: true, amb: 0.42, cap: 0.34 });
-    return m;
+    return specCeiling(m, { knee: 0.85, max: 1.28 });
   });
 }
 
@@ -1053,7 +1368,15 @@ export function carbonMaterial() {
   // Carbon is a DARK material with a tight sheen. At envMapIntensity 1.1 + clearcoat gloss the
   // wings, splitters and diffusers mirrored the whole sky and read as pale plastic planks.
   _carbon = underbody(new THREE.MeshPhysicalMaterial({
-    map: toTexture(c, { srgb: true, repeat: [3, 3] }),
+    /**
+     * repeat 3 → 9. `roundedBox` is an ExtrudeGeometry, so the UVs carbon is sampled with are
+     * object-space METRES: at repeat 3 the 16-cell canvas laid 48 weave cells per metre, i.e. a
+     * 21 mm tow. Real carbon tow is 3-5 mm, and at 21 mm the supercar's diffuser and its rear
+     * bumper photograph at 3x as a BRICK WALL — which is exactly what the round-1 verdict called
+     * "a brick-textured slab bumper". Nine gives a 7 mm cell: fine enough to read as weave, coarse
+     * enough that the mip chain resolves it at chase distance instead of shimmering.
+     */
+    map: toTexture(c, { srgb: true, repeat: [9, 9] }),
     color: 0xffffff,
     metalness: 0.5, roughness: 0.38, clearcoat: 1, clearcoatRoughness: 0.16, envMapIntensity: 0.80,
   }), 'carbon');
@@ -1078,20 +1401,134 @@ export function carbonMaterial() {
    * across a wing, which is what says "lacquered weave", but the part stays graphite.
    */
   skyReflect(_carbon, { gain: 0.46, blur: 0.030, f0: 0.055, tint: 0.30, sunPow: 110, amb: 0.30, cap: 0.28 });
+  specCeiling(_carbon, { knee: 0.85, max: 1.28 });
   return _carbon;
 }
 
-export function emissiveMaterial({ color = '#ff2020', intensity = 3.0, opacity = 1, shared = false } = {}) {
-  const make = () => new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color),
-    emissive: new THREE.Color(color),
-    emissiveIntensity: intensity,
-    roughness: 0.35, metalness: 0.0,
-    transparent: opacity < 1, opacity,
+/**
+ * ROUND-1 (vehicle art): the lens DIFFUSE comes down to a fifth of the emissive colour.
+ *
+ * A lens was `color === emissive`, i.e. a near-white #e8f0ff diffuse on the headlamps. That is a
+ * white card, and a white card under the garage's key blows out whatever the emissive is doing —
+ * which is exactly what the hero frames show: the menu deliberately dims the head units to 6% for
+ * a showroom car (`menu.js _setHeadGlow`) and they still photograph as four clipped white discs
+ * with no lens, no bezel and no shape. Same on the tuner's rectangular units.
+ *
+ * A real lens with the bulb off is a DARK object — clear glass over a reflector, reading as a deep
+ * tinted disc with a bright rim. Lit, the emissive is 2.5-4x and completely dominates, so the
+ * on-state is unchanged; off, the lamp has a value again.
+ */
+/**
+ * ---- THE OPTIC ----
+ *
+ * A lens is not a coloured card. It is a moulded prismatic optic, and the flutes in it are what
+ * you read the lamp BY — off, they break the reflector into a row of bright and dark cells; lit,
+ * they modulate the emission so the lamp blooms as a striped bar instead of a featureless
+ * rectangle. Round 1: "front headlights are dead — flat grey discs on the muscle and blank pale
+ * pills on the tuner"; the tuner's units in particular are 0.44 x 0.115 m of unbroken flat value
+ * sitting across the nose in the garage hero shot.
+ *
+ * Two optics, because the two lens geometries carry different UVs and nothing else in the kit can
+ * reconcile them:
+ *
+ *   'flute'    vertical prismatic flutes, TILEABLE. `roundedBox` is an ExtrudeGeometry, so its cap
+ *              UVs are object-space METRES — which is a gift here: a repeat of 1/pitch gives every
+ *              rectangular lamp in the game the same real-world 18 mm flute pitch no matter how
+ *              big or small the lamp is, off one shared texture.
+ *   'fresnel'  concentric fresnel steps in the 0..1 space a CircleGeometry actually has, for the
+ *              round lamps (the muscle's four tails, the SUV's headlamps).
+ */
+const FLUTE_PITCH = 0.018;
+const _lensTex = new Map();
+/**
+ * @param kind 'flute' (rectangular lamps, object-space metres) | 'fresnel' (round lamps, 0..1)
+ * @param chan 'albedo' — deep modulation, the reflector read when the lamp is OFF
+ *             'emissive' — narrow grooves only, so a LIT lamp keeps its output
+ *
+ * Two channels because one map cannot do both jobs. A single map deep enough to draw the optic on
+ * an unlit lens has a mean around 0.34 in linear, and putting that on `emissiveMap` cut the tail
+ * lamps' output by two thirds: measured on la-tuner-chase, the rear clusters went from bloomed
+ * orange-red to flat red blocks with no halo at all, which is §7's "emissive surfaces with no
+ * bloom" — a cap at 60 — introduced by a fix for something else. The emissive channel is therefore
+ * white with thin dark grooves at the prism boundaries: the flutes still read across a lit lens,
+ * and the lamp's total output is within a tenth of what it was.
+ */
+export function lensTexture(kind = 'flute', chan = 'albedo') {
+  const key = `${kind}|${chan}`;
+  let t = _lensTex.get(key);
+  if (t) return t;
+  const emissive = chan === 'emissive';
+  const N = 128;
+  const { c, ctx } = canvas(N, N);
+  const img = ctx.createImageData(N, N);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const u = (x + 0.5) / N, v = (y + 0.5) / N;
+      let val;
+      if (kind === 'fresnel') {
+        const r = Math.hypot(u - 0.5, v - 0.5) * 2;
+        const s = (r * 5.2) % 1;
+        if (emissive) {
+          // a thin dark step at each ring boundary, plus a rim shade under the bezel
+          val = 1.0 - (smoothstep(0.90, 1.0, s) + (1 - smoothstep(0.0, 0.07, s))) * 0.34;
+          val *= 1 - smoothstep(0.90, 1.04, r) * 0.16;
+        } else {
+          // concentric steps: each ring is a prism face, bright where it turns toward the viewer
+          val = 0.60 + 0.46 * Math.pow(s, 0.7) - smoothstep(0.86, 1.0, s) * 0.34;
+          val *= 1 - smoothstep(0.86, 1.02, r) * 0.30;       // darker at the rim, under the bezel
+        }
+      } else {
+        const s = u % 1;
+        if (emissive) {
+          val = 1.0 - (smoothstep(0.90, 1.0, s) + (1 - smoothstep(0.0, 0.08, s))) * 0.38;
+          val *= 1 - Math.pow(Math.abs(Math.sin(v * Math.PI * 3.0)), 30) * 0.22;
+        } else {
+          // vertical flutes: a repeating prism, bright on its leading face, dark in the valley,
+          // crossed by a fainter horizontal cell line so it is an optic and not a barcode
+          val = 0.56 + 0.50 * Math.pow(s, 0.8) - smoothstep(0.88, 1.0, s) * 0.36;
+          val *= 1 - Math.pow(Math.abs(Math.sin(v * Math.PI * 3.0)), 24) * 0.30;
+        }
+      }
+      const q = Math.round(clamp(val, 0, 1) * 255);
+      const i = (y * N + x) * 4;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = q;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  t = toTexture(c, {
+    srgb: true,
+    repeat: kind === 'fresnel' ? [1, 1] : [1 / FLUTE_PITCH, 1 / FLUTE_PITCH],
+    wrap: kind === 'fresnel' ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping,
   });
+  _lensTex.set(key, t);
+  return t;
+}
+
+export function emissiveMaterial({
+  color = '#ff2020', intensity = 3.0, opacity = 1, shared = false, lens = null,
+} = {}) {
+  const make = () => {
+    const m = new THREE.MeshStandardMaterial({
+      // …and a REFLECTOR behind it: a lamp that is off is not a grey disc, it is a polished bowl
+      // under clear glass, so it hands back the room. metalness carries that; the emissive still
+      // dominates completely whenever the lamp is actually lit.
+      color: new THREE.Color(color).multiplyScalar(0.16),
+      emissive: new THREE.Color(color),
+      emissiveIntensity: intensity,
+      roughness: 0.22, metalness: 0.34, envMapIntensity: 0.85,
+      transparent: opacity < 1, opacity,
+    });
+    if (lens) {
+      m.map = lensTexture(lens, 'albedo');
+      m.emissiveMap = lensTexture(lens, 'emissive');
+      m.color.multiplyScalar(1.7);       // the albedo map's mean is ~0.6; keep the off-state value
+    }
+    return m;
+  };
   // Lamps whose intensity physics.js drives (brake, head) must own their material. Everything else
   // that merely glows — instrument cluster, plate lamps, light-bar pods — can share one.
-  return shared ? pooled(poolKey('emissive', color, intensity, opacity), make) : make();
+  return shared ? pooled(poolKey('emissive', color, intensity, opacity, lens || ''), make) : make();
 }
 
 // ------------------------------------------------------------------ tyres
@@ -1575,7 +2012,7 @@ function subdivideProfile(pts, subs) {
 const LIP_STEPS = 96;
 
 export function loftTub(sections, {
-  openings = [], capU = [0.100, 0.442], zNear = 0.040, zMid = 0.086, zFar = 0.175, linerAt = 0.34,
+  openings = [], capU = [0.100, 0.442], zNear = 0.030, zMid = 0.070, zFar = 0.175, linerAt = 0.34,
   flareAt = null,
 } = {}) {
   const src = [...sections].sort((a, b) => a.z - b.z).map((s) => {
@@ -1609,14 +2046,72 @@ export function loftTub(sections, {
     for (let j = 1; j < k; j++) zset.add(+lerp(a, b, j / k).toFixed(5));
   }
   const zs = [...zset].sort((a, b) => a - b);
+  /**
+   * ---- 1b. THE LOFT IS C1 ALONG ITS LENGTH --------------------------------
+   *
+   * ROUND-3 (vehicle art). The rear quarter of the muscle car photographs at 4x as a CRUMPLED
+   * panel: five or six parallel folds running down the haunch, as if the metal had been creased.
+   * Ablation (`tools/_va3_sweep.mjs chase muscle`) puts it beyond doubt — render the same geometry
+   * with metalness 0, roughness 0.55 and no clearcoat and the quarter is a clean pressing with one
+   * crease in it; put the paint back and the folds appear. So it is not the livery skin, not the
+   * flake normal and not the arch cut. It is the SURFACE.
+   *
+   * A station's profile was interpolated LINEARLY to its neighbour, which makes the tub a ruled
+   * surface between stations and gives it a tangent discontinuity AT every station. There are ~21
+   * of them down a car. Under diffuse shading a C0 kink of a degree or two is invisible; under a
+   * clearcoat whose reflection is sharp by construction, each kink is a band where the mirrored
+   * horizon jumps — i.e. a fold. The cars were built to be looked at with a mirror on them, so the
+   * surface has to be tangent-continuous or the mirror will find every joint.
+   *
+   * PCHIP (Fritsch-Carlson monotone cubic) is the right interpolant rather than plain Catmull-Rom:
+   * it is C1 everywhere, and because it clamps the tangent to zero at every local extremum it
+   * cannot overshoot — which matters because the four car files deliberately place PAIRS of
+   * stations 30-40 mm apart to keep an edge crisp (the cabin recess wall, the nose rake). A
+   * Catmull-Rom through those would balloon the panel either side of the step; this holds the step
+   * and stays flat around it.
+   */
+  const nP = src[0].pts.length;
+  const zArr = src.map((s2) => s2.z);
+  const tangents = [];                                  // [point][coord] → slope per station
+  const pchip = (xs, ys) => {
+    const n = xs.length, m = new Float64Array(n);
+    if (n < 2) return m;
+    const d = new Float64Array(n - 1);
+    for (let i = 0; i < n - 1; i++) {
+      const h = xs[i + 1] - xs[i];
+      d[i] = h > 1e-9 ? (ys[i + 1] - ys[i]) / h : 0;
+    }
+    m[0] = d[0]; m[n - 1] = d[n - 2];
+    for (let i = 1; i < n - 1; i++) {
+      if (d[i - 1] * d[i] <= 0) { m[i] = 0; continue; }
+      const h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i];
+      const w0 = 2 * h1 + h0, w1 = h1 + 2 * h0;
+      m[i] = (w0 + w1) / (w0 / d[i - 1] + w1 / d[i]);
+    }
+    return m;
+  };
+  for (let k = 0; k < nP; k++) {
+    tangents.push([
+      pchip(zArr, src.map((s2) => s2.pts[k][0])),
+      pchip(zArr, src.map((s2) => s2.pts[k][1])),
+    ]);
+  }
+  const hermite = (y0, y1, m0, m1, h, t) => {
+    const t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * h * m0
+      + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * h * m1;
+  };
   const ptsAt = (z) => {
     if (z <= src[0].z) return src[0].pts;
     const last = src[src.length - 1];
     if (z >= last.z) return last.pts;
     for (let i = 1; i < src.length; i++) {
       if (z <= src[i].z) {
-        const a = src[i - 1], b = src[i], t = (z - a.z) / ((b.z - a.z) || 1);
-        return a.pts.map((p, k) => [lerp(p[0], b.pts[k][0], t), lerp(p[1], b.pts[k][1], t)]);
+        const a = src[i - 1], b = src[i], h = (b.z - a.z) || 1, t = (z - a.z) / h;
+        return a.pts.map((p, k) => [
+          hermite(p[0], b.pts[k][0], tangents[k][0][i - 1], tangents[k][0][i], h, t),
+          hermite(p[1], b.pts[k][1], tangents[k][1][i - 1], tangents[k][1][i], h, t),
+        ]);
       }
     }
     return last.pts;
@@ -1780,6 +2275,7 @@ export function loftTub(sections, {
   const UA = new Float32Array(total * 2); UA.set(uvA); UA.set(extra.uvA, V * 2);
   const UB = new Float32Array(total * 2); UB.set(uvB); UB.set(extra.uvB, V * 2);
   const MK = new Float32Array(total); MK.set(mask);        // caps are never in an opening
+  const WG = new Float32Array(total); WG.set(wgt);         // 0 at the lip → 1 deep in the well
   const N = new Float32Array(total * 3);
   const accum = (idx) => {
     for (let t = 0; t < idx.length; t += 3) {
@@ -1799,10 +2295,10 @@ export function loftTub(sections, {
   }
 
   // ---- 9. compact each bucket into its own geometry ----------------------
-  const emit = (idx, uvSrc, withMask) => {
+  const emit = (idx, uvSrc, withMask, withWell) => {
     if (!idx.length) return null;
     const map = new Int32Array(total).fill(-1);
-    const vp = [], vn = [], vu = [], vm = [], ix = new Uint32Array(idx.length);
+    const vp = [], vn = [], vu = [], vm = [], vw = [], ix = new Uint32Array(idx.length);
     for (let i = 0; i < idx.length; i++) {
       const v = idx[i];
       if (map[v] < 0) {
@@ -1811,6 +2307,7 @@ export function loftTub(sections, {
         vn.push(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]);
         vu.push(uvSrc[v * 2], uvSrc[v * 2 + 1]);
         if (withMask) vm.push(MK[v]);
+        if (withWell) vw.push(WG[v]);
       }
       ix[i] = map[v];
     }
@@ -1819,6 +2316,7 @@ export function loftTub(sections, {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(vn, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(vu, 2));
     if (withMask) g.setAttribute('aFlare', new THREE.Float32BufferAttribute(vm, 1));
+    if (withWell) g.setAttribute('aWell', new THREE.Float32BufferAttribute(vw, 1));
     g.setIndex(new THREE.BufferAttribute(ix, 1));
     return g;
   };
@@ -1836,7 +2334,7 @@ export function loftTub(sections, {
     anchors.push(us[k]);
     k += subs[i] || 0;
   }
-  return { shell: emit(shell, UA, flareAt !== null), liner: emit(liner, UB, false), anchors };
+  return { shell: emit(shell, UA, flareAt !== null, true), liner: emit(liner, UB, false, false), anchors };
 }
 
 /**
@@ -2084,11 +2582,30 @@ function wheelGraph({
    * the casting enough diffuse to hold a value and a shading gradient across each spoke.
    */
   const rimMetal = style === 'offroad' ? 0.68 : 1.0;
-  const rimMat = pooled(poolKey('rim', rimColor, rimRough, rimMetal), () => new THREE.MeshPhysicalMaterial({
+  /**
+   * ROUND-1 (vehicle art): THE ALLOY GETS THE ANALYTIC MIRROR.
+   *
+   * Every other metal on the car — bumper, bezel, grille bar, mirror face, exhaust tip — has run
+   * through `skyReflect` since round 2, and the reason given there applies with more force here:
+   * a metal has no diffuse, so everything you see in a spoke is its environment, and the blurred
+   * cube probe is a constant. The 7x crop of the muscle car's front wheel shows exactly the
+   * predicted result — five spoke faces at one flat mid-grey with no shading difference between
+   * them, a rim lip clipped to white with a bloom halo round it, and a hub cap that is a glossy
+   * blob. The wheel is the second-largest object in a garage hero frame and it was reading as
+   * grey card.
+   *
+   * So the weighting is inverted the same way chromeMaterial's was: the probe drops to a fill and
+   * the generated horizon becomes the main term. Each spoke face then has its own normal crossing
+   * the sky/ground split at its own angle, which is what makes a five-spoke read as five spokes.
+   */
+  const rimMat = pooled(poolKey('rim', rimColor, rimRough, rimMetal), () => specCeiling(skyReflect(new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(rimColor), metalness: rimMetal,
     roughness: rimRough,
-    envMapIntensity: 1.15, clearcoat: 0.8, clearcoatRoughness: 0.07, side: THREE.DoubleSide,
-  }));
+    envMapIntensity: 0.58, clearcoat: 0.8, clearcoatRoughness: 0.07, side: THREE.DoubleSide,
+  }), {
+    gain: 1.18, blur: 0.030 + rimRough * 0.30, f0: 0.66, tint: 0.88,
+    sunPow: 150, amb: 0.16, cap: 0.94,
+  }), { knee: 1.20, max: 2.30 }));
   /**
    * ROUND-5: roughness 0.20 → 0.29, clearcoat 1 → 0.65.
    *
@@ -2099,8 +2616,17 @@ function wheelGraph({
    * Spreading the lobe is the only fix that works at the source; the lip still reads as the
    * brightest ring on the wheel, it just no longer fits between two samples.
    */
+  // …and the lip, which is the part that was actually clipping: a polished mirror at env 1.05 in a
+  // room with four ceiling fixtures in it returns >1.0 over its whole width, the tonemap flattens
+  // it to white and the bloom pass throws a halo off it. Same inversion — probe down, generated
+  // horizon up — so the lip is still the brightest ring on the wheel but it is a bright ring with
+  // a dark side, which is what a polished flange looks like.
   const lipMat = lipColor
-    ? pooled(poolKey('rimlip', lipColor), () => new THREE.MeshPhysicalMaterial({ color: new THREE.Color(lipColor), metalness: 1.0, roughness: 0.29, envMapIntensity: 1.05, clearcoat: 0.65, clearcoatRoughness: 0.16, side: THREE.DoubleSide }))
+    ? pooled(poolKey('rimlip', lipColor), () => specCeiling(skyReflect(new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(lipColor), metalness: 1.0, roughness: 0.30, envMapIntensity: 0.48,
+      clearcoat: 0.65, clearcoatRoughness: 0.16, side: THREE.DoubleSide,
+    }), { gain: 1.30, blur: 0.055, f0: 0.78, tint: 0.90, sunPow: 130, amb: 0.13, cap: 0.96 }),
+    { knee: 1.20, max: 2.30 }))
     : rimMat;
   // BackSide is baked into the pooled material rather than assigned onto it later — a shared
   // material must never be mutated after the fact or every other user of it moves too.
@@ -2118,10 +2644,13 @@ function wheelGraph({
   const rHub = rimR * 0.30;
 
   // barrel: the dark drum you see through the spoke windows
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(rimR * 0.965, rimR * 0.965, width * 1.02, 24, 1, true), wellMat);
+  // ROUND-1 (vehicle art): the hidden parts of the wheel pay for the wipers and badges added this
+  // round. The barrel is the dark drum you see THROUGH the spoke windows — never in silhouette,
+  // never lit enough to show a facet — and the back plate is behind it. 24/24 → 18/14.
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(rimR * 0.965, rimR * 0.965, width * 1.02, 18, 1, true), wellMat);
   barrel.rotation.z = Math.PI / 2;
   spin.add(barrel);
-  const backPlate = new THREE.Mesh(new THREE.CircleGeometry(rimR * 0.965, 24), wellMat);
+  const backPlate = new THREE.Mesh(new THREE.CircleGeometry(rimR * 0.965, 14), wellMat);
   backPlate.rotation.y = -Math.PI / 2;                        // faces the viewer from outboard
   backPlate.position.x = hw * 0.88;                           // …at the INBOARD end of the barrel
   spin.add(backPlate);
@@ -2137,18 +2666,38 @@ function wheelGraph({
   ], 30), lipMat));
   // a polished lip bead: a torus catches a specular rim-light all the way round the wheel, which is
   // what makes an alloy readable at 30 m when the spokes themselves are three pixels wide
-  const lipRing = new THREE.Mesh(new THREE.TorusGeometry(rimR * 0.995, Math.min(0.014, width * 0.055), 6, 32), lipMat);
+  // 6x32 on a 14 mm torus is 384 triangles for a bead that is three pixels wide at chase distance
+  // and is anyway drawn on top of the flange lathe behind it. 5x24 is visually identical.
+  const lipRing = new THREE.Mesh(new THREE.TorusGeometry(rimR * 0.995, Math.min(0.014, width * 0.055), 5, 24), lipMat);
   lipRing.rotation.y = Math.PI / 2;
   lipRing.position.x = -(xBead + 0.006);
   spin.add(lipRing);
 
   // spokes
+  /**
+   * `tilt` — THE DISH, and the reason a five-spoke read as grey card.
+   *
+   * Every spoke was an ExtrudeGeometry pushed along +X and then placed by `rotation.x = a`. That
+   * rotation is ABOUT THE FACE NORMAL, so all n spokes ended up with the identical normal
+   * (-1, 0, 0): one normal, one reflection, one value. Measured on the SUV's six-spoke in the
+   * garage hero crop, all six faces came back the same mid-grey with no shading difference between
+   * them at all — which is why the wheel photographs as a flat fan rather than as a casting, and
+   * why the round-1 note about the alloys reading as grey card survived the analytic mirror being
+   * added to them.
+   *
+   * A real alloy is DISHED: the spoke face is set back at the rim relative to the hub, so each face
+   * is a cone segment and each one crosses the sky/ground split at its own angle. `tilt` is that
+   * cone half-angle, applied as a rotation about the spoke's own tangential axis — Euler order XYZ
+   * means the Y term is applied in the spoke's local frame BEFORE the X placement, which is exactly
+   * the axis wanted. It is negative so the rim end goes INBOARD (a dish, not a poke-through): at
+   * these angles the outermost point of the spoke still clears the bead flange by 15-20 mm.
+   */
   const conf = {
-    fivespoke: { n: spokes, fOut: 0.46, fIn: 0.86, depth: width * 0.26, twist: 0.08, dish: 0.55 },
-    mesh: { n: spokes * 2, fOut: 0.40, fIn: 0.78, depth: width * 0.22, twist: 0.16, dish: 0.42 },
-    offroad: { n: spokes, fOut: 0.58, fIn: 0.90, depth: width * 0.26, twist: 0.0, dish: 0.30 },
-    turbofan: { n: spokes, fOut: 0.66, fIn: 0.88, depth: width * 0.20, twist: 0.20, dish: 0.70 },
-  }[style] || { n: spokes, fOut: 0.52, fIn: 0.86, depth: width * 0.22, twist: 0.06, dish: 0.5 };
+    fivespoke: { n: spokes, fOut: 0.46, fIn: 0.86, depth: width * 0.26, twist: 0.08, dish: 0.55, tilt: -0.105 },
+    mesh: { n: spokes * 2, fOut: 0.40, fIn: 0.78, depth: width * 0.22, twist: 0.16, dish: 0.42, tilt: -0.090 },
+    offroad: { n: spokes, fOut: 0.58, fIn: 0.90, depth: width * 0.26, twist: 0.0, dish: 0.30, tilt: -0.072 },
+    turbofan: { n: spokes, fOut: 0.66, fIn: 0.88, depth: width * 0.20, twist: 0.20, dish: 0.70, tilt: -0.130 },
+  }[style] || { n: spokes, fOut: 0.52, fIn: 0.86, depth: width * 0.22, twist: 0.06, dish: 0.5, tilt: -0.09 };
 
   const OUT = -1;                                              // outboard is -X in wheel space
   const pitch = Math.PI / conf.n;                              // half the angular pitch
@@ -2158,7 +2707,7 @@ function wheelGraph({
       rimSector(rHub * 0.92, rFace, pitch * conf.fIn, pitch * conf.fOut, conf.depth, conf.twist),
       rimMat,
     );
-    sp.rotation.x = a;
+    sp.rotation.set(a, conf.tilt || 0, 0);       // Y first (local, the dish), then X (the placement)
     sp.position.x = OUT * faceX;
     spin.add(sp);
     if (style === 'fivespoke') {
@@ -2167,7 +2716,7 @@ function wheelGraph({
         rimSector(rHub * 0.9, rFace * 0.80, pitch * 0.34, pitch * 0.22, conf.depth * 0.5),
         rimMat,
       );
-      web.rotation.x = a + pitch;
+      web.rotation.set(a + pitch, (conf.tilt || 0) * 0.6, 0);
       web.position.x = OUT * (faceX - conf.depth * 0.55);
       spin.add(web);
     }
@@ -2177,7 +2726,9 @@ function wheelGraph({
   // wheel detail at distance, which is why it goes on the SUV.
   // Polished fasteners — lug nuts and beadlock bolts — are one shared material: they were
   // #b8bfc9/0.20 and #c9ced6/0.28, i.e. the same polished steel written down twice.
-  const lugMat = pooled('lugnut', () => new THREE.MeshStandardMaterial({ color: 0xbcc3cc, metalness: 1.0, roughness: 0.23 }));
+  const lugMat = pooled('lugnut', () => skyReflect(new THREE.MeshStandardMaterial({
+    color: 0xa8afb9, metalness: 1.0, roughness: 0.26, envMapIntensity: 0.45,
+  }), { gain: 1.20, blur: 0.05, f0: 0.78, tint: 0.90, sunPow: 140, amb: 0.14, cap: 0.96 }));
 
   if (beadlock) {
     const boltMat = lugMat;
@@ -2202,12 +2753,20 @@ function wheelGraph({
     [rHub * 0.98, faceX + conf.depth * conf.dish * 0.5], [rHub * 1.02, faceX - conf.depth * 0.5],
     [rHub * 0.80, faceX - conf.depth * 0.9],
   ], 18), rimMat));
+  // ROUND-1: the cap was a 46 mm dome rising 19 mm, which concentrates the studio key into one
+  // clipped spot — at 7x the muscle car's centre cap is a red jelly bean. A hub cap is a shallow
+  // pressing with a FLAT enamel face and a chamfer round it, which spreads the same highlight into
+  // a rim and leaves the face reading as its own colour.
   const cap = new THREE.Mesh(ringLathe([
-    [rHub * 0.62, faceX + conf.depth * 0.40], [rHub * 0.50, faceX + conf.depth * 0.60],
-    [0.001, faceX + conf.depth * 0.64],
-  ], 16), pooled(poolKey('hubcap', capColor || caliperColor), () => new THREE.MeshStandardMaterial({
-    color: new THREE.Color(capColor || caliperColor), metalness: 0.75, roughness: 0.26, side: THREE.DoubleSide,
-  })));
+    [rHub * 0.66, faceX + conf.depth * 0.40], [rHub * 0.56, faceX + conf.depth * 0.52],
+    [rHub * 0.40, faceX + conf.depth * 0.555], [0.001, faceX + conf.depth * 0.565],
+  ], 16), pooled(poolKey('hubcap', capColor || caliperColor), () => skyReflect(new THREE.MeshStandardMaterial({
+    // ROUND-1: 0.75/0.26 with no analytic term made the cap a clipped gloss blob — at 7x the
+    // muscle car's centre cap is a red jelly bean. A painted cap is enamel over alloy: mostly
+    // dielectric, with one small hard highlight on its crown.
+    color: new THREE.Color(capColor || caliperColor), metalness: 0.35, roughness: 0.34,
+    envMapIntensity: 0.70, side: THREE.DoubleSide,
+  }), { gain: 0.80, blur: 0.05, f0: 0.24, tint: 0.55, sunPow: 220, amb: 0.20 })));
   spin.add(cap);
   // lug ring: five polished bolts on a machined ring, sitting proud of the hub face
   spin.add(new THREE.Mesh(ringLathe([
@@ -2233,11 +2792,13 @@ function wheelGraph({
   spin.add(face);
   // The rotor's rim and its hat were #50555d/0.55 and #4a4f58/0.44 — two draw calls for two shades
   // of the same cast steel, both of them deep inside the barrel behind the spokes. One material.
-  const steelMat = pooled('brakesteel', () => new THREE.MeshStandardMaterial({ color: 0x4d525a, metalness: 0.85, roughness: 0.50 }));
-  const edge = new THREE.Mesh(new THREE.CylinderGeometry(rDisc, rDisc, width * 0.11, 24, 1, true), steelMat);
+  const steelMat = pooled('brakesteel', () => skyReflect(new THREE.MeshStandardMaterial({
+    color: 0x4d525a, metalness: 0.85, roughness: 0.50, envMapIntensity: 0.70,
+  }), { gain: 0.70, blur: 0.10, f0: 0.42, tint: 0.75, sunPow: 60, amb: 0.30 }));
+  const edge = new THREE.Mesh(new THREE.CylinderGeometry(rDisc, rDisc, width * 0.11, 16, 1, true), steelMat);
   edge.rotation.z = Math.PI / 2; edge.position.x = OUT * hw * 0.24;
   spin.add(edge);
-  const hat = new THREE.Mesh(new THREE.CylinderGeometry(rHub * 1.05, rHub * 1.05, width * 0.30, 14), steelMat);
+  const hat = new THREE.Mesh(new THREE.CylinderGeometry(rHub * 1.05, rHub * 1.05, width * 0.30, 10), steelMat);
   hat.rotation.z = Math.PI / 2; hat.position.x = OUT * hw * 0.24;
   spin.add(hat);
 
@@ -2477,7 +3038,7 @@ function wellGradient() {
  * geometry that reaches a bucket is given the attribute — zero-filled if it has none — rather than
  * having it stripped. One float per vertex on a car's worth of geometry.
  */
-const _MERGE_ATTRS = ['position', 'normal', 'uv', 'aFlare'];
+const _MERGE_ATTRS = ['position', 'normal', 'uv', 'aFlare', 'aWell'];
 
 /** Two materials that would render identically get one draw call, even if they are two objects. */
 function materialKey(m) {
@@ -2517,8 +3078,10 @@ export function mergeByMaterial(group) {
     if (g.index) g = g.toNonIndexed();
     if (!g.attributes.normal) g.computeVertexNormals();
     for (const name of Object.keys(g.attributes)) if (!_MERGE_ATTRS.includes(name)) g.deleteAttribute(name);
-    if (!g.attributes.aFlare) {
-      g.setAttribute('aFlare', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count), 1));
+    for (const extra of ['aFlare', 'aWell']) {
+      if (!g.attributes[extra]) {
+        g.setAttribute(extra, new THREE.BufferAttribute(new Float32Array(g.attributes.position.count), 1));
+      }
     }
     g.applyMatrix4(local);
     const key = materialKey(o.material);
@@ -2639,8 +3202,13 @@ export function lightUnit({
   segs = 0, lensMat = null, glowMat = null,
 } = {}) {
   const g = new THREE.Group();
+  // 16 segments put a 22-degree facet on a round lens that a garage crop reads as a stop sign, and
+  // the bezel round it was a 14-segment torus in a 0.12-rough chrome — a mirror that tight on
+  // curvature that coarse fits its whole specular lobe between two samples, which is why the
+  // muscle car's taillights photographed with a DOTTED white ring round each lens. Both are
+  // resolved now and the bezel's lobe is spread, the same fix the wheel lip already carries.
   const lensGeo = shape === 'round'
-    ? new THREE.CircleGeometry(h * 0.5, 16)
+    ? new THREE.CircleGeometry(h * 0.5, 24)
     : shape === 'strip'
       ? roundedBox(w, h, 0.02, h * 0.45)
       : roundedBox(w, h, 0.025, Math.min(w, h) * 0.30);
@@ -2664,9 +3232,9 @@ export function lightUnit({
 
   if (bezel) {
     const ring = shape === 'round'
-      ? new THREE.TorusGeometry(h * 0.53, 0.016, 5, 14)
-      : new THREE.TorusGeometry(Math.max(w, h) * 0.52, 0.014, 5, 14, Math.PI * 2);
-    const bz = new THREE.Mesh(ring, chromeMaterial({ color: '#c9ced6', rough: 0.12 }));
+      ? new THREE.TorusGeometry(h * 0.53, 0.016, 5, 26)
+      : new THREE.TorusGeometry(Math.max(w, h) * 0.52, 0.014, 5, 22, Math.PI * 2);
+    const bz = new THREE.Mesh(ring, chromeMaterial({ color: '#c9ced6', rough: 0.22 }));
     if (shape !== 'round') bz.scale.set(w / (Math.max(w, h) * 1.04), h / (Math.max(w, h) * 1.04), 1);
     bz.position.z = 0.012;
     bz.name = 'bezel';
@@ -2743,16 +3311,27 @@ export function grilleMesh({
   const barMat = frame === 'chrome' ? chromeMaterial({ color: '#b9bfc8', rough: 0.16 })
     : darkMetalMaterial({ color: '#1a1c21', rough: 0.45, metal: 0.7 });
   if (mesh) {
+    /**
+     * ROUND-3: the mesh gets its own material, a SATIN STEEL rather than the frame's chrome.
+     *
+     * A chrome bar is a pure metal — it has no diffuse at all, so everything you see in it is its
+     * reflection, and a bar lying 21 mm down inside a dark aperture reflects the inside of that
+     * aperture. Measured on the supercar's rear extractor, the whole 1.16 x 0.28 m of woven screen
+     * came back within two levels of the cavity behind it: the grille had depth and no VALUE, so
+     * the round-2 crop read the entire mouth as one black rectangle. A satin steel keeps a diffuse
+     * term, so the weave catches the sky above the car and draws itself against the hole.
+     */
+    const meshMat = darkMetalMaterial({ color: '#565c66', rough: 0.38, metal: 0.72 });
     for (let i = 0; i < slats; i++) {
       const y = -h / 2 + (i + 0.5) * (h / slats);
-      const bar = new THREE.Mesh(roundedBox(w * 0.98, h / slats * 0.24, 0.03, 0.006), barMat);
+      const bar = new THREE.Mesh(roundedBox(w * 0.98, h / slats * 0.30, 0.03, 0.006), meshMat);
       bar.position.set(0, y, -d * 0.16);
       g.add(bar);
     }
     const cols = Math.round(slats * (w / Math.max(h, 0.01)) * 0.28);
     for (let i = 0; i < cols; i++) {
       const x = -w / 2 + (i + 0.5) * (w / cols);
-      const bar = new THREE.Mesh(roundedBox(w / cols * 0.20, h * 0.96, 0.03, 0.006), barMat);
+      const bar = new THREE.Mesh(roundedBox(w / cols * 0.26, h * 0.96, 0.03, 0.006), meshMat);
       bar.position.set(x, 0, -d * 0.16);
       g.add(bar);
     }
@@ -2947,13 +3526,26 @@ function drawBodyPaint({
     ctx.fillRect(0, 0, split, size);
     ctx.fillRect(size - split, 0, split, size);
     mirrorDraw(() => {
-      // a body-length flash just under the shoulder, plus a door-number square
+      // a body-length flash just under the shoulder…
       ctx.fillStyle = stripe;
       ctx.globalAlpha = 0.92;
       ctx.fillRect(X(uAt(iCrease) - 0.016), Y(0.90), size * 0.026, Y(0.10) - Y(0.90));
-      ctx.globalAlpha = 0.55;
-      ctx.fillRect(X(uAt(iRocker) + 0.018), Y(0.56), X(uAt(iShoulder) - 0.01) - X(uAt(iRocker) + 0.018), size * 0.10);
       ctx.globalAlpha = 1;
+      /**
+       * …and a COMPETITION DOOR PLATE. This was a 55%-alpha wash of the stripe colour laid over the
+       * flank band, which on the gold truck rendered as a pale smear the eye reads as a stain
+       * rather than as a graphic — §2.3 wants livery that is designed, not implied. It is now a
+       * solid plate in the dark accent with a stripe-coloured border and a stripe bar across it:
+       * three hard edges on one shape, which is what makes a rally door plate legible at distance.
+       */
+      const x0 = X(uAt(iRocker) + 0.028), x1 = X(uAt(iShoulder) - 0.018);
+      const y0 = Y(0.585), ph = size * 0.115;
+      ctx.fillStyle = stripe;
+      ctx.fillRect(x0, y0, x1 - x0, ph);
+      ctx.fillStyle = accent || '#22252b';
+      ctx.fillRect(x0 + size * 0.006, y0 + size * 0.006, (x1 - x0) - size * 0.012, ph - size * 0.012);
+      ctx.fillStyle = stripe;
+      ctx.fillRect(x0 + size * 0.006, y0 + ph * 0.44, (x1 - x0) - size * 0.012, size * 0.010);
     });
   }
 
@@ -3116,10 +3708,18 @@ function drawBodyPaint({
       // live analytic mirror (paintMaterial, cap 0.40) rides on top of, rather than a substitute
       // for one; the sky-above / dark-ground-below split it also carries is untouched.
       [uShoulder - 0.018, 'rgba(206,232,255,0.06)'],
-      [uShoulder, 'rgba(216,238,255,0.15)'],                    // ← the sky band
+      [uShoulder, 'rgba(216,238,255,0.14)'],                    // ← the sky band
       [uShoulder + 0.016, 'rgba(206,230,252,0.07)'],
-      [uDeck, 'rgba(212,232,250,0.13)'],                        // deck / roof edge, rolling over
-      [0.5, 'rgba(238,247,255,0.21)'],                          // deck / roof centre, facing the sky
+      // ROUND-1 (vehicle art): the top end comes down from 0.13/0.21.
+      //
+      // This canvas is sampled by THREE materials, and only one of them is the tub. `paintUpper`
+      // maps the CABIN ring onto the same texture, and the roof band's u runs 0.31→0.69 — i.e. the
+      // roof panel of every car is painted with the brightest 40% of this gradient. Stacked on top
+      // of the live mirror it put the roof of all four cars at a near-white 0.9 value, which is why
+      // the greenhouse photographs as one pale hazy dome with the pillars and the glass lost inside
+      // it. A roof does catch the sky, but it catches it as a GRADED panel, not as a white card.
+      [uDeck, 'rgba(212,232,250,0.085)'],                       // deck / roof edge, rolling over
+      [0.5, 'rgba(238,247,255,0.125)'],                         // deck / roof centre, facing the sky
     ];
     const g = ctx.createLinearGradient(0, 0, size, 0);
     for (const [u, col] of stops) g.addColorStop(clamp(u, 0, 0.5), col);

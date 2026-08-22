@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import {
   loftBody, loftTub, loftBand, roundedBox, buildWheel, wheelParts, wheelScalable, WheelRig,
-  wellLinerMaterial, flareBand, paintMaterial, glassMaterial,
+  wellLinerMaterial, flareBand, archReturn, paintMaterial, glassMaterial,
   chromeMaterial, darkTrimMaterial, plasticMaterial, carbonMaterial, emissiveMaterial,
   cavityMaterial, darkMetalMaterial, stdMaterial, interiorMaterial, glowSprite, hemiTint,
+  blackoutMaterial,
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
   panelNoise, cloneShaded, wingEndplate,
 } from './kit.js';
@@ -80,9 +81,22 @@ export function bodySection(z, {
       [w * floor, y0],
       [w * rocker * 0.985, lerp(y0, ySill, tuckY)],
       [w * rocker, ySill],
-      [w * 0.982 * flare, ySill + d * (crease - 0.28)],
+      /**
+       * THE CHARACTER LINE, sharpened.  Round 1: "fenders are blobby amorphous clay with no
+       * character crease."  It was measurable — the crease apex stood 1.8% of the half-width proud
+       * of its neighbours, 17 mm on the muscle car, spread over 38% of the sill-to-belt height.
+       * Seventeen millimetres over 215 is not a crease, it is a bulge, and with averaged vertex
+       * normals it produced no line at all: the flank ran from rocker to shoulder as one smooth
+       * balloon and every highlight on it was a soft blob.
+       *
+       * 2.6% proud over 27% of the height is a real pressed swage — about 27 mm on the muscle, 24
+       * on the tuner — and because `subdivideProfile` inserts its extra points along the two
+       * STRAIGHT segments either side, the apex keeps its own vertex with short steep neighbours,
+       * so the normal actually breaks there and the crease draws a line down the length of the car.
+       */
+      [w * 0.9742 * flare, ySill + d * (crease - 0.20)],
       [w * flare, ySill + d * crease],
-      [w * 0.984 * flare, ySill + d * (crease + 0.10)],
+      [w * 0.9765 * flare, ySill + d * (crease + 0.075)],
       [w * belt, yBelt],
       [w * belt * 0.955, lerp(yBelt, yDeck, 0.45)],
       [w * deck, yDeck],
@@ -286,9 +300,12 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const mkPaint = (map) => paintMaterial({
     color: map ? '#ffffff' : paintColor, map,
     metalness: bp.paint?.metalness ?? 0.30,
-    roughness: bp.paint?.roughness ?? 0.30,
+    // See the note in muscle.js: the basecoat samples the city probe at a BLURRED mip so the
+    // probe's own texels cannot print on a panel, and the sharp reflection comes from the analytic
+    // horizon in kit.js skyReflect instead.
+    roughness: bp.paint?.roughness ?? 0.46,
     clearcoat: bp.paint?.clearcoat ?? 1.0,
-    clearcoatRoughness: bp.paint?.clearcoatRoughness ?? 0.045,
+    clearcoatRoughness: bp.paint?.clearcoatRoughness ?? 0.42,
     envIntensity: bp.paint?.envIntensity ?? 0.95,
     flake: bp.paint?.flake ?? 0.55,
     seed: 3,
@@ -314,6 +331,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const trim = darkTrimMaterial(bp.darkTrim || {});
   const plastic = plasticMaterial();
   const carbon = carbonMaterial();
+  const blackout = blackoutMaterial();
   const shellOf = (m) => {
     if (!m.userData.__shell) {
       // cloneShaded, not clone: a plain Material.copy() drops onBeforeCompile and JSON-mangles
@@ -335,6 +353,20 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   car.add(bodyGroup);
 
   // ---------------- 3. the tub's meshes ----------------
+  /**
+   * The overhang shadow behind the arch lip (kit.js `archReturn`). It rides the tub's own `aWell`
+   * weight, which is 0 exactly at the lip and 1 deep in the barrel, so the lip keeps full paint
+   * value and the metal that turns in behind it falls away — the one line that makes the opening
+   * read as an opening rather than as a fender that rolls over and dissolves.
+   *
+   * It is registered BEFORE `flareBand` on purpose. Both patch `<map_fragment>`, `patchShader`
+   * applies them in order, and each one replaces the include token in place — so whichever is
+   * registered LAST ends up writing diffuseColor first and having its result overwritten. Registered
+   * this way round, the over-fender's plastic colour is laid down and THEN the arch shadow is
+   * multiplied over it, so a satin black flare still darkens into its own opening instead of
+   * flattening it back out.
+   */
+  archReturn(paint);
   if (bp.blackArches) flareBand(paint);
   const tub = new THREE.Mesh(tubGeo.shell, paint);
   tub.name = 'shell';
@@ -379,14 +411,16 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       const g = loftBand(cabinRange(st, p.z0, p.z1, p.steps ?? 4), p.a, p.b, {
         offset: p.offset ?? 0.013, side: 'both',
       });
-      bodyGroup.add(new THREE.Mesh(g, p.mat === 'paint' ? paintUpper : shellOf(p.mat === 'chrome' ? chrome : trim)));
+      // 'dark' on a pillar or a roof rail is BLACKOUT, not bumper plastic — see blackoutMaterial()
+      bodyGroup.add(new THREE.Mesh(g, p.mat === 'paint' ? paintUpper
+        : shellOf(p.mat === 'chrome' ? chrome : p.mat === 'trim' ? trim : blackout)));
     }
     // beltline trim: the bright strip that runs under the side glass on every real car
     if (cb.belt !== false) {
       const g = loftBand(cabinRange(st, cb.beltZ0 ?? zA, cb.beltZ1 ?? zB, 10), 1, 2, {
         offset: 0.016, side: 'both',
       });
-      bodyGroup.add(new THREE.Mesh(g, shellOf(cb.beltMat === 'chrome' ? chrome : trim)));
+      bodyGroup.add(new THREE.Mesh(g, shellOf(cb.beltMat === 'chrome' ? chrome : cb.beltMat === 'trim' ? trim : blackout)));
     }
 
     // ---------------- interior ----------------
@@ -524,12 +558,19 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    */
   const banks = new Map();
   const addLight = (cfg, bucket, yaw, kind) => {
-    const key = `${kind}|${cfg.color}|${cfg.intensity ?? 3.0}|${cfg.glow ?? 0.85}`;
+    /**
+     * The OPTIC joins the bank key (kit.js `lensTexture`). A round lens carries a CircleGeometry's
+     * 0..1 UVs and a rectangular one carries ExtrudeGeometry's object-space metres, so the two need
+     * different maps and cannot share a material — but a car mixes at most two shapes in a bucket,
+     * so this splits a bank in two at worst and the lamps in each still bake into one mesh.
+     */
+    const optic = cfg.shape === 'round' ? 'fresnel' : 'flute';
+    const key = `${kind}|${cfg.color}|${cfg.intensity ?? 3.0}|${cfg.glow ?? 0.85}|${optic}`;
     let bank = banks.get(key);
     if (!bank) {
       bank = {
         group: new THREE.Group(),
-        lensMat: emissiveMaterial({ color: cfg.color, intensity: cfg.intensity ?? 3.0 }),
+        lensMat: emissiveMaterial({ color: cfg.color, intensity: cfg.intensity ?? 3.0, lens: optic }),
         glowMat: (cfg.glow ?? 0.85) > 0 ? new THREE.MeshBasicMaterial({
           map: glowSprite(cfg.color),
           transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
@@ -624,27 +665,110 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    */
   if (bp.mirrors) {
     const mi = bp.mirrors;
-    const podMat = mi.painted ? paintSolid : trim;
+    /**
+     * ROUND-3: `mat` and `scale`.
+     *
+     * Round-2 verdict: "the muscle mirror is an oversized body-colour box with no mirror face or
+     * stalk". Both halves of that were true in the garage frame, which is a three-quarter FRONT —
+     * so the one face that carries the glass points away from the lens and all that is left facing
+     * the camera is the pod, in body colour, at a size that reads as a brick beside the screen.
+     * A 1970 fastback wears a CHROME bullet mirror: a small polished pod on a visible stalk, which
+     * is legible from the front precisely because it is a mirror all over rather than only on one
+     * face. `scale` shrinks the whole assembly to the size the class actually wore.
+     */
+    const podMat = mi.mat === 'chrome' ? chrome : mi.painted ? paintSolid : trim;
+    const armMat = mi.mat === 'chrome' ? chrome : trim;
+    const ms = mi.scale ?? 1;
     for (const sx of [-1, 1]) {
-      const arm = new THREE.Mesh(roundedBox(0.115, 0.038, 0.052, 0.018), trim);
-      arm.position.set(sx * (mi.x + 0.012), mi.y, mi.z);
+      const arm = new THREE.Mesh(roundedBox(0.115 * ms, 0.038 * ms, 0.052 * ms, 0.018 * ms), armMat);
+      arm.position.set(sx * (mi.x + 0.012 * ms), mi.y, mi.z);
       arm.rotation.z = sx * -0.38;
       detail.add(arm);
       // the shell: a shallow outer face, a deeper root, and a chin fairing under the two
-      const cap = new THREE.Mesh(roundedBox(0.150, 0.086, 0.092, 0.036), podMat);
-      cap.position.set(sx * (mi.x + 0.098), mi.y + 0.040, mi.z);
+      const cap = new THREE.Mesh(roundedBox(0.150 * ms, 0.086 * ms, 0.092 * ms, 0.036 * ms), podMat);
+      cap.position.set(sx * (mi.x + 0.098 * ms), mi.y + 0.040 * ms, mi.z);
       cap.rotation.y = sx * 0.13;
       detail.add(cap);
-      const root = new THREE.Mesh(roundedBox(0.088, 0.062, 0.062, 0.026), podMat);
-      root.position.set(sx * (mi.x + 0.045), mi.y + 0.022, mi.z + 0.006);
+      const root = new THREE.Mesh(roundedBox(0.088 * ms, 0.062 * ms, 0.062 * ms, 0.026 * ms), podMat);
+      root.position.set(sx * (mi.x + 0.045 * ms), mi.y + 0.022 * ms, mi.z + 0.006);
       detail.add(root);
-      const chin = new THREE.Mesh(roundedBox(0.128, 0.030, 0.070, 0.014), trim);
-      chin.position.set(sx * (mi.x + 0.096), mi.y - 0.008, mi.z);
+      const chin = new THREE.Mesh(roundedBox(0.128 * ms, 0.030 * ms, 0.070 * ms, 0.014 * ms), mi.mat === 'chrome' ? chrome : trim);
+      chin.position.set(sx * (mi.x + 0.096 * ms), mi.y - 0.008 * ms, mi.z);
       detail.add(chin);
-      const face = new THREE.Mesh(new THREE.PlaneGeometry(0.116, 0.066), chromeMaterial({ color: '#aeb6c2', rough: 0.05 }));
-      face.position.set(sx * (mi.x + 0.098), mi.y + 0.042, mi.z - 0.049);
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(0.116 * ms, 0.066 * ms), chromeMaterial({ color: '#aeb6c2', rough: 0.05 }));
+      face.position.set(sx * (mi.x + 0.098 * ms), mi.y + 0.042 * ms, mi.z - 0.049 * ms);
       face.rotation.y = Math.PI;
       detail.add(face);
+    }
+  }
+
+  /**
+   * WIPERS — two blades parked across the bottom of the screen.
+   *
+   * Small, but it is the detail that TELLS you a windscreen is there. The garage hero shot is a
+   * three-quarter front, so the screen is the single largest piece of glazing in the frame and it
+   * has nothing on it: the round-1 crops read straight through into the cabin and the pane is
+   * indistinguishable from an opening. A pair of dark blades lying ON the glass gives the eye a
+   * surface at that depth, and they read at chase distance too because they are the only hard dark
+   * horizontal line above the bonnet.
+   *
+   * Authored as `bp.cabin.wipers = { z, w, x, sweep, lift }`. Only the STATION is authored: the
+   * height comes from `sampleStation` on the cabin's own sections, so a blade lies on the glass
+   * whatever rake the car has and can never be re-broken by a change to the roofline. Matt black
+   * blackout lacquer — the same bucket the pillars use, so no extra draw call.
+   */
+  if (bp.cabin?.wipers) {
+    const wp = bp.cabin.wipers;
+    const cst = bp.cabin.stations;
+    const ordered = cst[0].z <= cst[cst.length - 1].z ? cst : [...cst].reverse();
+    // the glass line at the wiper's station, so a blade is never floating over the screen or buried
+    // in the cowl whatever rake the car was authored with
+    const st = sampleStation(ordered, wp.z);
+    const yGlass = st.yRoof + (wp.lift ?? 0.014);
+    const halfW = (wp.w ?? 0.42) * 0.5;
+    const xOff = wp.x ?? (st.rw * 0.42);
+    for (const sx of [-1, 1]) {
+      const arm = new THREE.Mesh(roundedBox(wp.w ?? 0.42, 0.013, 0.020, 0.006), blackout);
+      arm.position.set(sx * xOff, yGlass, wp.z);
+      arm.rotation.z = sx * (wp.sweep ?? 0.22);
+      detail.add(arm);
+      const pivot = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.019, 0.024, 8), blackout);
+      pivot.rotation.x = Math.PI / 2;
+      pivot.position.set(sx * (xOff - halfW * 0.92), yGlass - 0.004, wp.z + 0.010);
+      detail.add(pivot);
+    }
+  }
+
+  /**
+   * BADGES. §6.1 asks for them by name, and until now the only one on any car was a three-bar
+   * decal painted into the livery canvas at u 0.5 — invisible at any distance and flat at every
+   * distance. A badge is a tiny object but it is a HIGH-CONTRAST tiny object: a polished bezel with
+   * a dark enamel field inside it, sitting on a grille or a tail panel, is the thing that says a
+   * car was manufactured rather than modelled.
+   *
+   * Three parts, all in buckets the car already carries (chrome + cavity), so no draw call:
+   *   the FIELD — a dark enamel plate, recessed;
+   *   the BEZEL — a polished rim standing proud of it;
+   *   the WING  — two swept chrome blades either side, which is what turns a disc into a marque.
+   */
+  for (const b of bp.badges || []) {
+    const w = b.w ?? 0.10, h = b.h ?? 0.10, d = b.d ?? 0.022;
+    const bx = b.x ?? 0, ry = b.ry ?? 0;
+    const put = (mesh, ox, oy, oz) => {
+      mesh.position.set(bx + ox, b.y + oy, b.z + oz);
+      mesh.rotation.y = ry;
+      if (b.rx) mesh.rotation.x = b.rx;
+      detail.add(mesh);
+    };
+    put(new THREE.Mesh(roundedBox(w, h, d, Math.min(w, h) * 0.42), cavityMaterial()), 0, 0, 0);
+    put(new THREE.Mesh(roundedBox(w * 1.16, h * 1.16, d * 0.72, Math.min(w, h) * 0.46), chrome), 0, 0, -0.004 * (b.face ?? 1));
+    put(new THREE.Mesh(roundedBox(w * 0.46, h * 0.20, d * 1.30, h * 0.09), chrome), 0, 0, 0);
+    if (b.wings !== false) {
+      for (const sx of [-1, 1]) {
+        const wing = new THREE.Mesh(roundedBox(w * 0.86, h * 0.13, d * 0.9, h * 0.05), chrome);
+        wing.rotation.z = sx * 0.10;
+        put(wing, sx * w * 0.92, 0, 0.002 * (b.face ?? 1));
+      }
     }
   }
 

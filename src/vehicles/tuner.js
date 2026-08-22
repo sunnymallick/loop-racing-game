@@ -60,7 +60,7 @@ export const blueprint = {
   // no city into the paint, so the car sat in the frame as a flat coloured shape and went to a grey
   // silhouette in NYC. §1.6.3 wants "a sky reflection above and a dark ground reflection below" —
   // that is the env probe, and it needs metalness to carry it and a tight clearcoat over it.
-  paint: { metalness: 0.46, roughness: 0.25, clearcoat: 0.92, clearcoatRoughness: 0.062, flake: 0.50, envIntensity: 1.20 },
+  paint: { metalness: 0.26, roughness: 0.45, clearcoat: 0.92, clearcoatRoughness: 0.42, flake: 0.50, envIntensity: 0.90 },
   livery: {
     style: 'rally', stripe: '#f4f6f8', accent: '#15171c',
     panels: {
@@ -75,7 +75,7 @@ export const blueprint = {
   },
   // see muscle.js — 0.72 opacity made the cabin a §7 black void; 0.60 keeps the tint and the env
   // reflection but lets the roll cage, the door cards and the shelf read through the hatch glass
-  glass: { tint: '#0d141c', opacity: 0.60 },
+  glass: { tint: '#070c12', opacity: 0.56 },
 
   /**
    * THE TUB. Read the yDeck column: it is high (bonnet) from z 1.00 forward, drops into the cabin
@@ -101,10 +101,19 @@ export const blueprint = {
     { z: 1.00, w: 0.894, y0: 0.235, rocker: 0.878, ySill: 0.40, yBelt: 0.948, belt: 0.938, yDeck: 0.922, deck: 0.86, crown: 0.012 },
     { z: 1.16, w: 0.898, y0: 0.237, rocker: 0.882, ySill: 0.405, yBelt: 0.945, belt: 0.938, yDeck: 0.918, deck: 0.86, crown: 0.014, flare: 1.026 },
     { z: 1.31, w: 0.905, y0: 0.240, rocker: 0.885, ySill: 0.41, yBelt: 0.940, belt: 0.938, yDeck: 0.912, deck: 0.86, crown: 0.014, flare: 1.058 },
-    { z: 1.62, w: 0.900, y0: 0.250, rocker: 0.89, ySill: 0.42, yBelt: 0.928, belt: 0.94, yDeck: 0.898, deck: 0.86, crown: 0.014, flare: 1.032 },
-    { z: 1.90, w: 0.886, y0: 0.270, rocker: 0.90, ySill: 0.44, yBelt: 0.908, belt: 0.945, yDeck: 0.876, deck: 0.87, crown: 0.012 },
-    { z: 2.08, w: 0.855, y0: 0.305, rocker: 0.92, ySill: 0.47, yBelt: 0.880, belt: 0.955, yDeck: 0.856, deck: 0.90, crown: 0.008 },
-    { z: 2.16, w: 0.740, y0: 0.365, floor: 0.55, rocker: 0.95, ySill: 0.52, yBelt: 0.852, belt: 0.965, yDeck: 0.842, deck: 0.92, crown: 0.004 },
+    /**
+     * THE NOSE, raked. Round-1 silhouette note: "the tuner is the weak one — a long-nose,
+     * long-overhang 80s coupe, not the low compact hatch §2.3 asks for." The overhang is 850 mm on
+     * a 2.62 m wheelbase, which is short enough; what made it read as a land-yacht bonnet was that
+     * the deck fell only 80 mm over the 1.16 m from the cowl to the nose tip — a flat table at
+     * bonnet height all the way to the leading edge. A compact hatch's bonnet drops hard over the
+     * last half metre so the nose is a WEDGE. It now falls 190 mm over the same run, which shortens
+     * the apparent overhang without moving a single z and leaves every bolt-on where it was.
+     */
+    { z: 1.62, w: 0.900, y0: 0.250, rocker: 0.89, ySill: 0.42, yBelt: 0.928, belt: 0.94, yDeck: 0.890, deck: 0.86, crown: 0.014, flare: 1.032 },
+    { z: 1.90, w: 0.886, y0: 0.270, rocker: 0.90, ySill: 0.44, yBelt: 0.908, belt: 0.945, yDeck: 0.852, deck: 0.87, crown: 0.012 },
+    { z: 2.08, w: 0.855, y0: 0.305, rocker: 0.92, ySill: 0.47, yBelt: 0.880, belt: 0.955, yDeck: 0.798, deck: 0.90, crown: 0.008 },
+    { z: 2.16, w: 0.740, y0: 0.365, floor: 0.55, rocker: 0.95, ySill: 0.52, yBelt: 0.852, belt: 0.965, yDeck: 0.752, deck: 0.92, crown: 0.004 },
   ],
 
   /**
@@ -127,7 +136,11 @@ export const blueprint = {
       { z: -1.87, hw: 0.800, rw: 0.792, yBelt: 0.951, yRoof: 0.958 },
     ],
     roof: { z0: -1.10, z1: 0.30, a: 5, offset: 0.014 },
+    wipers: { z: 0.900, w: 0.44, x: 0.26, sweep: 0.22 },
     pillars: [
+      // roof-edge rail in satin black — see the note in muscle.js. On a JDM hatch it is the
+      // moulded gutter, not a bright strip, so it takes the dark trim the pillars already use.
+      { z0: -1.12, z1: 0.32, a: 5, b: 6, mat: 'dark', steps: 9, offset: 0.018 },
       { z0: 0.34, z1: 1.00, a: 2, b: 5, mat: 'dark', steps: 5 },      // A
       { z0: -0.44, z1: -0.30, a: 2, b: 5, mat: 'dark', steps: 2 },    // B
       // C and D. A hatch has TWO pillars behind the door — a blacked-out C beside the quarter light
@@ -146,7 +159,7 @@ export const blueprint = {
 
   wheels: {
     // bronze 10-spoke mesh on low-profile street rubber — the JDM tuner signature
-    style: 'mesh', rimColor: '#b47a2c', caliperColor: '#e0b21c', lipColor: '#cfd4dc', tire: 'street',
+    style: 'mesh', rimColor: '#b47a2c', caliperColor: '#e0b21c', lipColor: '#bcc2cc', tire: 'street',
     capColor: '#18b6e8',
     // 0.165 profile left a 58 mm sidewall: from ten metres the tyre vanished and the car appeared
     // to be riding on bare bronze discs. 0.24 is a real 35-series performance sidewall.
@@ -164,7 +177,17 @@ export const blueprint = {
   archDepth: 0.12, archSpan: 1.06, blackArches: true, archBolts: 9, archBlackBand: 0.58,
 
   lights: {
-    head: [{ x: 0.60, y: 0.735, z: 2.115, w: 0.44, h: 0.115, shape: 'strip', color: '#dfe9ff', intensity: 3.2 }],
+    /**
+     * ROUND-1 verdict: "blank pale pills on the tuner … not emissive". They ARE emissive — the
+     * garage deliberately runs the head units at 6% for a showroom car — but a 0.44 x 0.115 m lens
+     * with nothing inside it is a pale pill in any state, lit or not. `segs: 2` splits it into the
+     * main and high-beam chambers a projector unit actually has, and the moulded flute optic
+     * (kit.js `lensTexture`) gives the glass its prisms, so the unit reads as a lamp with the bulb
+     * off rather than as a blank lozenge.
+     */
+    // y 0.735 → 0.690: the raked bonnet's leading edge is now at 0.752, and at 0.735 the lens's top
+    // would have stood 40 mm proud of the panel it is let into.
+    head: [{ x: 0.60, y: 0.690, z: 2.115, w: 0.44, h: 0.115, shape: 'strip', color: '#dfe9ff', intensity: 3.2, segs: 2 }],
     /**
      * TALL CORNER CLUSTERS, standing up the outer edges of the tailgate — the lamp shape that goes
      * with a hatch, and nothing like the muscle's four round lenses or the supercar's two rings.
@@ -183,8 +206,12 @@ export const blueprint = {
   grilles: [
     { w: 1.02, h: 0.22, d: 0.14, y: 0.555, z: 2.125, slats: 5, mesh: true, frame: 'dark' },
     { x: 0.58, w: 0.30, h: 0.13, d: 0.10, y: 0.385, z: 2.12, slats: 3, mesh: true, frame: 'dark', mirror: true },
+    // centre lower intake — the hole that closes the gap between the valance bar and the splitter
+    { w: 0.82, h: 0.115, d: 0.12, y: 0.428, z: 2.118, slats: 3, mesh: true, frame: 'dark' },
     // tailgate extractor mesh under the lamps, so the tall tail panel has a hole in it
-    { w: 0.80, h: 0.17, d: 0.10, y: 0.735, z: -2.075, slats: 4, mesh: true, frame: 'dark' },
+    // ry: PI — see the note on the supercar's rear extractor. A rear-facing aperture built to open
+    // along +Z shows a chase camera the closed back of its own cavity box unless it is turned round.
+    { w: 0.80, h: 0.17, d: 0.10, y: 0.735, z: -2.075, slats: 4, mesh: true, frame: 'dark', ry: Math.PI },
   ],
   vents: [
     { x: 0.40, y: 0.918, z: 1.62, w: 0.28, h: 0.16, fins: 3, angle: 0.6, rx: -1.5708 },
@@ -194,7 +221,16 @@ export const blueprint = {
   handles: [{ x: 0.90, y: 0.875, z: -0.18 }],
 
   trim: [
+    /**
+     * THE FRONT. Round 1: "tuner front is a black bar plus a separate flat splitter plank." It was
+     * two unrelated slabs with 130 mm of open air between them. Four parts now make it one moulded
+     * bumper: the splitter keeps its blade, a polished LIP runs along its leading edge so the plank
+     * has a bright front rather than a dark cut end, two vertical FENCES tie it up into the valance
+     * above it, and a mesh centre intake puts a hole in the middle of what used to be the gap.
+     */
     { w: 1.72, h: 0.09, d: 0.34, y: 0.268, z: 2.08, mat: 'carbon', rx: 0.09, r: 0.03 },     // front splitter
+    { w: 1.66, h: 0.030, d: 0.055, y: 0.302, z: 2.242, mat: 'chrome', r: 0.011 },           // splitter leading lip
+    { x: 0.575, w: 0.032, h: 0.115, d: 0.24, y: 0.330, z: 2.148, mat: 'carbon', mirror: true, r: 0.009 }, // fences
     { x: 0.72, w: 0.30, h: 0.02, d: 0.22, y: 0.318, z: 1.96, mat: 'carbon', rz: 0.34, mirror: true, r: 0.008 }, // canards — dropped onto the splitter's top face
     // SIDE SKIRT. It sat at x 0.912 with the rocker at 0.771 — 91 mm of open air under the doors,
     // the whole length of the car. Pulled in until it overlaps the rocker; the polished blade under
@@ -203,7 +239,7 @@ export const blueprint = {
     // A polished blade along the BOTTOM edge of the skirt. The lower body of a car needs one bright
     // line under it or it has no bottom edge at all and dissolves into its own contact shadow — the
     // exact failure the round-3 critic described as "a painted shell over a black silhouette".
-    { x: 0.828, w: 0.036, h: 0.028, d: 1.94, y: 0.300, z: -0.06, mat: 'chrome', mirror: true, r: 0.010 },
+    { x: 0.832, w: 0.048, h: 0.040, d: 1.94, y: 0.296, z: -0.06, mat: 'chrome', mirror: true, r: 0.014 },
     { w: 1.62, h: 0.10, d: 0.14, y: 0.58, z: 2.14, mat: 'dark', r: 0.03 },
     { w: 1.50, h: 0.09, d: 0.14, y: 0.615, z: -2.075, mat: 'dark', r: 0.03 },
     { w: 0.42, h: 0.19, d: 0.03, y: 0.545, z: -2.088, mat: 'dark', r: 0.014 },     // plate recess

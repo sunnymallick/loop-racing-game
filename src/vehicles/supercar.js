@@ -34,9 +34,13 @@ export const blueprint = {
   // instead of hiding behind a full-width diffuser (§6.1 round-2 gap).
   dims: { length: 4.62, width: 2.32, height: 1.25, wheelbase: 2.68, track: 1.820, trackRear: 1.906, rideHeight: 0.11 },
   // the glossiest car in the game: show-car clearcoat over metallic red
-  paint: { metalness: 0.55, roughness: 0.22, clearcoat: 1.0, clearcoatRoughness: 0.042, flake: 0.58, envIntensity: 1.28 },
+  paint: { metalness: 0.30, roughness: 0.42, clearcoat: 1.0, clearcoatRoughness: 0.38, flake: 0.58, envIntensity: 0.94 },
   livery: {
-    style: 'gt', stripe: '#eef1f5', accent: '#14171c',
+    // ROUND-1 (vehicle art): #eef1f5 is 0.93 sRGB, and a 0.93 panel under the garage key clips
+    // before the specular even arrives — the whole centre of the bonnet reads as one blown white
+    // blob with the stripe, the crown and the highlight fused into it. #d9dde5 is still an
+    // unmistakable white racing stripe and it leaves the bloom somewhere to go.
+    style: 'gt', stripe: '#d9dde5', accent: '#14171c',
     panels: {
       doors: [V(0.94), V(-0.52)],
       hood: [V(1.02), V(2.10)],
@@ -45,7 +49,7 @@ export const blueprint = {
     },
   },
   // see muscle.js — 0.74 made the cabin a §7 black void behind the wraparound screen
-  glass: { tint: '#0c131a', opacity: 0.62 },
+  glass: { tint: '#060b11', opacity: 0.56 },
 
   /**
    * ROUND-4 SURFACING PASS ON THE WINGS.
@@ -95,6 +99,8 @@ export const blueprint = {
     // z1 0.26 → 0.31 closes the 40 mm the roof panel used to stop short of the A-pillar band below,
     // so the header, the pillar and the rail are one continuous piece of bodywork round the screen.
     roof: { z0: -0.52, z1: 0.31, a: 5, offset: 0.013 },
+    // one blade on a very raked screen; no drip rail — a mid-engine canopy is one smooth shell
+    wipers: { z: 0.845, w: 0.44, x: 0.24, sweep: 0.18 },
     pillars: [
       { z0: 0.30, z1: 0.92, a: 2, b: 5, mat: 'dark', steps: 5 },      // A-pillar
       { z0: -0.40, z1: -0.80, a: 2, b: 5, mat: 'paint', steps: 5 },   // buttress root
@@ -126,8 +132,16 @@ export const blueprint = {
 
   lights: {
     head: [
-      { x: 0.64, y: 0.545, z: 2.245, w: 0.36, h: 0.10, shape: 'strip', color: '#e6efff', intensity: 3.4 },
-      { x: 0.62, y: 0.415, z: 2.235, w: 0.22, h: 0.06, shape: 'strip', color: '#4fd8ff', intensity: 2.6, glow: 0.5 },
+      { x: 0.64, y: 0.545, z: 2.245, w: 0.36, h: 0.10, shape: 'strip', color: '#e6efff', intensity: 3.4, segs: 2 },
+      /**
+       * ROUND-2: the DRL bar was scored as "supercar fog lights are unmodified blue boxes". It was
+       * not the lens — a 0.22 x 0.06 bar is a bar — it was the HALO card, 0.28 x 0.10 of additive
+       * cyan at 0.5 strength sitting on top of it and then bloomed, which fattens a 60 mm strip
+       * into a 190 mm square of light with no shape inside it. The halo comes down to a rim, and
+       * three divider ribs plus the moulded optic (kit.js `lensTexture`) give the bar the internal
+       * structure that says signature lamp rather than blue brick.
+       */
+      { x: 0.62, y: 0.415, z: 2.235, w: 0.22, h: 0.06, shape: 'strip', color: '#4fd8ff', intensity: 2.6, glow: 0.22, segs: 3 },
     ],
     // the twin round lamp rings of f&f3 — clear of the carbon blade above them so they read whole
     tail: [
@@ -135,6 +149,10 @@ export const blueprint = {
       { x: 0.71, y: 0.870, z: -2.360, w: 0.22, h: 0.22, shape: 'round', color: '#ff2410', intensity: 2.3 },
       // high-mount stop lamp in the carbon tail blade; shares the round lamps' bank
       { x: 0, y: 0.995, z: -2.398, w: 0.30, h: 0.042, shape: 'strip', color: '#ff2410', intensity: 2.3, mirror: false, bezel: false },
+      // Rear reflectors, low in the valance either side of the extractor. Same colour, intensity
+      // and halo as the high-mount lamp, so they join its bank and cost nothing — and they put two
+      // lit elements into the one part of the car that was returning a flat black rectangle.
+      { x: 0.635, y: 0.520, z: -2.318, w: 0.155, h: 0.048, shape: 'strip', color: '#ff2410', intensity: 2.3, bezel: false },
     ],
     reverse: [{ x: 0.0, y: 0.585, z: -2.365, w: 0.16, h: 0.08, color: '#fff2d8', intensity: 1.6, glow: 0.3, mirror: false }],
   },
@@ -145,7 +163,25 @@ export const blueprint = {
     // side intakes: recessed 20 mm into the real flank (x 1.020 at this station), not buried 28 mm
     // inside it, so the mesh reads as a mouth in the door rather than a shadow under the paint
     { x: 0.995, w: 0.44, h: 0.26, d: 0.16, y: 0.635, z: -0.98, slats: 4, mesh: true, frame: 'dark', ry: 1.5708, mirror: true },
-    { w: 1.16, h: 0.28, d: 0.13, y: 0.685, z: -2.325, slats: 6, mesh: true, frame: 'dark' },                      // rear extractor grille
+    /**
+     * REAR EXTRACTOR. Round-1: "everything below the taillight bar is one flat featureless
+     * near-black rectangle". The grille was there — it was dark mesh in a dark aperture on a black
+     * tail panel, three near-black things stacked, and at 3x the whole 1.2 x 0.3 m of it came back
+     * as one void. A polished surround puts a hard bright rectangle around the opening, which is
+     * what makes it read as an opening; the mesh behind it keeps its depth.
+     */
+    /**
+     * ROUND-3: `ry: Math.PI`, and this is the whole of the round-2 note "the supercar diffuser
+     * mouth is a flat pure-black rectangle".
+     *
+     * `grilleMesh` builds an aperture that opens along its own +Z: the cavity box sits at -d/2 and
+     * the woven screen at -0.16 d, i.e. BEHIND the mounting plane. Bolted to the tail of the car
+     * with no yaw, the whole assembly faced forwards — so what a chase camera saw was the closed
+     * BACK of the cavity box, a 1.16 x 0.28 m flat black slab, with the mesh, the depth and the
+     * polished surround all hidden inside the car. Turned to face the camera it is what it was
+     * authored to be: a bright surround, a lit steel screen and a hole behind it.
+     */
+    { w: 1.16, h: 0.28, d: 0.13, y: 0.685, z: -2.325, slats: 6, mesh: true, frame: 'chrome', ry: Math.PI },
   ],
   vents: [
     { x: 0.42, y: 0.995, z: -1.30, w: 0.44, h: 0.30, fins: 5, angle: 0.55, rx: -1.5708 },   // engine cover louvres
@@ -189,7 +225,11 @@ export const blueprint = {
   ],
   // swan-neck: the blade hangs UNDER its mounts and the endplates are the full chord. Nothing
   // like the tuner's tall twin-element pedestal wing (§6.1 round-2: the two shared one wing).
-  wing: { type: 'swan', w: 1.66, chord: 0.36, x: 0.60, y: 1.075, z: -2.03, h: 0.20, mat: 'carbon', postMat: 'chrome', aoa: -0.16 },
+  // postMat chrome → dark. The swan neck's hook is a 34 x 30 x 200 mm block, and in polished chrome
+  // it mirrored the sky as a solid pale-blue cube standing on each side of the wing: the round-1
+  // verdict's "box stalks with literal blue box end-caps". Satin black arms are what a modern
+  // swan-neck actually wears and they leave the blade as the only thing up there with an edge.
+  wing: { type: 'swan', w: 1.66, chord: 0.36, x: 0.60, y: 1.075, z: -2.03, h: 0.20, mat: 'carbon', postMat: 'dark', aoa: -0.16 },
   // ROUND-2: 1.36 m wide with six strakes. §1.3's mid-engine rear is "a wide low diffuser"; at
   // 1.20 on a 2.28 m car it was a narrow box under the middle of the valance with daylight either
   // side of it. It still stops 65 mm inboard of the rear tyres' inner sidewalls, so nothing clips.

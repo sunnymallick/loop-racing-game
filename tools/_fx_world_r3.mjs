@@ -28,10 +28,10 @@ page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 await open(page, url, { city, car });
 const info = await page.evaluate(async ([uu]) => {
   const G = window.__GAME;
-  G.scenario('crash', { u: +uu, after: 12 });
+  G.scenario('crash', +uu > 0 ? { u: +uu, after: 12 } : { after: 12 });
   const g = G.game;
   const P = g.effects.lastImpact;
-  const rows = [];
+  let rows = [];
   const scan = (root, label) => {
     root.traverse((o) => {
       if (!o.isMesh || o.isInstancedMesh) return;
@@ -50,7 +50,7 @@ const info = await page.evaluate(async ([uu]) => {
         if (d < best) best = d;
         if (d < 2.5) { within++; if (wy < minY) minY = wy; if (wy > maxY) maxY = wy; }
       }
-      if (best < 6) {
+      if (best < 14) {
         const chain = [];
         for (let p = o; p; p = p.parent) if (p.name) chain.unshift(p.name);
         rows.push({ label, chain: chain.join('/'), mat: o.material?.name || o.material?.type,
@@ -59,8 +59,10 @@ const info = await page.evaluate(async ([uu]) => {
     });
   };
   scan(g.city.group, 'city');
+  for (const c of g.aiCars || []) scan(c, 'ai');
+  rows = rows.filter((r) => !/\/road$/.test(r.chain));
   rows.sort((a, b) => a.nearest - b.nearest);
-  return { impact: [+P.x.toFixed(1), +P.y.toFixed(1), +P.z.toFixed(1)], rows: rows.slice(0, 20) };
+  return { hits: g.effects.world.hits, impact: [+P.x.toFixed(1), +P.y.toFixed(1), +P.z.toFixed(1)], rows: rows.slice(0, 20) };
 }, [u]);
 console.log(JSON.stringify(info, null, 1));
 await browser.close();

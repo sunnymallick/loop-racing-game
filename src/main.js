@@ -20,12 +20,8 @@ const FIXED_DT = 1 / 60;
 const _camAim = new THREE.Vector3();
 const _boostRay = new THREE.Vector3();
 const _boostRel = new THREE.Vector3();
-// scratch: the contact→camera segment the crash cam tests for occluders, and the [lift, lateral]
-// offsets it tries in order when something is in the way (fx piece)
+// scratch: the point between the car and the contact that the crash camera composes on (fx piece)
 const _occFrom = new THREE.Vector3();
-const _occCar = new THREE.Vector3();
-const _occDir = new THREE.Vector3();
-const OCC_CANDIDATES = [[0, 0], [1.5, 0], [0, 3.8], [0, -3.8], [3.2, 0], [2.2, 3.8], [2.2, -3.8]];
 // scratch: the finish camera's road frame, its aim point and the basis it composes in
 const _finFwd = new THREE.Vector3();
 const _finRight = new THREE.Vector3();
@@ -1213,116 +1209,13 @@ class Game {
       }
     }
 
-    // (fx piece) CRASH-CAM OCCLUSION RESOLVE. ART_DIRECTION §6.6 scores camera response, and the
-    // critic charged this piece for it directly: in three of four crash captures the impact
-    // happened behind an overpass pillar or inside a Vegas sign leg, so the most important frame in
-    // the whole piece showed a prop instead of the crash. For the second or so after an impact,
-    // test whether anything solid in the city sits between the car and where the rig wants to be
-    // and, if it does, move the rig somewhere it can see.
-    //
-    // It LIFTS rather than dollies. Pulling in along the rig's own axis until the prop clears puts
-    // the camera three metres off the bumper looking over the roof, and the impact — which is
-    // beside and behind the car — leaves the frame entirely (that was this fix's first attempt, and
-    // the Vegas capture came back with no crash in it at all). Climbing keeps the distance, the
-    // whole car and the whole shower, and a crash seen from slightly above is the shot anyway. Only
-    // if no height clears it does the rig come in, and then no closer than 4.5 m.
-    //
-    // Gated on the FX director's own crash clock, not on shake: a backfire, a boost pad and every
-    // frame of a wall scrape all raise shake, and a full-city raycast on those would be running
-    // most of a lap. crashT is only zeroed by crash() itself, so this is inert while driving —
-    // including through the whole of the performance capture.
-    if (this.effects.crashT < 0.85 && this.city?.group) {
-      // ONE CANDIDATE PER FRAME, and none at all once a clear one is found. A ray against a whole
-      // city is not cheap — walking seven candidates in a single frame measured as a 140 ms spike
-      // and took the perf sweep under its 50 fps bar. The search has ~50 frames of crash window to
-      // work with and needs at most seven, so it is spread one per frame and then latched.
-      if (this._occCrash !== this.effects.impacts) {
-        this._occCrash = this.effects.impacts;
-        this._occIdx = 0; this._occLift = 0; this._occLat = 0; this._occPull = 0;
-      }
-      this._occT = (this._occT ?? 0) + 1;
-      // …and re-verify the latched choice every sixth frame. A crash against a barrier is a SLIDE:
-      // the car keeps moving for the whole second the crash camera is live, so a sightline that was
-      // clear when it was chosen can be behind a pylon by the time the frame that matters is drawn.
-      // That is exactly how the Vegas Strip capture came back as a flat magenta screen.
-      if (this._occIdx >= OCC_CANDIDATES.length && this._occT % 6 === 0) this._occIdx = 0;
-      if (this._occIdx < OCC_CANDIDATES.length) {
-        this._occRay ??= new THREE.Raycaster();
-        // (RACE piece, one-line crash fix — owner of this block please keep it) Three's
-        // Sprite.raycast dereferences `raycaster.camera.matrixWorld`, so raycasting a city group
-        // that contains any sprite (Vegas/Miami/NYC neon glow cards) throws "Cannot read
-        // properties of null (reading 'matrixWorld')" the first time the shake goes above 0.05 —
-        // which killed tools/perf.mjs on three of the four cities.
-        this._occRay.camera = this.engine.camera;
-        this._occRay.near = 0.7;
-        // Test the sightline to the EVENT, not to the car. The shower, the debris and the scorch
-        // are at the contact patch a metre or two outboard of the bodywork, so a rig that can see
-        // the car but not the contact still comes back with a frame that has no crash in it —
-        // which is what the Vegas supercar capture kept doing, with the impact behind a sign pylon
-        // the car itself was clear of.
-        // …and to the CAR as well. Either one alone is not enough: a sightline to the contact with
-        // the car behind a pylon is a frame of sparks with no vehicle in it, and a sightline to the
-        // car with the contact behind the pylon is a frame of an intact car with no crash in it.
-        // The Vegas Strip capture produced one of each on successive rounds.
-        const probe = (target, lift, lat) => {
-          _occDir.copy(want).addScaledVector(right, lat);
-          _occDir.y = want.y + lift;
-          _occDir.sub(target);
-          const dist = _occDir.length();
-          if (dist < 1.2) return -1;
-          this._occRay.set(target, _occDir.divideScalar(dist));
-          this._occRay.far = dist;
-          for (const hit of this._occRay.intersectObject(this.city.group, true)) {
-            const m = Array.isArray(hit.object.material) ? hit.object.material[0] : hit.object.material;
-            if (!m) continue;
-            // See through decals, haze cards and additive glow — but NOT through a transparent
-            // material that still writes depth and is nearly opaque. Skipping everything flagged
-            // `transparent` let the rig park inside a Las Vegas sign pylon, which is a two-lane-wide
-            // magenta slab: the capture came back as a flat magenta screen with no car in it.
-            if (m.depthWrite === false) continue;
-            if (m.transparent && (m.opacity ?? 1) < 0.65) continue;
-            return hit.distance;
-          }
-          return 0;
-        };
-        _occFrom.copy(b.pos).lerp(this.effects.lastImpact, 0.6).setY(b.pos.y + 0.6);
-        _occCar.copy(b.pos).setY(b.pos.y + 0.7);
-        // Candidates in the order we would rather have them: stay put, climb a little, step to
-        // one side, climb a lot, climb and step. Sideways matters because the thing in the way is
-        // usually a COLUMN — an overpass pier, a sign pylon — and you clear a column by walking
-        // around it, not by climbing it.
-        const ci = this._occIdx;
-        const lift = OCC_CANDIDATES[ci][0], lat = OCC_CANDIDATES[ci][1];
-        const a = probe(_occFrom, lift, lat);
-        const bq = a > 0 ? 0 : probe(_occCar, lift, lat);
-        if (a < 0 || bq < 0) {
-          this._occIdx = OCC_CANDIDATES.length;              // degenerate geometry — leave it alone
-        } else if (!a && !bq) {
-          this._occLift = lift; this._occLat = lat; this._occPull = 0;
-          this._occIdx = OCC_CANDIDATES.length;              // latched
-        } else if (ci === OCC_CANDIDATES.length - 1) {
-          // Nothing worked: take the best compromise and dolly in. 5.5 m is the floor — the car is
-          // ~4.5 m long, so anything tighter measured from its centre puts the lens inside the
-          // bodywork (which is exactly what this fix's first attempt did to the NYC muscle frame).
-          this._occLift = 2.2;
-          this._occPull = Math.max(5.5, (a || bq) - 0.6);
-          this._occIdx = OCC_CANDIDATES.length;
-        } else {
-          this._occIdx = ci + 1;
-        }
-      }
-      // applied to `want`, never to camPos, so a held offset cannot accumulate frame over frame
-      if (this._occLift > 0) want.y += this._occLift;
-      if (this._occLat !== 0) want.addScaledVector(right, this._occLat);
-      if (this._occPull > 0) {
-        _occFrom.copy(b.pos).setY(b.pos.y + 0.75);
-        _occDir.copy(want).sub(_occFrom);
-        const d = _occDir.length();
-        if (d > this._occPull) want.copy(_occFrom).addScaledVector(_occDir.divideScalar(d), this._occPull);
-      }
-    } else if (this._occLift || this._occLat || this._occPull) {
-      this._occPull = 0; this._occLift = 0; this._occLat = 0;
-    }
+    // (fx piece) THE CRASH RIG. For the 0.85 s after an impact the rig is pulled onto a line laid
+    // out on the ROAD rather than behind the wrecked car — see Effects.crashRig(), which carries
+    // the measurements and the reason. It replaces a per-frame full-city occluder raycast that
+    // cost 6.8 ms (LA) to 12.3 ms (NYC) a frame for ~50 frames after every impact and still let
+    // the NYC captures come back with the car cut in half by a slab its two probes threaded
+    // between.
+    if (trk) this.effects.crashRig(want, b.pos, trk, this.race?.playerU ?? null);
 
     const k = 1 - Math.exp(-(this.headless ? 60 : 7.5) * dt);
     this.camPos.lerp(want, k);
@@ -1628,6 +1521,17 @@ window.__GAME = {
       },
       city: game.cityId, car: game.carId, state: game.state,
       camera: { fov: +game.engine.camera.fov.toFixed(2) },
+      // HUD frame budget. `blurOps` is how many blurred canvas2D ops the HUD issued straight onto
+      // its supersampled backbuffer on the last frame, and `blurPeak` the worst since the last
+      // resize. At ~107 us each at 1600x900 they are the only expensive thing the HUD does, and
+      // this piece has been regressed twice by art added on that path — so the number is a first
+      // class output, not a debug aid. Everything the HUD draws belongs in a cached patch, a live
+      // layer or a glyph sprite; the correct reading is 0. See the COST note in src/ui/hud.js.
+      hud: {
+        blurOps: game.hud.blurOps ?? -1,
+        blurPeak: game.hud.blurPeak ?? -1,
+        blurBudget: game.hud.blurBudget ?? -1,
+      },
     };
   },
 
@@ -1849,13 +1753,26 @@ window.__GAME = {
         // grinding along it 2.4 s (≈115 m) later, so the frame showed the tail of a scrape and
         // none of the impact. Drive until the FX director records an impact, then hold for the
         // choreographed beat — with hit-stop that is ~0.2 s of sim time.
+        //
+        // …and it must actually ARRIVE at one. A fixed `steer: 1` after frame 300 was a bet on the
+        // road being straight there: in Los Angeles it is not, and the capture came back as the car
+        // at 123 mph on open dirt with `fx.shake 0` and no impact in 480 frames — one of the four
+        // crash frames in the set had no crash in it. So the steer is CLOSED-LOOP on the car's own
+        // lateral: build speed on the straight first, then hold the car past the wall line at
+        // |lateral| 1.52 until the collision registers, whatever the road is doing.
         place(opts.u ?? 0.10, opts.lateral ?? -0.6);
         const hits = game.effects.impacts;
-        let i = 0;
+        const trk0 = game.city.track;
+        const side = Math.sign(opts.side ?? -1) || -1;          // which barrier to go and find
+        let i = 0, steer = 0;
         for (; i < 480 && game.effects.impacts === hits; i++) {
-          run(1, { throttle: 1, steer: i > 300 ? 1 : 0 });
+          // 180 frames of throttle first — the §8 crash is a fast one, and the muscle needs ~3 s
+          // to get there. `steer` positive drives `lateral` negative, hence the sign.
+          steer = i < 180 ? 0
+            : clamp((trk0.nearest(game.body.pos).lateral - side * 1.75) * 1.6, -1, 1);
+          run(1, { throttle: 1, steer });
         }
-        run(opts.after ?? 12, { throttle: 1, steer: i > 300 ? 1 : 0 });
+        run(opts.after ?? 12, { throttle: 1, steer });
         break;
       }
       case 'landmark':

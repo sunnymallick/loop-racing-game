@@ -47,7 +47,37 @@ export const blueprint = {
   dims: { length: 5.06, width: 2.24, height: 1.42, wheelbase: 2.98, track: 1.740, trackRear: 1.846, rideHeight: 0.16 },
   // see paintMaterial(): metalness carries the environment into the paint, and the environment is
   // the only light on the back of a car in a chase frame. Deep metallic teal with a hard clearcoat.
-  paint: { metalness: 0.52, roughness: 0.25, clearcoat: 0.95, clearcoatRoughness: 0.058, flake: 0.62, envIntensity: 1.20 },
+  // Round-1 (this round): metalness 0.52 → 0.28 and the probe weighting 1.20 → 0.88. See the note
+  // over paintMaterial() — at 0.52 half the teal was being replaced by a blurred capture of
+  // whatever room or street the car stood in, which is what put a pale milky wash down the bonnet
+  // and across the rear haunch of the hero frame. The reflection now arrives from the analytic
+  // horizon instead, which is sharp and carries the paint's own hue.
+  /**
+   * ROUND-3 (vehicle art): BASE ROUGHNESS 0.29 → 0.46, COAT ROUGHNESS 0.058 → 0.25.
+   *
+   * The round-2 verdict on the environment reflection — "it resolves as big flat stair-stepped
+   * rectangles of pink/teal, a very low-res probe reading as colour patches, not a reflection" —
+   * turned out to be the SAME defect as the crumpled rear quarter this round found at 4x. Ablation
+   * (`tools/_va3_sweep.mjs chase muscle`): render the identical geometry at metalness 0 with no
+   * coat and the haunch is a clean pressing with one crease in it; put a 0.29-roughness metallic
+   * coat back on and five parallel "folds" appear across it. They are not geometry. They are the
+   * city's cube probe — a 384 px capture whose top mip is degrees per texel — sampled at a mip
+   * sharp enough to show its own texels, on a panel that sweeps 90° of reflection direction.
+   *
+   * Roughness is what chooses that mip, so the fix is to sample the probe where it is smooth and
+   * take the SHARP reflection from the analytic horizon instead (`kit.js skyReflect`), which is
+   * generated per fragment and has no texels to show. This is also what real metallic paint is: a
+   * fairly diffuse flake basecoat under a gloss lacquer, not a mirror-smooth basecoat.
+   */
+    /**
+   * …and the COAT roughness with it (0.058 → 0.44). Same measurement, other layer: the garage key
+   * is a spot at intensity 452, and a clearcoat lobe that tight turns it into a soft white plate
+   * the size of the rear haunch — the "white-cyan bar smearing across roof, C-pillar and rear
+   * quarter" of the round-2 verdict is that plate, not the bloom it was throwing. Spreading the
+   * coat leaves the paint its own colour under the highlight and costs nothing that matters,
+   * because the SHARP reflection on these cars is the analytic horizon, not the coat.
+   */
+  paint: { metalness: 0.28, roughness: 0.46, clearcoat: 0.95, clearcoatRoughness: 0.44, flake: 0.62, envIntensity: 0.92 },
   livery: {
     style: 'stripes', stripe: '#f2efe6',
     panels: {
@@ -59,11 +89,11 @@ export const blueprint = {
       fuelCap: [0.30, V(-2.10)],
     },
   },
-  // opacity 0.70 let only 30% of the cabin through, and 30% of a dark interior is black — §7's
-  // "empty black void through the glass" caps this piece at 72, below its target, so the glass had
-  // to give some of itself back. 0.58 still carries a full env reflection on the screen and the
-  // backlight; it just no longer erases what is behind it.
-  glass: { tint: '#0e151d', opacity: 0.58 },
+  // The interior has to survive the pane (§7 caps an empty black void at 72), so the opacity stays
+  // low — but the TINT goes deep. A privacy screen is a very dark glass you can still see through;
+  // a pale tint at the same opacity is a milky panel, which is what the round-1 hero frame shows
+  // over all four cabins.
+  glass: { tint: '#070c12', opacity: 0.54 },
 
   // ---- the tub: ground → beltline, with the bonnet, the cabin recess and the boot lid ----
   body: [
@@ -111,7 +141,19 @@ export const blueprint = {
       { z0: 0.10, z1: 0.74, a: 2, b: 5, mat: 'paint', steps: 5 },     // A-pillar / cowl side
       { z0: -0.30, z1: -0.16, a: 2, b: 5, mat: 'paint', steps: 2 },   // B-pillar
       { z0: -1.32, z1: -1.88, a: 2, b: 5, mat: 'paint', steps: 6 },   // fastback sail
+      /**
+       * DRIP RAIL. Ring index 5→6 is the outer 60 mm of the roof pressing, so this is a band OF the
+       * roof, sharing every vertex with it — one strip per side, proud of the roof panel by 4 mm.
+       *
+       * A '70 coupe wears a bright rail down each roof edge, and it is doing structural work in the
+       * picture: without it the roof paint and the side glass meet on a soft shaded corner and the
+       * whole greenhouse reads as one continuous pale dome (which is exactly what the round-1 hero
+       * crop shows). A hard bright line there is what tells the eye where the roof STOPS.
+       */
+      { z0: -1.36, z1: 0.08, a: 5, b: 6, mat: 'chrome', steps: 9, offset: 0.019 },
     ],
+    // parked across the bottom of the screen, laid back along the 29-degree rake
+    wipers: { z: 0.660, w: 0.50, x: 0.28, sweep: 0.22 },
     beltZ0: -1.36, beltZ1: 0.14, beltMat: 'chrome',
     // Oxblood-and-charcoal cabin. The seats/dash/shelf are authored 3x lighter than round 3 (which
     // had them at 0x14–0x2a) because a cabin is lit by nothing but sky bounce and then hidden
@@ -123,7 +165,7 @@ export const blueprint = {
   wheels: {
     // polished deep-dish chrome five-spoke on raised-sidewall white-letter street rubber, with a
     // staggered rear: 380 mm section on a 405 mm carcass is what fills those haunches.
-    style: 'fivespoke', rimColor: '#b6bdc7', caliperColor: '#b81c1c', lipColor: '#dee3ea', tire: 'muscle',
+    style: 'fivespoke', rimColor: '#aeb5bf', caliperColor: '#b81c1c', lipColor: '#c3c9d3', tire: 'muscle',
     capColor: '#b81c1c',
     front: { radius: 0.365, width: 0.30, spokes: 5, tireProfile: 0.320 },
     rear: { radius: 0.405, width: 0.38, spokes: 5, tireProfile: 0.325 },
@@ -148,12 +190,23 @@ export const blueprint = {
     reverse: [{ x: 0.16, y: 0.665, z: -2.615, w: 0.17, h: 0.085, color: '#fff2d8', intensity: 1.4, glow: 0.3 }],
   },
 
-  grilles: [{ w: 1.50, h: 0.30, d: 0.18, y: 0.845, z: 2.405, slats: 11, vertical: true, frame: 'chrome' }],
+  grilles: [
+    { w: 1.50, h: 0.30, d: 0.18, y: 0.845, z: 2.405, slats: 11, vertical: true, frame: 'chrome' },
+    // ROUND-2: the valance gets a MOUTH. The verdict was "muscle front bumper is a chrome slab plus
+    // a lower dark box" — and it was exactly that, a 1.5 m unbroken dark bar under a 1.3 m unbroken
+    // chrome one, the two largest objects on the front of the car and neither with a hole in it.
+    // A '70 valance carries the radiator intake below the bumper; this is it, recessed with a mesh
+    // in it, so the bottom of the nose reads as an opening instead of a plank.
+    { w: 0.94, h: 0.105, d: 0.12, y: 0.437, z: 2.418, slats: 3, mesh: true, frame: 'dark' },
+  ],
+  // marque badge in the middle of the grille — chrome bezel, black enamel field, swept wings
+  badges: [{ x: 0, y: 0.845, z: 2.474, w: 0.098, h: 0.076, d: 0.020 }],
   vents: [
     { x: 0.48, y: 1.005, z: 1.02, w: 0.30, h: 0.16, fins: 3, angle: 0.55, rx: -1.5708 },  // bonnet extractors
     { x: 0.86, y: 0.74, z: 1.02, w: 0.26, h: 0.18, fins: 3, angle: 0.4, ry: 1.5708 },     // fender gill
   ],
-  mirrors: { x: 0.86, y: 1.06, z: 0.60, painted: true },
+  // chrome bullet mirror, at 84% of the kit's default pod — see the note in assemble.js
+  mirrors: { x: 0.86, y: 1.06, z: 0.60, mat: 'chrome', scale: 0.84 },
   handles: [{ x: 0.955, y: 0.94, z: -0.20 }],
 
   trim: [
@@ -161,6 +214,11 @@ export const blueprint = {
     // Round 1 ran one straight bar wider than the body, which read as a slab bolted onto air.
     { w: 1.30, h: 0.135, d: 0.22, y: 0.66, z: 2.455, mat: 'chrome', r: 0.055 },
     { x: 0.68, w: 0.44, h: 0.135, d: 0.20, y: 0.66, z: 2.370, mat: 'chrome', ry: 0.42, mirror: true, r: 0.05 },
+    // BUMPER OVERRIDERS. Two vertical chrome guards standing off the centre bar — the period detail
+    // that breaks a straight bumper into three lit shapes and throws a hard shadow either side of
+    // itself. They are chrome, a bucket the car already carries, so they cost no draw call.
+    { x: 0.315, w: 0.075, h: 0.255, d: 0.115, y: 0.665, z: 2.500, mat: 'chrome', mirror: true, r: 0.026 },
+    { x: 0.315, w: 0.115, h: 0.055, d: 0.075, y: 0.775, z: 2.492, mat: 'chrome', mirror: true, r: 0.020 },
     { w: 1.20, h: 0.135, d: 0.22, y: 0.66, z: -2.585, mat: 'chrome', r: 0.055 },
     { x: 0.635, w: 0.42, h: 0.135, d: 0.20, y: 0.66, z: -2.505, mat: 'chrome', ry: -0.42, mirror: true, r: 0.05 },
     { w: 1.44, h: 0.30, d: 0.05, y: 0.865, z: -2.578, mat: 'dark', r: 0.03 },   // tail panel blackout
@@ -168,18 +226,25 @@ export const blueprint = {
     // the lamps; ours was one flat dark rectangle 1.44 m wide sitting dead centre of every chase
     // frame, which is a large share of why the back of the car read as a black cutout. Chrome is
     // already on this car, so the ribs merge into an existing bucket and cost nothing.
-    { w: 1.40, h: 0.022, d: 0.055, y: 0.985, z: -2.588, mat: 'chrome', r: 0.008 },
-    { w: 1.40, h: 0.022, d: 0.055, y: 0.925, z: -2.588, mat: 'chrome', r: 0.008 },
-    { w: 1.40, h: 0.022, d: 0.055, y: 0.805, z: -2.588, mat: 'chrome', r: 0.008 },
-    { w: 1.40, h: 0.022, d: 0.055, y: 0.745, z: -2.588, mat: 'chrome', r: 0.008 },
+    // 22 mm tall was a SUB-PIXEL MIRROR at chase distance — the same failure the sill blade below
+    // already carries a note about. A metalness-1 highlight narrower than two samples renders as a
+    // dashed row of white specks, and at 5x on la-muscle-chase all four ribs came back as dotted
+    // lines across the tail panel, which reads as aliasing (§7, cap 68). 32 mm covers 3-4 px.
+    { w: 1.40, h: 0.032, d: 0.065, y: 0.985, z: -2.588, mat: 'chrome', r: 0.010 },
+    { w: 1.40, h: 0.032, d: 0.065, y: 0.921, z: -2.588, mat: 'chrome', r: 0.010 },
+    { w: 1.40, h: 0.032, d: 0.065, y: 0.809, z: -2.588, mat: 'chrome', r: 0.010 },
+    { w: 1.40, h: 0.032, d: 0.065, y: 0.745, z: -2.588, mat: 'chrome', r: 0.010 },
     // number plate in the gap between the inner lamps — the tail panel's centre was a black hole
     { w: 0.40, h: 0.155, d: 0.035, y: 0.865, z: -2.605, mat: 'chrome', r: 0.012 },
     { w: 0.46, h: 0.205, d: 0.03, y: 0.865, z: -2.598, mat: 'dark', r: 0.014 },
-    { w: 1.48, h: 0.045, d: 0.05, y: 1.020, z: -2.576, mat: 'chrome', r: 0.014 }, // tail panel top edge
+    { w: 1.48, h: 0.060, d: 0.06, y: 1.024, z: -2.576, mat: 'chrome', r: 0.018 }, // tail panel top edge
     { x: 0.862, w: 0.062, h: 0.125, d: 2.30, y: 0.470, z: -0.10, mat: 'dark', mirror: true, r: 0.025 },  // rocker
     // chrome sill blade under the rocker: the bright bottom edge every 70s coupe wears, and the
     // line that stops the lower flank fading into the contact shadow
-    { x: 0.880, w: 0.028, h: 0.022, d: 2.20, y: 0.402, z: -0.10, mat: 'chrome', mirror: true, r: 0.008 },
+    // 0.028 x 0.022 was a sub-pixel mirror at hero distance: a metalness-1 highlight that fits
+    // between two samples renders as a dashed row of white specks along the sill, which is what
+    // the 8x crop shows. 0.042 x 0.036 covers 3-4 px and the line is continuous.
+    { x: 0.882, w: 0.042, h: 0.036, d: 2.20, y: 0.398, z: -0.10, mat: 'chrome', mirror: true, r: 0.012 },
     { x: 0.950, w: 0.045, h: 0.035, d: 2.10, y: 0.665, z: -0.10, mat: 'chrome', mirror: true, r: 0.014 }, // side spear
     { w: 1.50, h: 0.09, d: 0.30, y: 0.44, z: 2.40, mat: 'dark', rx: 0.10, r: 0.03 },      // front valance
     // Rear valance: deliberately 1.16 m across a 2.19 m car and lifted clear of the road, so the

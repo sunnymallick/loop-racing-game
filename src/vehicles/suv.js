@@ -41,7 +41,7 @@ export const blueprint = {
   dims: { length: 4.92, width: 2.30, height: 2.08, wheelbase: 3.05, track: 1.855, trackRear: 1.855, rideHeight: 0.34 },
   // the truck stays the least glossy thing in the game — satin utility paint, not a show car —
   // but it still needs enough of the probe in it to read as metal rather than as matt vinyl
-  paint: { metalness: 0.36, roughness: 0.36, clearcoat: 0.72, clearcoatRoughness: 0.105, flake: 0.30, envIntensity: 1.10 },
+  paint: { metalness: 0.20, roughness: 0.52, clearcoat: 0.72, clearcoatRoughness: 0.50, flake: 0.30, envIntensity: 0.86 },
   livery: {
     // the lower cladding was #3b4048: on the shadowed flank that plus the rocker gradient made the
     // bottom two thirds of the truck one black void with the gold cab floating on top of it
@@ -56,7 +56,7 @@ export const blueprint = {
   },
   // see muscle.js — the truck has the biggest glass area in the game and the flattest tailgate
   // window, so it was the worst offender for §7's black-void cabin
-  glass: { tint: '#111a22', opacity: 0.56 },
+  glass: { tint: '#0a1017', opacity: 0.54 },
 
   body: [
     { z: -2.46, w: 0.975, y0: 0.72, floor: 0.66, rocker: 0.97, ySill: 0.98, yBelt: 1.44, belt: 0.985, yDeck: 1.44, deck: 0.955, crown: 0.004 },
@@ -93,7 +93,11 @@ export const blueprint = {
       { z: -1.98, hw: 0.985, rw: 0.968, yBelt: 1.490, yRoof: 1.510 },
     ],
     roof: { z0: -1.86, z1: 0.54, a: 5, offset: 0.016 },
+    wipers: { z: 0.950, w: 0.54, x: 0.32, sweep: 0.20 },
     pillars: [
+      // full-length bright roof rails — the detail that says "wagon" from a silhouette, and the
+      // line that separates a 2.07 m roof from the tall flat side glass under it
+      { z0: -1.88, z1: 0.56, a: 5, b: 6, mat: 'chrome', steps: 10, offset: 0.020 },
       { z0: 0.54, z1: 1.02, a: 2, b: 5, mat: 'paint', steps: 4 },      // A — near vertical
       { z0: 0.26, z1: 0.40, a: 2, b: 5, mat: 'dark', steps: 2 },       // B
       { z0: -0.72, z1: -0.58, a: 2, b: 5, mat: 'dark', steps: 2 },     // C
@@ -123,10 +127,17 @@ export const blueprint = {
   // stays body colour. On a gold truck that is a bright arc over each wheel where there used to be
   // an unbroken black mass from the door shut line to the tread.
   archGap: 1.090, archFlare: 0.205, archLip: 0.030, archProud: 0.026, archInset: 0.068,
-  archDepth: 0.16, archSpan: 1.04, blackArches: true, archBolts: 7, archBlackBand: 0.60,
+  archDepth: 0.16, archSpan: 1.04, blackArches: true, archBolts: 7, archBlackBand: 0.72,
 
   lights: {
-    head: [{ x: 0.70, y: 1.13, z: 2.455, w: 0.30, h: 0.30, shape: 'round', color: '#f4f8ff', intensity: 3.0 }],
+    head: [
+      { x: 0.70, y: 1.13, z: 2.455, w: 0.30, h: 0.30, shape: 'round', color: '#f4f8ff', intensity: 3.0 },
+      // DRIVING LAMPS in the bumper. The front bumper is 1.98 x 0.26 m of unbroken dark plastic
+      // sitting under the widest, flattest nose in the game — the single largest blank surface on
+      // any of the four cars. Same colour, intensity and halo as the head units, so they join that
+      // bank and cost no draw call; they sit either side of the intake below.
+      { x: 0.62, y: 0.835, z: 2.598, w: 0.17, h: 0.17, shape: 'round', color: '#f4f8ff', intensity: 3.0 },
+    ],
     // Four-segment stacked lens. A 0.20 x 0.46 m lens is 2.4x the area of the muscle car's round
     // lamps, so at the same emissive it carries 2.4x the energy into the bloom pass: the two rear
     // corners of the truck rendered as solid red domes wider than the tailgate, with no lens, no
@@ -143,7 +154,13 @@ export const blueprint = {
     //  materials and costs no extra draw call)
   },
 
-  grilles: [{ w: 1.30, h: 0.46, d: 0.16, y: 1.13, z: 2.46, slats: 7, vertical: true, frame: 'chrome' }],
+  grilles: [
+    { w: 1.30, h: 0.46, d: 0.16, y: 1.13, z: 2.46, slats: 7, vertical: true, frame: 'chrome' },
+    // …and the intake between the driving lamps, so the bumper has a mouth
+    { w: 0.86, h: 0.115, d: 0.10, y: 0.835, z: 2.592, slats: 3, mesh: true, frame: 'dark' },
+  ],
+  // above the bull bar's tube (y 1.16) so it is not hidden behind it
+  badges: [{ x: 0, y: 1.295, z: 2.526, w: 0.112, h: 0.090, d: 0.022 }],
   vents: [
     { x: 0.0, y: 1.505, z: 1.72, w: 0.62, h: 0.22, fins: 4, angle: 0.5, rx: -1.5708, mirror: false },
     { x: 1.06, y: 1.12, z: 1.18, w: 0.30, h: 0.20, fins: 3, angle: 0.4, ry: 1.5708 },
@@ -167,8 +184,16 @@ export const blueprint = {
     // visible behind it. Pulled in to overlap the body; the tread edge rides its top outer corner.
     { x: 1.045, w: 0.14, h: 0.18, d: 2.70, y: 0.82, z: 0, mat: 'dark', mirror: true, r: 0.04 },  // rock slider
     { x: 1.085, w: 0.055, h: 0.024, d: 2.50, y: 0.916, z: 0, mat: 'chrome', mirror: true, r: 0.009 }, // slider tread edge
-    { w: 1.44, h: 0.10, d: 0.66, y: 0.60, z: 2.06, mat: 'chrome', r: 0.03 },   // front skid plate
-    { w: 1.44, h: 0.10, d: 0.60, y: 0.60, z: -2.10, mat: 'chrome', r: 0.03 },  // rear skid plate
+    /**
+     * SKID PLATES, raised 80 mm. At y 0.60 the plate's top sat 140 mm below the bumper's underside,
+     * so from a chase camera the truck had a bright 1.44 m plank hanging in mid-air under its tail
+     * with daylight above it — and being polished, its top edge picked up a dashed aliased highlight
+     * along its whole length. They now tuck up against the bumper they are bolted to, and the rear
+     * one is dark alloy: it is the piece directly under the tail lamps in every chase frame and a
+     * mirror there was the brightest thing on the back of the car.
+     */
+    { w: 1.38, h: 0.10, d: 0.66, y: 0.682, z: 2.06, mat: 'chrome', r: 0.03 },   // front skid plate
+    { w: 1.30, h: 0.10, d: 0.58, y: 0.682, z: -2.08, mat: 'dark', r: 0.03 },    // rear skid plate
     { w: 1.72, h: 0.055, d: 0.10, y: 1.435, z: -2.485, mat: 'dark', r: 0.02 },  // tailgate top lip
     // chrome garnish bridging the two lamp stacks: at night this is the only thing back here with
     // a specular, so it is what stops the tailgate reading as one black quad in Vegas and NYC

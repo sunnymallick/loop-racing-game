@@ -43,8 +43,24 @@ import { clamp, lerp, smoothstep } from '../core/rng.js';
  * false if you measure it that way.
  *
  * The bill is per-operation as well as per-radius — forcing every radius to 0.01 still left 9 ms on
- * the table — so shrinking the glows does not help. The operations themselves have to go. Two
- * mechanisms do that here, and between them they carry the HUD's glows for ~12 blurred ops a frame:
+ * the table — so shrinking the glows does not help. Measured again in wave 3, on the real GPU, with
+ * a canvas the exact shape of this one (`tools/_blurcurve.mjs`), the law is sharper than that:
+ *
+ *     ONE BLURRED OP COSTS ~107 us ON THE 4045x2275 BACKBUFFER, ~28 us AT 1600x900, AND ~13 us ON
+ *     ANYTHING 400x220 OR SMALLER — AND IT DOES NOT CARE HOW BIG THE SHAPE IS.
+ *
+ * Drawing a 12 px chip and drawing a 200 px plate cost the same; a blur radius of 3 and a blur
+ * radius of 8 cost the same. The bill is for the shadow scratch surface Skia allocates, and that is
+ * sized by the CANVAS, not by the shape. Twenty-eight blurred ops a frame (a nitrous run with the
+ * drift meter up and a banner on screen) is 4.2 ms of a 14.9 ms Miami frame — measured by zeroing
+ * `shadowBlur` on `CanvasRenderingContext2D.prototype` and re-running, `tools/_hudceil.mjs`.
+ *
+ * That law has one very cheap consequence, and it is the whole optimisation: A GLOW DOES NOT HAVE
+ * TO BE MADE STATIC TO BE MADE CHEAP. It only has to land on a SMALL canvas. Art that genuinely
+ * changes every frame can be repainted every frame into a bbox-sized offscreen layer and blitted
+ * back bit-exact, and the blur is then 6-8x cheaper for pixel-identical output. That is `_live()`.
+ * Three mechanisms carry the HUD's glows, and between them the backbuffer sees 0-2 blurred ops a
+ * frame:
  *
  *   · `_patch()`  — art that is not changing this frame is rendered ONCE into an offscreen canvas
  *                   at exactly the backbuffer's resolution and blitted back with the identity
@@ -55,8 +71,17 @@ import { clamp, lerp, smoothstep } from '../core/rng.js';
  *                   static cache can catch them. Instead each *character* is baked once, glow and
  *                   all, and the clock is blitted a character at a time.
  *
- * If you add art here, put it in a `_patch` unless it genuinely changes every frame, and if it
- * does, give it a glow only if you are willing to spend ~0.25 ms of the frame budget on it.
+ *   · `_live()`   — art that DOES change every frame and carries a glow: repainted every frame into
+ *                   its own bbox-sized layer and blitted back at an integer device pixel. Costs one
+ *                   clear + one blit, and moves its blurs off the 9.2 Mpx backbuffer onto a surface
+ *                   a twentieth of the size. See the note above `_live`.
+ *
+ * If you add art here, put it in a `_patch` if it is static and a `_live` if it is not. THE ONE
+ * RULE: no `shadowBlur` may be assigned on the backbuffer context (`draw`'s `ctx`) — only inside a
+ * `_patch`/`_live` paint or a `_seg` sprite. `this.blurOps` counts violations and `draw()` asserts
+ * BLUR_BUDGET against it; `window.__GAME.telemetry().hud` reports it, and functest fails on it.
+ * That guard exists because this piece has now been regressed twice by art added straight onto the
+ * backbuffer, and a HUD that is quietly 4 ms slow looks exactly like a HUD that is not.
  */
 
 const CYAN = '#39d7f2';
@@ -96,6 +121,24 @@ const RAIL = GR.RAIL;
 // Seven-segment character sprites held at once (see _seg). One digit per glow step per display is
 // well under this, so the live set is never evicted.
 const GLYPH_CAP = 128;
+
+// How many blurred ops the BACKBUFFER is allowed per frame before the HUD complains. At ~107 us
+// each (see the COST note) this is a hard 0.2 ms ceiling. The draw path should hit exactly 0: every
+// glow in this file belongs in a `_patch`, a `_live` or a `_seg` sprite. The budget is not zero
+// only so that a single deliberate exception is possible without tripping the alarm.
+const BLUR_BUDGET = 2;
+
+// Quantisation steps for the nitro strip's breath. The rail's halo pulses in RADIUS, which a blit
+// alpha cannot fake, so each step is a sprite of its own — baked on the frame it is first reached
+// and blitted for ever after. At the strip's 12 rad/s the breath passes through a step roughly
+// every 1.5 frames, i.e. finer than the animation is sampled, so nothing about it visibly steps.
+const PULSE_STEPS = 12;
+
+// Sprites held for `_stamp` — art drawn from a small recurring set of values, currently just the
+// speed readout. Bounded separately from the seven-segment glyphs so a long race cannot evict the
+// clock's digits. The live set is the few speeds the needle is passing through, which is well
+// inside this; the cap is there so a whole race cannot accumulate all 240 of them.
+const STAMP_CAP = 28;
 
 const SS = 3;               // HUD backbuffer supersample, in samples per CSS pixel
 const SS_MAX_EDGE = 4096;   // …never wider than the common GPU texture limit: a 2D canvas past
@@ -195,6 +238,37 @@ function railOn(ctx, x, y, h, accent, glow = 0, skew = SKEW, w = RAIL) {
   ctx.lineTo(x + w, y + h);
   ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1;
   ctx.stroke();
+}
+
+/**
+ * Bake a run of art's GLOW ON ITS OWN, with the ink itself pushed clear off the canvas.
+ *
+ * THE POINT. A glow whose only animation is its opacity looks like it should be cacheable, and it
+ * is not — not as one sprite. Canvas2D's shadow takes its strength from the SOURCE's alpha, so a
+ * translucent stroke at alpha A casts a halo at alpha A·blur and then lets that halo glow up
+ * through its own ink. Bake ink-and-halo together at full strength and fade the sprite and you get
+ * group opacity: the halo is hidden behind the ink instead of showing through it, and the element
+ * goes dull exactly where it is supposed to be brightest. (This is the trap noted on the lap pips
+ * and on the redline rim.)
+ *
+ * Split into TWO sprites it is exact. Blitting glow@A and then ink@A gives alpha A·blur and A·cov
+ * in that order — which is, term for term, what one blurred stroke at alpha A produces. So the
+ * pulse becomes two cached blits at ~22 us instead of a repaint with a blurred op at ~300 us.
+ *
+ * The mechanism: `shadowOffsetX` and `shadowBlur` are both in DEVICE pixels and are NOT affected by
+ * the current transform (verified on this build, `tools/_shadowsem.mjs` — Chrome follows the spec
+ * here). So pushing the ink `off` device pixels to the left and offsetting the shadow `off` device
+ * pixels to the right lands the halo exactly where it belongs with the ink outside the canvas.
+ *
+ * `paint` must not set shadowOffsetX/Y itself.
+ */
+function glowOnly(c, res, widthUnits, paint) {
+  const off = Math.ceil(widthUnits * res) + 64;
+  c.save();
+  c.shadowOffsetX = off;
+  c.translate(-off / res, 0);
+  paint(c);
+  c.restore();
 }
 
 /** Darken a hex colour toward black by `k`. */
@@ -413,7 +487,13 @@ export class HUD {
     this.t = 0;
     this._patches = new Map();   // id → cached static art, see _patch()
     this._glyphs = new Map();    // seven-segment character sprites, see _seg()
+    this._stamps = new Map();    // value-keyed sprites, see _stamp()
     this._res = 1;               // device pixels per design unit, set every draw()
+    this._frame = 0;             // repaint token for _live() layers
+    this.blurOps = 0;            // blurred ops issued on the BACKBUFFER this frame — see BLUR_BUDGET
+    this.blurPeak = 0;           // …and the worst frame since the last resize, for telemetry
+    this.blurBudget = BLUR_BUDGET;   // published, so the harness does not carry its own copy
+    this._blurWarned = false;
     this.resize();
   }
 
@@ -465,6 +545,13 @@ export class HUD {
       }
       // identical mapping to the live path: local → device, minus the patch's device origin
       p.ctx.setTransform(res, 0, 0, res, ox * res - dx, oy * res - dy);
+      // Ambient opacity is applied INSIDE the layer, not to the blit, whenever the caller passes it
+      // (`_live` always does). Source-over is associative, so a run of draws made at alpha A inside
+      // a transparent layer and then blitted at 1 is pixel-identical to the same run made at alpha A
+      // straight onto the destination — whereas blitting the layer at A is GROUP opacity, which is
+      // a different picture wherever those draws overlap each other. That distinction is the whole
+      // reason the drift panel and the chassis used to refuse to be cached while they were fading.
+      p.ctx.globalAlpha = o.inherit ?? 1;
       paint(p.ctx);
       p.key = full; p.dx = dx; p.dy = dy;
     }
@@ -479,10 +566,143 @@ export class HUD {
     ctx.restore();
   }
 
+  /**
+   * Draw a run of art that CHANGES EVERY FRAME through its own small offscreen layer.
+   *
+   * `_patch` exists to skip work. `_live` does not skip any work at all — it repaints on every
+   * single frame — and is still a large win, because of the cost law in the COST note at the top of
+   * this file: a blurred canvas2D op is billed for the size of the CANVAS it lands on, not the size
+   * of the shape. On the 4045x2275 backbuffer that is ~107 us; on a 700x640 layer around one plate
+   * it is ~15 us. So the way to make a glow cheap is not to make it static, it is to make it land
+   * somewhere small — and unlike caching, that works on art that genuinely moves every frame.
+   *
+   * The cost added back is one `clearRect` and one `drawImage` on a small canvas, both of which the
+   * compositor does on the GPU. The blit is at the identity transform on a whole device pixel, so
+   * it is a straight copy: the type and the plate edges stay exactly as crisp as a direct draw.
+   *
+   * Ambient `globalAlpha` is carried INTO the layer rather than applied to the blit, so this is
+   * pixel-identical to drawing the run directly — see the note in `_patch`.
+   *
+   * @param o.ox,oy  design-space origin, when the caller has translated the context
+   */
+  _live(ctx, id, x, y, w, h, paint, o = {}) {
+    this._patch(ctx, id, x, y, w, h, `~${this._frame}`, paint,
+      { ...o, inherit: ctx.globalAlpha });
+  }
+
+  /**
+   * Cache a run of art that only ever ROTATES, and blit it through the rotation.
+   *
+   * `_patch` blits at the identity transform, which is what keeps type and plate edges bit-exact —
+   * but it means a patch cannot turn. Anything whose animation IS a rotation (the speedo needle)
+   * would otherwise have to be repainted every frame, and a repaint that carries a glow costs
+   * ~300 us however small the layer is. This bakes the art once in its own unrotated frame and
+   * pays a resample on the blit instead. Use it only where a third of a CSS pixel of softening does
+   * not matter — never for type.
+   *
+   * @param x,y,w,h  bounds in the art's own (unrotated) local space
+   * @param key      everything the baked art depends on — NOT the angle
+   * @param ang      blit rotation, radians
+   * @param ox,oy    design-space centre of rotation
+   */
+  _sprite(ctx, id, x, y, w, h, key, ang, ox, oy, paint) {
+    const res = this._res;
+    const cw = Math.max(1, Math.ceil(w * res)), ch = Math.max(1, Math.ceil(h * res));
+    let p = this._patches.get(id);
+    if (!p) { p = { canvas: document.createElement('canvas'), ctx: null }; this._patches.set(id, p); }
+    const full = `${key}|${res}|${cw}x${ch}`;
+    if (p.key !== full) {
+      if (p.canvas.width !== cw || p.canvas.height !== ch) {
+        p.canvas.width = cw; p.canvas.height = ch;
+        p.ctx = p.canvas.getContext('2d');
+      } else {
+        p.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        p.ctx.clearRect(0, 0, cw, ch);
+      }
+      p.ctx.setTransform(res, 0, 0, res, -x * res, -y * res);
+      p.ctx.globalAlpha = 1;
+      paint(p.ctx);
+      p.key = full;
+    }
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.rotate(ang);
+    // drawn in design units at exactly the resolution it was baked for, so the only resampling is
+    // the rotation itself
+    ctx.drawImage(p.canvas, x, y, cw / res, ch / res);
+    ctx.restore();
+  }
+
+  /**
+   * Cache a run of art keyed on the VALUE it draws, through a bounded LRU.
+   *
+   * `_patch` keeps one canvas per id for ever, which is right for art whose identity is its place
+   * on the grid and wrong for art whose identity is a number. The speed readout is the case: it
+   * changes on almost every frame, but only ever draws one of ~240 strings at one of a handful of
+   * glow strengths, and the set that is live at any moment is the few values the needle is passing
+   * through. Keying on the value instead of the slot turns "repaint every frame" into "repaint the
+   * first time this car ever reads 137 mph".
+   *
+   * Its screen position is fixed, so — unlike `_seg`, which lays characters out along a line — the
+   * sub-pixel phase is a constant and one sprite per value is enough. The blit is at a whole device
+   * pixel, so the type is bit-exact with a direct draw.
+   *
+   * @param x,y,w,h  bounds in the space `paint` draws in
+   * @param o.ox,oy  design-space origin of that space, when the caller has translated the context
+   */
+  _stamp(ctx, key, x, y, w, h, paint, o = {}) {
+    const res = this._res;
+    const ox = o.ox || 0, oy = o.oy || 0;
+    const dx = Math.floor((x + ox) * res), dy = Math.floor((y + oy) * res);
+    const cw = Math.max(1, Math.ceil((x + ox + w) * res) - dx);
+    const ch = Math.max(1, Math.ceil((y + oy + h) * res) - dy);
+    const k = `${key}|${res}|${cw}x${ch}|${dx},${dy}`;
+    let sp = this._stamps.get(k);
+    if (sp) { this._stamps.delete(k); this._stamps.set(k, sp); }   // touch: Maps iterate insertion order
+    else {
+      sp = document.createElement('canvas');
+      sp.width = cw; sp.height = ch;
+      const sc = sp.getContext('2d');
+      sc.setTransform(res, 0, 0, res, ox * res - dx, oy * res - dy);
+      paint(sc);
+      this._stamps.set(k, sp);
+      while (this._stamps.size > STAMP_CAP) {
+        this._stamps.delete(this._stamps.keys().next().value);
+      }
+    }
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(sp, dx, dy);
+    ctx.restore();
+  }
+
+  /**
+   * Count blurred ops on one context, so the HUD can police its own budget.
+   *
+   * This is an own accessor on the backbuffer context object — the only surface where a blurred op
+   * is expensive — so a `shadowBlur` set inside a `_patch`, a `_live` layer or a `_seg` sprite is
+   * correctly NOT counted: those canvases are small and their blurs are near-free. One extra
+   * property call per assignment, and there should be no assignments at all.
+   */
+  _meterBlur(c) {
+    if (!c || Object.getOwnPropertyDescriptor(c, 'shadowBlur')) return c;
+    const proto = Object.getPrototypeOf(c);
+    const d = Object.getOwnPropertyDescriptor(proto, 'shadowBlur');
+    if (!d || !d.set) return c;
+    const hud = this;
+    Object.defineProperty(c, 'shadowBlur', {
+      configurable: true,
+      get() { return d.get.call(this); },
+      set(v) { if (v) hud.blurOps++; d.set.call(this, v); },
+    });
+    return c;
+  }
+
   /** Drop every cached canvas — the resolution changed, so nothing baked is reusable. */
   _flushCache() {
     this._patches.clear();
     this._glyphs.clear();
+    this._stamps.clear();
   }
 
   /**
@@ -574,10 +794,12 @@ export class HUD {
       if (this.buf.width !== bw || this.buf.height !== bh) {
         this.buf.width = bw; this.buf.height = bh;      // reallocates — only on a real size change
       }
-      this.bctx = this.buf.getContext('2d');
+      this.bctx = this._meterBlur(this.buf.getContext('2d'));
     } else {
       this.buf = null; this.bctx = null;
+      this._meterBlur(this.ctx);
     }
+    this.blurPeak = 0;
   }
 
   /**
@@ -626,6 +848,8 @@ export class HUD {
   draw(s, dt) {
     const ctx = this.bctx || this.ctx;
     const scale = this.bctx ? this.scale : this.dpr;
+    this._frame++;
+    this.blurOps = 0;
     if (!this._ticked) this._tick(s, dt);
     this._ticked = false;
     const W = this.w, H = this.h;
@@ -688,6 +912,25 @@ export class HUD {
       out.imageSmoothingQuality = 'high';
       out.drawImage(this.buf, 0, 0, this.buf.width, this.buf.height,
         0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    // ---- the guard. Every glow in this file belongs in a `_patch`, a `_live` or a `_seg` sprite;
+    // a glow issued straight onto the backbuffer costs ~107 us, and twenty-eight of them was the
+    // 4.2 ms regression this piece has now been through twice. Measured live across every HUD
+    // state — race, nitrous, drift, banner, flashes, countdown, results — the correct reading is 0.
+    //
+    // console.ERROR, not warn, and once only: tools/functest.mjs fails the build on a console error
+    // and ignores warnings, so this is the difference between a guard that catches the third
+    // regression and a guard that watches it happen. If you are reading this because you tripped
+    // it, you do not need to delete your glow — you need to move it inside a `_live` layer.
+    if (this.blurOps > this.blurPeak) this.blurPeak = this.blurOps;
+    if (this.blurOps > BLUR_BUDGET && !this._blurWarned) {
+      this._blurWarned = true;
+      console.error(`HUD BLUR BUDGET: ${this.blurOps} blurred canvas2D ops issued straight onto the `
+        + `${this.buf ? `${this.buf.width}x${this.buf.height}` : 'HUD'} backbuffer this frame `
+        + `(budget ${BLUR_BUDGET}). Each one costs ~107 us there and ~13 us inside a layer. Move `
+        + `them into a _patch (static art) or a _live layer (art that moves) — see the COST note at `
+        + `the top of src/ui/hud.js.`);
     }
   }
 
@@ -788,17 +1031,21 @@ export class HUD {
 
     const y1 = y + decks[0], y2 = y1 + decks[1], y3 = y2 + decks[2];
     // A flash repaints a plate's edge, its deck wash, the rail glow and the numeral's halo all at
-    // once. Keying a cache on a value that changes every frame would repaint it every frame and
-    // cost more than it saves, so a flashing deck is drawn live instead — but ONLY that deck. The
-    // standings are the most expensive part of this cluster by far (two glowed labels a row, plus
-    // the leader chip) and they do not react to either flash, so they stay cached throughout.
+    // once. Keying a *cache* on a value that changes every frame would repaint it every frame and
+    // gain nothing, so a flashing deck does not get cached — but it still gets a LAYER. The five
+    // blurred ops in this deck cost ~107 us each on the backbuffer and ~15 us each on a 700x640
+    // layer around the plate, so a flashing chassis went from 0.5 ms to under 0.1 ms without one
+    // pixel moving. The standings are the most expensive part of this cluster by far (two glowed
+    // labels a row, plus the leader chip) and they react to neither flash, so they stay cached.
     const posLive = f > 0.02;
     const lapLive = this.lapFlash > 0.02;
     const P = 40;
     const rowSig = (s.standings || []).slice(0, 8).map((r) => `${r.name}${r.you ? '*' : ''}`).join(',');
     const sig = `${x}|${y}|${w}|${h}|${s.position}|${s.totalRacers}|${s.lap}|${s.laps}|${rowSig}`;
+    // Separate ids for the live and cached forms: a flash must not evict the settled bake, or the
+    // deck repaints once more the moment the flash ends.
     const via = (id, live, bx, by, bw, bh, paint) => (live
-      ? paint(ctx)
+      ? this._live(ctx, `${id}~`, bx, by, bw, bh, paint)
       : this._patch(ctx, id, bx, by, bw, bh, sig, paint));
 
     // ---- deck bodies: each deck is tinted a little differently so the chassis has internal
@@ -827,7 +1074,7 @@ export class HUD {
       this._rule(c, R, y2, this.lapFlash > 0.02 ? AMBER : CYAN);
       this._deckLap(c, s, R, y2, decks[2]);
     });
-    this._lapPips(ctx, s, R, y2, decks[2], lapLive);
+    this._lapPips(ctx, s, R, y2, decks[2]);
 
     via('chassisC', false, x - P, y2, w + h * SKEW + P * 2, decks[2] + decks[3] + P, (c) => {
       this._lapPipFrames(c, s, R, y2, decks[2]);
@@ -957,29 +1204,42 @@ export class HUD {
    * Pips: one per lap, lit as they are completed.
    *
    * The completed and unlit pips are fixed art and are cached. The CURRENT lap's pip breathes, and
-   * it is the one thing in this HUD that cannot be faked with a cached sprite and a blit alpha:
-   * its fill is translucent and sits directly on top of its own glow, so painting it at full
-   * strength into a layer and fading the layer (group opacity) hides the halo that the original
-   * lets show through the ink (per-element opacity). It is one blurred op — spend it.
+   * ONE cached sprite faded to the breath is not the same picture: its fill is translucent and sits
+   * directly on top of its own glow, so the original lets the halo glow up through the ink
+   * (per-element opacity) where a faded sprite would hide it behind (group opacity).
+   *
+   * TWO sprites is exact — halo, then ink, each blitted at the breath. Nothing here is repainted
+   * per frame any more; a breathing pip is two 22 us blits. See `glowOnly`.
    */
-  _lapPips(ctx, s, R, y, h, live) {
+  _lapPips(ctx, s, R, y, h) {
     const laps = s.laps || 3;
     const lap = clamp(s.lap || 1, 1, laps);
     const breath = 0.35 + 0.25 * Math.sin(this.beat * 5);
     for (let i = 0; i < laps; i++) {
       const { px, py, ph, w } = this._pipRect(s, R, y, h, i);
       const done = i < lap - 1, cur = i === lap - 1;
-      const paint = (c) => {
+      const P = 18;
+      const bx = px - P, by = py - P, bw = w + ph * SKEW + P * 2, bh = ph + P * 2;
+      const sig = `${done}|${px}|${py}|${ph}`;
+      const shape = (c, style) => {
         platePath(c, px, py, w, ph, SKEW);
-        c.fillStyle = done ? AMBER : cur ? `rgba(255,194,61,${breath})` : 'rgba(255,255,255,0.12)';
-        if (done || cur) { c.shadowBlur = 10; c.shadowColor = AMBER; }
-        c.fill(); c.shadowBlur = 0;
+        c.fillStyle = style;
+        c.fill();
       };
-      if (live || cur) paint(ctx);
-      else {
-        const P = 18;
-        this._patch(ctx, `pip${i}`, px - P, py - P, w + ph * SKEW + P * 2, ph + P * 2,
-          `${done}|${px}|${py}|${ph}`, paint);
+      if (cur) {
+        this._patch(ctx, `pipGlow${i}`, bx, by, bw, bh, sig,
+          (c) => glowOnly(c, this._res, bw, (gc) => {
+            gc.shadowBlur = 10; gc.shadowColor = AMBER; shape(gc, 'rgba(255,194,61,1)');
+          }), { alpha: breath });
+        this._patch(ctx, `pipInk${i}`, bx, by, bw, bh, sig,
+          (c) => shape(c, 'rgba(255,194,61,1)'), { alpha: breath });
+      } else {
+        // done / unlit pips are fixed art whatever the lap deck above them is doing
+        this._patch(ctx, `pip${i}`, bx, by, bw, bh, sig, (c) => {
+          if (done) { c.shadowBlur = 10; c.shadowColor = AMBER; }
+          shape(c, done ? AMBER : 'rgba(255,255,255,0.12)');
+          c.shadowBlur = 0;
+        });
       }
     }
   }
@@ -1135,7 +1395,7 @@ export class HUD {
     // The plate is the same art from frame to frame unless the pulse is running, and the pulse only
     // runs during the countdown, inside the last ten seconds of the target, or once you are over it.
     // Rather than key the cache on a continuously-varying pulse — a cache that repaints every frame
-    // costs more than it saves — the plate is simply drawn live while it is pulsing.
+    // saves nothing — the plate is repainted every frame while it pulses, into its own layer.
     const paintPlate = (c) => {
       panel(c, x, y, w, h, {
         fill: ['rgba(21,12,12,0.94)', 'rgba(3,4,7,0.93)'],
@@ -1175,12 +1435,10 @@ export class HUD {
       platePath(c, wx, wy, ww, wh);
       c.strokeStyle = `rgba(255,140,90,${0.20 + p * 0.30})`; c.lineWidth = 1; c.stroke();
     };
-    if (p > 0.02) paintPlate(ctx);
-    else {
-      const P = 34;
-      this._patch(ctx, 'clock', x - P, y - P, w + h * SKEW + P * 2, h + P * 2,
-        `${cap}|${ref}|${urgent}|${over}|${col}|${x}|${y}|${w}`, paintPlate);
-    }
+    const CP = 34;
+    const cb = [x - CP, y - CP, w + h * SKEW + CP * 2, h + CP * 2];
+    if (p > 0.02) this._live(ctx, 'clockL', ...cb, paintPlate);
+    else this._patch(ctx, 'clock', ...cb, `${cap}|${ref}|${urgent}|${over}|${col}|${x}|${y}|${w}`, paintPlate);
 
     // Quantised so the pulse cannot thrash the sprite cache: a 3 px step on a 12–30 px halo is
     // invisible behind digits this bright, and the plate's rail carries the pulse anyway. p === 0
@@ -1190,18 +1448,31 @@ export class HUD {
       glow: 12 + Math.round(p * 6) * 3, italic: 0.12, dim: 0.11, dimColor: 'rgba(110,44,30,1)',
     });
 
-    // record-progress rail along the foot of the plate: how much of the target time is spent
+    // Record-progress rail along the foot of the plate: how much of the target time is spent.
+    //
+    // It grows continuously, so nothing about it is constant — but its ARTWORK only changes when
+    // the drawn end moves by a whole device pixel, which on a 236-unit rail over a minute-long
+    // record happens about eight times a second, not sixty. Quantising the length to the device
+    // pixel it would have been rasterised to anyway turns a per-frame blurred repaint into a blit
+    // on seven frames out of eight, and moves the tip by at most half a device pixel — a fifth of
+    // a CSS pixel on a 2.6 px rail.
     if (target > 0 && !counting) {
-      const t = clamp((s.raceTime || 0) / target, 0, 1);
-      ctx.save();
-      platePath(ctx, x, y, w, h); ctx.clip();
-      ctx.beginPath();
-      ctx.moveTo(x + 1, y + h - 2);
-      ctx.lineTo(x + 1 + (w - 2) * t, y + h - 2);
-      ctx.strokeStyle = over ? RED : '#ff9b3c'; ctx.lineWidth = 2.6;
-      ctx.shadowBlur = 8; ctx.shadowColor = col;
-      ctx.stroke();
-      ctx.restore();
+      const raw = clamp((s.raceTime || 0) / target, 0, 1);
+      const px = Math.round(raw * (w - 2) * this._res);
+      const t = px / ((w - 2) * this._res);
+      const RP = 12;
+      this._patch(ctx, 'clockRail', x - RP, y + h - 2 - RP, w + h * SKEW + RP * 2, RP * 2,
+        `${px}|${over}|${col}|${x}|${y}|${w}|${h}`, (c) => {
+        c.save();
+        platePath(c, x, y, w, h); c.clip();
+        c.beginPath();
+        c.moveTo(x + 1, y + h - 2);
+        c.lineTo(x + 1 + (w - 2) * t, y + h - 2);
+        c.strokeStyle = over ? RED : '#ff9b3c'; c.lineWidth = 2.6;
+        c.shadowBlur = 8; c.shadowColor = col;
+        c.stroke();
+        c.restore();
+      });
     }
   }
 
@@ -1344,21 +1615,28 @@ export class HUD {
     }, O);
     ctx.lineCap = 'butt';
 
+    // The speed fill and its bright head move every frame and glow hard — two of the three most
+    // expensive ops in the old HUD. They go into one `_live` layer cut to the arc's own annulus
+    // (about 640x640 device px against the backbuffer's 4045x2275), which is the whole saving.
     const nAng = a0 + (a1 - a0) * clamp(this.needle, 0, 1.02);
     if (this.needle > 0.005) {
-      ctx.beginPath(); ctx.arc(0, 0, AR, a0, nAng);
-      const ag = ctx.createLinearGradient(-R, R, R, -R);
-      ag.addColorStop(0, boost > 0.05 ? '#fff3c4' : '#22a9d6');
-      ag.addColorStop(1, boost > 0.05 ? '#ffb02e' : '#8ff0ff');
-      ctx.strokeStyle = ag; ctx.lineWidth = AW;
-      ctx.shadowBlur = 16 + boost * 18; ctx.shadowColor = boost > 0.05 ? ORANGE : CYAN;
-      ctx.stroke(); ctx.shadowBlur = 0;
-      // bright head
-      ctx.beginPath();
-      ctx.arc(Math.cos(nAng) * AR, Math.sin(nAng) * AR, AW * 0.34, 0, TAU);
-      ctx.fillStyle = boost > 0.05 ? '#fff8e0' : '#dffaff';
-      ctx.shadowBlur = 14; ctx.shadowColor = boost > 0.05 ? AMBER : CYAN;
-      ctx.fill(); ctx.shadowBlur = 0;
+      const AB = AR + AW; // arc bounds; the halo is well inside the 34 px pad the layer adds below
+      this._live(ctx, 'speedArc', -AB - 18, -AB - 18, (AB + 18) * 2, (AB + 18) * 2, (c) => {
+        c.lineCap = 'butt';
+        c.beginPath(); c.arc(0, 0, AR, a0, nAng);
+        const ag = c.createLinearGradient(-R, R, R, -R);
+        ag.addColorStop(0, boost > 0.05 ? '#fff3c4' : '#22a9d6');
+        ag.addColorStop(1, boost > 0.05 ? '#ffb02e' : '#8ff0ff');
+        c.strokeStyle = ag; c.lineWidth = AW;
+        c.shadowBlur = 16 + boost * 18; c.shadowColor = boost > 0.05 ? ORANGE : CYAN;
+        c.stroke(); c.shadowBlur = 0;
+        // bright head
+        c.beginPath();
+        c.arc(Math.cos(nAng) * AR, Math.sin(nAng) * AR, AW * 0.34, 0, TAU);
+        c.fillStyle = boost > 0.05 ? '#fff8e0' : '#dffaff';
+        c.shadowBlur = 14; c.shadowColor = boost > 0.05 ? AMBER : CYAN;
+        c.fill(); c.shadowBlur = 0;
+      }, O);
     }
 
     // ---- tick hierarchy: minor every 10, major every 20, numeral every 40.
@@ -1392,30 +1670,41 @@ export class HUD {
       }
     }, O);
 
-    // ---- needle with weight: counterweight tail, taper, shadow
-    ctx.save();
-    ctx.rotate(nAng);
-    ctx.save();
-    ctx.translate(R * 0.02, R * 0.03);
-    ctx.beginPath();
-    ctx.moveTo(-R * 0.20, -R * 0.030); ctx.lineTo(R * 0.72, -R * 0.012);
-    ctx.lineTo(R * 0.745, 0); ctx.lineTo(R * 0.72, R * 0.012); ctx.lineTo(-R * 0.20, R * 0.030);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fill();
-    ctx.restore();
-    ctx.beginPath();
-    ctx.moveTo(-R * 0.20, -R * 0.030); ctx.lineTo(R * 0.72, -R * 0.012);
-    ctx.lineTo(R * 0.745, 0); ctx.lineTo(R * 0.72, R * 0.012); ctx.lineTo(-R * 0.20, R * 0.030);
-    ctx.closePath();
-    const ng = ctx.createLinearGradient(-R * 0.2, 0, R * 0.75, 0);
-    ng.addColorStop(0, '#8a1010'); ng.addColorStop(0.25, '#ff4a2a'); ng.addColorStop(1, '#ff8a5a');
-    ctx.fillStyle = ng;
-    ctx.shadowBlur = 12; ctx.shadowColor = 'rgba(255,60,30,0.85)';
-    ctx.fill(); ctx.shadowBlur = 0;
-    // counterweight
-    ctx.beginPath(); ctx.ellipse(-R * 0.155, 0, R * 0.055, R * 0.042, 0, 0, TAU);
-    ctx.fillStyle = '#c8332a'; ctx.fill();
-    ctx.restore();
+    // ---- needle with weight: counterweight tail, taper, shadow.
+    //
+    // The needle is the same object on every frame of a race — only its ANGLE moves — so it is
+    // baked once, at rotation zero, and blitted through the rotation. That trades one blurred
+    // repaint a frame (~300 us) for one rotated blit (~25 us). The blit resamples, which a blit at
+    // the identity transform would not; at the backbuffer's 2.5x supersample that is a third of a
+    // CSS pixel of softening on an edge that is then box-filtered by 2.5x on composite anyway, and
+    // it is a glowing red needle rather than type. Captured before and after at 1600x900: no
+    // visible difference at 1:1 or at 3x on the needle tip.
+    const NB = R * 0.80;
+    // (0, 0) as the pivot, not (cx, cy): `ctx` is already translated to the dial's centre here.
+    this._sprite(ctx, 'needle', -NB, -NB, NB * 2, NB * 2, `${R}`, nAng, 0, 0, (c) => {
+      c.save();
+      c.save();
+      c.translate(R * 0.02, R * 0.03);
+      c.beginPath();
+      c.moveTo(-R * 0.20, -R * 0.030); c.lineTo(R * 0.72, -R * 0.012);
+      c.lineTo(R * 0.745, 0); c.lineTo(R * 0.72, R * 0.012); c.lineTo(-R * 0.20, R * 0.030);
+      c.closePath();
+      c.fillStyle = 'rgba(0,0,0,0.45)'; c.fill();
+      c.restore();
+      c.beginPath();
+      c.moveTo(-R * 0.20, -R * 0.030); c.lineTo(R * 0.72, -R * 0.012);
+      c.lineTo(R * 0.745, 0); c.lineTo(R * 0.72, R * 0.012); c.lineTo(-R * 0.20, R * 0.030);
+      c.closePath();
+      const ng = c.createLinearGradient(-R * 0.2, 0, R * 0.75, 0);
+      ng.addColorStop(0, '#8a1010'); ng.addColorStop(0.25, '#ff4a2a'); ng.addColorStop(1, '#ff8a5a');
+      c.fillStyle = ng;
+      c.shadowBlur = 12; c.shadowColor = 'rgba(255,60,30,0.85)';
+      c.fill(); c.shadowBlur = 0;
+      // counterweight
+      c.beginPath(); c.ellipse(-R * 0.155, 0, R * 0.055, R * 0.042, 0, 0, TAU);
+      c.fillStyle = '#c8332a'; c.fill();
+      c.restore();
+    });
 
     // ---- hub, and the scrim the readout sits on. Both are painted over the needle, so they are a
     // patch of their own rather than part of the dial face.
@@ -1441,13 +1730,29 @@ export class HUD {
       c.restore();
     }, O);
 
-    drawText(ctx, mphTxt, {
-      x: 0, y: R * 0.520, size: R * 0.300, weight: 0.215, italic: 0.06, align: 'center',
-      color: gradientFill([[0, '#ffffff'], [0.5, '#f2f8fd'], [0.58, '#a8bccf'], [1, '#ffffff']]),
-      sheen: true, tracking: 0.02,
-      shadow: { color: 'rgba(0,0,0,0.6)', dy: R * 0.018, blur: 6 },
-      glow: boost > 0.05 ? { color: ORANGE, blur: 22 * boost } : null,
-    });
+    // The readout changes every frame at speed and carries a drop shadow plus, on nitrous, a halo —
+    // two blurred ops. Its layer is cut to the number itself, so it is the cheapest kind there is.
+    // The readout is two blurred ops — a drop shadow for legibility and, on nitrous, a halo — and
+    // it changes on nearly every frame at speed. It is also one of only ~240 strings drawn at a
+    // fixed point on the dial, so it belongs in a value-keyed sprite cache rather than a repaint.
+    //
+    // The halo is quantised to a WHOLE DEVICE PIXEL of blur radius, which is the unit shadowBlur is
+    // actually specified in (verified: `tools/_shadowsem.mjs`) — so the cache key is not an
+    // approximation of the glow, it is the glow rounded to the finest step that can render
+    // differently at all. It also keeps the working set small: the boost pulse takes ~0.15 s to
+    // rise, so the radius passes through its 22 values slowly while the number changes every frame.
+    const MS = R * 0.300;
+    const bBlur = boost > 0.05 ? Math.max(1, Math.round(22 * boost)) : 0;
+    this._stamp(ctx, `mph|${mphTxt}|${bBlur}|${R}`,
+      -R * 0.62, R * 0.520 - MS * 1.25, R * 1.24, MS * 1.75, (c) => {
+        drawText(c, mphTxt, {
+          x: 0, y: R * 0.520, size: MS, weight: 0.215, italic: 0.06, align: 'center',
+          color: gradientFill([[0, '#ffffff'], [0.5, '#f2f8fd'], [0.58, '#a8bccf'], [1, '#ffffff']]),
+          sheen: true, tracking: 0.02,
+          shadow: { color: 'rgba(0,0,0,0.6)', dy: R * 0.018, blur: 6 },
+          glow: bBlur ? { color: ORANGE, blur: bBlur } : null,
+        });
+      }, O);
     // hairline rule under the number, then the unit — a caption, not a competing readout. Under
     // nitrous the number's halo reaches down across both, and the original paints them over it.
     this._patch(ctx, 'dialUnit', -R * 0.3, R * 0.5, R * 0.6, R * 0.32, `${R}`, (c) => {
@@ -1458,16 +1763,25 @@ export class HUD {
       label(c, 'MPH', 0, R * 0.700, R * 0.098, 'rgba(190,214,236,0.95)', { align: 'center', tracking: 0.38 });
     }, O);
 
-    // redline warning: the whole rim flushes when the engine is in the red
+    // Redline warning: the whole rim flushes when the engine is in the red — which under nitrous is
+    // most of the lap, so this would otherwise be a blurred op on every frame perf.mjs measures.
+    // Fixed art at a pulsing opacity: halo sprite and ink sprite, each blitted at the pulse. See
+    // `glowOnly` for why one sprite would not have been the same picture.
     if (mph >= RED0) {
       const p = 0.45 + 0.55 * Math.sin(this.beat * 13);
-      ctx.save();
-      ctx.beginPath(); ctx.arc(0, 0, R * 0.945, 0, TAU);
-      ctx.strokeStyle = `rgba(255,64,40,${0.14 + 0.30 * p})`;
-      ctx.lineWidth = R * 0.028;
-      ctx.shadowBlur = 20; ctx.shadowColor = RED;
-      ctx.stroke();
-      ctx.restore();
+      const A = 0.14 + 0.30 * p;
+      const RB = R * 0.945 + R * 0.014 + 26;
+      const rim = (c) => {
+        c.beginPath(); c.arc(0, 0, R * 0.945, 0, TAU);
+        c.strokeStyle = 'rgba(255,64,40,1)';
+        c.lineWidth = R * 0.028;
+        c.stroke();
+      };
+      this._patch(ctx, 'redGlow', -RB, -RB, RB * 2, RB * 2, `${R}`,
+        (c) => glowOnly(c, this._res, RB * 2, (gc) => {
+          gc.shadowBlur = 20; gc.shadowColor = RED; rim(gc);
+        }), { ...O, alpha: A });
+      this._patch(ctx, 'redInk', -RB, -RB, RB * 2, RB * 2, `${R}`, rim, { ...O, alpha: A });
     }
 
     ctx.restore();
@@ -1501,10 +1815,21 @@ export class HUD {
         accent: active ? null : CYAN, glow: 7,
       }));
     if (active) {
+      // The breathing edge stroke has no blur at all, so it is free on the backbuffer and stays
+      // there. The RAIL is the expensive half: its halo pulses from 14 to 26 px, and a radius is
+      // not something a blit alpha can fake. So the pulse is quantised into PULSE_STEPS and each
+      // step gets its own sprite, baked the first time it is reached and blitted for ever after.
+      // At 12 rad/s the strip passes through a step every ~1.5 frames, which is finer than the
+      // animation is sampled — the breath is unchanged, and it costs one blit instead of a blurred
+      // repaint. The sprite is cut to the rail alone (about 96x233 device px), not to the plate.
       platePath(ctx, x, y, w, h);
       ctx.strokeStyle = `rgba(255,180,60,${0.55 + 0.35 * pulse})`;
       ctx.lineWidth = 1.2; ctx.stroke();
-      railOn(ctx, x, y, h, AMBER, 14 + 12 * pulse);
+      const pb = Math.round(pulse * (PULSE_STEPS - 1));
+      const pq = pb / (PULSE_STEPS - 1);
+      const RG = 14;
+      this._patch(ctx, `nitroRail${pb}`, x - RG, y - RG, RAIL + h * SKEW + RG * 2, h + RG * 2,
+        `${x}|${y}|${h}`, (c) => railOn(c, x, y, h, AMBER, 14 + 12 * pq));
     }
 
     this._patch(ctx, 'nitroFace', x - 24, y - 24, w + h * SKEW + 48, h + 48,
@@ -1564,24 +1889,41 @@ export class HUD {
         c.restore();
       });
 
-    label(ctx, active ? 'FIRING' : 'CHARGE', lx(hb) + w - GR.PAD, hb, 9,
-      active ? `rgba(255,232,178,${0.6 + 0.4 * pulse})` : 'rgba(160,190,212,0.85)',
+    // The caption pulses while firing (live layer) and is fixed art otherwise (cached patch); either
+    // way its drop shadow is a blurred op and stays off the backbuffer.
+    const capW = 70, capB = [lx(hb) + w - GR.PAD - capW - 6, hb - 16, capW + 12, 24];
+    const paintCap = (c, alpha) => label(c, active ? 'FIRING' : 'CHARGE', lx(hb) + w - GR.PAD, hb, 9,
+      active ? `rgba(255,232,178,${alpha})` : 'rgba(160,190,212,0.85)',
       { align: 'right', tracking: 0.24 });
+    if (active) {
+      const cb = Math.round(pulse * (PULSE_STEPS - 1));
+      const ca = 0.6 + 0.4 * (cb / (PULSE_STEPS - 1));
+      this._patch(ctx, `nitroCap${cb}`, ...capB, `${hb}|${w}|${lx(hb)}`, (c) => paintCap(c, ca));
+    } else {
+      this._patch(ctx, 'nitroCap', ...capB, `${hb}|${w}|${lx(hb)}`, (c) => paintCap(c, 1));
+    }
 
     // charge bar — drains while boosting, creeps back afterwards
-    const fw = (bw - 3) * clamp(this.charge, 0, 1);
+    const fpx = Math.round((bw - 3) * clamp(this.charge, 0, 1) * this._res);
+    const fw = fpx / this._res;
     if (fw > 1.5) {
-      ctx.save();
-      platePath(ctx, bx + 1.5, by + 1.5, bw - 3, bh - 3, SKEW);
-      ctx.clip();
-      platePath(ctx, bx + 1.5, by + 1.5, fw, bh - 3, SKEW);
-      const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
-      g.addColorStop(0, active ? '#fff4cf' : '#2fd0ff');
-      g.addColorStop(1, active ? ORANGE : '#0d7fae');
-      ctx.fillStyle = g;
-      ctx.shadowBlur = active ? 16 : 7; ctx.shadowColor = active ? ORANGE : CYAN;
-      ctx.fill();
-      ctx.restore();
+      // Same device-pixel quantisation as the clock rail: while the bar is draining under boost it
+      // still repaints, but every frame it is holding, refilling slowly or sitting full is a blit.
+      const BP = 22;
+      this._patch(ctx, 'nitroFill', bx - BP, by - BP, bw + bh * SKEW + BP * 2, bh + BP * 2,
+        `${fpx}|${active}|${bx}|${by}|${bw}|${bh}`, (c) => {
+        c.save();
+        platePath(c, bx + 1.5, by + 1.5, bw - 3, bh - 3, SKEW);
+        c.clip();
+        platePath(c, bx + 1.5, by + 1.5, fw, bh - 3, SKEW);
+        const g = c.createLinearGradient(bx, 0, bx + bw, 0);
+        g.addColorStop(0, active ? '#fff4cf' : '#2fd0ff');
+        g.addColorStop(1, active ? ORANGE : '#0d7fae');
+        c.fillStyle = g;
+        c.shadowBlur = active ? 16 : 7; c.shadowColor = active ? ORANGE : CYAN;
+        c.fill();
+        c.restore();
+      });
     }
     // notches and bezel are cut over the fill, so they cannot be baked with the channel above
     this._patch(ctx, 'nitroMarks', bx - 5, by - 5, bw + bh * SKEW + 10, bh + 10,
@@ -1620,15 +1962,19 @@ export class HUD {
     const bx = lx(by + bh) + RAIL + GR.PAD + 14, bw = w - RAIL - GR.PAD * 2 - 14;
     const P = 30;
 
-    // While the panel is sliding and fading in, it is drawn live. Compositing a cached layer under
+    // While the panel is sliding and fading in it cannot be CACHED: compositing a cached layer under
     // a global alpha is GROUP opacity — the whole plate fades as one flat image — whereas the
     // original fades each of its ten overlapping translucent draws individually, and where they
     // overlap the two do not agree. Once the panel has settled at full opacity the two are the same
     // thing again, and that is where it spends nearly all of its time on screen.
+    //
+    // It can still have a LAYER, though, and it should: this plate is five blurred ops. `_live`
+    // carries the ambient opacity INTO the layer and blits at 1, so every draw inside still fades
+    // individually — per-element opacity, the same picture — for a twentieth of the blur bill.
     const settled = a > 0.995;
     const via = (id, bx2, by2, bw2, bh2, key, paint) => (settled
       ? this._patch(ctx, id, bx2, by2, bw2, bh2, key, paint, { ty })
-      : paint(ctx));
+      : this._live(ctx, `${id}~`, bx2, by2, bw2, bh2, paint, { ty }));
 
     // Plate, headings, labels and the empty meter — nothing here reacts to the drift, so it is one
     // patch. The score, the angle and the meter fill are the only things that move.
@@ -1650,23 +1996,30 @@ export class HUD {
       c.fillStyle = 'rgba(0,0,0,0.6)'; c.fill();
     });
 
-    drawText(ctx, String(Math.round(this.driftScore)), {
-      x: lx(b1 + 2) + w - GR.PAD, y: b1 + 2, size: 24, weight: 0.215, italic: 0.20, align: 'right',
-      color: '#ffffff', sheen: true, glow: { color: '#ff8a1e', blur: 12 },
-    });
-    // the simulated slip angle when main.js supplies it — never a number derived from the bar
-    label(ctx, `${Math.round(s.slipDeg ?? d * 42)}°`, lx(b2) + w - GR.PAD, b2, 10.5,
-      'rgba(255,230,184,0.92)', { align: 'right', tracking: 0.04 });
+    // Score, slip angle and meter fill all move every frame and all three glow: one layer each,
+    // cut to the type and to the meter channel.
+    this._live(ctx, 'driftNum', lx(b1 + 2) + w - GR.PAD - 130, b1 - 30, 150, 54, (c) => {
+      drawText(c, String(Math.round(this.driftScore)), {
+        x: lx(b1 + 2) + w - GR.PAD, y: b1 + 2, size: 24, weight: 0.215, italic: 0.20, align: 'right',
+        color: '#ffffff', sheen: true, glow: { color: '#ff8a1e', blur: 12 },
+      });
+      // the simulated slip angle when main.js supplies it — never a number derived from the bar
+      label(c, `${Math.round(s.slipDeg ?? d * 42)}°`, lx(b2) + w - GR.PAD, b2, 10.5,
+        'rgba(255,230,184,0.92)', { align: 'right', tracking: 0.04 });
+    }, { ty });
 
-    ctx.save();
-    platePath(ctx, bx + 1, by + 1, bw - 2, bh - 2, SKEW);
-    ctx.clip();
-    platePath(ctx, bx + 1, by + 1, Math.max(2, (bw - 2) * d), bh - 2, SKEW);
-    const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
-    g.addColorStop(0, '#ffd54a'); g.addColorStop(1, '#ff5a1e');
-    ctx.fillStyle = g; ctx.shadowBlur = 12; ctx.shadowColor = '#ff8a1e';
-    ctx.fill();
-    ctx.restore();
+    const FP = 20;
+    this._live(ctx, 'driftFill', bx - FP, by - FP, bw + bh * SKEW + FP * 2, bh + FP * 2, (c) => {
+      c.save();
+      platePath(c, bx + 1, by + 1, bw - 2, bh - 2, SKEW);
+      c.clip();
+      platePath(c, bx + 1, by + 1, Math.max(2, (bw - 2) * d), bh - 2, SKEW);
+      const g = c.createLinearGradient(bx, 0, bx + bw, 0);
+      g.addColorStop(0, '#ffd54a'); g.addColorStop(1, '#ff5a1e');
+      c.fillStyle = g; c.shadowBlur = 12; c.shadowColor = '#ff8a1e';
+      c.fill();
+      c.restore();
+    }, { ty });
     // quarter marks and the bezel go OVER the fill, so they cannot join the patch above
     via('driftMarks', bx - 4, by - 4, bw + bh * SKEW + 8, bh + 8, `${bx}|${by}|${bw}`, (c) => {
       c.save();
@@ -1734,14 +2087,24 @@ export class HUD {
     chevrons(ctx, wpx / 2 + 24, -size * 0.62, 3, 7, 18, m.color, a * 0.8);
     ctx.globalAlpha = 1;
 
-    drawText(ctx, m.text, {
-      x: 0, y: 0, size, weight: 0.225, italic: 0.24, align: 'center', alpha: a,
-      color: gradientFill([[0, '#ffffff'], [0.46, '#fff4dd'], [0.56, '#ffd79a'], [1, '#ffffff']]),
-      glow: { color: m.color, blur: 34 },
-      outline: { color: 'rgba(0,0,0,0.6)', width: 3.2 },
-      tracking: 0.10, bevel: true, sheen: true,
-    });
+    // The headline is the one blurred op in this cluster (a 34 px halo), and the shout is on screen
+    // for four seconds at a time, so it is a per-frame op that matters. It goes in a layer of its
+    // own. The entrance scale lives INSIDE the layer, whose box is cut for the largest scale the
+    // pop ever reaches, so the canvas is allocated once and only its blit position moves.
     ctx.restore();
+    const SCM = 1.28, PM = 34;
+    this._live(ctx, 'shout',
+      -(wpx * SCM) / 2 - PM, -size * SCM * 1.15 - PM, wpx * SCM + PM * 2, size * SCM * 1.7 + PM * 2,
+      (c) => {
+        c.scale(sc, sc);
+        drawText(c, m.text, {
+          x: 0, y: 0, size, weight: 0.225, italic: 0.24, align: 'center', alpha: a,
+          color: gradientFill([[0, '#ffffff'], [0.46, '#fff4dd'], [0.56, '#ffd79a'], [1, '#ffffff']]),
+          glow: { color: m.color, blur: 34 },
+          outline: { color: 'rgba(0,0,0,0.6)', width: 3.2 },
+          tracking: 0.10, bevel: true, sheen: true,
+        });
+      }, { ox: cx, oy: cy });
   }
 
   // ---------------------------------------------------------------- the results screen
@@ -2262,44 +2625,53 @@ export class HUD {
     });
   }
 
+  // The gantry: a plate with a glow, three lamps that glow when lit, and a numeral with a 34 px
+  // halo that pops on every tick — six blurred ops on the frames that matter most, the frames the
+  // player is staring at with nothing else to look at. Two layers: the board (which changes only
+  // when a lamp lights) and the numeral (which scales every frame).
   _drawStartLights(ctx, cx, cy, countdown) {
     const lit = countdown <= 3 ? 4 - Math.ceil(countdown) : 0;
     const w = 250, h = 74;
-    panel(ctx, cx - w / 2, cy - h / 2, w, h, {
-      fill: ['rgba(14,17,24,0.92)', 'rgba(4,6,10,0.92)'], edge: 'rgba(200,220,235,0.28)',
-      accent: countdown <= 0.02 ? GREEN : RED, glow: 10,
-    });
-    for (let i = 0; i < 3; i++) {
-      const x = cx - 70 + i * 70;
-      const on = i < lit;
-      const go = countdown <= 0.02;
-      ctx.beginPath(); ctx.arc(x, cy, 22, 0, TAU);
-      const c = on ? (go ? GREEN : RED) : 'rgba(26,30,38,0.9)';
-      const gg = ctx.createRadialGradient(x - 7, cy - 8, 2, x, cy, 22);
-      gg.addColorStop(0, on ? '#ffffff' : 'rgba(60,68,80,0.9)');
-      gg.addColorStop(0.35, c);
-      gg.addColorStop(1, on ? shade(go ? '#2bff62' : '#ff2e2e', 0.45) : 'rgba(16,20,26,0.9)');
-      ctx.fillStyle = gg;
-      if (on) { ctx.shadowBlur = 30; ctx.shadowColor = c; }
-      ctx.fill(); ctx.shadowBlur = 0;
-      ctx.beginPath(); ctx.arc(x, cy, 22, 0, TAU);
-      ctx.strokeStyle = 'rgba(210,228,242,0.45)'; ctx.lineWidth = 2.2; ctx.stroke();
-    }
+    const go = countdown <= 0.02;
+    const BP = 40;
+    this._patch(ctx, 'lights', cx - w / 2 - BP, cy - h / 2 - BP, w + h * SKEW + BP * 2, h + BP * 2,
+      `${lit}|${go}|${cx}|${cy}`, (bc) => {
+        panel(bc, cx - w / 2, cy - h / 2, w, h, {
+          fill: ['rgba(14,17,24,0.92)', 'rgba(4,6,10,0.92)'], edge: 'rgba(200,220,235,0.28)',
+          accent: go ? GREEN : RED, glow: 10,
+        });
+        for (let i = 0; i < 3; i++) {
+          const x = cx - 70 + i * 70;
+          const on = i < lit;
+          bc.beginPath(); bc.arc(x, cy, 22, 0, TAU);
+          const c = on ? (go ? GREEN : RED) : 'rgba(26,30,38,0.9)';
+          const gg = bc.createRadialGradient(x - 7, cy - 8, 2, x, cy, 22);
+          gg.addColorStop(0, on ? '#ffffff' : 'rgba(60,68,80,0.9)');
+          gg.addColorStop(0.35, c);
+          gg.addColorStop(1, on ? shade(go ? '#2bff62' : '#ff2e2e', 0.45) : 'rgba(16,20,26,0.9)');
+          bc.fillStyle = gg;
+          if (on) { bc.shadowBlur = 30; bc.shadowColor = c; }
+          bc.fill(); bc.shadowBlur = 0;
+          bc.beginPath(); bc.arc(x, cy, 22, 0, TAU);
+          bc.strokeStyle = 'rgba(210,228,242,0.45)'; bc.lineWidth = 2.2; bc.stroke();
+        }
+      });
+
     // the seconds themselves, punched large under the lamps
     const n = Math.ceil(countdown);
     const frac = 1 - (countdown - Math.floor(countdown));
     const sc = 1 + (1 - smoothstep(0, 0.35, frac)) * 0.45;
-    const go = countdown <= 0.02;
-    ctx.save();
-    ctx.translate(cx, cy + h * 0.5 + 62);
-    ctx.scale(sc, sc);
-    drawText(ctx, go ? 'GO!' : String(Math.max(1, n)), {
-      x: 0, y: 0, size: 64, weight: 0.23, italic: 0.24, align: 'center',
-      color: go ? GREEN : '#fff2e2', sheen: true, tracking: 0.08,
-      glow: { color: go ? GREEN : RED, blur: 34 },
-      outline: { color: 'rgba(0,0,0,0.45)', width: 2.5 },
-    });
-    ctx.restore();
+    const NS = 64, SCM = 1.45, NP = 34;
+    this._live(ctx, 'countNum',
+      -NS * SCM * 1.6, -NS * SCM * 1.15 - NP, NS * SCM * 3.2, NS * SCM * 1.7 + NP * 2, (c) => {
+        c.scale(sc, sc);
+        drawText(c, go ? 'GO!' : String(Math.max(1, n)), {
+          x: 0, y: 0, size: NS, weight: 0.23, italic: 0.24, align: 'center',
+          color: go ? GREEN : '#fff2e2', sheen: true, tracking: 0.08,
+          glow: { color: go ? GREEN : RED, blur: 34 },
+          outline: { color: 'rgba(0,0,0,0.45)', width: 2.5 },
+        });
+      }, { ox: cx, oy: cy + h * 0.5 + 62 });
   }
 }
 

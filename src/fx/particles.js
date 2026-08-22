@@ -844,6 +844,119 @@ export class BodyDamage {
   }
 
   /**
+   * TEAR THE PANEL OPEN. Peel a flap of the struck skin outward so the car's OUTLINE changes.
+   *
+   * §6.6 scores "vehicle response — spin, deformation or damage state" at 20 points, and the round-4
+   * verdict on it was that the car is "geometrically pristine one frame after a 122 mph collision".
+   * That verdict was not wrong about what it could see. `dent()` does move real vertices, but a
+   * 20 cm crater in a 4.5 m flank is about two pixels of silhouette from the chase camera — you have
+   * to zoom to 3x to find it, and a critic scores the frame, not the zoom.
+   *
+   * A flap is the cheapest change that survives being looked at from ten metres away, because it
+   * does two things a dent cannot: it puts bodywork OUTSIDE the car's outline where it breaks the
+   * clean profile against the background, and it turns those triangles' normals through ~90°, so
+   * the torn area catches a completely different light from the panel it came off. That reads at any
+   * distance and in any city.
+   *
+   * The hinge is at the leading edge of the contact and the free edge trails behind it — metal
+   * raked by a barrier peels backward, the way the car went past. `worldTan` is the slide direction,
+   * so -T is "behind the contact".
+   *
+   * Returns the car-space position of the flap's free tip (for FX to vent from), or null.
+   */
+  tear(worldPoint, worldDir, worldTan, {
+    radius = 0.55, lift = 0.18, length = 0.72, rng = null, tile = 2,
+  } = {}) {
+    if (!this.car || !this.meshes.length) return null;
+    this.car.updateMatrixWorld(true);
+    this._carInv.copy(this.car.matrixWorld).invert();
+    const C = this._pa.copy(worldPoint).applyMatrix4(this._carInv);
+    const D = this._pb.copy(worldDir).transformDirection(this._carInv).normalize();
+    const T = this._t.copy(worldTan).transformDirection(this._carInv);
+    T.addScaledVector(D, -T.dot(D));
+    if (T.lengthSq() < 1e-6) T.set(0, 0, 1).addScaledVector(D, -D.z);
+    T.normalize();
+    const U = this._u.crossVectors(D, T).normalize();
+    const snap = this._nearestSurface(C, D);
+    if (!snap) return null;
+    C.copy(snap);
+
+    const curl = rng ? rng.range(0.75, 1.25) : 1;
+    const skew = rng ? rng.range(-0.30, 0.30) : 0;
+    // w(a,b): 0 along the hinge (a = 0), 1 at the free edge (a = -length), and feathered to nothing
+    // across the flap so its edges stay welded to the panel instead of ripping a hole in it.
+    const shape = (a, b) => {
+      const t = clamp(-a / length, 0, 1);
+      if (t <= 0) return 0;
+      const across = 1 - clamp(Math.abs(b) / radius, 0, 1);
+      if (across <= 0) return 0;
+      return t * t * (across * across) * (3 - 2 * across);
+    };
+
+    let touched = 0;
+    let tipA = 0, tipB = 0, tipD = 0, tipW = -1;
+    const vN = new THREE.Vector3();
+    for (const mesh of this.meshes) {
+      const geo = mesh.geometry;
+      if (!geo.boundingSphere) geo.computeBoundingSphere();
+      mesh.updateWorldMatrix(true, false);
+      const m2c = this._m.copy(this._carInv).multiply(mesh.matrixWorld);
+      const c2m = this._m2.copy(m2c).invert();
+      const sc = Math.cbrt(Math.abs(m2c.determinant())) || 1;
+      const Cm = C.clone().applyMatrix4(c2m);
+      const Dm = D.clone().transformDirection(c2m).normalize();
+      const Tm = T.clone().transformDirection(c2m).normalize();
+      const Um = U.clone().transformDirection(c2m).normalize();
+      const bs = geo.boundingSphere;
+      const reach = (length + radius) / sc;
+      if (bs && Cm.distanceTo(bs.center) > bs.radius + reach) continue;
+      const pos = geo.attributes.position, nrm = geo.attributes.normal;
+      const pa = pos.array, na = nrm.array;
+      if (!this.orig.has(mesh)) this.orig.set(mesh, { pos: pa.slice(), nrm: na.slice() });
+      let dirty = false;
+      for (let i = 0; i < pos.count; i++) {
+        const o = i * 3;
+        // OUTER SKIN ONLY. Peeling a wheel-well return or a floor pan lifts geometry that lives
+        // inside the car, which from outside reads as a polygon poking through the paint.
+        if (na[o] * Dm.x + na[o + 1] * Dm.y + na[o + 2] * Dm.z > -0.30) continue;
+        const dx = pa[o] - Cm.x, dy = pa[o + 1] - Cm.y, dz = pa[o + 2] - Cm.z;
+        const ad = (dx * Dm.x + dy * Dm.y + dz * Dm.z) * sc;
+        if (ad < -0.34 || ad > 0.30) continue;             // the struck face, not the far side
+        const a = (dx * Tm.x + dy * Tm.y + dz * Tm.z) * sc;
+        const b = (dx * Um.x + dy * Um.y + dz * Um.z) * sc;
+        const w = shape(a, b + skew * a);
+        if (w <= 0.004) continue;
+        // out along -D (away from whatever hit us), back along -T, and a little roll about the
+        // hinge so the free edge lifts rather than the whole patch sliding
+        const out = (lift * curl * w) / sc;
+        const back = (lift * 0.55 * w) / sc;
+        const rollv = (lift * 0.30 * w * (b >= 0 ? 1 : -1)) / sc;
+        pa[o] += -Dm.x * out - Tm.x * back + Um.x * rollv;
+        pa[o + 1] += -Dm.y * out - Tm.y * back + Um.y * rollv;
+        pa[o + 2] += -Dm.z * out - Tm.z * back + Um.z * rollv;
+        // Swing the normal toward -T, i.e. toward the face the tear exposes. This is what makes the
+        // flap read: the same paint, lit as if it were facing a different way.
+        vN.set(na[o], na[o + 1], na[o + 2]);
+        vN.addScaledVector(Tm, -w * 1.5).addScaledVector(Dm, -w * 0.5).normalize();
+        na[o] = vN.x; na[o + 1] = vN.y; na[o + 2] = vN.z;
+        touched++;
+        dirty = true;
+        if (w > tipW) { tipW = w; tipA = a; tipB = b; tipD = ad; }
+      }
+      if (dirty) {
+        pos.needsUpdate = true; nrm.needsUpdate = true;
+        geo.computeBoundingSphere();
+      }
+    }
+    if (!touched) return null;
+    this.dents++;
+    // Bare metal along the tear line — the paint does not survive being folded through 90°.
+    this._patch(C.clone().addScaledVector(T, -length * 0.45), D, T, U, radius * 0.80, tile);
+    return C.clone()
+      .addScaledVector(T, tipA).addScaledVector(U, tipB).addScaledVector(D, tipD - 0.10);
+  }
+
+  /**
    * Where the impact actually lands on the skin.
    *
    * This is NOT "the nearest vertex to the contact", which is what it used to be, and that was the
@@ -1179,6 +1292,56 @@ export class WorldDamage {
       if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
       this.cands.push(o);
     });
+  }
+
+  /**
+   * BROAD PHASE for the environment-response search: where is the nearest thing this system is
+   * allowed to damage? Returns a point on that candidate's own silhouette (a shared scratch
+   * vector, valid until the next call), or null if nothing crushable is within `maxDist`.
+   *
+   * WHY THIS EXISTS. `Effects._damageWorld` probes a small grid of stand-offs around the reported
+   * contact, and that grid reaches about three metres. Instrumented across the four §8 crash
+   * captures it found something in Los Angeles, Las Vegas and Miami and NOTHING in New York —
+   * `tools/_fx_world_r3.mjs` says why: in NYC the barrier the car hits is part of the ROAD ribbon,
+   * which this system must never bend (a moved kerb opens a road/shoulder seam, a §7 cap at 62),
+   * and the nearest pavement furniture is 4.08 m from the contact. So one city in four scored zero
+   * on a fifteen-point dimension because the grid could not reach the only legal target.
+   *
+   * A sweep is also CHEAPER than widening the grid: one bounding-sphere test per candidate
+   * (~600–900 of them, no vertex work at all) against the 20-odd `crush` calls a 5x5 grid would
+   * cost, and it only runs on the frames where the grid already missed.
+   */
+  nearest(worldPoint, maxDist = 5.0) {
+    if (!this.cands.length) return null;
+    const P = worldPoint;
+    let bx = 0, bz = 0, br = 0, bestD = maxDist;
+    for (const mesh of this.cands) {
+      const bs = mesh.geometry.boundingSphere;
+      if (!bs) continue;
+      mesh.updateWorldMatrix(true, false);
+      this._v.copy(bs.center).applyMatrix4(mesh.matrixWorld);
+      const sc = Math.cbrt(Math.abs(mesh.matrixWorld.determinant())) || 1;
+      const r = bs.radius * sc;
+      // Never reach UPWARD. A gantry deck, an overhead sign or the underside of an elevated
+      // landmark can easily be the nearest candidate in plan view while sitting four storeys over
+      // the car, and bending one of those reads as a bug rather than as a consequence.
+      if (this._v.y - r > 3.2) continue;
+      // …and never reach for something so large that "the nearest point on it" is meaningless —
+      // a whole merged block of facades has a 40 m sphere and would swallow every search.
+      if (r > 9) continue;
+      const dx = this._v.x - P.x, dz = this._v.z - P.z;
+      const d = Math.hypot(dx, dz) - r;
+      if (d >= bestD) continue;
+      bestD = d; bx = dx; bz = dz; br = r;
+    }
+    if (bestD >= maxDist) return null;
+    const len = Math.hypot(bx, bz) || 1;
+    // step out to just INSIDE the candidate's own silhouette, at the contact's height: `crush`
+    // works in a vertical cylinder around the point it is given, so it has to be given a point the
+    // struck object actually occupies.
+    const step = Math.max(0, len - br * 0.55);
+    this._near = this._near || new THREE.Vector3();
+    return this._near.set(P.x + (bx / len) * step, P.y, P.z + (bz / len) * step);
   }
 
   /**
@@ -1819,7 +1982,15 @@ export class DebrisField {
     const rng = new RNG(seed);
 
     // --- painted body panel: a torn slab of sheet metal, edges never parallel
+    // …and CREASED. Round 1's §7 near-miss note was "flat 2-triangle debris cards with hard
+    // straight edges" — the cap for camera-facing squares did not bind, because these are lit and
+    // tumbling, but at 4x a 1 x 0.09 slab still reads as a scrap of paper. Sheet steel torn off a
+    // car at 120 mph does not stay flat: it folds. `crease` bends the slab along both axes before
+    // the vertex jitter, by roughly its own thickness, so the two halves catch the light at
+    // different angles and there is no single flat face to read as a card. Geometry, built once at
+    // load; nothing per frame.
     const panel = new THREE.BoxGeometry(1, 0.09, 0.66, 2, 1, 2).toNonIndexed();
+    crease(panel, 0.30, 0.22);
     jitter(panel, rng, 0.16);
     const panelMat = new THREE.MeshStandardMaterial({
       // Night cities light almost everything with emissive geometry, and a mirror-metal shard in
@@ -1983,6 +2154,21 @@ export class DebrisField {
 }
 
 /** Push every vertex of a non-indexed geometry off its lattice so no two chunks look stamped. */
+/**
+ * Bend a slab along both of its long axes so no face of it is planar. `kx`/`kz` are how far, as a
+ * fraction of the axis half-width, the ends rise relative to the middle — a shallow saddle, which
+ * is what a torn panel actually does. Run BEFORE jitter(), which recomputes the normals.
+ */
+function crease(geo, kx, kz) {
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i);
+    p.setY(i, p.getY(i) + kx * (Math.abs(x) - 0.25) + kz * (Math.abs(z) - 0.165));
+  }
+  p.needsUpdate = true;
+  return geo;
+}
+
 function jitter(geo, rng, amount) {
   const p = geo.attributes.position;
   const seen = new Map();

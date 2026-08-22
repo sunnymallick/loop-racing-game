@@ -1772,9 +1772,13 @@ function steamPlume(M, { seed = 1, h = 11, r = 4.2, opacity = 0.26, warm = 1 }) 
     map: sprite({ size: 128, shape: 'smoke', seed: 40 + (seed % 3), color: '#c6d6ea' }),
     transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide, fog: true,
   }));
+  // (grade-discipline pass) opacity 0.42 -> 0.24. See the note on the ground pool below: between
+  // them these two warm additive terms were the "flat untextured tan" on the near carriageway that
+  // three rounds of road-surface, lamp-colour and wet-reflection work never touched, because none
+  // of those is what was drawing it.
   const hot = M('steam-hot', () => new THREE.MeshBasicMaterial({
     map: sprite({ size: 128, shape: 'smoke', seed: 44, color: '#ffbe72' }),
-    transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false,
+    transparent: true, opacity: 0.24, blending: THREE.AdditiveBlending, depthWrite: false,
     side: THREE.DoubleSide, fog: true,
   }));
   for (let i = 0; i < 4; i++) {
@@ -1799,11 +1803,27 @@ function steamPlume(M, { seed = 1, h = 11, r = 4.2, opacity = 0.26, warm = 1 }) 
       g.add(q);
     }
   }
+  // (grade-discipline pass) THE FLAT TAN, FOUND AT LAST — 9.2 m x 9.2 m of untextured additive
+  // '#ffc98a' laid flat on the carriageway, at eighteen sites round the lap, one of which is six
+  // metres in front of where the chase capture stops.
+  //
+  // Rounds 2 and 3 both diagnosed this patch as the sodium light pools and spent `lampColor`,
+  // `lampSpacing` and `lampHeight` on it; this round spent `wetLook` and both ambient terms on it
+  // as well. Ablated properly (hide one scene-graph layer at a time and re-measure the patch), the
+  // answer is none of those: with the whole `landmarks` group hidden the same rectangle measures
+  // rgb(12,20,37), with the `road` group hidden it is still rgb(148,113,83), and with the light
+  // pools, the wet pass, the spill pass and the speed pass each disabled it does not move by more
+  // than a code value. It is this quad and the hot core above it.
+  //
+  // The idea is right and it stays — a plume standing in a pool of sodium light has to put that
+  // light on the tarmac or it reads as a decal floating over the road. It just cannot be a
+  // near-opaque flat wash 9 m across: at 0.15 over a 6 m disc it is a pool that the asphalt's own
+  // aggregate, cracks and lane paint read straight through, which is what it was always for.
   const glow = mesh(
-    new THREE.PlaneGeometry(r * 2.2, r * 2.2),
+    new THREE.PlaneGeometry(r * 1.45, r * 1.45),
     M('steam-glow', () => new THREE.MeshBasicMaterial({
       map: sprite({ size: 128, shape: 'glow', color: '#ffc98a', seed: 3 }),
-      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.34,
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.15,
     })),
   );
   glow.rotation.x = -Math.PI / 2;
@@ -2814,7 +2834,18 @@ export const def = {
     // about 2000K, i.e. distinctly orange rather than this near-white cream, so deepening it is
     // both the correct colour AND ~25-45% less additive energy per channel. The pool now reads as
     // a warm pool ON asphalt instead of replacing it.
-    lampColor: '#e8a35e',
+    // (grade-discipline pass) '#e8a35e' -> '#c8792e'. Round 3 deepened this once and the flat tan
+    // came back anyway, because the arithmetic was only half done. The pool decal's core stop is
+    // alpha 0.60 and the kit multiplies it by a per-lamp strength of 1.15-1.45, so the ribbon that
+    // starts six metres in front of the chase camera adds up to 0.87 of this colour, ADDITIVELY,
+    // over a carriageway authored at rgb(30,32,38). At (232,163,94) that lands the near quarter of
+    // the frame around rgb(232,175,114) — a flat sand band with none of the road's own aggregate
+    // left in it, which is the largest single defect in this city's captures.
+    // (200,121,46) is both a more honest sodium lamp (2000 K is orange, not cream) and ~35 % less
+    // additive energy per channel. The pools stay pools; the asphalt between them stays asphalt;
+    // and the warm content of the frame moves into the WET STREAKS below, which is where §1.3 puts
+    // it — "every light source draws a long reflection down the stone".
+    lampColor: '#c8792e',
     // A WET street. §2.2 makes a reflective road mandatory at night and round 3 measured this one
     // as "dry matte asphalt that reflects nothing" — the lowest-scoring thing in the city. At 0.60
     // the road's roughness map only came down to ~0.5 and the kerbside streaks were laid at 60%
@@ -2852,8 +2883,23 @@ export const def = {
       // cone tightened to Vegas' order. The road between the reflections goes back to being dark
       // asphalt with its aggregate in it, and the reflections become the vertical streaks §2.2
       // makes mandatory instead of a veil that erases both.
-      strength: 0.48, gain: 2.10, threshold: 0.68, knee: 0.52, spread: 0.016,
-      patch: 0.74, patchScale: 0.070, fresnel: 2.5,
+      // (grade-discipline pass) …and re-opened one more time, in the OTHER direction, because the
+      // round-3 numbers cured the veil by removing the reflection as well. Measured on the r0
+      // sweep, `nyc-tuner-chase` and `nyc-muscle-chase` have no vertical streak anywhere on the
+      // near carriageway: the road is dark asphalt plus flat sodium pools, which is exactly the
+      // "dry matte asphalt reflecting nothing" this city has been carrying since round 3.
+      //
+      // The veil and the streak are separated by SPREAD, not by threshold or gain. Round 3's veil
+      // was spread 0.030 — six times Miami's cone — and at that width nine dithered taps land on
+      // nine different sources and average into milk. At 0.014 all nine agree, so the same energy
+      // resolves as one hard mirrored column under each lamp head, each deli window and the
+      // SHORTCUT gantry. That is what lets the threshold come back down to where an ordinary
+      // sodium lamp clears it and the strength go up to where the streak is worth looking at.
+      // `patch` down to 0.62 so a bigger fraction of the lane is wet, because this city's premise
+      // is rain; it is still short of a lake, and the dry asphalt between the runs is what keeps
+      // the aggregate visible.
+      strength: 0.66, gain: 2.25, threshold: 0.58, knee: 0.50, spread: 0.014,
+      patch: 0.62, patchScale: 0.070, fresnel: 2.2,
     },
     // Blue hour, not midnight: a luminous cobalt sky with a pale band at the horizon is what gives
     // the canyon and the spire a silhouette to read against. Vegas owns black-sky neon.
@@ -2862,7 +2908,12 @@ export const def = {
     // is the same value at s47: a blue hour that is actually blue, which is also what gives the
     // sodium lamps and the taxi yellow something to be warm against.
     sky: {
-      top: '#0a1c48', horizon: '#4478bc', ground: '#151a23',
+      // (grade-discipline pass) top '#0a1c48' -> '#123363'. In a canyon the only sky in frame is the
+      // strip directly overhead — i.e. 40-70° of elevation, which is `top`, not `horizon` — and at
+      // (10,28,72) that strip came back as a near-black slate. The cobalt this city is named after
+      // was all in the `horizon` stop, which the buildings cover. This is the same blue hour, put
+      // where the camera can see it.
+      top: '#123363', horizon: '#4478bc', ground: '#151a23',
       haze: '#7f9ecc', sunDir: [-0.62, 0.05, -0.78], sunColor: '#ffb178',
       clouds: 0.50, stars: 0.26, seed: 404,
     },
@@ -2879,11 +2930,38 @@ export const def = {
     // never crush": `shadowFill` 0.86 on a slate-blue ambient is untouched, and so is the warm
     // sodium bounce below. What comes out is the value separation a night canyon needs.
     ambient: {
-      sky: '#8fb0e0', ground: '#454f60', intensity: 1.62,
+      // (grade-discipline pass) 1.62 -> 1.44. A hemisphere lands on every up-facing surface at full
+      // strength regardless of what is near it, so it is the term that decides whether a sodium
+      // pool is a POOL. At 1.62 the carriageway, the sidewalk, the kerb and every parked roof were
+      // already at a mid value before a single lamp reached them, and the frame had one flat lit
+      // band from kerb to kerb. The floor §2.1 asks for ("shadows keep colour and never crush") is
+      // held by `shadowFill` 0.86 on this same slate blue, which is untouched.
+      // (Tried at 1.28 first and measured: the frame went to 41-56 % under sRGB 26, i.e. as dark as
+      // Las Vegas, and a blue hour that is as dark as a moonless desert night is the wrong end of
+      // its own premise. 1.44 keeps the pools reading as pools and hands the canyon walls back
+      // about a code value and a half. Note this term is COOL — it is the cobalt sky — so unlike
+      // the sodium fill below, raising it does not put the flat tan back on the road.)
+      // (grade-discipline round 2) hue held at 213, saturation 0.55 -> 0.42. The cobalt blue hour
+      // is this city's identity and the INTENSITY that makes it read is untouched — but a
+      // hemisphere lands on every up-facing surface at full strength, so its chroma is also the
+      // chroma of the carriageway, the kerb, every parked roof and the hero car's deck lid. That
+      // is the four-city body-panel measurement this round is judged on: the same mint muscle car
+      // photographed at hue 206 here against 172 in LA. Less saturated cobalt light, same amount
+      // of it; the blue hour is still carried by the #123363 zenith, the #2a3c60 fog and the
+      // shadow lift, which are three terms that do NOT paint the road.
+      sky: '#9ab3d6', ground: '#454f60', intensity: 1.44,
       // (coherence pass) 0.58 -> 0.70. This is the sodium bounce coming back up the canyon off the
       // opposite kerb, and it is the only warm light in the rig; with the cobalt now stronger above
       // it, it has to come up with it or the split collapses back into one blue.
-      fill: { color: '#ffab5e', intensity: 0.70, dir: [0.55, 0.20, 0.62] },
+      // (grade-discipline pass) 0.70 -> 0.44. Same argument as the hemisphere above and the lamp
+      // colour: this is a DIRECTIONAL warm term with y=0.20, so it reaches the road at N·L 0.20 —
+      // a flat amber wash over the whole carriageway that owes nothing to where the lamps are. The
+      // warm/cool split the note below wanted is now carried by the sodium pools and their wet
+      // reflections against a cobalt hemisphere, which is a split with structure in it.
+      // (0.44 first, then back to 0.52 once the El's additive band came out: with that gone there
+      // is room for the sodium bounce again, and the canyon's shaded side needs it to stay a
+      // surface. It is still a quarter down from the 0.70 that was washing the road flat.)
+      fill: { color: '#ffab5e', intensity: 0.52, dir: [0.55, 0.20, 0.62] },
     },
     shadowTint: '#41598a',
     shadowFill: 0.86,
@@ -2906,8 +2984,46 @@ export const def = {
     //     out the one warm hue the palette owns. Warm highlights over a cobalt lift is the blue
     //     hour; cool highlights over a cobalt lift is a monochrome.
     grade: {
-      uSaturation: 1.34, uExposure: 1.06, uContrast: 1.08,
-      uLift: '#141f36', uGain: '#fdf0e6', uVignette: 0.22,
+      // (grade-discipline pass) uContrast 1.08 -> 1.14, uExposure 1.06 -> 1.13, and NO uBlackPoint.
+      //
+      // Both of those are consequences of removing the El's additive light band (see the ladder in
+      // `landmarks()`): that one buffer was carrying a large fraction of this city's total frame
+      // luminance, and with it gone the first draft of this block — contrast 1.18 plus a 1.10 black
+      // point — took the captures to 11-13 % of frame under luma 8, i.e. blacker than Las Vegas,
+      // which is the wrong end of a BLUE HOUR's own premise and a straight §2.1 violation
+      // ("shadows keep colour and never crush to pure black").
+      //
+      // A stop and a bit of exposure is the right way to pay that back rather than the ambient
+      // terms, because exposure lifts the sodium pools, the wet streaks and the canyon walls in
+      // the same proportion — it does not put a flat wash back on the road. Measured after: ~6 %
+      // under luma 8, which is Vegas' number, on a city that should be a little lighter than
+      // Vegas and now is.
+      /**
+       * THE NEUTRAL ANCHOR (grade-discipline round 2). uSaturation 1.34 -> 1.22 and
+       * uLift '#141f36' -> '#5e6a8b'.
+       *
+       * `applyLook` normalises `uLift` by its own LUMINANCE before using it as a multiplier on the
+       * shadow band, and blue carries 7.2% of luminance — so (20,31,54) came out as a multiplier of
+       * (0.687, 1.021, 1.718), i.e. a 1.7x BLUE gain applied over a band that is still half-strength
+       * at mid-grey. Measured on `nyc-muscle-chase`, that landed the carriageway at rgb(86,60,88) —
+       * hue 296, a magenta road — and put the mint hero car at hue 323 when the same car in LA
+       * measures 172. A grade that repaints the hero car and the asphalt is tinting ALBEDO, not
+       * light, and the same defect measured in all four cities.
+       *
+       * '#5e6a8b' normalises to (0.897, 1.001, 1.288): still the coolest lift of the four cities,
+       * still visibly a cobalt shadow, but no longer strong enough to overwrite what a surface
+       * actually is. Nothing is lost from the blue hour, because the blue hour is a LIGHT here —
+       * a 1.44 cobalt hemisphere, a #123363 zenith and a #2a3c60 fog — and those are untouched.
+       * uSaturation comes back to the 1.05-1.15 band the whole game now runs in (the engine
+       * multiplies the city's figure by 0.90 before clamping, so 1.22 asks for 1.10).
+       */
+      uSaturation: 1.22, uExposure: 1.13, uContrast: 1.14,
+      // The night-derived vibrance is 0.30, and vibrance is aimed at exactly the pixels with the
+      // least chroma — the asphalt, the granite kerb, the white crosswalk bars. Those three are
+      // what the sodium and the cobalt have to be read AGAINST, so they are the last things that
+      // should be pushed toward a hue.
+      uVibrance: 0.19,
+      uLift: '#5e6a8b', uGain: '#fdf0e6', uVignette: 0.22,
     },
     // (round 3) See `_applyEnv` in src/main.js. New York's paint weighting works out at
     // 1.25 x 1.53 x 2.80 = 5.4 — nearly Vegas' — because the two constants that make it up both
@@ -2915,7 +3031,12 @@ export const def = {
     // canyon of sodium windows that is what turned the teal muscle car's flanks into a pale
     // amber-white sheen. 0.62 keeps the deli windows and the El's lamps visibly IN the bodywork
     // and hands the paint back its own value.
-    paintEnv: 0.62,
+    // (grade-discipline round 2) 0.62 -> 0.55. Same measurement as the hemisphere above: this
+    // city's probe is a canyon of sodium windows under a cobalt lid, and on an up-facing panel it
+    // was the dominant term. The deli windows and the El's lamps are still visibly in the
+    // bodywork at 0.55 — that is the §1.6.3 clearcoat and it is worth keeping — but the paint now
+    // wins on its own panels.
+    paintEnv: 0.55,
     bloom: { strength: 0.94, radius: 0.58, threshold: 0.70 },
   },
   track: {
@@ -3031,7 +3152,15 @@ export const def = {
     // raycast — `tools/_pxid.mjs` names the nearest surface under that whole band as a props-layer
     // MeshBasicMaterial, i.e. the pool itself, not the road). 8 m is still a Manhattan mast arm and
     // it is 21 m of pool instead of 23.
-    lampStyle: 'modern', lampSpacing: 40, lampHeight: 8,
+    // (grade-discipline pass) 40 -> 46. One more step of the same fix: a 21 m additive ribbon
+    // every 92 m instead of every 80 leaves a longer run of plain textured asphalt between pools,
+    // and with the pool colour deepened as well the two changes compound.
+    // (grade-discipline pass, second iteration) 46 -> 54 and the mast 8 -> 7. Re-measured after the
+    // lamp colour was deepened: the flat sand band is much reduced but ONE pool still fills the
+    // bottom third of the chase frame, because the ribbon is `lampHeight * 2.6` = 21 m long and it
+    // starts six metres in front of the camera. A 7 m mast arm is still a Manhattan mast arm and it
+    // is 18 m of ribbon every 108 m instead of 21 m every 92.
+    lampStyle: 'modern', lampSpacing: 54, lampHeight: 7,
     palms: false,
     // The kit's kerb run is eighty identical striped units at 4.05 m with the same stripe phase —
     // §7's "same prop mesh at a visible regular interval", cap 66, and the round-1 critic saw it
@@ -3132,13 +3261,40 @@ export const def = {
 
     // The ladder of light the El throws down onto the carriageway. Only on the straight part of
     // the run: these are flat quads, and a flat quad on a banked corner sinks into the tarmac.
-    for (let u = U_EL0 + 0.006; u < U_EL1; u += 0.0105) {
+    //
+    // (grade-discipline pass) THIS IS THE FLAT UNTEXTURED TAN, and it took a scene-graph bisection
+    // to find it. Rounds 2, 3 and the first half of this one all diagnosed the pale sand band on
+    // the near carriageway as the kit's per-lamp light pools, and spent `lampColor`, `lampSpacing`,
+    // `lampHeight`, `wetLook` and both ambient terms trying to move it. None of them moved it by
+    // more than a code value, because none of them draws it. Hiding scene-graph layers one at a
+    // time and re-measuring the same rectangle: `road` hidden → rgb(148,113,83), i.e. the road is
+    // not even visible there; `landmarks` hidden → rgb(12,20,37). Bisecting the 782 landmark meshes
+    // lands on ONE merged additive buffer, 24 triangles, spanning x -390..-100 at y=0 — this run.
+    //
+    // The arithmetic, now that it is the right object: `lightPoolMaterial`'s core stop is alpha
+    // 0.60 x strength, so at 1.7 these quads were 1.02 — a fully saturating additive wash — and at
+    // r 7.6 with elong 1.45 each is 15 x 22 m while the loop stepped 0.0105 of a ~2.2 km lap, i.e.
+    // 23 m. A 22 m pool every 23 m is not a ladder, it is a continuous band, and the kit's own note
+    // on this material says so in as many words ("saturates to a flat beige carriageway once eighty
+    // of them overlap additively down an avenue").
+    //
+    // 0.016 of u is a 35 m step, r 6.0 makes each pool 12 x 17 m, and 1.05 strength puts the core
+    // at 0.63 instead of 1.02. That is a LADDER — light, dark, light, with eighteen metres of plain
+    // textured asphalt between the rungs — which is both what the comment above always claimed and
+    // what §1.3's "warm amber street lamps line the road" is. It also removes about 3 000 m² of
+    // full-screen additive overdraw from the one city that has to draw an elevated railway too.
+    // (Measured on the tuner chase capture, over the rectangle x 0.30-0.55, y 0.80-0.95: the near
+    // carriageway goes from rgb(157,126,114) — a flat sand band — to rgb(12,19,37), i.e. from a
+    // saturated additive wash to wet asphalt, with the lane paint, the aggregate and the taillight
+    // reflections readable through it again. That capture happens to stop between two rungs; the
+    // muscle capture stops on one and reads rgb(68,45,51), which is the pool doing its job.)
+    for (let u = U_EL0 + 0.006; u < U_EL1; u += 0.016) {
       if (Math.abs(track.turnRate(u)) > 0.0028) continue;
       const s = track.at(u);
       const grp = new THREE.Group();
       grp.position.copy(s.pos).setY(s.pos.y + 0.055);
       grp.rotation.y = Math.atan2(s.tan.x, s.tan.z);
-      grp.add(lightPool({ r: 7.6, color: '#ffcf90', cache: C, strength: 1.7, elong: 1.45 }));
+      grp.add(lightPool({ r: 6.0, color: '#e8a45c', cache: C, strength: 1.05, elong: 1.45 }));
       el.add(grp);
     }
 
