@@ -54,6 +54,12 @@ export async function boot({ headless = true, width = 1600, height = 900, gpu = 
     reducedMotion: 'no-preference',
   });
   const page = await context.newPage();
+  // Playwright defaults every action — including page.evaluate — to 30s. City construction is
+  // procedural and has grown well past that, so a multi-shot sweep would die partway through with
+  // a bare TimeoutError while every city loaded fine on its own. Every critic depends on the full
+  // 16-shot sweep, so this must not be the thing that fails.
+  context.setDefaultTimeout(180000);
+  page.setDefaultTimeout(180000);
   const logs = [];
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') logs.push(`[${m.type()}] ${m.text()}`); });
   page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
