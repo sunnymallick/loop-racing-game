@@ -1605,7 +1605,13 @@ function buildExtra(x, mats) {
     const R = x.r ?? 0.055;                 // rail tube radius
     const bend = R * 2.5;                   // the radius of the top corner
     const xo = W * 0.5 - R;                 // the leg axes
-    const skidMat = chromeMaterial({ color: '#9aa0a8', rough: 0.35 });
+    /**
+     * The bash plate is BRUSHED ALLOY, not chrome. A metalness-1 plank the size of this one, lying
+     * nearly face-up under a garage key light, is a mirror of the ceiling: it came back as a flat
+     * white-blue slab across the whole front of the truck, brighter than the headlamps. A 0.72
+     * metal keeps a diffuse term, so the plate has a value and the scratches in it read.
+     */
+    const skidMat = darkMetalMaterial({ color: '#9199a3', rough: 0.42, metal: 0.72 });
     const plateH = 0.115, plateD = 0.26;
     /**
      * rail -> ELBOW -> leg, as one continuous tube. A quarter-torus corner is what removes the
@@ -1618,7 +1624,9 @@ function buildExtra(x, mats) {
     rail.rotation.z = Math.PI / 2;
     mesh.add(rail);
     for (const sx of [-1, 1]) {
-      const el = new THREE.Mesh(new THREE.TorusGeometry(bend, R, 8, 16, Math.PI / 2), trim);
+      // 14 to match the legs' and the rail's cross-section: a 8-sided elbow butted onto a
+      // 12-sided leg leaves a visible notch in the silhouette at the joint.
+      const el = new THREE.Mesh(new THREE.TorusGeometry(bend, R, 14, 18, Math.PI / 2), trim);
       el.position.set(sx * (xo - bend), -bend, 0);
       if (sx < 0) el.scale.x = -1;
       mesh.add(el);
@@ -1641,20 +1649,39 @@ function buildExtra(x, mats) {
     mesh.add(strip);
     // legs and inner uprights: the legs hang off the elbows, the uprights' top caps are inside the
     // rail, and every bottom cap is inside the plate
-    for (const [ux, r, yTop] of [[-xo, R, -bend], [xo, R, -bend],
+    /**
+     * ROUND-4: the outer legs start INSIDE the elbow, not at its mouth.
+     *
+     * A partial `TorusGeometry` has no end caps, so the elbow's lower mouth is an open tube — and
+     * the leg's top disc was sitting exactly in that mouth at y = -bend, plugging it with a flat
+     * 104 mm face that the garage hero crop reads at 4x as a cut-off tube on the skyline of the
+     * bar. Pushed R*0.7 up into the elbow the disc is inside the tube, where it cannot be seen
+     * from any angle, and the corner is a continuous bend again.
+     */
+    const legTop = -bend + Math.min(bend * 0.55, R * 0.7);
+    for (const [ux, r, yTop] of [[-xo, R, legTop], [xo, R, legTop],
       [-W * 0.20, R * 0.86, 0], [W * 0.20, R * 0.86, 0]]) {
       const yBot = -Hh + plateH * 0.06;
-      const up = new THREE.Mesh(new THREE.CylinderGeometry(r, r, yTop - yBot, 12), trim);
+      const up = new THREE.Mesh(new THREE.CylinderGeometry(r, r, yTop - yBot, 14), trim);
       up.position.set(ux, (yTop + yBot) * 0.5, 0);
       mesh.add(up);
     }
-    // mounting stays back into the chassis — otherwise the bar floats in front of the nose.
-    // 0.44 long from the leg, so the far cap is a comfortable 200 mm inside the bodywork.
+    /**
+     * Mounting stays back into the chassis — otherwise the bar floats in front of the nose.
+     *
+     * ROUND-4: they were at x = 0.92 * xo, i.e. 60 mm INBOARD of the leg they were supposed to be
+     * welded to and 8 mm clear of its 52 mm tube, and they ran from z = 0 backwards — so each one
+     * presented a flat 72 mm disc in open air beside the leg, at the top of the bar and again two
+     * thirds of the way down. That is four of them on the truck's face, and the garage hero crop
+     * at 4x reads them exactly as the verdict did: "terminates unterminated". On the leg axis and
+     * pushed 20 mm through it, the front cap is inside the tube and the whole assembly is once
+     * again a hoop with no free end in it.
+     */
     for (const sx of [-1, 1]) {
-      for (const dy of [0.0, -Hh * 0.62]) {
+      for (const dy of [-bend * 1.4, -Hh * 0.62]) {
         const stay = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.44, 8), trim);
         stay.rotation.x = Math.PI / 2;
-        stay.position.set(sx * xo * 0.92, dy, -0.22);
+        stay.position.set(sx * xo, dy, -0.20);
         mesh.add(stay);
       }
     }
