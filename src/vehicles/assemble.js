@@ -580,6 +580,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    * insert cannot be outside its hole even if the blueprint asks for it.
    */
   const noseFits = tubGeo.noseFits || [];
+  const seated = [];
   const fitAt = (x, y, z) => {
     let best = null, bestD = Infinity;
     for (const f of noseFits) {
@@ -633,7 +634,9 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     const zBack = f.zFloor + f.dir * (back + 0.004);
     const zMax = f.zc - f.dir * (out + 0.008);
     const z2 = f.dir > 0 ? Math.min(zBack, zMax) : Math.max(zBack, zMax);
-    return { ...cfg, w, h, x: (x < 0 ? -cx : cx), y: cy, z: z2, fit: f };
+    const out2 = { ...cfg, w, h, x: (x < 0 ? -cx : cx), y: cy, z: z2, fit: f };
+    seated.push({ from: [x, y, z, cfg.w, cfg.h], to: [out2.x, out2.y, out2.z, w, h] });
+    return out2;
   };
 
   // ---------------- 6. lights + detail ----------------
@@ -1158,7 +1161,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     paintMaterial: paint,
     // the measured cut of every nose opening — builder probes read this to check that nothing was
     // seated outside its own hole (kit.js capPanel §7b)
-    noseFits,
+    noseFits, seated,
   };
   void rng; void clamp; void liveryTexture; void emissiveMaterial;
   return car;
@@ -1532,24 +1535,80 @@ function buildExtra(x, mats) {
       mesh.add(hoop);
     }
   } else if (x.type === 'bullbar') {
+    /**
+     * ---- A CLOSED FRAME, ROUND-3 (front clip) ------------------------------------------------
+     *
+     * The verdict, verbatim: "a bull-bar tube passes straight THROUGH the chrome skid plate and
+     * terminates unterminated in black space below it".
+     *
+     * Both halves of that were true and they were the same fault: this was five INDEPENDENT
+     * primitives — a rail, three uprights and a plate — each placed by its own number, so the
+     * uprights stood at +/-0.57 while the plate reached only +/-0.52 (the outer pair missed it
+     * entirely and ran on into open air 28 mm below it), and the rail's two ends were flat
+     * cylinder caps hanging in front of the headlamps with nothing behind them.
+     *
+     * It is now ONE CLOSED LOOP: rail across the top, a leg down each side, the plate across the
+     * bottom, and two inner uprights between them. Every member's ends are INSIDE the member it
+     * joins — the rail's caps inside the legs, the legs' caps inside the rail and the plate, the
+     * plate's caps inside the legs — so there is no free end anywhere in the assembly and no
+     * amount of camera angle can find one. That is also what a real A-bar is: a hoop, not a set of
+     * sticks.
+     */
     mesh = new THREE.Group();
-    const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, x.w ?? 1.9, 12), trim);
+    const W = x.w ?? 1.9, Hh = x.h ?? 0.56;
+    const R = x.r ?? 0.055;                 // rail tube radius
+    const bend = R * 2.5;                   // the radius of the top corner
+    const xo = W * 0.5 - R;                 // the leg axes
+    const skidMat = chromeMaterial({ color: '#9aa0a8', rough: 0.35 });
+    const plateH = 0.115, plateD = 0.26;
+    /**
+     * rail -> ELBOW -> leg, as one continuous tube. A quarter-torus corner is what removes the
+     * last cap from the top of the frame: with a straight leg butted under a straight rail the
+     * leg's top disc is exposed on its outboard side however the two radii are chosen, and a
+     * 50 mm flat face on the skyline of the bar is exactly the "terminates unterminated" read.
+     * The rail overlaps each elbow by 4 mm so no two faces are ever coincident.
+     */
+    const rail = new THREE.Mesh(new THREE.CylinderGeometry(R, R, (xo - bend) * 2 + 0.008, 14), trim);
     rail.rotation.z = Math.PI / 2;
     mesh.add(rail);
-    for (let i = -1; i <= 1; i++) {
-      const up = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, x.h ?? 0.62, 10), trim);
-      up.position.set(i * (x.w ?? 1.9) * 0.30, -(x.h ?? 0.62) * 0.5, 0);
+    for (const sx of [-1, 1]) {
+      const el = new THREE.Mesh(new THREE.TorusGeometry(bend, R, 8, 16, Math.PI / 2), trim);
+      el.position.set(sx * (xo - bend), -bend, 0);
+      if (sx < 0) el.scale.x = -1;
+      mesh.add(el);
+    }
+    /**
+     * The bash plate is a SWEPT bar, so its two tips fall 140 mm back — behind the nose station
+     * and inside the lofted undertray — instead of being flat faces in open air out beyond the
+     * legs. It has to reach past the legs (they die into it) and a plate that reaches past them
+     * and then simply stops is the same defect one member further out.
+     */
+    const skid = new THREE.Mesh(
+      sweptBar((xo + R * 1.5) * 2, plateH, plateD, { sweep: 0.15, pow: 2.4, r: 0.030, taper: 0.70, seg: 20 }),
+      skidMat,
+    );
+    skid.position.set(0, -Hh, -0.010);
+    mesh.add(skid);
+    // a satin rub strip along the plate's face, so a polished plank is not one flat mirror
+    const strip = new THREE.Mesh(roundedBox(xo * 1.55, plateH * 0.30, plateD * 0.24, 0.010), trim);
+    strip.position.set(0, -Hh + plateH * 0.16, plateD * 0.40);
+    mesh.add(strip);
+    // legs and inner uprights: the legs hang off the elbows, the uprights' top caps are inside the
+    // rail, and every bottom cap is inside the plate
+    for (const [ux, r, yTop] of [[-xo, R, -bend], [xo, R, -bend],
+      [-W * 0.20, R * 0.86, 0], [W * 0.20, R * 0.86, 0]]) {
+      const yBot = -Hh + plateH * 0.06;
+      const up = new THREE.Mesh(new THREE.CylinderGeometry(r, r, yTop - yBot, 12), trim);
+      up.position.set(ux, (yTop + yBot) * 0.5, 0);
       mesh.add(up);
     }
-    const skid = new THREE.Mesh(roundedBox((x.w ?? 1.9) * 0.55, 0.10, 0.22, 0.03), chromeMaterial({ color: '#9aa0a8', rough: 0.35 }));
-    skid.position.set(0, -(x.h ?? 0.62) * 0.86, 0);
-    mesh.add(skid);
-    // mounting stays back into the chassis — otherwise the bar floats in front of the nose
+    // mounting stays back into the chassis — otherwise the bar floats in front of the nose.
+    // 0.44 long from the leg, so the far cap is a comfortable 200 mm inside the bodywork.
     for (const sx of [-1, 1]) {
-      for (const dy of [0.02, -(x.h ?? 0.62) * 0.62]) {
-        const stay = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.34, 8), trim);
+      for (const dy of [0.0, -Hh * 0.62]) {
+        const stay = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.44, 8), trim);
         stay.rotation.x = Math.PI / 2;
-        stay.position.set(sx * (x.w ?? 1.9) * 0.30, dy, -0.19);
+        stay.position.set(sx * xo * 0.92, dy, -0.22);
         mesh.add(stay);
       }
     }

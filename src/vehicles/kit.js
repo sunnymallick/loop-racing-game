@@ -2129,6 +2129,16 @@ export function loftTub(sections, {
 
   // ---- 2. rings + the untouched skin parameterisation ---------------------
   const { rings, L, us, vs } = buildRings(dense);
+  /**
+   * The u of every AUTHORED profile point, read off the tub's own parameterisation. The livery
+   * generator anchors the rocker shadow, the character line, the sky band and every shut line to
+   * these — and so does the nose cap, see `capPanel`.
+   */
+  const anchors = [];
+  for (let i = 0, k = 0; i < src[0].pts.length; i++) {
+    anchors.push(us[k]);
+    k += subs[i] || 0;
+  }
 
   // ---- 3. where the body surface actually is on each opening circle -------
   for (const o of openings) {
@@ -2294,21 +2304,83 @@ export function loftTub(sections, {
   const capPanel = (si, flip, cfg = {}) => {
     const dir = flip ? -1 : 1;                       // which way is "out of the car" here
     const zc = dense[si].z;
+    /**
+     * ---- HOW MANY COLUMNS THE FAN HAS, AND THE SAWTOOTH ------------------------------------
+     *
+     * ROUND-3 (front clip). Ablation settles what was left after the screens were fixed: with the
+     * livery map off AND the flake normal off, the truck's grille mouth STILL meets the bodywork
+     * on a ten-tooth sawtooth (`NOFLAKE=1 tools/_fc3_shot.mjs suv`). So it is not the texture and
+     * not the normal map — it is that the recess WALL is a coarse polygon there, and anything let
+     * into it (a grille frame, a lamp bezel) crosses a facetted surface at a grazing angle. The
+     * teeth measured 33 mm apart; the panel's columns are the tub's own profile ring, 77 of them
+     * over a five-metre perimeter, i.e. 65 mm — one tooth per two columns, which is exactly what a
+     * grazing cut through a faceted wall produces.
+     *
+     * The fan's columns are now subdivided. Every extra column is a LINEAR interpolation between
+     * two neighbours on the boundary, so it lands exactly on the tub's own last-ring edge — the
+     * seam with the tub stays watertight to the bit and nothing about the silhouette moves — but
+     * the recess walls inside the panel are resolved three times as finely and the grazing cut
+     * lands on a curve instead of on a staircase.
+     */
+    const CS = Math.max(1, Math.round(cfg.csub ?? 3));
     const B = [];
-    for (let i = 0; i < L; i++) { const k = si * L + i; B.push([pos[k * 3], pos[k * 3 + 1]]); }
+    for (let i = 0; i < L - 1; i++) {
+      const k = si * L + i, k2 = k + 1;
+      for (let q = 0; q < CS; q++) {
+        const t = q / CS;
+        B.push([lerp(pos[k * 3], pos[k2 * 3], t), lerp(pos[k * 3 + 1], pos[k2 * 3 + 1], t)]);
+      }
+    }
+    { const k = si * L + (L - 1); B.push([pos[k * 3], pos[k * 3 + 1]]); }
+    const LC = B.length;                       // the fan's own column count
     let mx = 0, my = 0;
-    for (let i = 0; i < L - 1; i++) { mx += B[i][0]; my += B[i][1]; }
-    mx /= (L - 1); my /= (L - 1);
+    for (let i = 0; i < LC - 1; i++) { mx += B[i][0]; my += B[i][1]; }
+    mx /= (LC - 1); my /= (LC - 1);
     if (cfg.cx !== undefined) mx = cfg.cx;
     if (cfg.cy !== undefined) my = cfg.cy;
     let ex = 1e-4, yLo = Infinity, yHi = -Infinity;
-    for (let i = 0; i < L - 1; i++) {
+    for (let i = 0; i < LC - 1; i++) {
       ex = Math.max(ex, Math.abs(B[i][0] - mx));
       yLo = Math.min(yLo, B[i][1]); yHi = Math.max(yHi, B[i][1]);
     }
     const dy = (yHi - yLo) || 1;
-    const CV = clamp(vs[si], 0.05, 0.95), R = 0.022;
-    const uOf = (yy) => capU[0] + (capU[1] - capU[0]) * clamp((yy - yLo) / dy, 0, 1);
+    /**
+     * ---- AND WHICH SLICE ACROSS THE CAR ------------------------------------------------------
+     *
+     * v is the length axis, so a cap's v band decides which SHUT LINES it can catch. At
+     * 0.95 +/- 0.022 the nose cap's band was 0.928-0.972 and every car in the game has its bonnet's
+     * leading shut line inside that (SUV 0.967, muscle 0.968, tuner 0.962) — so a hard dark line
+     * meant for the panel gap between bonnet and clip was being drawn ACROSS the nose face by a
+     * radial fan, which is the torn contour left round the truck's grille after the u range was
+     * fixed. Pulled in to 0.92 and narrowed to +/- 0.006 the band cannot reach any of them, and the
+     * across-panel variation it used to give is not missed: the value ramp that matters on a cap is
+     * the vertical one, and that is u.
+     */
+    const CV = clamp(vs[si], 0.08, 0.92), R = 0.006;
+    /**
+     * ---- WHICH SLICE OF THE PAINT A CAP PANEL WEARS ----------------------------------------
+     *
+     * ROUND-3 (front clip). The nose face is one radial fan, and its u is the panel's HEIGHT
+     * mapped onto a band of the livery — which is right in principle (§1.1's dark ground
+     * reflection below, bright sky above, printed onto the one panel a head-on camera looks
+     * straight at) and was wrong in range. [0.100, 0.442] starts at the UNDERBODY and climbs past
+     * the rocker, the character-line crease and every livery split on the way up, so:
+     *
+     *   - the truck's `offroad` cladding boundary (a hard edge at u ≈ 0.15) lands as a CONTOUR
+     *     across the middle of the nose, and because the fan's columns are the tub's own profile
+     *     points their angular spread is wildly uneven — so that contour is resolved as a jagged
+     *     polyline, not a line. Ablation (`FLAT=1 tools/_fc3_shot.mjs suv`) settles it: with the
+     *     map off the panel is clean, with it on the same panel has torn olive edges round the
+     *     grille and the lamp pods. It is the texture, not the surface.
+     *   - the same is true, less loudly, of the crease shadow on the other three cars.
+     *
+     * A cap now wears the CREASE-to-DECK sweep instead: the part of the profile that is body
+     * colour in every livery style this kit draws, and the part that actually carries the
+     * reflection ramp (kit.js drawBodyPaint §4b) rather than the graphics. Same ramp, same
+     * intent, no hard edge anywhere inside it.
+     */
+    const CU = cfg.capU || capU;
+    const uOf = (yy) => CU[0] + (CU[1] - CU[0]) * clamp((yy - yLo) / dy, 0, 1);
 
     const aps = [];
     for (const a of cfg.apertures || []) {
@@ -2358,7 +2430,7 @@ export function loftTub(sections, {
     // ---- per-column radial levels, planted on the rim of every opening ----
     const SAMP = 88;
     const levels = [];
-    for (let i = 0; i < L; i++) {
+    for (let i = 0; i < LC; i++) {
       const dx = B[i][0] - mx, dyv = B[i][1] - my;
       const len = Math.hypot(dx, dyv) || 1e-4;
       const ts = [];
@@ -2415,11 +2487,11 @@ export function loftTub(sections, {
      */
     for (let pass = 0; pass < (cfg.smooth ?? 10); pass++) {
       const prev = levels.map((a) => a.slice());
-      for (let i = 0; i < L - 1; i++) {
-        const a = prev[(i - 1 + L - 1) % (L - 1)], b = prev[i], c = prev[(i + 1) % (L - 1)];
+      for (let i = 0; i < LC - 1; i++) {
+        const a = prev[(i - 1 + LC - 1) % (LC - 1)], b = prev[i], c = prev[(i + 1) % (LC - 1)];
         for (let j = 0; j < b.length; j++) levels[i][j] = 0.25 * a[j] + 0.5 * b[j] + 0.25 * c[j];
       }
-      levels[L - 1] = levels[0].slice();
+      levels[LC - 1] = levels[0].slice();
     }
 
     // Drop any level that is degenerate in EVERY column — a slot clamped to the rim or to the
@@ -2427,15 +2499,15 @@ export function loftTub(sections, {
     // panel with one opening this is a third of the grid.
     for (let j = levels[0].length - 1; j > 0; j--) {
       let same = true;
-      for (let i = 0; i < L && same; i++) same = Math.abs(levels[i][j] - levels[i][j - 1]) < 1e-6;
-      if (same) for (let i = 0; i < L; i++) levels[i].splice(j, 1);
+      for (let i = 0; i < LC && same; i++) same = Math.abs(levels[i][j] - levels[i][j - 1]) < 1e-6;
+      if (same) for (let i = 0; i < LC; i++) levels[i].splice(j, 1);
     }
     const K = levels[0].length;
 
     // ---- vertices ----------------------------------------------------------
     const base = V + extra.pos.length / 3;
     for (let j = 0; j < K; j++) {
-      for (let i = 0; i < L; i++) {
+      for (let i = 0; i < LC; i++) {
         const t = levels[i][j];
         const px = mx + (B[i][0] - mx) * t, py = my + (B[i][1] - my) * t;
         // the opening always closes before it reaches the rim of the panel, so no cut can ever
@@ -2446,7 +2518,19 @@ export function loftTub(sections, {
         extra.pos.push(px, py, zc + dir * (dome - d * guard));
         extra.uvA.push(uOf(py), CV + ((px - mx) / ex) * R);
         extra.uvB.push(0, 1);
-        extra.wg.push(sh * guard);
+        /**
+         * The overhang shade the recess hands to `archReturn`, but held OFF the rim.
+         *
+         * ROUND-3 (front clip): `sh` was `f * shade`, i.e. the darkening began the instant the
+         * signed distance went negative — so its first contour sat ON the aperture outline. A
+         * per-vertex field on this grid has jagged iso-contours (the columns are the tub's own
+         * profile points and their angular density varies by a factor of four), so what that drew
+         * round every opening on the truck was a ragged olive halo: "a dark line where two
+         * surfaces meet", exactly the thing a §7 seam read is made of. Started a quarter of the
+         * way into the fillet instead, the first contour lands where the surface is already
+         * turning away, and the shading and the geometry say the same thing in the same place.
+         */
+        extra.wg.push(clamp((sh - 0.25) / 0.75, 0, 1) * guard);
       }
     }
     /**
@@ -2469,8 +2553,8 @@ export function loftTub(sections, {
      * pair at the very centre of the fan).
      */
     for (let j = 0; j < K - 1; j++) {
-      for (let i = 0; i < L - 1; i++) {
-        const p0 = base + j * L + i, p1 = p0 + 1, p2 = p0 + L, p3 = p2 + 1;
+      for (let i = 0; i < LC - 1; i++) {
+        const p0 = base + j * LC + i, p1 = p0 + 1, p2 = p0 + LC, p3 = p2 + 1;
         if (flip) shell.push(p0, p3, p2, p0, p1, p3);
         else shell.push(p0, p2, p3, p0, p3, p1);
       }
@@ -2516,7 +2600,7 @@ export function loftTub(sections, {
         const th = -Math.PI + (bin + 0.5) * (Math.PI * 2 / NA);
         const ux = Math.cos(th), uy = Math.sin(th);
         let best = Infinity;
-        for (let i = 0; i < L - 1; i++) {
+        for (let i = 0; i < LC - 1; i++) {
           const axp = B[i][0] - mx, ayp = B[i][1] - my;
           const ex = B[i + 1][0] - B[i][0], ey = B[i + 1][1] - B[i][1];
           const den = ux * ey - uy * ex;
@@ -2592,7 +2676,9 @@ export function loftTub(sections, {
   let fits = tailFits;
   capPanel(0, true, tailCap);              // tail panel, facing -z
   fits = noseFits;
-  capPanel(NS - 1, false, noseCap);        // nose panel, facing +z
+  capPanel(NS - 1, false, {
+    capU: [Math.min(anchors[5] + 0.012, 0.40), Math.max(anchors[9], anchors[5] + 0.05)], ...noseCap,
+  });                                      // nose panel, facing +z
 
   // ---- 8. one normal field for all three buckets -------------------------
   const total = V + extra.pos.length / 3;
@@ -2649,20 +2735,6 @@ export function loftTub(sections, {
     g.setIndex(new THREE.BufferAttribute(ix, 1));
     return g;
   };
-  /**
-   * The u of every AUTHORED profile point, read off the tub's own parameterisation.
-   *
-   * The livery generator anchors the rocker shadow, the character line, the sky band and every shut
-   * line to these. They must come from the DENSE ring the tub is actually skinned from, not from
-   * `profileU(authoredSections)`: u is arc-length averaged across sections, and the dense list
-   * weights the arch stations more heavily, so the two disagree by up to 0.005 of the circumference
-   * — five pixels on the 1024 skin, which is nearly two shut-line widths.
-   */
-  const anchors = [];
-  for (let i = 0, k = 0; i < src[0].pts.length; i++) {
-    anchors.push(us[k]);
-    k += subs[i] || 0;
-  }
   return {
     shell: emit(shell, UA, flareAt !== null, true), liner: emit(liner, UB, false, false), anchors,
     // the measured cut of every nose / tail opening — see capPanel §7b

@@ -317,7 +317,18 @@ export const blueprint = {
     // slat" finding verbatim. The grille also moved 16 mm deeper into its recess; between them
     // there is now 45 mm of clear air behind the rail. The stays still reach 340 mm back into the
     // clip, so nothing floats.
-    { type: 'bullbar', w: 1.90, h: 0.56, y: 1.16, z: 2.508 },
+    /**
+     * ROUND-3 (front clip). The bar is now a CLOSED HOOP — rail, two legs, bash plate, two inner
+     * uprights, every end inside the member it joins (assemble.js `bullbar`). Two numbers changed
+     * with it:
+     *   w 1.90 -> 1.66  so the legs stand at +/-0.78, inboard of the front wings rather than level
+     *                   with them, and the plate they close onto is 1.56 m instead of 1.83.
+     *   z 2.508 -> 2.585  the nose panel crowns 50 mm forward of its own station, so at 2.508 the
+     *                   rail's back half and the bodywork occupied the same 50 mm of space and the
+     *                   bar looked embedded in the clip. It now stands 75 mm clear of the crown,
+     *                   with 440 mm mounting stays running back through the panel into the body.
+     */
+    { type: 'bullbar', w: 1.66, h: 0.55, y: 1.17, z: 2.585, r: 0.052 },
     { type: 'rack', w: 1.78, d: 2.10, y: 2.11, z: -0.62, jerry: true },
     { type: 'lightbar', w: 1.56, count: 7, y: 2.24, z: 0.42 },
     { type: 'snorkel', x: 1.07, y: 1.66, z: 1.34, h: 1.05 },
