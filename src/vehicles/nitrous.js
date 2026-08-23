@@ -393,7 +393,7 @@ export const NITRO = {
       screen: 1.00, profile: [0.58, 0.09, 1.42, 0.080],   // slim needle: closes fastest of the four
       bands: 8.0, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.56, flick: 62, turb: 0.92,
       gasGain: 1.30, hotI: 5.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.68,
-      skirtW: 0.90, skirtI: 0.80, bodyD: 1.78, thick: 1.15, occ: 0.90,
+      skirtW: 0.90, skirtI: 0.80, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 1.4, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
@@ -409,7 +409,7 @@ export const NITRO = {
       screen: 1.10, profile: [0.70, 0.055, 1.20, 0.090],  // fat barrel, widest right off the bumper
       bands: 5.5, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.58, flick: 28, turb: 1.06,
       gasGain: 1.12, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.84,
-      skirtW: 0.98, skirtI: 0.92, bodyD: 1.78, thick: 1.25, occ: 0.92,
+      skirtW: 0.98, skirtI: 0.92, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 1.4, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
@@ -431,7 +431,7 @@ export const NITRO = {
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
       gasGain: 1.08, hotI: 4.50, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.90,
-      skirtW: 1.06, skirtI: 0.90, bodyD: 1.62, thick: 1.25, occ: 0.92,
+      skirtW: 1.06, skirtI: 0.90, bodyD: 1.62, thick: 1.25, occ: 0.97,
       sparkRate: 82, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 1.4, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
@@ -448,7 +448,7 @@ export const NITRO = {
       screen: 1.25, profile: [0.55, 0.10, 1.38, 0.078],   // long spindle — the slenderest of the four
       bands: 7.5, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.60, flick: 74, turb: 0.86,
       gasGain: 1.02, hotI: 4.90, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.62,
-      skirtW: 0.86, skirtI: 0.74, bodyD: 1.78, thick: 1.12, occ: 0.90,
+      skirtW: 0.86, skirtI: 0.74, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 1.4, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
@@ -1244,6 +1244,11 @@ function plumeMaterial(fx, phase) {
       // plume goes away, and how strongly the near side of the column shades the far side.
       uBodyD: { value: fx.bodyD ?? 0.90 },
       uThick: { value: fx.thick ?? 0.95 },
+      // Alpha only — it scales the occlusion, never the emission. (r17) 0.90-0.92 -> 0.97: at 0.90
+      // the lane line ran visibly through the densest part of the column, which makes the gas read
+      // as a GLAZE laid over the road rather than as something the road is behind. The plume still
+      // has no hard boundary — (1 - trans) goes to zero smoothly at every edge — it is just fully
+      // opaque where it is genuinely thick.
       uOcc: { value: fx.occ ?? 0.92 },
       uReach: { value: PLUME_REACH },
       // (r17) 0.82/1.10 -> 0.90/1.18. Cutting the gas at 0.82 threw away the LAST SIXTH of the

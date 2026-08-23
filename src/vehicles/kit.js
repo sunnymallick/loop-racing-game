@@ -4225,11 +4225,25 @@ export function lightUnit({
       ring.position.z = 0.002;
       ring.name = 'reflector';
       g.add(ring);
-      // the centre boss of a sealed beam: a small dark hub inside the retaining ring
-      const boss = new THREE.Mesh(new THREE.SphereGeometry(lw * 0.085, 10, 6), housingMaterial());
-      boss.position.z = 0.004;
-      boss.name = 'reflector';
-      g.add(boss);
+      /**
+       * ---- THE FILAMENT (round 4) ------------------------------------------------------------
+       *
+       * The centre of a sealed beam was a small DARK hub, and at 16x on the garage hero shot that
+       * is the whole reason four headlamps on the muscle car photograph as bolt heads: a cream
+       * ring, a dark ring, a flat grey disc and a two-pixel dark dot in the middle of it is
+       * exactly a washer. Every element of a lamp was there except the one that says "lamp".
+       *
+       * A filament is a bucket the garage does not dim — `menu.js` takes the HEAD bank to 6 %,
+       * correctly, because a showroom car does not have its headlights on, but a lamp still has a
+       * bright point in the middle of its bowl wherever the room light lands. Above the bloom
+       * threshold (§2.3, ~0.6-0.75) it halos a couple of pixels onto the reflector round it, which
+       * is what makes the unit read as glass over a bowl instead of a disc with a dot on it.
+       */
+      const fil = new THREE.Mesh(new THREE.SphereGeometry(lw * 0.105, 10, 6),
+        emissiveMaterial({ color: '#fff0d2', intensity: 1.55, shared: true }));
+      fil.position.z = 0.005;
+      fil.name = 'reflector';
+      g.add(fil);
     } else {
       // projector barrels — as many as fit along the lamp, at least one
       const br = Math.min(lw, lh) * 0.34;
@@ -4240,7 +4254,9 @@ export function lightUnit({
         ring.position.set(f, 0, 0.002);
         ring.name = 'reflector';
         g.add(ring);
-        const boss = new THREE.Mesh(new THREE.SphereGeometry(br * 0.46, 10, 6), housingMaterial());
+        // …and the projector's own bulb, for the same reason as the sealed beam's filament above
+        const boss = new THREE.Mesh(new THREE.SphereGeometry(br * 0.46, 10, 6),
+          emissiveMaterial({ color: '#fff0d2', intensity: 1.35, shared: true }));
         boss.position.set(f, 0, 0.004);
         boss.name = 'reflector';
         g.add(boss);
