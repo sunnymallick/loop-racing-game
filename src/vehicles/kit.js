@@ -624,6 +624,49 @@ export function archReturn(mat, { depth = 0.30, rough = 0.55 } = {}) {
 }
 
 /**
+ * ---- THE INSIDE OF AN APERTURE IS NOT PAINT -------------------------------------------------
+ *
+ * ROUND-4 (front clip), and it is the loudest thing left on the nose of all four cars. At 8x the
+ * supercar's letterbox mouth, the truck's grille and the muscle car's loop-bumper opening are all
+ * TROUGHS OF BODY COLOUR: a bright red / gold / green floor with a sky reflection sliding across
+ * it and a few grey bars floating in front. The geometry is right — the recess is cut into the
+ * shell, it has real depth, its walls are watertight — but a recess made of the SAME MATERIAL as
+ * the panel around it does not read as an opening, it reads as a dent in the paint.
+ *
+ * `archReturn` already darkens the diffuse term by `aWell`, and it is not enough here, because a
+ * grille mouth is not dark on account of its albedo. It is dark because it is a hole: almost no
+ * sky reaches into it, so the clearcoat mirror, the analytic horizon (`skyReflect`) and the
+ * environment probe — which between them are most of the value on a piece of car paint — should
+ * all be OCCLUDED there. Those three arrive at different points in the program and two of them are
+ * added AFTER `<map_fragment>`, so no amount of tinting the albedo can touch them.
+ *
+ * This patch runs at `<opaque_fragment>`, i.e. after every one of them has been folded into
+ * `outgoingLight`, and simply closes the aperture down: one multiply that takes the whole shaded
+ * result to a fraction of itself, plus a small neutral floor so the cavity keeps a tinted value
+ * rather than crushing to #000 (§2.1). It rides `aCav`, which `loftTub` writes ONLY on the nose
+ * and tail cap panels — the wheel arches keep `aWell` and are not touched by this.
+ */
+export function capCavity(mat, { dark = 0.14, floor = 0.016 } = {}) {
+  const n = (x) => x.toFixed(4);
+  return patchShader(mat, `cav|${n(dark)}|${n(floor)}`, (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aCav;\nvarying float vCav;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvCav = aCav;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vCav;')
+      .replace('#include <opaque_fragment>', `{
+	// smoothstep, not a linear ramp: the first 20 % of the fillet keeps full paint value so the
+	// RIM of the opening stays bright and the darkening starts where the surface has already
+	// turned away. A ramp that begins on the outline draws a halo round the hole instead of a
+	// shadow inside it (see the note on aWell in kit.js capPanel).
+	float cav = smoothstep( 0.14, 0.62, vCav );
+	outgoingLight = mix( outgoingLight, outgoingLight * ${n(dark)} + vec3( ${n(floor * 0.86)}, ${n(floor * 0.94)}, ${n(floor)} ), cav );
+}
+#include <opaque_fragment>`);
+  });
+}
+
+/**
  * Chain onBeforeCompile patches onto one material.
  *
  * Three gives a material a single onBeforeCompile hook, so the moment two effects want the shader
@@ -2292,7 +2335,7 @@ export function loftTub(sections, {
    * `archReturn()` shades the inside of a grille mouth with the identical overhang ramp that
    * darkens the metal behind an arch lip — one rule, both openings.
    */
-  const extra = { pos: [], uvA: [], uvB: [], wg: [] };
+  const extra = { pos: [], uvA: [], uvB: [], wg: [], cav: [] };
 
   /** Signed distance to a rounded rectangle — negative inside. */
   const rrSD = (px, py, ax, ay, hw, hh, r) => {
@@ -2323,21 +2366,123 @@ export function loftTub(sections, {
      * lands on a curve instead of on a staircase.
      */
     const CS = Math.max(1, Math.round(cfg.csub ?? 3));
-    const B = [];
-    for (let i = 0; i < L - 1; i++) {
-      const k = si * L + i, k2 = k + 1;
-      for (let q = 0; q < CS; q++) {
-        const t = q / CS;
-        B.push([lerp(pos[k * 3], pos[k2 * 3], t), lerp(pos[k * 3 + 1], pos[k2 * 3 + 1], t)]);
-      }
+    /**
+     * The openings, resolved BEFORE anything else on the panel, because the first question the
+     * grid has to answer is where it may put its centre — see `solveCentre` below.
+     */
+    const aps = [];
+    for (const a of cfg.apertures || []) {
+      const o = {
+        x: a.x ?? 0, y: a.y, hw: (a.w ?? 0.2) * 0.5, hh: (a.h ?? 0.2) * 0.5, r: a.r ?? 0.035,
+        depth: a.depth ?? 0.07, rim: Math.max(0.006, a.rim ?? 0.032), shade: a.shade ?? 1,
+        lip: a.lip ?? 0, lipW: a.lipW ?? 0.045, flat: a.flat !== false,
+      };
+      aps.push(o);
+      // …and its mirror image. Authoring one side keeps a blueprint readable and guarantees the
+      // pair is symmetric to the millimetre, which a hand-typed second entry never is.
+      if (a.mirror && o.x !== 0) aps.push({ ...o, x: -o.x });
     }
-    { const k = si * L + (L - 1); B.push([pos[k * 3], pos[k * 3 + 1]]); }
-    const LC = B.length;                       // the fan's own column count
+    /**
+     * ---- COLUMNS AT AN EVEN ANGLE, NOT AT AN EVEN ARC ----------------------------------------
+     *
+     * ROUND-4 (front clip). What decides how finely a recess RIM is resolved is the ANGULAR
+     * density of the rays, and the tub's own profile ring is wildly uneven in that measure — a
+     * dozen points over 20 degrees down the flank, three over 70 across the undertray. Subdividing
+     * every boundary segment the SAME number of times preserves that unevenness exactly, so the
+     * undertray stayed at 20-25 degree steps and a grazing cut through an aperture wall down there
+     * had nothing to land on.
+     *
+     * Each segment is now subdivided until no two neighbouring rays are more than `maxAng` apart
+     * about the panel centre. Every extra column is still a LINEAR interpolation between two
+     * neighbours ON the boundary polyline, so the seam with the tub is bit-exact and nothing about
+     * the silhouette moves.
+     */
+    const ring0 = [];
+    for (let i = 0; i < L; i++) { const k = si * L + i; ring0.push([pos[k * 3], pos[k * 3 + 1]]); }
     let mx = 0, my = 0;
-    for (let i = 0; i < LC - 1; i++) { mx += B[i][0]; my += B[i][1]; }
-    mx /= (LC - 1); my /= (LC - 1);
+    for (let i = 0; i < L - 1; i++) { mx += ring0[i][0]; my += ring0[i][1]; }
+    mx /= (L - 1); my /= (L - 1);
     if (cfg.cx !== undefined) mx = cfg.cx;
     if (cfg.cy !== undefined) my = cfg.cy;
+    /**
+     * ---- THE FAN'S CENTRE MAY NOT LIE IN A HOLE ------------------------------------------------
+     *
+     * ROUND-4 (front clip), and this is the tear at the middle of the grille that every crop of
+     * this clip has shown: on the tuner the authored centre sits INSIDE the mouth aperture
+     * (measured clearance 0.000 m), on the muscle car it sits 3 mm off its rim, on the truck it is
+     * inside the grille opening and on the supercar it is 22 mm above the letterbox.
+     *
+     * The grid is a fan of rays out of that centre, so t = 0 is a SINGULARITY: every one of the
+     * ~1100 columns passes through it and the absolute spacing between neighbouring rays goes to
+     * zero there. A recess rim that crosses the fan near t = 0 therefore cannot be resolved at all
+     * — the eight levels the solver plants either side of the crossing are all clamped into the
+     * same few millimetres, the rim fillet is crushed against the singular point, and what the
+     * camera sees is the V-shaped notch and the torn contour at the top-centre of the mouth.
+     *
+     * No amount of level-planting fixes that, because the resolution simply is not there. The
+     * centre has to MOVE off the openings. It is solved rather than re-authored per car: scan the
+     * panel's own symmetry line, score each candidate by its clearance from every aperture outline
+     * (and from the panel boundary, so the fan does not degenerate the other way), and take the
+     * best — with a mild pull back toward the authored value so a blueprint that was already clear
+     * is left exactly where it is.
+     *
+     * `crown` and `rake` are measured from this point, so the nose's forward bulge moves with it.
+     * That is correct: the apex of a pressing belongs on the sheetmetal, not in the middle of a
+     * hole where it is cancelled by `flat` anyway.
+     */
+    if (aps.length) {
+      const clearAp = (px, py) => {
+        let c = Infinity;
+        for (const a of aps) {
+          // the RIM is the hard constraint; the moulded brow outside it is a smooth bump now
+          // (see `pushAt`) and only worth a fraction of a rim's clearance.
+          c = Math.min(c, rrSD(px, py, a.x, a.y, a.hw, a.hh, a.r) - (a.lip > 0 ? a.lipW * 0.35 : 0));
+        }
+        return c;
+      };
+      // signed distance to the panel's own boundary polyline — positive inside
+      const RP = ring0.length - 1;
+      const clearEdge = (px, py) => {
+        let hit = false, dmin = Infinity;
+        for (let i = 0, j = RP - 1; i < RP; j = i++) {
+          const xi = ring0[i][0], yi = ring0[i][1], xj = ring0[j][0], yj = ring0[j][1];
+          if ((yi > py) !== (yj > py)
+            && px < ((xj - xi) * (py - yi)) / ((yj - yi) || 1e-9) + xi) hit = !hit;
+          const ax2 = xj - xi, ay2 = yj - yi;
+          const tt = clamp(((px - xi) * ax2 + (py - yi) * ay2) / ((ax2 * ax2 + ay2 * ay2) || 1e-9), 0, 1);
+          dmin = Math.min(dmin, Math.hypot(px - (xi + ax2 * tt), py - (yi + ay2 * tt)));
+        }
+        return hit ? dmin : -dmin;
+      };
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < RP; i++) { lo = Math.min(lo, ring0[i][1]); hi = Math.max(hi, ring0[i][1]); }
+      // the boundary clearance is worth less than the aperture clearance: a fan centre 60 mm from
+      // the panel edge is ugly but survivable, one 0 mm from a rim is not.
+      const score = (py) => Math.min(clearAp(mx, py), clearEdge(mx, py) * 0.55) - Math.abs(py - my) * 0.22;
+      let bestY = my, best = score(my);
+      const N2 = 320;
+      for (let i = 0; i <= N2; i++) {
+        const py = lerp(lo, hi, i / N2);
+        const sc = score(py);
+        if (sc > best) { best = sc; bestY = py; }
+      }
+      my = bestY;
+    }
+    const maxAng = (cfg.maxAng ?? 1.25) * Math.PI / 180;
+    const B = [];
+    for (let i = 0; i < L - 1; i++) {
+      const a = ring0[i], b = ring0[i + 1];
+      const aa = Math.atan2(a[1] - my, a[0] - mx), ab = Math.atan2(b[1] - my, b[0] - mx);
+      let da = Math.abs(ab - aa);
+      if (da > Math.PI) da = Math.PI * 2 - da;
+      const k = clamp(Math.ceil(da / maxAng), CS, 48);
+      for (let q = 0; q < k; q++) {
+        const t = q / k;
+        B.push([lerp(a[0], b[0], t), lerp(a[1], b[1], t)]);
+      }
+    }
+    B.push([ring0[L - 1][0], ring0[L - 1][1]]);
+    const LC = B.length;                       // the fan's own column count
     let ex = 1e-4, yLo = Infinity, yHi = -Infinity;
     for (let i = 0; i < LC - 1; i++) {
       ex = Math.max(ex, Math.abs(B[i][0] - mx));
@@ -2356,6 +2501,7 @@ export function loftTub(sections, {
      * across-panel variation it used to give is not missed: the value ramp that matters on a cap is
      * the vertical one, and that is u.
      */
+    capCentres.push([+mx.toFixed(4), +my.toFixed(4)]);
     const CV = clamp(vs[si], 0.08, 0.92), R = 0.006;
     /**
      * ---- WHICH SLICE OF THE PAINT A CAP PANEL WEARS ----------------------------------------
@@ -2382,19 +2528,6 @@ export function loftTub(sections, {
     const CU = cfg.capU || capU;
     const uOf = (yy) => CU[0] + (CU[1] - CU[0]) * clamp((yy - yLo) / dy, 0, 1);
 
-    const aps = [];
-    for (const a of cfg.apertures || []) {
-      const o = {
-        x: a.x ?? 0, y: a.y, hw: (a.w ?? 0.2) * 0.5, hh: (a.h ?? 0.2) * 0.5, r: a.r ?? 0.035,
-        depth: a.depth ?? 0.07, rim: Math.max(0.006, a.rim ?? 0.032), shade: a.shade ?? 1,
-        lip: a.lip ?? 0, lipW: a.lipW ?? 0.045, flat: a.flat !== false,
-      };
-      aps.push(o);
-      // …and its mirror image. Authoring one side keeps a blueprint readable and guarantees the
-      // pair is symmetric to the millimetre, which a hand-typed second entry never is.
-      if (a.mirror && o.x !== 0) aps.push({ ...o, x: -o.x });
-    }
-
     const crown = cfg.crown ?? 0, rake = cfg.rake ?? 0, nBase = Math.max(2, cfg.rings ?? 5);
 
     /**
@@ -2420,21 +2553,72 @@ export function loftTub(sections, {
           sh = Math.max(sh, f * a.shade);
           if (a.flat) fl = Math.max(fl, smoothstep(0, 1, f));
         } else if (a.lip > 0 && sd < a.lipW) {
+          /**
+           * ---- THE BROW HAS TO COME BACK DOWN AT THE RIM --------------------------------
+           *
+           * ROUND-4 (front clip). `lip * smoothstep(f)` peaked AT the outline — f goes to 1 as
+           * sd goes to 0 — while the branch on the other side of that outline starts the recess
+           * from zero. So every aperture with a moulded brow was ringed by a 13-15 mm CLIFF
+           * exactly on its own edge, and a cliff whose contour cuts across a polar grid at a
+           * grazing angle is a sawtooth: "the grille frame's top edge breaks into a ragged
+           * sawtooth of alternating dark/cyan rather than a clean boundary".
+           *
+           * A moulded eyebrow does not do that. It rises out of the panel, crests in the middle
+           * of its skirt and rolls back into the aperture edge — which is `16 f²(1-f)²`, zero
+           * value AND zero slope at both ends, so the brow meets the panel and the rim flush and
+           * there is no contour anywhere for the grid to stairstep.
+           */
           const f = 1 - sd / a.lipW;
-          out = Math.max(out, a.lip * f * f * (3 - 2 * f));
+          const b2 = f * (1 - f);
+          out = Math.max(out, a.lip * 16 * b2 * b2);
         }
       }
       return { d: d > 0 ? d : -out, sh, fl };
     };
 
-    // ---- per-column radial levels, planted on the rim of every opening ----
+    /**
+     * ---- LEVELS THAT MEAN THE SAME THING IN EVERY COLUMN ------------------------------------
+     *
+     * ROUND-4 (front clip), and this is the whole of the remaining §7 seam. Ablate the livery map
+     * and the flake normal (`FLAT=1 NOFLAKE=1 tools/_fc3_shot.mjs tuner`) and the nose panel is
+     * STILL a sheet of crumpled fabric: long wavy folds running across the bumper, a faceted ridge
+     * round every lamp pod, and thin dark slivers trailing off the pod corners where the surface
+     * folds back through itself. Measured on the untouched tuner nose, 4.0 % of the panel's
+     * triangles shaded with a vertex normal more than 57 degrees from their own face normal, and
+     * the worst were a full 180 — inverted.
+     *
+     * That is a TOPOLOGY fault, not a shading one, and it came from how the radial levels were
+     * chosen. Each column planted eight levels on each opening's rim, appended them to the base
+     * rings and SORTED the result. A sort has no memory: index j is "the j-th smallest number this
+     * particular ray happened to produce", so between two neighbouring columns ring j could be the
+     * mouth's upper fillet in one and a plain base ring in the other. The quad between them is not
+     * a step in the surface, it is a SHEAR — and where the shear exceeds the local ring spacing the
+     * two rings cross and the quad inverts. Ten passes of angular smoothing were blurring that, at
+     * the cost of blurring the rim placement they existed to protect, and they could never remove
+     * the inversions, because averaging two incompatible orderings is still incompatible.
+     *
+     * Nothing is planted and nothing is sorted now. Every column gets the SAME NUMBER of levels
+     * laid down at equal CUMULATIVE DENSITY along its own ray, where the density is a smooth
+     * function of that ray's crossings — so level j is always "63 % of the way through this ray's
+     * detail", the same feature in every column, and ring j is a continuous closed curve. Two
+     * rings cannot cross, because the cumulative distribution is monotone by construction.
+     *
+     * The two continuity requirements the density has to meet, and both were failure modes:
+     *
+     *   - a ray that MISSES an opening must not simply drop that opening's band, or the level list
+     *     jumps between the last column that grazes it and the first that does not. A miss keeps
+     *     the band and fades its weight out over the last `rim` of clearance instead.
+     *   - the band is splatted into the histogram with FRACTIONAL endpoints, so a crossing moving
+     *     by a tenth of a bin moves the levels by a tenth of a bin. Integer binning quantised the
+     *     rings to 4 mm steps, which is its own small staircase.
+     */
     const SAMP = 88;
-    const levels = [];
+    // ---- 1. what each ray needs resolved: the fillet and the moulded brow at both crossings ----
+    const colBands = [];
     for (let i = 0; i < LC; i++) {
       const dx = B[i][0] - mx, dyv = B[i][1] - my;
       const len = Math.hypot(dx, dyv) || 1e-4;
-      const ts = [];
-      for (let j = 0; j <= nBase; j++) ts.push(j / nBase);
+      const bands = [];
       for (const a of aps) {
         const sdAt = (t) => rrSD(mx + dx * t, my + dyv * t, a.x, a.y, a.hw, a.hh, a.r);
         let best = Infinity, bt = 1, first = -1, last = -1;
@@ -2443,10 +2627,14 @@ export function loftTub(sections, {
           if (sd < best) { best = sd; bt = t; }
           if (sd < 0) { if (first < 0) first = s2; last = s2; }
         }
-        let tA, tB;
-        if (first < 0) { tA = bt; tB = bt; } else {
+        let tA, tB, g = 1;
+        if (first < 0) {
+          g = clamp(1 - best / Math.max(a.rim, 1e-4), 0, 1);
+          if (g <= 0.002) continue;
+          tA = bt; tB = bt;
+        } else {
           const bisect = (lo, hi) => {
-            for (let k = 0; k < 18; k++) {
+            for (let k = 0; k < 16; k++) {
               const m = (lo + hi) * 0.5;
               if (sdAt(m) < 0) hi = m; else lo = m;
             }
@@ -2455,58 +2643,69 @@ export function loftTub(sections, {
           tA = first === 0 ? 0 : bisect((first - 1) / SAMP, first / SAMP);
           tB = last === SAMP ? 1 : bisect((last + 1) / SAMP, last / SAMP);
         }
-        const w = clamp(a.rim / len, 0.003, 0.30);
-        ts.push(tA - w, tA - w * 0.42, tA + w * 0.42, tA + w,
-          tB - w, tB - w * 0.42, tB + w * 0.42, tB + w);
+        const w = clamp(a.rim / len, 0.004, 0.30);
+        /**
+         * The MOULDED BROW is part of the band, and leaving it out is why every lamp pod on this
+         * car wore a faceted ridge. `lip` raises the panel over a `lipW`-wide skirt OUTSIDE the
+         * rim — 46-54 mm on these four — and the old solver planted nothing out there, so a 50 mm
+         * bump was sampled by base rings 70 mm apart and came out as two flat facets and a fold.
+         */
+        const wl = a.lip > 0 ? clamp((a.rim + a.lipW) / len, 0.006, 0.34) : w;
+        bands.push([tA - wl, tA + w * 1.6, g], [tB - w * 1.6, tB + wl, g]);
       }
-      for (let j = 0; j < ts.length; j++) ts[j] = clamp(ts[j], 0, 1);
-      ts.sort((p2, q2) => p2 - q2);
-      levels.push(ts);
+      colBands.push(bands);
     }
+    // ---- 2. density → the level list ----
+    const NBIN = 256, RIM_GAIN = 5;
+    const dens = new Float64Array(NBIN), cum = new Float64Array(NBIN + 1);
+    const fillDens = (bands) => {
+      dens.fill(1);
+      for (const [b0, b1, g] of bands) {
+        const x0 = clamp(b0, 0, 1) * NBIN, x1 = clamp(b1, 0, 1) * NBIN;
+        if (x1 <= x0 + 1e-9) continue;
+        const i1 = Math.min(NBIN - 1, Math.floor(x1));
+        for (let i = Math.floor(x0); i <= i1; i++) {
+          const lo = Math.max(x0, i), hi = Math.min(x1, i + 1);
+          if (hi > lo) dens[i] += RIM_GAIN * g * (hi - lo);
+        }
+      }
+      for (let i = 0; i < NBIN; i++) cum[i + 1] = cum[i] + dens[i];
+      return cum[NBIN] / NBIN;
+    };
     /**
-     * ---- ANGULAR SMOOTHING, and the reason the panel does not crease ----
-     *
-     * The columns of this grid are the TUB'S OWN profile points, and their angular spread about the
-     * panel centre is wildly uneven: the flank carries a dozen points over 20 degrees while the
-     * undertray carries three over 70. A level planted on the rim of an opening therefore moves a
-     * long way between two neighbouring columns — measured on the tuner's mouth, 0.38 of the panel
-     * radius across a single column — and the quad between them is not a step in the surface, it is
-     * a SHEAR: the two ends of the same ring sit at different radii, so the recess wall runs
-     * diagonally and the panel photographs as crumpled fabric. 192 of 2964 quad edges were over
-     * 0.06.
-     *
-     * Three passes of a [1/4, 1/2, 1/4] filter along the ring fixes it. It is safe by construction:
-     * an elementwise average of sorted arrays is sorted, so every column stays monotone, and t = 0
-     * and t = 1 are shared by every column so the fan centre and the seam with the tub cannot move.
-     * The opening's edge is still resolved by its own levels — they are simply spread over three
-     * columns instead of one, which is finer than the rim fillet they sit inside.
-     *
-     * Measured on the tuner nose: 3 passes 0.115 / 44 bad edges, 8 passes 0.070 / 16, 12 passes
-     * 0.055 / 0. Ten is where the fold stops being visible at 8x on all four cars without softening
-     * the mouth's corners into a lozenge.
+     * How many rings. Solved from the spacing a RIM FILLET needs rather than authored: at equal
+     * cumulative density the spacing where the density is `d` is `dBar / (K·d)`, so asking for
+     * `rimStep` inside a fillet (d = 1 + RIM_GAIN) fixes K. On these four noses it lands between
+     * 34 and 46 rings — fewer than the old per-column solver's 46 — and every one of them is spent
+     * on a ring that is a curve rather than on a slot that was a different feature per column.
      */
-    for (let pass = 0; pass < (cfg.smooth ?? 10); pass++) {
-      const prev = levels.map((a) => a.slice());
-      for (let i = 0; i < LC - 1; i++) {
-        const a = prev[(i - 1 + LC - 1) % (LC - 1)], b = prev[i], c = prev[(i + 1) % (LC - 1)];
-        for (let j = 0; j < b.length; j++) levels[i][j] = 0.25 * a[j] + 0.5 * b[j] + 0.25 * c[j];
+    let dSum = 0;
+    for (const bands of colBands) dSum += fillDens(bands);
+    const dBar = dSum / LC;
+    // …and a panel with nothing cut into it needs no more than its authored dome resolution.
+    const K = dBar > 1.001
+      ? clamp(Math.round(dBar / ((cfg.rimStep ?? 0.0090) * (1 + RIM_GAIN))), nBase + 2, 96)
+      : Math.max(2, nBase);
+    const levels = colBands.map((bands) => {
+      fillDens(bands);
+      const tot = cum[NBIN];
+      const v = new Float64Array(K + 1);
+      for (let j = 1; j < K; j++) {
+        const target = tot * (j / K);
+        let lo = 0, hi = NBIN - 1;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m + 1] < target) lo = m + 1; else hi = m; }
+        v[j] = clamp((lo + (target - cum[lo]) / (dens[lo] || 1)) / NBIN, 0, 1);
       }
-      levels[LC - 1] = levels[0].slice();
-    }
-
-    // Drop any level that is degenerate in EVERY column — a slot clamped to the rim or to the
-    // centre by all L rays is a duplicate ring that costs vertices and draws nothing. On a tail
-    // panel with one opening this is a third of the grid.
-    for (let j = levels[0].length - 1; j > 0; j--) {
-      let same = true;
-      for (let i = 0; i < LC && same; i++) same = Math.abs(levels[i][j] - levels[i][j - 1]) < 1e-6;
-      if (same) for (let i = 0; i < LC; i++) levels[i].splice(j, 1);
-    }
-    const K = levels[0].length;
+      v[K] = 1;
+      for (let j = 1; j <= K; j++) if (v[j] < v[j - 1]) v[j] = v[j - 1];
+      return v;
+    });
+    levels[LC - 1] = levels[0];                 // the fan closes on the column it started from
 
     // ---- vertices ----------------------------------------------------------
+    if (globalThis.__CAPLOG) console.log(`cap: LC=${LC} K=${K} verts=${LC * (K + 1)} dBar=${dBar.toFixed(2)}`);
     const base = V + extra.pos.length / 3;
-    for (let j = 0; j < K; j++) {
+    for (let j = 0; j <= K; j++) {
       for (let i = 0; i < LC; i++) {
         const t = levels[i][j];
         const px = mx + (B[i][0] - mx) * t, py = my + (B[i][1] - my) * t;
@@ -2531,6 +2730,21 @@ export function loftTub(sections, {
          * turning away, and the shading and the geometry say the same thing in the same place.
          */
         extra.wg.push(clamp((sh - 0.25) / 0.75, 0, 1) * guard);
+        /**
+         * ---- AND HOW FAR INTO THE HOLE IT IS -------------------------------------------
+         *
+         * `aWell` is a DIFFUSE ramp — it multiplies albedo, which is all an arch return needs,
+         * because the metal behind an arch lip really is the same paint seen at a glancing angle.
+         * An aperture is not that. A grille mouth is dark because almost no sky reaches into it,
+         * and on this car most of the value on a painted panel is NOT albedo: it is the clearcoat
+         * mirror, the analytic horizon (skyReflect) and the environment probe, all of which are
+         * folded in AFTER <map_fragment>. That is why every crop of this clip has shown a trough
+         * of body colour with a sky reflection sliding across its floor.
+         *
+         * `aCav` is the same measurement handed to `capCavity()`, which closes the whole shaded
+         * result down at <opaque_fragment> — after every one of those terms exists.
+         */
+        extra.cav.push(sh * guard);
       }
     }
     /**
@@ -2552,7 +2766,7 @@ export function loftTub(sections, {
      * nose cap against 648 back-facing. After: 648 against 36 (the remainder are the degenerate
      * pair at the very centre of the fan).
      */
-    for (let j = 0; j < K - 1; j++) {
+    for (let j = 0; j < K; j++) {
       for (let i = 0; i < LC - 1; i++) {
         const p0 = base + j * LC + i, p1 = p0 + 1, p2 = p0 + LC, p3 = p2 + 1;
         if (flip) shell.push(p0, p3, p2, p0, p1, p3);
@@ -2673,6 +2887,7 @@ export function loftTub(sections, {
     }
   };
   const noseFits = [], tailFits = [];
+  const capCentres = [];
   let fits = tailFits;
   capPanel(0, true, tailCap);              // tail panel, facing -z
   fits = noseFits;
@@ -2687,6 +2902,8 @@ export function loftTub(sections, {
   const UA = new Float32Array(total * 2); UA.set(uvA); UA.set(extra.uvA, V * 2);
   const UB = new Float32Array(total * 2); UB.set(uvB); UB.set(extra.uvB, V * 2);
   const MK = new Float32Array(total); MK.set(mask);        // caps are never in an opening
+  const CV2 = new Float32Array(total);                     // …and the tub is never in an aperture
+  for (let i = 0; i < extra.cav.length; i++) CV2[V + i] = extra.cav[i];
   const WG = new Float32Array(total); WG.set(wgt);         // 0 at the lip → 1 deep in the well
   // …and the nose/tail panels write theirs in the same channel, so the shading ramp that darkens
   // the metal behind an arch lip darkens the inside of a grille mouth too (see archReturn()).
@@ -2713,7 +2930,7 @@ export function loftTub(sections, {
   const emit = (idx, uvSrc, withMask, withWell) => {
     if (!idx.length) return null;
     const map = new Int32Array(total).fill(-1);
-    const vp = [], vn = [], vu = [], vm = [], vw = [], ix = new Uint32Array(idx.length);
+    const vp = [], vn = [], vu = [], vm = [], vw = [], vc = [], ix = new Uint32Array(idx.length);
     for (let i = 0; i < idx.length; i++) {
       const v = idx[i];
       if (map[v] < 0) {
@@ -2722,7 +2939,7 @@ export function loftTub(sections, {
         vn.push(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]);
         vu.push(uvSrc[v * 2], uvSrc[v * 2 + 1]);
         if (withMask) vm.push(MK[v]);
-        if (withWell) vw.push(WG[v]);
+        if (withWell) { vw.push(WG[v]); vc.push(CV2[v]); }
       }
       ix[i] = map[v];
     }
@@ -2731,7 +2948,10 @@ export function loftTub(sections, {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(vn, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(vu, 2));
     if (withMask) g.setAttribute('aFlare', new THREE.Float32BufferAttribute(vm, 1));
-    if (withWell) g.setAttribute('aWell', new THREE.Float32BufferAttribute(vw, 1));
+    if (withWell) {
+      g.setAttribute('aWell', new THREE.Float32BufferAttribute(vw, 1));
+      g.setAttribute('aCav', new THREE.Float32BufferAttribute(vc, 1));
+    }
     g.setIndex(new THREE.BufferAttribute(ix, 1));
     return g;
   };
@@ -2739,6 +2959,8 @@ export function loftTub(sections, {
     shell: emit(shell, UA, flareAt !== null, true), liner: emit(liner, UB, false, false), anchors,
     // the measured cut of every nose / tail opening — see capPanel §7b
     noseFits, tailFits,
+    // [tail, nose] fan centres, after capPanel has solved them clear of the openings
+    capCentres,
   };
 }
 
@@ -3592,7 +3814,7 @@ function wellGradient() {
  * geometry that reaches a bucket is given the attribute — zero-filled if it has none — rather than
  * having it stripped. One float per vertex on a car's worth of geometry.
  */
-const _MERGE_ATTRS = ['position', 'normal', 'uv', 'aFlare', 'aWell'];
+const _MERGE_ATTRS = ['position', 'normal', 'uv', 'aFlare', 'aWell', 'aCav'];
 
 /** Two materials that would render identically get one draw call, even if they are two objects. */
 function materialKey(m) {
@@ -3632,7 +3854,7 @@ export function mergeByMaterial(group) {
     if (g.index) g = g.toNonIndexed();
     if (!g.attributes.normal) g.computeVertexNormals();
     for (const name of Object.keys(g.attributes)) if (!_MERGE_ATTRS.includes(name)) g.deleteAttribute(name);
-    for (const extra of ['aFlare', 'aWell']) {
+    for (const extra of ['aFlare', 'aWell', 'aCav']) {
       if (!g.attributes[extra]) {
         g.setAttribute(extra, new THREE.BufferAttribute(new Float32Array(g.attributes.position.count), 1));
       }

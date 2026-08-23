@@ -128,7 +128,8 @@ export const blueprint = {
        * there were four scratches. 0.44 x 0.185 gives a 0.378 x 0.123 floor, which carries the main
        * lamp and the DRL under it at full size with a 10 mm gap between them.
        */
-      { x: 0.585, y: 0.505, w: 0.44, h: 0.185, r: 0.045, depth: 0.052, rim: 0.024, shade: 0.5, lip: 0.012, lipW: 0.042, mirror: true },
+      // shade 0.5 -> 1: see the note on the tuner's pod. The inside of a lamp housing is black.
+      { x: 0.585, y: 0.505, w: 0.44, h: 0.185, r: 0.045, depth: 0.058, rim: 0.024, shade: 1, lip: 0.012, lipW: 0.042, mirror: true },
     ],
   },
 

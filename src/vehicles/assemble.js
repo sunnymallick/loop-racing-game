@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import {
   loftBody, loftTub, loftBand, roundedBox, sweptBar, buildWheel, wheelParts, wheelScalable, WheelRig,
-  wellLinerMaterial, flareBand, archReturn, paintMaterial, glassMaterial,
+  wellLinerMaterial, flareBand, archReturn, capCavity, paintMaterial, glassMaterial,
   chromeMaterial, darkTrimMaterial, plasticMaterial, carbonMaterial, emissiveMaterial,
   cavityMaterial, darkMetalMaterial, stdMaterial, interiorMaterial, glowSprite, hemiTint,
   tireMaterial,
@@ -380,6 +380,13 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    * flattening it back out.
    */
   archReturn(paint);
+  /**
+   * …and the inside of a NOSE or TAIL aperture, which `archReturn` alone cannot reach. See the
+   * note on kit.js `capCavity`: a recess made of the same material as the panel round it reads as
+   * a dent in the paint, not as a hole, because the clearcoat mirror and the env probe are added
+   * downstream of the albedo tint. This closes the whole shaded result down inside the opening.
+   */
+  capCavity(paint);
   if (bp.blackArches) flareBand(paint);
   const tub = new THREE.Mesh(tubGeo.shell, paint);
   tub.name = 'shell';

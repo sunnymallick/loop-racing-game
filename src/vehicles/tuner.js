@@ -229,7 +229,10 @@ export const blueprint = {
       // The housing now sits behind the recess floor, inside the car, and cannot be seen at all.
       // 0.455 x 0.125 -> 0.500 x 0.176: the pod now carries BOTH the main slot lamp and the DRL
       // bar under it at their authored size, where round 1 squeezed a single lamp down to 0.246.
-      { x: 0.545, y: 0.708, w: 0.500, h: 0.176, r: 0.050, depth: 0.042, rim: 0.026, shade: 0.5, lip: 0.013, lipW: 0.046, mirror: true },
+      // shade 0.5 -> 1 (round 4): `shade` is what kit.js capCavity closes the opening down by,
+      // and a headlamp housing is the blackest thing on the front of a car. At 0.5 the pod stayed
+      // the car's own cyan and the unit read as a lamp-shaped sticker on a dent in the paint.
+      { x: 0.545, y: 0.708, w: 0.500, h: 0.176, r: 0.050, depth: 0.052, rim: 0.026, shade: 1, lip: 0.013, lipW: 0.046, mirror: true },
     ],
   },
 
