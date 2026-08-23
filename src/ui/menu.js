@@ -239,7 +239,35 @@ const GARAGE_MIRROR = {
    * tungsten of the strip lights.
    */
   accent: '#b9c2c8',
-  sun: { color: '#ffd8b4', intensity: 0.80, dir: [-0.46, 0.60, 0.65] },
+  /**
+   * (coherence pass) A LIT ROOM, NOT A MOONLESS STREET — set at the input this time.
+   *
+   * `setBodyTint` derives ONE number, night-ness `n`, from `fog.color`'s luminance and this
+   * `sun.intensity`, and then every term of the paint probe hangs off it: the hot horizon band's
+   * luminance (lerp 1.42 → 0.86), the zenith the upper panels mirror (0.52 → 0.075), the sun glint
+   * (2.6 → 0.7), how hard the paint leans on the probe at all, and `UNDER.fill`. At fog #0a1116 and
+   * sun 0.80 this room computed as n = 0.945 — 94 % night — so the four cars stood in a workshop
+   * with four strip fixtures, two softboxes, a key, a rim and a bounce bank in it and were shaded
+   * as if they were parked on an unlit street.
+   *
+   * What that costs is visible in the sixteen-frame set the moment you put a garage frame next to a
+   * race frame of the same car: on the road the fleet's white liveries read WHITE and the upper
+   * panels carry §1.6.3's bright sky reflection; in the garage the same stripes come back beige and
+   * the same paint comes back matte, because a 0.10-luminance zenith has nothing in it to mirror
+   * and a 0.89 band is dimmer than the tungsten that is actually hitting the car. It is the same
+   * asset reading as two different materials in two rooms of one game.
+   *
+   * The stage below already patched the SYMPTOM per material — see the "dark trim, re-lit for a lit
+   * room" note in `_enterStage`, which multiplies `UNDER.fill` back up because "the garage is not a
+   * night street". This fixes the cause instead, and it is deliberately a HALF step (n 0.945 →
+   * 0.80, band 0.89 → 1.01, zenith 0.100 → 0.164) rather than a full one, precisely because that
+   * per-material lift is still in place downstream and the two must not compound: the dark trim
+   * gains 15 % here, not 60 %. A full correction wants the two solved together, in a menu round.
+   *
+   * `fog.color` is left alone. It is the other half of `n` and the bigger lever, but it is also
+   * what the room's own haze is graded from, and moving it is a menu-piece decision.
+   */
+  sun: { color: '#ffd8b4', intensity: 1.55, dir: [-0.46, 0.60, 0.65] },
   ambient: { sky: '#5f8fa8', ground: '#242a31' },
   ground: { color: '#20252b', accent: '#ffc07a' },
   fog: { color: '#0a1116' },

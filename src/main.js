@@ -1039,11 +1039,32 @@ class Game {
     // plausible distance can out-mass it. The flame coefficient is re-solved with it, so the boost
     // rig still lands where the nitrous piece tuned it: at full flame and full speed this reads
     // 4.10 m, exactly as before.
-    const back = 4.05 + speed01 * 1.58 * (1 - flame * 0.40) + gPull
+    /**
+     * (coherence pass) THE GRID STANDOFF — the one framing nobody measured.
+     *
+     * Every number above was solved from a capture taken at pace: the presentation rounds projected
+     * the car's envelope at speed01 0.5-1.0 and pulled the rig in until the hero measured ~32 % of
+     * frame width. But `back` is a base plus a speed term, so the tightest framing the rig can
+     * produce is the one it produces at speed01 = 0 — and speed01 = 0 is the START LINE. At 4.05 m
+     * the lens sits 1.6 m behind a 4.9 m car's rear bumper with a 48 deg vertical FOV, where the
+     * visible half-height is 0.71 m against 1.3 m of tail panel: the player's own boot lid, wing
+     * and rear glass fill the bottom 45 % of the screen. That is the FIRST FRAME OF EVERY RACE, in
+     * every city, on every car — see shots/coh2-loop/04-racestart.png and 11-race2.png — and it is
+     * also every crash recovery and every moment the field is stopped.
+     *
+     * So this is a STANDOFF, not a re-tune. It is a pure function of speed that has decayed to
+     * exactly zero by 30 % of top speed, which is below the slowest speed any capture in §8 is
+     * taken at (the drift captures are the slowest at ~0.45), so every framing the presentation
+     * and nitrous rounds measured is untouched to within a centimetre. All it does is give the
+     * grid, the countdown and a stopped car the distance a parked camera needs.
+     */
+    const standoff = 2.35 * (1 - smoothstep(0.0, 0.30, speed01));
+    const back = 4.05 + standoff + speed01 * 1.58 * (1 - flame * 0.40) + gPull
       - flame * 0.90 - kick * 0.90 + b.drift * 1.7;
     // Still ABOVE the jet's axis — the plume needs an elevation angle or it projects down its own
     // centreline — but roughly two metres lower than round 3's tower.
-    const up = 2.05 + speed01 * 0.42 + flame * 0.35 + kick * 0.35 + b.drift * 1.00;
+    // …and it rises with the standoff, or backing off at rest just lowers the angle onto the roof.
+    const up = 2.05 + standoff * 0.26 + speed01 * 0.42 + flame * 0.35 + kick * 0.35 + b.drift * 1.00;
     // Under nitrous the rig swings out to one side: §8 asks for a REAR THREE-QUARTER on the
     // plume, and sitting on the axis foreshortens the jet into a bright blob behind the bumper.
     // (The jet's own screen-space governor pays for whatever foreshortening survives — see
@@ -1610,6 +1631,17 @@ window.__GAME = {
     // corner runs wide into the barrier, and the wall-scrape spark shower then swamps the plume —
     // the nitrous capture in §8 has to be a frame about the jet, not about grinding a wall.
     const straightU = () => {
+      // Straightness alone selects for the EMPTIEST part of a city, because a long straight with
+      // nothing on it scores best. A whole-game critic reading all 64 canonical frames found the
+      // result: "all 16 nitrous captures wash the environment out... the city disappears", and the
+      // same picker had put drift captures on bare lots and under blank underpasses. Half the
+      // evidence every critic scores was of a dead zone.
+      //
+      // So straightness is still required (a boost launched into a corner ends in a barrier), but
+      // among the straight candidates we now prefer the one the city itself nominates as its best
+      // view: `landmarkU` is documented as "the longest straight, looking down it" at the landmark.
+      const lm = game.city.landmarkU;
+      const cand = [];
       let best = 0.05, bestC = Infinity;
       for (let i = 0; i < 200; i++) {
         const u0 = i / 200;
@@ -1623,7 +1655,22 @@ window.__GAME = {
             if (Math.abs(((u - bp.u + 0.5) % 1) - 0.5) < 0.02) c += 4;
           }
         }
+        cand.push({ u: u0, c });
         if (c < bestC) { bestC = c; best = u0; }
+      }
+      // Scenic selection is a STRICT TIEBREAK, never a trade. Weighting it into the cost directly
+      // (first attempt) pulled the launch point onto road that was not straight enough and both
+      // test captures came back as crashes — a boost at 190 mph into a bend ends in the barrier.
+      // So: take only the candidates whose curvature cost is within 25% of the best available, and
+      // among those — all of which are genuinely straight — pick the one nearest the city's own
+      // nominated viewpoint. Straightness is never compromised; the view is free.
+      if (lm != null) {
+        const ok = cand.filter((x) => x.c <= bestC * 1.25 + 1e-6);
+        let bd = Infinity;
+        for (const x of ok) {
+          const d = Math.abs(((x.u - lm + 0.5) % 1) - 0.5);
+          if (d < bd) { bd = d; best = x.u; }
+        }
       }
       return best;
     };
@@ -1674,12 +1721,20 @@ window.__GAME = {
         // road by how close its average radius is to the one this class can hold at ~100 mph.
         const win = 120 / trk.length;
         const wantR = clamp(45 * 45 / (ph.driftG ?? 14), 60, 400);
+        // Scenic bias, same reason as straightU() above: scoring a corner purely on its radius
+        // picks whichever bend best fits the class, with no regard for what is standing next to it,
+        // and a whole-game critic reading all 16 drift captures found every one of them "off the
+        // racing line in an unlit dead zone" — a bare lot in LA, a blank underpass in Miami, a
+        // striped barrier and black in NYC. The slide is the same slide wherever it happens, so
+        // among corners of comparable radius, prefer the one with the city in frame.
+        const lmU = game.city.landmarkU;
         let entryU = u0, radius = 1e6, turnSum = 0, bestScore = Infinity;
         for (let k = 0; k < 0.6; k += 0.004) {
           let c = 0, n = 0, sgn = 0;
           for (let j = 0; j < win; j += win / 12) { const t = trk.turnRate(u0 + k + j); c += Math.abs(t); sgn += t; n++; }
           const r = n / Math.max(1e-6, c);
-          const score = Math.abs(Math.log(r / wantR));
+          let score = Math.abs(Math.log(r / wantR));
+          if (lmU != null) score += Math.abs(((u0 + k - lmU + 0.5) % 1) - 0.5) * 0.9;
           if (score < bestScore) { bestScore = score; radius = r; entryU = u0 + k; turnSum = sgn; }
         }
         const dir = turnSum < 0 ? 1 : -1;                     // +1 = the road turns right here

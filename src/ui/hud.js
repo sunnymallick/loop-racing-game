@@ -109,10 +109,19 @@ const GR = {
   SHEAR: 0.16,    // 9.1° — the one slant. tan(θ) of the plate's leading edge.
   RAIL: 3,        // accent rail width, all plates
   PAD: 14,        // text inset from the plate's leading edge
+  // (COHERENCE PASS) ROW 21 -> 22, and COLW deliberately LEFT ALONE.
+  //
+  // The standings deck read as cramped and as unfinished at the same time — eight 13.5 px names on
+  // a 21 px pitch, in a plate whose right two thirds carried nothing at all. Both halves of that
+  // are one fault: there was no second column. There is now (`_deckIntervals`), which is what all
+  // that dead space was for, and one more pixel of leading is all the air the rows needed once
+  // they had something to be a table WITH. Widening the plate was tried first (268) and is the
+  // wrong answer twice over: it makes the empty half emptier, and it pushes the deck 43 px further
+  // down a frame whose left column is already the tallest cluster on screen.
   COLW: 246,      // left chassis width
   TOP: 22,        // top band starts here
   BAND: 68,       // …and is this tall: position deck, countdown plate and city banner all match
-  ROW: 21,        // standings row pitch
+  ROW: 22,        // standings row pitch
   RULE: 'rgba(150,190,220,0.20)',
 };
 const SKEW = GR.SHEAR;
@@ -145,10 +154,23 @@ const SS_MAX_EDGE = 4096;   // …never wider than the common GPU texture limit:
 const SS_MAX_PX = 9.2e6;    //    4096 px falls off the accelerated path, and past ~9 Mpx it is
                             //    simply a lot of VRAM to clear every frame. At 1600×900 → 2.5×.
 
-// Gauge scale. 240 mph over a 220° sweep, numerals every 40, majors every 20, minors every 10.
-// Fastest car tops out at 188 mph, so the redline at 190 is somewhere you only reach on nitrous.
-const MPH_MAX = 240;
-const MPH_RED = 190;
+// Gauge scale. 320 mph over a 220° sweep, numerals every 40, majors every 20, minors every 10.
+//
+// (coherence pass) 240 -> 320, and the redline 190 -> 200. The old scale was solved against the
+// four cars' DRY top speeds (`handling.js`: 151/157/167/188 mph) and never against what nitrous
+// does to them. Measured on the real build (tools/_coh4_vmax.mjs), a held boost reaches
+// suv 195 / muscle 210 / tuner 234 / SUPERCAR 293 mph — so on the fastest car in the game the
+// needle sat pinned at the `1.02` clamp and the digital readout ran 53 mph past the highest
+// numeral on the face for the whole of every boost (shots/coh2-loop/06-nitro.png reads 256 MPH on
+// a dial that stops at 240). An instrument the game drives off the end of is not an instrument.
+//
+// 320 is chosen so the tick hierarchy is unchanged and the numeral row lands on 0,40,…,320 — NINE
+// numerals, which is also what §1.1's reference dial carries ("radial tick marks numbered 0-8").
+// The redline moves to 200 because that is the number it was always meant to mean: just above the
+// fastest car's un-boosted top speed, i.e. a band you only ever enter on nitrous. It now covers
+// 297°-380° of the sweep, which is §1.1's "red danger arc across the top-right of the dial".
+const MPH_MAX = 320;
+const MPH_RED = 200;
 
 /**
  * Angled parallelogram plate — the signature HUD shape. (x, y) is the plate's BOTTOM-left corner
@@ -1084,6 +1106,7 @@ export class HUD {
         this._deckStandings(c, s, R, y3, decks[3]);
       }
     });
+    if (decks[3]) this._deckIntervals(ctx, s, R, y3, decks[3]);
   }
 
   /** Deck body wash, clipped to the chassis and inset past the rail. */
@@ -1265,7 +1288,11 @@ export class HUD {
       x: R.lx(y + 14) + RAIL + GR.PAD, y: y + 14, size: 10, weight: 0.205, italic: 0.20,
       color: 'rgba(150,206,228,0.9)', tracking: 0.30,
     });
-    chevrons(ctx, R.lx(y + 11) + R.w - 40, y + 4, 3, 5, 9, CYAN, 0.5);
+    // column head for the interval, set in the list face so it reads as a table head and not as a
+    // second title — the same DRIVER / TIME relationship the results panel already uses
+    label(ctx, 'GAP', R.lx(y + 14) + R.w - 16, y + 14, 9, 'rgba(120,168,196,0.85)',
+      { tracking: 0.24, align: 'right' });
+    chevrons(ctx, R.lx(y + 11) + R.w - 96, y + 4, 3, 5, 9, CYAN, 0.5);
     const hx = R.lx(y + head) + RAIL;
     ctx.beginPath();
     ctx.moveTo(hx + GR.PAD, y + head - 2); ctx.lineTo(hx + R.w - RAIL - 12, y + head - 2);
@@ -1297,7 +1324,63 @@ export class HUD {
         you ? 'rgba(48,26,2,0.95)' : 'rgba(140,168,194,0.95)', { tracking: 0.06, align: 'right' });
       label(ctx, r.name, tx + GR.PAD + 12, baseline, 13.5, you ? '#160d02' : '#dde8f3',
         { tracking: 0.10, weight: you ? 0.185 : 0.155 });
-      if (you) chevrons(ctx, tx + R.w - 34, ry + 4, 2, 4, 8, 'rgba(40,22,2,0.85)', 0.9);
+      if (you) chevrons(ctx, tx + R.w - 84, ry + 5, 2, 4, 8, 'rgba(40,22,2,0.85)', 0.9);
+    }
+  }
+
+  /**
+   * THE INTERVAL COLUMN — the standings deck's second column, and what its empty right-hand two
+   * thirds were always for.
+   *
+   * The race director already carries this number: `_order()` writes `gap` (seconds behind the
+   * leader, from the metres of track between them and the car's own speed) onto every driver every
+   * frame, and the RESULTS panel has always shown it. The live deck did not, so the two halves of
+   * the same table disagreed about what a standings list is — a name list during the race, a
+   * classification afterwards.
+   *
+   * It is drawn STRAIGHT ONTO THE BACKBUFFER, and that is deliberate — it is the one thing in this
+   * file that is neither a `_patch` nor a `_live`, so it is worth saying why.
+   *
+   *   · It cannot ride in `chassisC` with the names. Those repaint only on an overtake; a gap
+   *     changes continuously, and folding it in would repaint eight glowed name labels and the
+   *     leader chip every frame, which is the exact cost this file's cache system exists to avoid.
+   *
+   *   · It does not get a `_patch` of its own either, and that took measuring. Eight independent
+   *     numbers at any sane quantisation means the patch's key changes on essentially every frame
+   *     — 262 repaints in 300, measured — so the cache buys nothing, while the layer it adds is
+   *     written and then used as a `drawImage` source in the same frame, every frame. The bake
+   *     itself is 0.10 ms and the frame rate still fell 9 % in every city on the real GPU with it
+   *     in (la 93.9 -> 85.4, nyc 97.6 -> 92.7). Drawn direct, at the same 0.1 ms of text, the
+   *     four-city perf run is inside noise of the build without the column at all.
+   *
+   * `shadow: false` is load-bearing: a drop shadow is a blurred op, and eight of them straight onto
+   * the 4044x2274 backbuffer is 0.86 ms and trips BLUR_BUDGET, which functest checks. The column
+   * sits on the deck's own near-black wash and on the player's orange bar, so it does not need one.
+   */
+  _deckIntervals(ctx, s, R, y, h) {
+    const rows = s.standings || [];
+    const n = Math.min(8, rows.length);
+    if (!n) return;
+    const head = 20;
+    const txt = (r, i) => {
+      if (r.dnf) return 'DNF';
+      if (i === 0) return 'LEAD';
+      const g = Math.abs(r.gap ?? 0);
+      return g >= 99 ? '+99' : `+${g.toFixed(g < 10 ? 2 : 1)}`;
+    };
+    for (let i = 0; i < n; i++) {
+      const r = rows[i];
+      const ry = y + head + 2 + i * GR.ROW;
+      const baseline = ry + (GR.ROW - 2) - 6;
+      const tx = R.lx(baseline) + RAIL;
+      const lead = i === 0 && !r.dnf;
+      label(ctx, txt(r, i), tx + R.w - 16, baseline, lead ? 10 : 11.5,
+        r.you ? 'rgba(38,20,2,0.95)' : r.dnf ? 'rgba(226,110,96,0.92)'
+          : lead ? 'rgba(255,196,78,0.95)' : 'rgba(158,192,216,0.92)',
+        // `false`, not `null`: `label()` resolves its default with `??`, so a null here would put
+        // the drop shadow BACK — eight blurred ops a frame straight onto the 4044x2274 backbuffer,
+        // which is 0.86 ms and trips BLUR_BUDGET. (Measured the hard way; see the note above.)
+        { tracking: lead ? 0.18 : 0.04, align: 'right', weight: r.you ? 0.175 : 0.145, shadow: false });
     }
   }
 
@@ -1519,7 +1602,7 @@ export class HUD {
     const mph = Math.max(0, s.mph || 0);
     const MAX = MPH_MAX, RED0 = MPH_RED;
     // 220° sweep with a 140° gap at the bottom. The gap is sized so the two end numerals (0 and
-    // 240) sit above the shoulders of the digital readout rather than beside it — the readout
+    // 320) sit above the shoulders of the digital readout rather than beside it — the readout
     // owns the bottom of the face outright.
     const a0 = Math.PI * (160 / 180), a1 = Math.PI * (380 / 180);
     const angOf = (v) => a0 + (a1 - a0) * clamp(v / MAX, 0, 1.02);
@@ -1644,7 +1727,11 @@ export class HUD {
     // TICK_R: NUM_R + halfDiagonal(numeral) < TICK_R. No stroke can cross a figure at any angle.
     // The speed fill's halo washes inward across the tick band, and the original draws the ticks
     // over it — so this patch has to be blitted after the live arc above, not folded into the face.
-    const TICK_R = R * 0.700, NUM_R = R * 0.552, NUM_S = R * 0.098;
+    // (coherence pass) the numeral row went from seven figures to nine when MPH_MAX moved to 320,
+    // so the arc length each one gets fell from 36.7° to 27.5°. Size 0.098 → 0.088 and the row
+    // pushed 0.018 R further out together restore the gap between "120" and "160" at the apex,
+    // where the row is most crowded, without breaking NUM_R + halfDiagonal(numeral) < TICK_R.
+    const TICK_R = R * 0.700, NUM_R = R * 0.570, NUM_S = R * 0.088;
     this._patch(ctx, 'dialTicks', -R, -R, R * 2, R * 2, `${R}`, (c) => {
       for (let v = 0; v <= MAX; v += 10) {
         const a = angOf(v);
@@ -1719,7 +1806,7 @@ export class HUD {
       c.beginPath(); c.arc(0, 0, R * 0.042, 0, TAU);
       c.fillStyle = '#1a2129'; c.fill();
 
-      // readout backing: it owns the open bottom of the dial, dropped clear of the 0 / 240 numerals
+      // readout backing: it owns the open bottom of the dial, dropped clear of the 0 / 320 numerals
       c.save();
       c.beginPath();
       c.ellipse(0, R * 0.46, R * 0.62, R * 0.36, 0, 0, TAU);

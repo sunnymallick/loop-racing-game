@@ -4091,14 +4091,49 @@ export class Race {
     all.length = 0;
     for (const x of order) all.push(x);
     const lead = all[0].progress;
+    /**
+     * (COHERENCE PASS) THE REFERENCE SPEED FOR `gap`, and why it is the field's and not the car's.
+     *
+     * `gap` was `gapM / thisCar'sSpeed`. Distance behind the leader is monotonic in the standings
+     * order by construction, but dividing each car's own metres by its own speed is not — a car
+     * that is 40 m back and crawling out of a spin reads further behind than one 90 m back at full
+     * chat. Nothing consumed the number until the HUD's standings deck started showing it, and the
+     * first frame that did showed the field as LEAD / +0.32 / +0.30 / +1.13 / +1.42 / +3.93 /
+     * +1.07 / +1.99 — a classification table that is not sorted by its own column, which is worse
+     * than no column at all.
+     *
+     * A time gap between two cars is the time it takes the one behind to reach where the one in
+     * front is NOW, and on a race track everybody is doing roughly the same speed, so the honest
+     * single-number answer uses ONE pace for the whole field. The leader's is the right one: it is
+     * the pace the gap is measured against, it varies smoothly, and it makes the column monotone by
+     * construction because it is a constant times `gapM`. Floored at 16 m/s so a leader in a slow
+     * corner (or stationary on the grid) cannot send the whole table to infinity.
+     */
+    const paceMS = Math.max(16, Math.abs(all[0].speed || 0) * 0.447 || 30);
+    /**
+     * …and the same discipline on the DISTANCE. `order` is not raw progress order: `jumps()` holds
+     * a place for 8 m of clear air and 0.30 s of dwell before it swaps two cars, deliberately, so
+     * that a wheel alongside in a corner does not strobe the position deck. For those few tenths
+     * the car listed 7th really is a metre up the road on the car listed 6th — which is invisible
+     * while the deck is a list of names and glaring the moment it has an interval column
+     * (measured, LA chase capture: 6th +1.55, 7th +1.30, 8th +1.80).
+     *
+     * So the interval is measured against a progress that is monotone in the ORDER SHOWN: each
+     * car's own progress, or the car in front's if it has crept past it, whichever is further back.
+     * Two cars mid-swap then show the same interval — which is exactly what side-by-side means —
+     * and the column can never contradict the column of positions beside it.
+     */
+    let mono = lead;
     for (let i = 0; i < all.length; i++) {
       all[i].pos = i + 1;
+      mono = Math.min(mono, all[i].progress);
+      all[i]._gapProgress = mono;
       // DNF means THE FLAG FELL AND YOU WERE STILL OUT THERE — which only happens on the
       // deadline (`_deadline`). When the player finishes normally the race is classified at that
       // moment and the cars a second or two behind them are simply behind them, not retired.
       all[i].dnf = this._classified && this.dnf && !all[i].finished;
-      all[i].gapM = (lead - all[i].progress) * t.length;
-      all[i].gap = all[i].gapM / Math.max(16, Math.abs(all[i].speed) * 0.447 || 30);
+      all[i].gapM = (lead - all[i]._gapProgress) * t.length;
+      all[i].gap = all[i].gapM / paceMS;
       // gap to the car directly in front, which is the number a driver actually races against
       all[i].gapAheadM = i ? (all[i - 1].progress - all[i].progress) * t.length : 0;
     }

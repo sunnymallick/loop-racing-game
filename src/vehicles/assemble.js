@@ -4,6 +4,7 @@ import {
   wellLinerMaterial, flareBand, archReturn, paintMaterial, glassMaterial,
   chromeMaterial, darkTrimMaterial, plasticMaterial, carbonMaterial, emissiveMaterial,
   cavityMaterial, darkMetalMaterial, stdMaterial, interiorMaterial, glowSprite, hemiTint,
+  tireMaterial,
   blackoutMaterial,
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
   panelNoise, cloneShaded, wingEndplate,
@@ -277,6 +278,17 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     // that line and there is no ring, no gap and nothing to see through. Everything else keeps the
     // flare painted, with no material break at all.
     flareAt: bp.blackArches ? (bp.archBlackBand ?? 0.40) : null,
+    /**
+     * THE FRONT AND REAR CLIP.
+     *
+     * `bp.nose` / `bp.tail` describe the two end panels of the loft: how much they crown, and what
+     * is cut into them. A grille, a lower intake, a lamp housing and a plate recess are all the
+     * same thing — an inset opening in the bodywork — and every one of them used to be a box parked
+     * in front of a flat triangle fan, which is the whole of the round-6 §7 geometry-seam finding.
+     * See `loftTub`'s section 7.
+     */
+    noseCap: bp.nose || {},
+    tailCap: bp.tail || {},
   });
 
   // ---------------- 2. materials ----------------
@@ -631,6 +643,10 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     const g = grilleMesh({
       w: gr.w, h: gr.h, d: gr.d ?? 0.14, slats: gr.slats ?? 8,
       vertical: gr.vertical, frame: gr.frame ?? 'chrome', mesh: gr.mesh,
+      // A grille dropped into a lofted aperture already HAS a surround — the bodywork it is let
+      // into. Bolting a second chrome frame on inside the hole is what used to read as two
+      // unrelated rectangles stacked on the nose.
+      surround: gr.surround,
     });
     g.position.set(gr.x ?? 0, gr.y, gr.z);
     if (gr.rx) g.rotation.x = gr.rx;
@@ -1392,6 +1408,59 @@ function buildExtra(x, mats) {
       h.position.set(sx * (x.w ?? 1.4) * 0.32, (x.h ?? 0.7) * 0.5 + 0.02, 0.02);
       mesh.add(h);
     }
+  } else if (x.type === 'sparewheel') {
+    /**
+     * (COHERENCE PASS) THE TAILGATE-MOUNTED SPARE — one detail, because the class was failing its
+     * §2.3 silhouette test on one read.
+     *
+     * The sixteen-frame set said the same thing about this car in every city: from the chase camera
+     * — which is the view the player has of it for the whole race — a tall slab-sided body with a
+     * wide, short, flat tailgate, a roof rack over the top and corner lamps at the extremes is a
+     * PANEL VAN. Every one of those features is also on an H2, which is why no amount of tuning the
+     * ones already there was going to fix it: what an H2 has that a Transit does not is a full-size
+     * knobbly spare bolted to the back of it, and it is the single most legible 4x4 cue in
+     * existence at any distance where you can still make out the vehicle at all.
+     *
+     * Built out of materials the car already carries plus one tyre bucket (the rim ring, hub and
+     * carrier are chrome / dark trim / paint, all of which `mergeByMaterial` folds into buckets
+     * that exist), so it is one extra draw call on one class.
+     */
+    mesh = new THREE.Group();
+    const rOut = x.r ?? 0.40, wid = x.w ?? 0.22;
+    const tyre = new THREE.Mesh(new THREE.CylinderGeometry(rOut, rOut, wid, 22, 1, false),
+      tireMaterial(x.tire || 'knobby'));
+    tyre.rotation.x = Math.PI / 2;
+    mesh.add(tyre);
+    // wheel face: rim barrel, a dish and a centre cap in the body colour, so the spare carries the
+    // car's paint the way the road wheels carry theirs
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(rOut * 0.62, rOut * 0.62, wid * 1.06, 18), chrome);
+    rim.rotation.x = Math.PI / 2;
+    mesh.add(rim);
+    const dish = new THREE.Mesh(new THREE.CylinderGeometry(rOut * 0.58, rOut * 0.58, wid * 0.34, 18), trim);
+    dish.rotation.x = Math.PI / 2;
+    dish.position.z = -wid * 0.42;
+    mesh.add(dish);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(rOut * 0.20, rOut * 0.20, wid * 0.5, 12), paint);
+    cap.rotation.x = Math.PI / 2;
+    cap.position.z = -wid * 0.50;
+    mesh.add(cap);
+    // five studs round the cap — the detail that stops the face reading as a plain disc
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 + 0.3;
+      const stud = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, wid * 0.34, 8), chrome);
+      stud.rotation.x = Math.PI / 2;
+      stud.position.set(Math.cos(a) * rOut * 0.36, Math.sin(a) * rOut * 0.36, -wid * 0.56);
+      mesh.add(stud);
+    }
+    // swing-out carrier. Only the part OUTBOARD of the tailgate is modelled — everything behind
+    // z=0 here is inside the body — so it is a hinge post up the far side and a short arm across
+    // to the hub, which is the whole of what you can see of a carrier from behind a moving car.
+    const post = new THREE.Mesh(roundedBox(0.10, rOut * 1.7, 0.14, 0.03), trim);
+    post.position.set(x.hinge ?? (rOut * 1.05), 0, wid * 0.5 - 0.02);
+    mesh.add(post);
+    const arm = new THREE.Mesh(roundedBox(rOut * 1.05, 0.095, 0.11, 0.028), trim);
+    arm.position.set((x.hinge ?? (rOut * 1.05)) * 0.5, -rOut * 0.42, wid * 0.5 - 0.02);
+    mesh.add(arm);
   } else if (x.type === 'tailgate') {
     /**
      * A real tailgate. Round 2's SUV had one enormous featureless quad back here carrying a

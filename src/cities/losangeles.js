@@ -2042,7 +2042,33 @@ export const def = {
     //    wants. Pushed further (tried: '#5f4f41' at hemisphere 1.32) the shade quartile lost its
     //    cyan altogether and came back h52 s0.05; pulled back to neutral the LIT quartile went
     //    h351 s0.09. This is the balance point, measured either side.
-    surface: { tint: '#634f40', lanes: 3, centerLine: 'double-yellow', worn: 0.78 },
+    // (COHERENCE PASS) '#634f40' -> '#5b524a'. The reasoning in the round-3 note above is sound
+    // and its measurement was honest; the number it landed on was not. h27 s0.35 at 0.105 linear
+    // is the albedo of DIRT, and it is the only carriageway in the game that has one — Vegas runs
+    // '#191720', NYC '#1e2026', Miami '#2d3037', all of them within a few degrees of neutral. Over
+    // the sixteen-frame set that made LA the one city whose road is not made of the same material
+    // as the other three: measured on the chase frame's road band, rgb(78,64,57) h20 s0.38, and on
+    // the landmark and crash framings the carriageway, the sidewalk, the dirt lot and the hillside
+    // all arrive within a few code values of each other — one continuous ochre surface with lane
+    // paint drawn on part of it.
+    //
+    // The trap the round-3 note fell into is real and this number is measured against it
+    // (tools/_coh6_road.mjs, road band 120,430-760,860, lit/shade quartiles taken separately):
+    // a NEUTRAL road under this rig is not grey, it is BLUE — hemisphere '#4fb0ea' at 3.00 lands
+    // its whole intensity on an up-facing surface while a 19-degree key delivers sin(19) = 0.33 of
+    // its own, so at tint '#4a4a4e' the lit quartile came back h252 s0.30. The albedo has to carry
+    // some warmth to meet it. It just has to carry a ROAD's worth and not a hillside's:
+    //
+    //   '#634f40'  lit rgb(119,85,69) h19 s0.44   shade h197 s0.38   band rgb(78,64,57)  ← dirt
+    //   '#4a4a4e'  lit rgb(85,81,105) h252 s0.30  shade h211 s0.60   band rgb(54,61,83)  ← blue
+    //   '#5b524a'  lit rgb(105,90,90) h358 s0.25  shade h203 s0.50   band rgb(68,68,72)  ← asphalt
+    //
+    // The last one is the only one of the three whose road band is achromatic overall while its
+    // lit and shaded quartiles still separate warm from cool — which is what asphalt under a low
+    // sun looks like, and it is the same relationship the other three cities' roads already have.
+    // Band luminance is unchanged (L0.269 against L0.263), so this does not re-open "the only DAY
+    // city is the darkest frame in the game": it is a hue change, not a brightness one.
+    surface: { tint: '#5b524a', lanes: 3, centerLine: 'double-yellow', worn: 0.78 },
     bank: 0.05,
     crossings: 8,
     sidewalkWidth: 5.2,
