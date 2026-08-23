@@ -384,8 +384,8 @@ export const NITRO = {
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.58, 0.09, 1.55, 0.055],   // slim needle: closes fastest of the four
-      bands: 4.8, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.50, flick: 62, turb: 0.92,
-      gasGain: 1.52, hotI: 5.20, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.68,
+      bands: 8.0, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.56, flick: 62, turb: 0.92,
+      gasGain: 1.30, hotI: 5.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.68,
       skirtW: 0.90, skirtI: 0.80, bodyD: 1.78, thick: 1.15, occ: 0.90,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 1.4, smearWidth: 0.030,
@@ -400,8 +400,8 @@ export const NITRO = {
       core: '#fffaf2', mid: '#ff7d18', edge: '#e03a0a', spark: '#ffc477',
       len: 4.00, rad: 0.530, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.70, 0.055, 1.20, 0.090],  // fat barrel, widest right off the bumper
-      bands: 3.6, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.52, flick: 28, turb: 1.06,
-      gasGain: 1.30, hotI: 4.00, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.84,
+      bands: 5.5, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.58, flick: 28, turb: 1.06,
+      gasGain: 1.12, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.84,
       skirtW: 0.98, skirtI: 0.92, bodyD: 1.78, thick: 1.25, occ: 0.92,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 1.4, smearWidth: 0.032,
@@ -417,13 +417,13 @@ export const NITRO = {
       core: '#fff3d6', mid: '#ff9a20', edge: '#e04a12', spark: '#ffd487',
       len: 3.70, rad: 0.560, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.02, profile: [0.76, 0.045, 1.05, 0.105],  // blunt bell — fat off the pipe, stubby
-      bands: 3.2, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.46, flick: 16, turb: 1.18,
+      bands: 5.0, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.52, flick: 16, turb: 1.18,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 1.26, hotI: 4.20, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.90,
+      gasGain: 1.08, hotI: 4.50, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.90,
       skirtW: 1.06, skirtI: 0.90, bodyD: 1.62, thick: 1.25, occ: 0.92,
       sparkRate: 82, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 1.4, smearWidth: 0.050,
@@ -439,8 +439,8 @@ export const NITRO = {
       core: '#ffffff', mid: '#9a72ff', edge: '#2a2fff', spark: '#ded2ff',
       len: 4.60, rad: 0.560, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.55, 0.10, 1.45, 0.060],   // long spindle — the slenderest of the four
-      bands: 4.6, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.54, flick: 74, turb: 0.86,
-      gasGain: 1.18, hotI: 4.60, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.62,
+      bands: 7.5, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.60, flick: 74, turb: 0.86,
+      gasGain: 1.02, hotI: 4.90, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.62,
       skirtW: 0.86, skirtI: 0.74, bodyD: 1.78, thick: 1.12, occ: 0.90,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 1.4, smearWidth: 0.042,
@@ -1014,17 +1014,21 @@ const PLUME_FRAG = /* glsl */`
       float tr = sz / uLen;                       // raw station, may run past the tip
       float t  = clamp(tr, 0.0, 1.0);
 
-      // ── THE SHOCK TRAIN: FOUR OR FIVE CELLS, EACH CLOSER AND FAINTER THAN THE LAST ─────────
-      // Phase runs as t^1.42, so with uBands 3.4-4.6 the nodes sit at roughly t = 0.36 / 0.59 /
-      // 0.77 / 0.93 — spacings 0.23, 0.18, 0.16, monotonically shrinking. You cannot find a
-      // period in a sequence where every term is shorter than the one before it, and four large
-      // cells is the one arrangement that survives a 50 px radial motion blur running along the
-      // column: twelve small ones average out to a smooth streak, which is what r15 photographed.
+      // ── THE SHOCK TRAIN: ONE BIG DIAMOND, A SMALLER SECOND, A HINT OF A THIRD ──────────────
+      // Phase runs as t^1.42, so with uBands 5.5-8.0 the nodes sit at t ~ 0.24 / 0.40 / 0.52 /
+      // 0.62 / 0.72 — spacings 0.15, 0.12, 0.11, 0.10, monotonically shrinking — and the
+      // amplitude falls as exp(-t/0.42), so the second is 68% of the first, the third 48%, the
+      // fourth 35%, and by t = 0.8 the train has faded INTO the gas rather than continuing to
+      // punch identical holes in it. Three visible cells that each shrink is a SEQUENCE; twelve
+      // comparable ones is a texture, and a texture has a repeating unit however carefully each
+      // cell is shaped. (r17: 3.4-4.6 put the first node at t = 0.36, which left the whole first
+      // third of the column smooth — the jet came out of the pipe as a plain hot cone and the
+      // train only started where the gas was already dimming.)
       float bp  = uBands * pow(t + 0.012, 1.42) * 6.2831853 + uPhase * 1.7
                 + 0.16 * sin(uTime * uBandSpeed * 0.055);
       float sw  = sin(bp);
       float ci  = floor(bp * 0.1591549 + 0.5);
-      float amp = smoothstep(0.008, 0.070, t) * exp(-t / 0.66) * uBandAmt
+      float amp = smoothstep(0.008, 0.055, t) * exp(-t / 0.42) * uBandAmt
                 * (0.60 + 0.72 * h21(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0)))
                 * (0.88 + 0.14 * sin(uTime * uFlick * 0.31 + ci * 1.7));
       amp = clamp(amp, 0.0, 1.0);
@@ -1043,12 +1047,22 @@ const PLUME_FRAG = /* glsl */`
       float w = halfW(t) * (1.0 - uNeck * amp * sw);
       w = max(w, uR0 * 0.012);
 
-      float rl = length(rq);
+      // ── THE AXIS WANDERS ──────────────────────────────────────────────────────────────────
+      // A perfectly straight centreline with a smooth profile on it is a ROD however it is
+      // shaded, and the last third of the column — thin, dim and analytic — is where that reads
+      // worst. The axis drifts by a fraction of the LOCAL half-width (so the throat stays on the
+      // pipe and only the tail snakes), in a direction that itself turns with distance.
+      float wn = vn(vec2(t * 3.4 - uTime * 1.5, uPhase * 5.0 + 2.0));
+      float wa = wn * 6.2831853;
+      vec2 rr = rq - vec2(cos(wa), sin(wa))
+              * (uR0 * (0.30 + 0.55 * wn) * uTurb * smoothstep(0.04, 0.80, t) * max(w / uR0, 0.10));
+
+      float rl = length(rr);
       float q  = rl / w;                        // true radius, in local half-widths
       float q2 = q * q;
 
       if (q2 < uReach * uReach) {
-        vec2 c = rq / max(rl, 1e-4);            // direction around the axis — no atan2, no seam
+        vec2 c = rr / max(rl, 1e-4);            // direction around the axis — no atan2, no seam
         // LOW angular frequency, HIGH axial frequency: a jet's shear layer is a set of
         // longitudinal flutes that crawl downstream. Anything that varies fast around the axis is
         // exactly what a line integral through the column averages back out to a smooth ribbon.
@@ -1101,14 +1115,14 @@ const PLUME_FRAG = /* glsl */`
           float hotA = uHot * exp(-t / uBurn) * (0.34 + node * 1.24);
           // A diamond is a LENS, brightest on the centreline and gone before the skirt — not a
           // rung laid across the jet. A row of rungs is a barcode.
-          float nd = node * (0.26 + 0.94 * exp(-q2 * 1.15));
+          float nd = node * (0.24 + 0.96 * exp(-q2 * 1.05));
 
-          float dens = (g2 * uBodyD * (1.0 + nd * 0.95) * mix(1.0, flm, 0.36)
+          float dens = (g2 * uBodyD * (1.0 + nd * 1.20) * mix(1.0, flm, 0.36)
                      +  g3 * skirtA * 1.60 * flm * flm
                      +  wsp) * cut;
           // T is a TEMPERATURE and colour is a function of it, so fringe, body and core are three
           // readings of one continuous field rather than three stacked zones with rims between.
-          float T = (g2 * bodyA * (1.0 + nd * 2.70)
+          float T = (g2 * bodyA * (1.0 + nd * 4.20)
                   +  g3 * skirtA * (0.55 + nd * 0.55)
                   +  g1 * nd * 0.60) * cut;
           vec3 warm = mix(uMid, uCore, 0.55);
@@ -1124,7 +1138,7 @@ const PLUME_FRAG = /* glsl */`
           // to the tip; EMISSION falls hard, so the jet is incandescent at the throat and merely
           // glowing at the tail, which is both what a jet does and the thing that makes its length
           // legible as depth rather than as a stripe.
-          float glow = 0.26 + 0.74 * exp(-t * 2.10);
+          float glow = 0.17 + 0.83 * exp(-t * 2.40);
           vec3 e = (col * (dens * (0.20 + T * 1.05)) + fil * (g1 * hotA * cut)) * glow;
 
           acc   += trans * e * dl;
@@ -1146,7 +1160,7 @@ const PLUME_FRAG = /* glsl */`
     // is a posterised region with a hard boundary. Second: a shoulder, em/(1 + em·uSoft), so a
     // knot four times the body's brightness still lands on a curve.
     float pk = max(max(em.r, em.g), em.b);
-    em = mix(em, vec3(pk), clamp((pk - 1.10) * 0.42, 0.0, 0.46));
+    em = mix(em, vec3(pk), clamp((pk - 1.35) * 0.40, 0.0, 0.46));
     em = em / (1.0 + em * uSoft);
 
     float a = (1.0 - trans) * uOcc;
@@ -1233,7 +1247,12 @@ function plumeMaterial(fx, phase) {
       // depth(tip)/depth(throat) - 1, refreshed every frame from the live camera in update()
       uPersp: { value: 0 },
       // the shoulder on the plume's own emission, em/(1 + em*uSoft)
-      uSoft: { value: 0.34 },
+      // (r17) 0.34 -> 0.20. The shoulder is here so a knot lands on a curve rather than on a
+      // plateau, but at 0.34 it was compressing a 6:1 emission swing between a shock node and the
+      // gas either side of it down to 2.6:1 BEFORE the ACES curve got hold of it — i.e. it was
+      // deleting the shock train on its way to the frame. With the body exposed to land near 0.7
+      // instead of near 1.0 there is room above it for a knot to be genuinely brighter.
+      uSoft: { value: 0.20 },
       // density of the detached wisps outside the column (fl^3 — sparse by construction)
       uWisp: { value: fx.wisp ?? 0.55 },
     },
