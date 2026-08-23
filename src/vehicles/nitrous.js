@@ -1095,7 +1095,9 @@ const PLUME_FRAG = /* glsl */`
         cut *= ax * gnd;
 
         if (cut > 0.002) {
-          float puff   = 0.88 + 0.24 * vn(vec2(t * 2.4 - uTime * 1.7, uPhase * 7.0 + 2.0));
+          // The gust that displaces the axis is the same gust that thickens the gas — one noise
+          // lookup, and the correlation between the two is physical rather than a saving.
+          float puff = 0.80 + 0.40 * wn;
           // Held out to the tip. A jet that fades to nothing by two thirds of its own length has
           // thrown away exactly the part where the taper is most legible, and the column then
           // reads as the fat parallel FRONT of a cone with nothing after it.
