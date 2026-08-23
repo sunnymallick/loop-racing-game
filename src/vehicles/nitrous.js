@@ -1394,6 +1394,8 @@ class StreakPool {
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
+// scratch for core.onBeforeRender — never touched by update(), so the two cannot alias
+const _v3 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _q3 = new THREE.Quaternion();
@@ -1500,6 +1502,35 @@ export class NitrousJet {
       const core = new THREE.Mesh(coreGeometry(), coreMat);
       core.renderOrder = 8.2;      // under the burner disc and the ignition sprites
       core.frustumCulled = false;
+      // ── THE FRAME IS RESOLVED AT DRAW TIME, NOT IN update() ─────────────────────────────────
+      // The plume is defined by world-space uniforms (see PLUME_FRAG), and update() runs before
+      // the car's matrices are recomputed for the frame — so writing them there leaves the whole
+      // column ONE FRAME BEHIND the exhaust it comes out of. Measured at 185 mph: uOrigin landed
+      // 1.35 m downstream of the nozzle, i.e. the jet was detached from the car by a third of its
+      // own length with a metre of clear air between the pipe and the flame. onBeforeRender is
+      // called with matrixWorld already up to date, which is the only place this can be exact.
+      core.onBeforeRender = () => {
+        const u = coreMat.uniforms;
+        const wm = core.matrixWorld;
+        const sc = _v3.setFromMatrixColumn(wm, 0).length() || 1;
+        u.uOrigin.value.setFromMatrixPosition(wm);
+        u.uU.value.setFromMatrixColumn(wm, 0).divideScalar(sc);
+        u.uV.value.setFromMatrixColumn(wm, 1).divideScalar(sc);
+        u.uAxis.value.setFromMatrixColumn(wm, 2).divideScalar(-sc);   // +Z is forward; the jet fires aft
+        const len = (core.userData.len || 0) * sc;
+        const r0 = (core.userData.r0 || 0) * sc;
+        // The widest the local half-width can get — the perspective correction, the shock belly
+        // and the march's reach at once. The bounding cylinder the ray is clipped to has to hold
+        // every one of them, or the clip becomes the silhouette: a straight line down the flank.
+        const rMax = r0 * Math.max(1, clamp(1 + u.uPersp.value, 0.20, 2.40))
+          * (1 + u.uNeck.value) * PLUME_REACH * 1.06;
+        u.uLen.value = len;
+        u.uR0.value = r0;
+        u.uRmax.value = rMax;
+        // ...and the proxy quad is cut a flat margin outside THAT, never to the shape of the gas.
+        u.uHalfW.value = rMax * PLUME_PAD * (core.userData.wide || 1);
+        u.uPadS.value = Math.max(0.05 * len, 1.30 * rMax);
+      };
       g.add(core);
       const sheath = core;         // back-compat alias for the scratch ablation tools
 
@@ -2012,29 +2043,15 @@ export class NitrousJet {
     // disagree about where the gas is. (race.js shrinks jet.group to 1e-3 while warming a shader,
     // which is why the world SCALE has to be read off the matrix rather than assumed to be 1.)
     for (const n of this.nozzles) {
-      n.group.updateWorldMatrix(true, false);
-      const wm = n.group.matrixWorld;
-      const wScale = _v2.setFromMatrixColumn(wm, 0).length() || 1;
-      const nLen = baseLen * n.lenMul * wScale;
-      const nCoreR = coreR * n.radMul * wScale;
-      const mu = n.coreMat.uniforms;
-      mu.uOrigin.value.setFromMatrixPosition(wm);
-      mu.uU.value.setFromMatrixColumn(wm, 0).divideScalar(wScale);
-      mu.uV.value.setFromMatrixColumn(wm, 1).divideScalar(wScale);
-      mu.uAxis.value.setFromMatrixColumn(wm, 2).divideScalar(-wScale);   // +Z is forward; the jet fires aft
-      mu.uLen.value = nLen;
-      mu.uR0.value = nCoreR;
-      // The widest the local half-width can get: the perspective correction, the shock belly and
-      // the march's reach, all at once. The bounding cylinder the ray is clipped to has to hold
-      // every one of them or the clip becomes the silhouette — a straight line down the flank.
-      const pcMax = Math.max(1, clamp(1 + this._persp, 0.20, 2.40));
-      const rMax = nCoreR * pcMax * (1 + (fx.neckAmt ?? 0.30)) * PLUME_REACH * 1.06;
-      mu.uRmax.value = rMax;
-      // ...and the proxy quad is cut a flat margin outside THAT, never to the shape of the gas.
-      // The extra width with the rig near the plume's own axis is because an axis-containing
+      // Length and radius are stored in the nozzle's OWN units; core.onBeforeRender turns them
+      // into the world-space frame the march needs, with matrices that are current for the frame.
+      // The extra proxy width with the rig near the plume's own axis is because an axis-containing
       // strip degenerates towards a line there; the burner disc carries that framing anyway.
-      mu.uHalfW.value = rMax * PLUME_PAD * (1 + gA * 1.6);
-      mu.uPadS.value = Math.max(0.05 * nLen, 1.30 * rMax);
+      const nLen = baseLen * n.lenMul;
+      const nCoreR = coreR * n.radMul;
+      n.core.userData.len = nLen;
+      n.core.userData.r0 = nCoreR;
+      n.core.userData.wide = 1 + gA * 1.6;
 
       // parent-space → so the camera-facing sprites can be built from the camera world quaternion
       const invParent = camQ ? _q2.copy(n.group.getWorldQuaternion(_q3)).invert() : null;
