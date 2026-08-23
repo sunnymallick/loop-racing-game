@@ -383,7 +383,7 @@ export const NITRO = {
       // profile = [throat fraction, station of the widest point, decay exponent, TAIL fraction].
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
-      screen: 1.00, profile: [0.58, 0.09, 1.55, 0.055],   // slim needle: closes fastest of the four
+      screen: 1.00, profile: [0.58, 0.09, 1.42, 0.080],   // slim needle: closes fastest of the four
       bands: 8.0, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.56, flick: 62, turb: 0.92,
       gasGain: 1.30, hotI: 5.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.68,
       skirtW: 0.90, skirtI: 0.80, bodyD: 1.78, thick: 1.15, occ: 0.90,
@@ -438,7 +438,7 @@ export const NITRO = {
     fx: {
       core: '#ffffff', mid: '#9a72ff', edge: '#2a2fff', spark: '#ded2ff',
       len: 4.60, rad: 0.560, merge: 0.085, standoff: 0.10, flameRise: 0.035,
-      screen: 1.25, profile: [0.55, 0.10, 1.45, 0.060],   // long spindle — the slenderest of the four
+      screen: 1.25, profile: [0.55, 0.10, 1.38, 0.078],   // long spindle — the slenderest of the four
       bands: 7.5, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.60, flick: 74, turb: 0.86,
       gasGain: 1.02, hotI: 4.90, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.62,
       skirtW: 0.86, skirtI: 0.74, bodyD: 1.78, thick: 1.12, occ: 0.90,
@@ -1138,7 +1138,7 @@ const PLUME_FRAG = /* glsl */`
           // to the tip; EMISSION falls hard, so the jet is incandescent at the throat and merely
           // glowing at the tail, which is both what a jet does and the thing that makes its length
           // legible as depth rather than as a stripe.
-          float glow = 0.17 + 0.83 * exp(-t * 2.40);
+          float glow = 0.23 + 0.77 * exp(-t * 1.85);
           vec3 e = (col * (dens * (0.20 + T * 1.05)) + fil * (g1 * hotA * cut)) * glow;
 
           acc   += trans * e * dl;
