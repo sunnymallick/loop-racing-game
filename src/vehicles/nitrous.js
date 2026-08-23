@@ -382,7 +382,7 @@ export const NITRO = {
       len: 3.60, rad: 0.480, merge: 0.0, standoff: 0.10, flameRise: 0.045,
       screen: 0.610, profile: [0.60, 0.10, 1.62, 0.022],  // slim needle: closes fastest of the four
       bands: 11.5, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.46, flick: 62, turb: 0.92,
-      gasGain: 1.34, hotI: 4.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.50,
+      gasGain: 1.62, hotI: 5.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.50,
       skirtW: 0.90, skirtI: 0.80, bodyD: 1.45, thick: 1.15, occ: 0.90,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 1.4, smearWidth: 0.030,
@@ -395,10 +395,10 @@ export const NITRO = {
     ramp: 0.52, curve: 1.20, surge: 0.62, surgeTime: 0.44, color: '#ff7a1e',
     fx: {
       core: '#fffaf2', mid: '#ff7d18', edge: '#e03a0a', spark: '#ffc477',
-      len: 4.00, rad: 0.620, merge: 0.070, standoff: 0.12, flameRise: 0.15,
-      screen: 0.650, profile: [0.72, 0.08, 1.34, 0.030],  // fat barrel, widest right off the bumper
+      len: 4.00, rad: 0.620, merge: 0.110, standoff: 0.12, flameRise: 0.15,
+      screen: 0.650, profile: [0.72, 0.08, 1.58, 0.030],  // fat barrel, widest right off the bumper
       bands: 9.0, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.44, flick: 28, turb: 1.06,
-      gasGain: 1.26, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.62,
+      gasGain: 1.00, hotI: 4.00, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.62,
       skirtW: 0.98, skirtI: 0.92, bodyD: 1.45, thick: 1.25, occ: 0.92,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 1.4, smearWidth: 0.032,
@@ -412,15 +412,15 @@ export const NITRO = {
     ramp: 0.78, curve: 1.55, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
       core: '#fff3d6', mid: '#ff9a20', edge: '#e04a12', spark: '#ffd487',
-      len: 3.70, rad: 0.700, merge: 0.050, standoff: 0.13, flameRise: 0.26,
-      screen: 0.630, profile: [0.80, 0.06, 1.42, 0.034],  // blunt bell — fat off the pipe, stubby
+      len: 3.70, rad: 0.630, merge: 0.085, standoff: 0.13, flameRise: 0.26,
+      screen: 0.630, profile: [0.80, 0.06, 1.78, 0.034],  // blunt bell — fat off the pipe, stubby
       bands: 7.5, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.40, flick: 16, turb: 1.18,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 0.92, hotI: 3.40, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.66,
+      gasGain: 1.02, hotI: 4.50, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.66,
       skirtW: 1.06, skirtI: 0.90, bodyD: 1.30, thick: 1.25, occ: 0.92,
       sparkRate: 82, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 1.4, smearWidth: 0.050,
@@ -434,7 +434,7 @@ export const NITRO = {
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
       core: '#ffffff', mid: '#9a72ff', edge: '#2a2fff', spark: '#ded2ff',
-      len: 4.60, rad: 0.520, merge: 0.085, standoff: 0.10, flameRise: 0.035,
+      len: 4.60, rad: 0.520, merge: 0.130, standoff: 0.10, flameRise: 0.035,
       screen: 0.650, profile: [0.56, 0.11, 1.72, 0.022],  // long spindle — the slenderest of the four
       bands: 12.0, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.50, flick: 74, turb: 0.86,
       gasGain: 1.14, hotI: 4.80, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.46,
@@ -946,7 +946,14 @@ const PLUME_FRAG = /* glsl */`
     amp *= 0.55 + 0.80 * vn(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0));
     amp  = clamp(amp * uBandAmt * clamp(bf, 0.35, 1.30), 0.0, 1.0);
     float sw   = sin(bp);                        // signed: +1 at a node, -1 halfway between two
-    float sh   = 1.25 + 0.90 * vn(vec2(ci * 0.37 + 7.3, uPhase * 4.0 + 1.7));
+    // ── A DIAMOND IS A LENS, NOT A BEAD ──────────────────────────────────────────────────────
+    // At sh ~1.25-2.15 the cell's bright region was short compared with its own width, and what
+    // it drew at 4x was a chain of round white blobs sitting ON the jet — which is round 3's
+    // verdict ("a chain of identical, uniformly-sized soft round sprites") arriving from the shock
+    // train instead of from a sprite pool. Below 1.0 the exponent broadens the node into a lens
+    // that spans most of its cell, so it reads as a length of the column that is brighter rather
+    // than as an object on top of it.
+    float sh   = 0.70 + 0.55 * vn(vec2(ci * 0.37 + 7.3, uPhase * 4.0 + 1.7));
     float node = amp * pow(0.5 + 0.5 * sw, sh);  // the bright knot, one-sided, never a trough
 
     // ── 2. ONE HALF-WIDTH PER STATION ─────────────────────────────────────────────────────────
@@ -1001,7 +1008,7 @@ const PLUME_FRAG = /* glsl */`
     // r14 ran this at 0.19 + 3.40·node and measured 247-255 for a third of the column: above the
     // clip everything looks identical, so a wide saturated core does not merely look bad, it
     // deletes every piece of structure the march computed inside it.
-    float hotA   = uHot * exp(-t / uBurn) * (0.17 + node * node * 3.00);
+    float hotA   = uHot * exp(-t / uBurn) * (0.22 + node * node * 1.45);
     float kc = uFilW * (1.0 + node * 1.30);      // a node SWELLS the filament, never pinches it
     float kb = uBodyW;
     float ks = uSkirtW;
@@ -1082,19 +1089,28 @@ const PLUME_FRAG = /* glsl */`
       // and the shear layer outside it is thick and modulated by fl SQUARED, so the boundary of
       // the visible gas sits at a different radius at every station, in every frame, and is never
       // the analytic curve.
-      float dens = g2 * uBodyD * mix(1.0, flm, 0.34)
+      // A shock cell is a compression: more gas, not merely more light. Putting the node into the
+      // DENSITY as well means the diamond also occludes more of the road behind it, which is the
+      // difference between a bright patch drawn on a jet and a thicker part of one.
+      float dens = g2 * uBodyD * (1.0 + node * 0.55) * mix(1.0, flm, 0.34)
                  + g3 * skirtA * 1.55 * flm * flm
                  + wsp;
       // ...and what glows. T is a TEMPERATURE, and colour is a function of it — so core, body
       // and fringe are three readings of one continuous field rather than three stacked zones.
       // The white end of the ramp starts at T = 0.92 (r14: 0.58), which is above anything the
       // body of the gas reaches: the column is the CLASS COLOUR and white belongs to the knots.
-      // ...and a shock cell brightens the GAS, not merely the thread down the middle of it: a
-      // diamond you can only see on the filament is a bead on a string, which is round 3's verdict.
-      float T = g2 * bodyA * (1.0 + node * 0.90) + g3 * skirtA * 0.55 + g1 * node * 0.60;
+      // ...and a shock cell brightens the GAS ACROSS ITS WHOLE SECTION, not merely the thread
+      // down the middle of it: a diamond you can only see on the filament is a bead on a string,
+      // which is round 3's verdict arriving from a different layer.
+      float T = g2 * bodyA * (1.0 + node * 1.80)
+              + g3 * skirtA * (0.55 + node * 0.55)
+              + g1 * node * 0.60;
       vec3 col = mix(uEdge, uMid, smoothstep(0.05, 0.52, T));
       col = mix(col, uCore, smoothstep(0.92, 1.85, T));
-      vec3 e = col * (dens * (0.20 + T * 1.05)) + uCore * (g1 * hotA);
+      // The filament only goes WHITE where it is genuinely hot; a cool knot keeps the class hue,
+      // so the train reads as a temperature gradient down the column instead of as white dots.
+      vec3 fil = mix(uMid, uCore, clamp(hotA * 0.62, 0.0, 1.0));
+      vec3 e = col * (dens * (0.20 + T * 1.05)) + fil * (g1 * hotA);
 
       float dtau = dens * dl * uThick;
       acc   += trans * e * dl;
@@ -1468,7 +1484,7 @@ const VIS_T = 0.90;
  * containment clamp probes THIS point, not VIS_T: a column whose tip is outside the picture shows
  * only its parallel front half, which is the composition half of "near-constant width".
  */
-const END_T = 1.00;
+const END_T = 0.96;
 
 export class NitrousJet {
   /**
@@ -1793,7 +1809,7 @@ export class NitrousJet {
         const mid = (flo + fhi) * 0.5;
         if (inBox(mid)) flo = mid; else fhi = mid;
       }
-      const fitted = Math.max(flo, out.len * 0.62);
+      const fitted = Math.max(flo, out.len * 0.55);
       out.fit = fitted / out.len;
       out.len = fitted;
     }
