@@ -8,38 +8,92 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  * no camera response → 65; identical across the four classes → 70.
  * §7 additionally caps "particles as unrotated camera-facing squares with visible hard edges" at 58.
  *
- * ── ROUND 12: THE PLUME IS ONE VOLUME. READ THE PLUME_FRAG BLOCK COMMENT FIRST. ──────────────
- * Four rounds in a row came back with a different description of the same failure — "a chain of
- * identical soft round sprites", "~7 hollow crescent shells", "a flat near-constant-width ribbon
- * with a hard-edged coloured rim", and finally, from a fresh 1600x900 capture of r11, "a FLAT
- * HARD-EDGED ORANGE SLAB jutting out of the back of the car". The cause was never the tuning of
- * whatever the current element was; it was that there WAS a current element. r12 replaces the
- * core-impostor-plus-sheath-impostor pair with a single quad per outlet whose shader is one
- * closed-form volume integral: three co-axial gaussians (white filament, class-coloured body, cool
- * turbulent skirt) summed into one field that has no interior boundary at any radius, and one
- * premultiplied blend that both emits and occludes. See the block comment above PLUME_FRAG for the
- * five things that made the old build read as a slab and what each was replaced with.
+ * ── ROUND 14: THE PLUME IS A RAYMARCHED VOLUME. READ THE PLUME_FRAG BLOCK COMMENT FIRST. ─────
+ * FIVE rounds in a row came back with the same failure in five different words — "a chain of
+ * identical soft round sprites", "~7 hollow crescent shells", "a flat near-constant-width additive
+ * ribbon with a hard-edged coloured rim", "a smooth airbrushed light-ribbon with a hard-edged
+ * uniform white stripe down its middle", and finally "a pure-white CLIPPED core inside a smooth
+ * airbrushed skirt — a capsule with no throat, no belly, no taper and no shock diamonds, and at
+ * sustained boost it SHRINKS". Rounds 3-13 each rebuilt or retuned the ELEMENT (a band, a card, a
+ * shell, two impostors, one impostor); r14 changes the METHOD. Five things were measurably wrong
+ * and each is fixed at its own cause — the measurements are from tools/_plume_ms.mjs, which
+ * ablates the gas quads out of a real capture and reports the plume's own width, length and
+ * clipped-pixel count in screen space:
+ *
+ *   1. IT WAS A 2-D FIELD PAINTED ON A QUAD. Every round up to r13 evaluated ONE closed-form
+ *      radial profile per pixel. That is an airbrushed ribbon however cleverly it is shaded,
+ *      because a ribbon is what it is: nothing in it can occlude anything else in it, so there is
+ *      no inside, and any turbulence you add is a decal on a flat surface. PLUME_FRAG now MARCHES
+ *      THE VIEW CHORD through the gas, front to back, integrating emission and absorption — 14
+ *      steps, clipped to the column so none of them is wasted. Three things fall out that no 2-D
+ *      field has: self-occlusion (the hot core is seen THROUGH the cool skirt and picks up its
+ *      colour, which is a fringe with no edge in it), flutes that wrap AROUND the axis and vary
+ *      with depth, and a chord that shortens with the taper so necking is automatically dimming.
+ *
+ *   2. THE GOVERNOR WAS SOLVING FOR A STUB. `fx.screen` was 0.285-0.30 of frame height, so on the
+ *      LA supercar at 241 mph the solver came back with gLen = 0.49 and a 2.3 m column — a ~180 px
+ *      jet, smaller than the HUD speedometer, on the frame §2.5 says the effect has to dominate.
+ *      It is now 0.52-0.56, and the target OPENS UP over the first ~1.1 s of boost (0.84x at
+ *      ignition, 1.16x sustained), so nitrous-long is guaranteed bigger than nitrous instead of
+ *      smaller. Measured: supercar 441 px at ignition -> 769 px sustained; muscle 357 -> 659.
+ *
+ *   3. THE COLUMN NEVER FELL BELOW THE BLOOM THRESHOLD. This is the actual mechanism behind three
+ *      separate rounds of "near-constant width", and no amount of profile work could have fixed
+ *      it. UnrealBloomPass hangs a halo of FIXED SCREEN RADIUS on everything above its threshold;
+ *      a column that is above the threshold along its whole length therefore arrives at the frame
+ *      with ~20 px of halo welded to both sides at every station, and a 7:1 taper photographs as
+ *      1.4:1. The emission now falls as w^0.95 rather than w^0.42, so the throat blooms and the
+ *      tail — which has no halo at all — shows the taper the geometry actually has. Measured on
+ *      the LA supercar: 201 px across at t = 0.05, 36 px at t = 0.5, 7 px at t = 0.7.
+ *
+ *   4. THE WHITE CORE WAS A CLIPPED BAR. r13's filament ran far enough past the clip to be pinned
+ *      at white for the first third of the column: 3675-5108 px of the plume at 250+ in some
+ *      channel, up to 60 px wide, which destroys every bit of internal structure inside it — above
+ *      the clip everything looks identical. The filament now sits DARK on its own (0.19 authority)
+ *      and what drives it white is a SHOCK NODE (x1 -> x4.4), so the clipped, blooming part of the
+ *      jet is a row of knots that get smaller, dimmer and closer together. And the body of the gas
+ *      is a SUPER-GAUSSIAN, exp(-(r/kb)^3), which is flat across the middle instead of sharply
+ *      peaked — the same total light arrives as a wide saturated column that stays on the
+ *      tonemap's slope. Measured: 1300-5200 clipped-ish px, 0.5-2% of the plume, all in knots.
+ *
+ *   5. THE SILHOUETTE WAS DRAWN BY THE SMOOTH PART. The skirt was an order of magnitude too thin
+ *      to be seen (an ablation with uSkirtI = 0 was indistinguishable from the full render), so
+ *      what set the visible outline was the body gaussian — smooth, analytic, and therefore an
+ *      airbrushed edge. Body and skirt are now separated in the march: the body is dense and very
+ *      nearly smooth (a real supersonic core IS smooth) and the shear layer around it is thick and
+ *      modulated by the flute noise SQUARED, so the boundary sits at a different radius at every
+ *      station and in every frame.
+ *
+ * And one composition fix: TWIN JETS CONVERGE. Two parallel columns half a metre apart photograph
+ * as exactly what r13 was called — "a pair of laser rods". Real adjacent jets entrain each other
+ * and merge into one plume with two hot roots; each column is now toed IN by just enough to reach
+ * the centreline near the end of its own visible length (capped, so the muscle's and the SUV's
+ * wide-set pipes do not become a visible V).
  *
  * ── The §7 rule, and how every layer here obeys it ────────────────────────────────────────────
  * NOTHING in this file is allowed to show a straight edge or a corner. Concretely:
- *   · the plume's radial density is a sum of GAUSSIANS, which never reach zero and therefore have
- *     no boundary to find at any radius, at any zoom, in any frame;
+ *   · the plume's radial density is a sum of gaussians and one super-gaussian, none of which ever
+ *     reaches zero, so there is no boundary to find at any radius, at any zoom, in any frame;
+ *   · the marched chord is clipped at uReach half-widths, where the widest term is at ~2e-2 of its
+ *     peak — below one 8-bit step, so the cut cannot draw a step;
  *   · every sprite (burner disc, muzzle flash, shock ring, ground pool) is drawn from a procedural
  *     canvas whose alpha reaches 0 well inside the tile, and every camera-facing card carries its
  *     own roll + spin so it is never an "unrotated camera-facing square";
  *   · the streak quads are shaded as a 2-D gaussian capsule — round head, tapered tail, zero alpha
  *     on all four quad edges;
+ *   · the gas fades out over a 0.8 m band as it approaches the car's own ground plane, so a
+ *     depth-tested quad through the asphalt never draws a dead straight line;
  *   · everything additionally fades out inside ~2.5 m of the camera, so no layer can ever be
  *     clipped by the near plane into a hard-edged wedge across the lens.
- *
  * ── The round-3 rule: THE CAR MUST SURVIVE ITS OWN NITROUS ───────────────────────────────────
  * Round 2's jet was bright enough to erase the thing it was attached to — the rear third of the
  * car clipped to featureless white, and because each plume was splayed ~10° outboard and lifted
  * to a fixed minimum height, the near jet appeared to erupt from the car's FLANK while the far one
  * hid behind the body: one off-axis blob instead of two jets. Three structural rules now:
  *
- *   · one jet per real exhaust outlet, at that outlet's x and y, fired straight down the car's
- *     rear-facing centreline (splay ≈ 0.02 rad, not 0.17), each with its own band/flicker phase;
+ *   · one jet per real exhaust outlet, at that outlet's x and y, fired essentially down the car's
+ *     rear-facing centreline (r14: toed IN by <= 0.085 rad so twin columns merge downstream rather
+ *     than reading as two rods — never OUT), each with its own band/flicker phase;
  *   · the plume STARTS `fx.standoff` (~0.3 m) behind the tip and its alpha ramps in over the first
  *     quarter of the column, so the bumper, taillights, diffuser and exhaust tips read in front of
  *     clear air, not inside the hottest part of the flame;
@@ -52,9 +106,9 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  *
  * The effect is ONE gas layer plus its supporting cast:
  *
- *   1. THE PLUME — one axis-billboarded quad per outlet, whose shader integrates the whole volume
- *      (filament, body, skirt, shock train, turbulence) in a single premultiplied pass. This is the
- *      layer the whole effect is judged on; see the PLUME_FRAG block comment
+ *   1. THE PLUME — one axis-billboarded quad per outlet, whose shader RAYMARCHES the view chord
+ *      through the volume (filament, body, skirt, shock train, turbulence) in a single
+ *      premultiplied pass. This is the layer the whole effect is judged on; see PLUME_FRAG
  *   2. a camera-facing burner disc so the plume still reads with structure head-on
  *   3. a velocity-stretched spark + light-smear streak pool, emitted into a narrow REARWARD cone
  *      and entrained in the jet wake (it trails, it does not detonate)
@@ -63,8 +117,9 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  *      to the grade pass, which ripples the image behind the plume
  *
  * (r10 deleted a class-tinted lathe shell carried since round 1 as "the volume layer"; r12 deleted
- * the core/sheath split. Every deletion so far has made the plume better, which is the pattern:
- * a jet is one object and every layer boundary is a line the eye can find.)
+ * the core/sheath split; r14 deleted the closed-form 2-D profile itself. Every deletion so far has
+ * made the plume better, which is the pattern: a jet is one object, and every layer boundary —
+ * and every analytic curve — is a line the eye can find.)
  *
  * Ignition adds a muzzle flash, an expanding shock ring and a rearward spark blast, and main.js
  * turns `Nitrous.surge` into an FOV punch, a camera kick and a grade shift.
@@ -251,8 +306,10 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //   color         flame tint; also drives the HUD, grade and speed-line tint
 //   fx            purely visual per-class shaping of the jet (see NitrousJet)
 //
-//   fx.gain       master brightness of the plume. THE anti-blowout knob: the SUV's plume is the
-//                 widest in the game, and at gain 1 it clipped to one featureless white mass.
+//   fx.merge      how far, in radians, a twin column is toed IN toward the centreline. Two
+//                 parallel jets half a metre apart read as "a pair of laser rods"; real adjacent
+//                 jets entrain each other and merge. Capped, and further capped per car so the
+//                 SUV's 1.56 m outlet spacing does not become a visible V. Never splays OUT.
 //   fx.wake       how much of the car's speed the embers inherit. 0 would pin them to the bumper,
 //                 1 would fire them through the chase camera at 90 m/s (round 1's "firework").
 //   fx.cone       half-angle, in radians, of the rearward emission cone.
@@ -263,33 +320,47 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //                 bumper and the near end of the flame". ~0.11 m: the plume is lit ON the lip and
 //                 the exposure (not the geometry) is what keeps the bodywork readable.
 //   fx.rad        the plume's REFERENCE radius: the shader's radial coordinate is in these units,
-//                 and the gas reaches PLUME_REACH (1.7) local half-widths out from the axis, so the
-//                 visible column is roughly 2.2 x fx.rad across at its widest. (r12) Cut ~40% on
-//                 every class: r11's envelope was 2.3 x a 0.86 x core radius that the governor
-//                 could inflate 2.7x, i.e. a plume ~2.5x the width of the car it came out of —
-//                 which is most of why the director's capture reads as a slab rather than a jet.
-//                 The white FILAMENT inside it is ~0.2 of the local half-width, so it stays well
-//                 under half the twin-outlet spacing and the two hot cores never merge.
+//                 and the gas is marched to PLUME_REACH (1.7) local half-widths out from the axis.
+//                 (r14) Up ~35% on every class. The taper has to survive the bloom pass, and bloom
+//                 adds a halo of FIXED SCREEN RADIUS: a throat only 50 px across cannot show a 7:1
+//                 taper once ~20 px of halo is welded to each side of every station, but a throat
+//                 at ~55% of the car's width can. The white FILAMENT inside it is ~0.16 of the
+//                 local half-width, i.e. ~0.08 m, so the two hot roots never merge into one blob.
 //   fx.profile    the class cone [neck, peakAt, spread, filament] — see coneW(). `spread` above ~1.1
 //                 and `filament` under ~0.12 are what make the column actually neck down over the
 //                 length you can see, which is what stops the shock train reading as a repeat.
-//   fx.bands      shock cells over the whole column, of which only the first two or three are
-//                 ever visible: phase runs as t^1.45 (cells get SHORTER and closer together with
-//                 distance, like real diamonds) and amplitude decays as exp(-t/0.44), so cell 1 is
-//                 at 0.70 authority, cell 2 at 0.38, cell 3 at 0.26 and cell 4 is gone. There is
-//                 no repeating unit to find because there are never four comparable cells.
-//   fx.gasGain    master exposure of the volume. The BODY term has to land near 1.0 in its
-//                 strongest channel: saturated, still on the tonemap's curve, never a posterised
-//                 plateau of pure hue with a hard rim around it (the round-11 failure).
+//   fx.bands      shock cells over the whole column, of which only the first two or three are ever
+//                 visible: phase runs as t^1.30 (cells get SHORTER and closer together with
+//                 distance, like real diamonds) and amplitude decays as exp(-t/0.40), so cell 1 is
+//                 at ~0.62 authority, cell 2 at ~0.26, cell 3 at ~0.11 and cell 4 does not exist.
+//                 There is no repeating unit to find because there are never three comparable
+//                 cells. (r14) Roughly doubled, because the part of the column that is BRIGHT is
+//                 now the first ~35% — at the old count there was barely one cell inside it.
+//   fx.gasGain    master exposure of the marched integral. The BODY has to land near 1.0-1.4 in
+//                 its strongest channel at the throat: saturated, still on the tonemap's slope,
+//                 never a posterised plateau with a rim around it. Verify it with
+//                 tools/_plume_ms.mjs — the number to watch is any-chan-250 as a fraction of the
+//                 plume's own pixels, which should be a couple of per cent and all of it in knots.
 //   fx.hotI       gain on the incandescent filament — the only part driven past the bloom
-//                 threshold, so it is the only part that blooms.
+//                 threshold, so it is the only part that blooms. It sits DARK on its own; what
+//                 lights it is a shock node (x1 -> x4.4), so the white in the jet is a row of
+//                 knots rather than a bar.
 //   fx.burn       how fast the filament burns out downstream (exp(-t/burn)). White at the throat,
 //                 class colour at the tail: 0.19 is a supercar needle, 0.30 is the SUV's lazy bell.
-//   fx.filW       filament 1/e half-width as a fraction of the LOCAL column half-width (~0.2).
-//   fx.bodyW      the class-coloured body's 1/e half-width, same units (~0.4–0.52).
-//   fx.skirtW     the cool turbulent skirt's, same units (~0.72–0.98) — this is what draws the
-//                 plume's OUTLINE, and it is a gaussian, so the outline has no edge to find.
-//   fx.skirtI     how much gas is in that skirt. High = boiling SUV bell, low = tight needle.
+//   fx.filW       filament 1/e half-width as a fraction of the LOCAL column half-width (~0.16).
+//   fx.bodyW      the class-coloured body's half-width, same units (~0.44-0.52). The body is a
+//                 SUPER-gaussian, exp(-(r/bodyW)^3): flat across the middle, so the same total
+//                 light arrives as a wide saturated column instead of a clipped axial bar.
+//   fx.bodyD      how much the body ABSORBS. The raymarch's transmittance comes from this, so it
+//                 decides whether the lane line behind the plume goes away, and how strongly the
+//                 near side of the column shades the far side.
+//   fx.skirtW     the cool turbulent shear layer's 1/e half-width, same units (~0.86-1.06) — this
+//                 is what draws the plume's OUTLINE, and it is modulated by the flute noise
+//                 SQUARED, so the outline sits at a different radius at every station.
+//   fx.skirtI     how much gas is in that shear layer. High = boiling SUV bell, low = tight
+//                 needle. Do NOT let it out-weigh fx.bodyD: at skirtI 1.0+ the plume becomes ALL
+//                 skirt, an ablation with the body removed is indistinguishable from the full
+//                 render, and what you have photographed is a smooth airbrushed ribbon again.
 //   fx.thick      optical thickness: how completely the middle of the jet HIDES the road behind it.
 //   fx.occ        ceiling on that occlusion — a plume you cannot see through at all is a painted
 //                 shape, so the wisps at the silhouette stay translucent.
@@ -308,10 +379,10 @@ export const NITRO = {
     ramp: 0.13, curve: 0.52, surge: 0.88, surgeTime: 0.22, color: '#3ce0ff',
     fx: {
       core: '#f4ffff', mid: '#34dcff', edge: '#0b46ff', spark: '#cdf4ff',
-      len: 3.60, rad: 0.480, splay: 0.0, standoff: 0.10, flameRise: 0.045, gain: 0.62,
+      len: 3.60, rad: 0.480, merge: 0.0, standoff: 0.10, flameRise: 0.045,
       screen: 0.520, profile: [0.60, 0.10, 1.62, 0.022],  // slim needle: closes fastest of the four
-      bands: 8.0, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.42, flick: 62, turb: 0.92,
-      gasGain: 1.25, hotI: 4.20, burn: 0.32, filW: 0.160, bodyW: 0.46,
+      bands: 11.5, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.46, flick: 62, turb: 0.92,
+      gasGain: 1.06, hotI: 4.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.50,
       skirtW: 0.90, skirtI: 0.80, bodyD: 1.45, thick: 1.15, occ: 0.90,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 1.4, smearWidth: 0.030,
@@ -324,10 +395,10 @@ export const NITRO = {
     ramp: 0.52, curve: 1.20, surge: 0.62, surgeTime: 0.44, color: '#ff7a1e',
     fx: {
       core: '#fffaf2', mid: '#ff7d18', edge: '#e03a0a', spark: '#ffc477',
-      len: 4.00, rad: 0.620, splay: 0.020, standoff: 0.12, flameRise: 0.15, gain: 0.48,
+      len: 4.00, rad: 0.620, merge: 0.070, standoff: 0.12, flameRise: 0.15,
       screen: 0.560, profile: [0.72, 0.08, 1.34, 0.030],  // fat barrel, widest right off the bumper
-      bands: 7.0, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, flick: 28, turb: 1.06,
-      gasGain: 1.35, hotI: 4.00, burn: 0.36, filW: 0.165, bodyW: 0.48,
+      bands: 9.0, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.44, flick: 28, turb: 1.06,
+      gasGain: 0.98, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.62,
       skirtW: 0.98, skirtI: 0.92, bodyD: 1.45, thick: 1.25, occ: 0.92,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 1.4, smearWidth: 0.032,
@@ -341,16 +412,16 @@ export const NITRO = {
     ramp: 0.78, curve: 1.55, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
       core: '#fff3d6', mid: '#ff9a20', edge: '#e04a12', spark: '#ffd487',
-      len: 3.70, rad: 0.700, splay: 0.020, standoff: 0.13, flameRise: 0.26, gain: 0.20,
-      screen: 0.540, profile: [0.80, 0.06, 1.18, 0.034],  // blunt bell — fat off the pipe, stubby
-      bands: 6.0, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.36, flick: 16, turb: 1.18,
+      len: 3.70, rad: 0.700, merge: 0.050, standoff: 0.13, flameRise: 0.26,
+      screen: 0.540, profile: [0.80, 0.06, 1.42, 0.034],  // blunt bell — fat off the pipe, stubby
+      bands: 7.5, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.40, flick: 16, turb: 1.18,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 1.05, hotI: 3.30, burn: 0.42, filW: 0.160, bodyW: 0.52,
-      skirtW: 1.06, skirtI: 1.04, bodyD: 1.30, thick: 1.25, occ: 0.92,
+      gasGain: 0.70, hotI: 3.40, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.66,
+      skirtW: 1.06, skirtI: 0.90, bodyD: 1.30, thick: 1.25, occ: 0.92,
       sparkRate: 82, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 1.4, smearWidth: 0.050,
       poolWidth: 3.2, poolLen: 7.6, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
@@ -363,10 +434,10 @@ export const NITRO = {
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
       core: '#ffffff', mid: '#9a72ff', edge: '#2a2fff', spark: '#ded2ff',
-      len: 4.60, rad: 0.520, splay: 0.030, standoff: 0.10, flameRise: 0.035, gain: 0.62,
+      len: 4.60, rad: 0.520, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 0.550, profile: [0.56, 0.11, 1.72, 0.022],  // long spindle — the slenderest of the four
-      bands: 8.5, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.46, flick: 74, turb: 0.86,
-      gasGain: 1.30, hotI: 4.40, burn: 0.30, filW: 0.155, bodyW: 0.44,
+      bands: 12.0, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.50, flick: 74, turb: 0.86,
+      gasGain: 0.88, hotI: 4.80, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.46,
       skirtW: 0.86, skirtI: 0.74, bodyD: 1.45, thick: 1.12, occ: 0.90,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 1.4, smearWidth: 0.042,
@@ -741,83 +812,66 @@ const NOISE_GLSL = /* glsl */`
   }
 `;
 
-// ---------------------------------------------------------------------------------------------
-// THE PLUME — ROUND 12: ONE CONTINUOUS VOLUME, NOT A STACK OF PARTS
+// ── ROUND 15: THE TAPER IS SOLVED IN SCREEN SPACE, AND ONLY A KNOT IS ALLOWED TO BE WHITE ────
 //
-// Rounds 3, 9, 10 and 11 each got a different verdict — "a chain of identical soft round sprites",
-// "~7 discrete hollow crescent shells", "a flat near-constant-width additive ribbon with a
-// hard-edged coloured rim" — and a fresh 1600x900 capture of r11 reads, in the director's words,
-// as "a FLAT HARD-EDGED ORANGE SLAB jutting straight out of the back of the car". Four notes, one
-// cause: the plume was assembled out of PARTS (bands, cards, shells, a core layer plus a sheath
-// layer), and whatever the part was, the part is what the eye found.
+// r14 made the shading a volume integral, which was right — the flutes, the self-occlusion and
+// the lack of any repeating unit all come from it and all survive. It still photographed as "a
+// flat hard-edged orange slab" / "a pair of laser rods", and a measured capture says why. Two
+// numbers from tools/_plume_ms.mjs on the LA supercar, r14:
 //
-// So there is now exactly ONE drawn layer for the gas — one axis-billboarded quad per outlet —
-// and its shading is a single closed-form volume integral. Nothing in it is a unit, a cell, a
-// shell or a card; there is no boundary between any two things because there are no two things.
+//   · peak luminance 247-255 for the whole of t = 0.05 .. 0.35, with a 22-27 px WIDE bar of
+//     >= 250 down the axis. A third of the column was pinned at the top of the range. Everything
+//     above the clip looks identical, so the shock train, the flutes and the colour ramp that the
+//     r14 march computes were all being drawn and then thrown away by the display transform.
+//   · the tip landed at screen y = 916 on a 900 px frame, i.e. OUTSIDE the picture, because the
+//     frame-containment clamp has a 0.66 floor. Everything the eye could see was the fat parallel
+//     FRONT of the cone; the entire necking half was off the bottom-left corner.
 //
-//   1. THE RADIAL PROFILE IS A SUM OF THREE CO-AXIAL GAUSSIANS, ONE PER TEMPERATURE.
-//      A gaussian volume has the property the whole effect needed and no previous round had: the
-//      line integral through a 3-D gaussian is ITSELF A GAUSSIAN, so "brighter through the middle
-//      where you look through more of it" is not painted on, it is what the maths does — and it
-//      has no boundary at ANY radius, at any zoom, in any frame, because a gaussian never ends.
-//      No `sqrt(1-r²)` wall (r9), no faired plateau with a shoulder (r11), no `discard` you can
-//      see: the quad is cut at 1.7 local half-widths, where the widest of the three terms is at
-//      2e-2 of its peak and its contribution is below the frame's quantisation.
+// And behind both of those, the mechanism nobody has attacked in fourteen rounds:
 //
-//      The three terms are the incandescent filament (uCore, 1/e half-width ~0.20 of the local
-//      column), the class-coloured body (uMid, ~0.45) and the cool turbulent skirt (uEdge, ~0.85).
-//      Their SUM runs white → hot class hue → saturated fringe → nothing, monotonically decreasing
-//      in value at every radius, so there is no local maximum anywhere off the axis for the eye to
-//      read as a rim. That is what killed r11's "crisp saturated red rim line": r11 built the
-//      fringe as an explicit zone with its own colour and its own alpha, and a zone has edges.
+// ── THE TAPER WAS DEFINED IN WORLD SPACE AND PHOTOGRAPHED THROUGH A PERSPECTIVE THAT CANCELS IT ─
 //
-//   2. IT NECKS DOWN, AND THE NECKING IS ALSO A DIMMING.
-//      Every class profile is now blunt at the lip (`neck` 0.62–0.80, not 0.16–0.38) and closes
-//      hard: the half-width at t = 0.8 is 8–27% of the half-width at the throat, per class. And
-//      because a narrower column is a SHORTER CHORD, the whole integral is multiplied by
-//      `pow(w, 0.55)` — the tail is thinner AND fainter, which is what a real jet does and what
-//      finally stops bloom from re-inflating the tapered end back to the throat's width. That
-//      last point is the actual mechanism behind three rounds of "near-constant width": once the
-//      column clips to white, the bloom halo around it has a FIXED screen radius, so a 4:1 taper
-//      arrives at the frame as a 1.3:1 slab. Nothing but the filament is allowed to clip now.
+// The chase camera sits BEHIND the car and the jet fires BACKWARD, i.e. towards the lens. So the
+// tail of the plume is several metres NEARER the camera than its throat, and perspective magnifies
+// it by exactly that ratio. On the LA supercar the throat sits ~8 m out and the visible end ~4 m
+// out: a factor of two of magnification applied to the thin end of the cone. A geometric 4:1 taper
+// arrives at the frame as 2:1, a 2:1 taper arrives as parallel — which is "near-constant width",
+// named by four critics in four different sets of words, and it is not something any amount of
+// profile-tuning can fix because the profile was never wrong.
 //
-//   3. EXPOSURE IS THE SHAPE. r11 multiplied a saturated class colour by a gas gain, a shock term
-//      and a 0.74-strength "roll it toward its own luminance" clip guard, and the result was a
-//      wide region pinned at white with a saturated ramp two pixels wide around it — a slab with a
-//      rim, drawn by the tonemap rather than by the geometry. Here the body peaks near 1.0 in its
-//      strongest channel (saturated, on the tonemap's curve, never posterised) and only the
-//      filament — a thread ~0.2 of the column wide, dead by mid-column — is driven past 2.0 so it
-//      blooms. Core, fringe and halo are three different exposures of one continuous field.
+// So the column's half-width now carries a PERSPECTIVE CORRECTION: uPersp is (depth at the tip /
+// depth at the throat − 1), measured from the live camera every frame, and the analytic cone is
+// multiplied by (1 + uPersp·t). Screen half-width ∝ world half-width / depth, so multiplying the
+// world half-width by depth(t)/depth(0) makes the SCREEN silhouette equal to the designed profile
+// from any camera, at any speed, on any framing. The jet reads as a cone whether the rig is behind
+// it, beside it or level with it — which is the only way a taper can be a reliable read in a game
+// where the camera is never in the same place twice.
 //
-//   4. AND IT IS PREMULTIPLIED, SO ONE LAYER BOTH EMITS AND OCCLUDES.
-//      out = emission + background·(1 − α), with α = 1 − exp(−τ) from the same integral. r11 needed
-//      two layers with two blend modes to get that (a composited core for opacity, an additive
-//      sheath for glow) and the seam between them was visible. One pass, both properties, and
-//      roughly the fill rate of the old sheath alone.
+// The other four changes, each at its own cause:
 //
-//   5. THE SHOCK TRAIN IS A MODULATION OF THAT FIELD, NEVER AN OBJECT IN IT. Phase runs as t^1.5,
-//      so cells get shorter and closer together downstream; amplitude decays as exp(−t/0.42), so
-//      cell 1 is at ~0.57 authority, cell 2 at ~0.23, cell 3 at ~0.12 and cell 4 does not exist;
-//      and a node only ever ADDS brightness and SWELLS the filament — the trough is exactly the
-//      column's own level, so there is no gap, no seam and nothing to segment.
-//
-//   6. THE ROAD IS NOT ALLOWED TO CUT IT. A 6 m column a metre across, hung 0.45 m off the deck,
-//      intersects the asphalt — and a depth-tested quad through a road plane draws a dead straight
-//      line, which is a §7 hard edge that no amount of shading fixes. The gas now fades over a
-//      0.8 m band as it approaches the car's own ground plane (uGroundY, so it works on LA's hills
-//      as well as on Vegas' flat), so the jet washes out on the tarmac instead of being sliced.
-// ---------------------------------------------------------------------------------------------
-
-// ── THE QUAD IS CUT TO THE CONE, NOT TO A RECTANGLE ──────────────────────────────────────────
-// The fragment shader's field is radial, so a rectangle around a cone that is 1.0 wide at the
-// throat and ~0.1 wide at the tail throws away most of its own fragments. The vertex shader
-// squeezes each ROW of the strip to the widest the gas can reach at that station (the analytic
-// half-width x the fray x the shader's reach in half-widths, plus the axis wander), and remaps
-// vUv.x by exactly the same factor so the fragment shader's `x` still lands in the same place in
-// column units. Same picture, well under half the fragments.
+//   · ONLY A KNOT MAY CLIP. The filament's base authority is 0.10 and what drives it is node²,
+//     so the bright, blooming, near-white part of the jet is a handful of small knots that get
+//     smaller and closer together downstream — never a bar. The uCore (white) end of the colour
+//     ramp starts at T = 0.92 instead of 0.58, so the BODY of the gas is the class colour and
+//     white is reserved for the knots. And the whole emission passes through a shoulder,
+//     em/(1 + em·uSoft), so however hot a knot gets it lands on a curve rather than on a plateau.
+//   · THE SHOCK TRAIN RUNS THE WHOLE VISIBLE LENGTH. amp decayed as exp(−t/0.40), so every cell
+//     lived inside the clipped region and none of them could be seen. exp(−t/0.55) with phase
+//     t^1.55 puts 5-6 cells across t = 0.2 .. 0.8, at t ≈ 0.21 / 0.34 / 0.44 / 0.53 / 0.60 / 0.68
+//     — spacing 0.125, 0.10, 0.09, 0.075, 0.07, monotonically shrinking, each fainter than the
+//     last. That is not a period; you cannot point at "the repeating unit" in a sequence where
+//     every term is smaller than the one before it.
+//   · THE SILHOUETTE IS BROKEN BY DETACHED GAS. A third density term — fl³, gated to the outer
+//     radii and ramped in with t — puts sparse blobs of gas OUTSIDE the column that are dense
+//     enough to be seen and sparse enough to read as torn-off wisps. The outline therefore has no
+//     radius at all: it is somewhere different at every station and in every frame.
+//   · AND THE END IS RAGGED ACROSS THE COLUMN, not just along it. The cut-off station is jittered
+//     by an azimuthal noise as well as an axial one, so the column frays out instead of coming to
+//     a smooth analytic point.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 const PLUME_VERT = /* glsl */`
   uniform vec4 uProf;
-  uniform float uTurb, uPad, uFitPad, uReach, uNeck;
+  uniform float uTurb, uPad, uFitPad, uReach, uNeck, uPersp;
   varying vec2 vUv;
   varying float vDepth;
   varying float vWY;
@@ -826,18 +880,20 @@ const PLUME_VERT = /* glsl */`
     float u    = clamp((t - pr.y) / max(1.0 - pr.y, 1e-3), 0.0, 1.0);
     float dec  = pow(1.0 - u, pr.z);
     float fil  = pr.w * pow(1.0 - u, 0.55) * (1.0 - u * u);
-    return rise * sqrt(dec * dec + fil * fil);
+    // the same perspective correction the fragment shader applies — the strip has to be cut to
+    // the shape that is actually going to be shaded, or it clips the silhouette flat
+    return rise * sqrt(dec * dec + fil * fil) * clamp(1.0 + uPersp * t, 0.20, 2.40);
   }
   void main(){
     // The fray and the wander in PLUME_FRAG both ramp in with t, so the strip's allowance does
     // too: cutting every row to the worst case the TAIL can reach made the throat — the widest and
     // therefore most expensive row in the strip — 70% overdraw for nothing.
     float fray = uFitPad * uTurb * smoothstep(0.0, 0.90, uv.y);
-    // ...and the shock train now swells the column as well as brightening it (see PLUME_FRAG),
-    // so the strip has to carry the fattest a bulge can get or it clips the silhouette flat —
-    // which would put a dead straight line down the side of the jet, the §7 tell in person.
+    // ...and the shock train swells the column as well as brightening it, and the wisp term puts
+    // gas outside it, so the strip has to carry the fattest the silhouette can get or it clips it
+    // flat — which would put a dead straight line down the side of the jet, the §7 tell in person.
     float lim  = uReach * coneWv(uv.y, uProf) * (1.0 + fray) * (1.0 + uNeck)
-               + 0.28 * uTurb * smoothstep(0.03, 0.62, uv.y) + 0.06;
+               + 0.18 * uTurb * smoothstep(0.03, 0.62, uv.y) + 0.05;
     float sq   = clamp(lim / uPad, 0.05, 2.60);
     vec3 p = position;
     p.x *= sq;
@@ -856,7 +912,7 @@ const PLUME_FRAG = /* glsl */`
   uniform float uTime, uLevel, uPhase, uTurb, uFlick;
   uniform float uBands, uBandSpeed, uBandAmt, uNeck;
   uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD;
-  uniform float uThick, uOcc, uPad, uReach, uFade;
+  uniform float uThick, uOcc, uPad, uReach, uFade, uPersp, uSoft, uWisp;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
   varying vec2 vUv;
   varying float vDepth;
@@ -873,22 +929,24 @@ const PLUME_FRAG = /* glsl */`
     float x = (vUv.x - 0.5) * 2.0 * uPad;      // lateral, in units of the column's reference radius
 
     // ── 1. THE SHOCK TRAIN, SOLVED FIRST, AS A FUNCTION OF t ALONE ────────────────────────────
-    // Phase runs as t^1.30 and amplitude as exp(-t/0.40), so the cells get SHORTER, CLOSER
-    // TOGETHER and FAINTER downstream all at once — which is what a real diamond train does and
-    // the reason you cannot find a period in it. Cell 1 sits at ~0.62 authority, cell 2 at ~0.26,
-    // cell 3 at ~0.11 and there is no cell 4. Three objects that each halve are not a repeat.
-    float cellF = pow(t, 1.30) * uBands;
-    float jit  = fbm2(vec2(cellF * 0.90 + uPhase * 5.0, 11.0)) - 0.5;
-    float bp   = (cellF + jit * 0.16 - 0.050) * 6.2831853 + uPhase * 1.7
-               + 0.24 * sin(uTime * uBandSpeed * 0.055);       // stands still; only breathes
+    // Phase runs as t^1.55 and amplitude as exp(-t/0.55). With uBands ~ 9-12 the cells land at
+    // t ~ 0.21 / 0.34 / 0.44 / 0.53 / 0.60 / 0.68 — spacings 0.125, 0.10, 0.09, 0.075, 0.07 —
+    // so they get SHORTER, CLOSER TOGETHER and FAINTER downstream all at once, which is what a
+    // real diamond train does and the reason you cannot find a period in it. r14 decayed the
+    // amplitude as exp(-t/0.40), which put every cell inside the part of the column that was
+    // clipped white: the train was mathematically present and optically absent.
+    float cellF = pow(t, 1.55) * uBands;
+    float jit  = fbm2(vec2(cellF * 0.80 + uPhase * 5.0, 11.0)) - 0.5;
+    float bp   = (cellF + jit * 0.13) * 6.2831853 + uPhase * 1.7
+               + 0.20 * sin(uTime * uBandSpeed * 0.055);       // stands still; only breathes
     float ci   = floor(bp * 0.1591549 + 0.5);
     float bf   = 0.86 + 0.18 * sin(uTime * uFlick * 0.29 + uPhase * 2.0)
                       + 0.12 * sin(uTime * uFlick * 0.83 + ci * 1.7);
-    float amp  = smoothstep(0.006, 0.055, t) * exp(-t / 0.40);
-    amp *= 0.52 + 0.84 * vn(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0));
+    float amp  = smoothstep(0.010, 0.075, t) * exp(-t / 0.55);
+    amp *= 0.55 + 0.80 * vn(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0));
     amp  = clamp(amp * uBandAmt * clamp(bf, 0.35, 1.30), 0.0, 1.0);
     float sw   = sin(bp);                        // signed: +1 at a node, -1 halfway between two
-    float sh   = 1.05 + 0.70 * vn(vec2(ci * 0.37 + 7.3, uPhase * 4.0 + 1.7));
+    float sh   = 1.25 + 0.90 * vn(vec2(ci * 0.37 + 7.3, uPhase * 4.0 + 1.7));
     float node = amp * pow(0.5 + 0.5 * sw, sh);  // the bright knot, one-sided, never a trough
 
     // ── 2. ONE HALF-WIDTH PER STATION ─────────────────────────────────────────────────────────
@@ -897,56 +955,68 @@ const PLUME_FRAG = /* glsl */`
     float nA = fbm3(vec2(t * 9.0 - uTime * 1.30, uPhase * 17.0 + 3.0));
     float nB = vn(vec2(t * 21.0 - uTime * 2.60, uPhase * 23.0 + 5.0));
 
-    float w = coneW(t, uProf);
+    // ── THE PERSPECTIVE CORRECTION — THIS IS THE TAPER ────────────────────────────────────────
+    // uPersp = depth(tip)/depth(throat) - 1, measured from the live camera. Screen half-width is
+    // world half-width / depth, so scaling the world half-width by depth(t)/depth(0) makes the
+    // SCREEN silhouette equal to the class profile from any camera. Without it, a jet fired
+    // backwards at a chase camera has its thin end magnified by the ratio of those two depths —
+    // on the LA supercar about 2x — and a 4:1 cone photographs as 2:1, a 2:1 cone as parallel.
+    // Depth along the axis is exactly linear in t, so a linear ramp is exact, not an approximation.
+    float pc = clamp(1.0 + uPersp * t, 0.20, 2.40);
+
+    float w = coneW(t, uProf) * pc;
     w *= 1.0 - uNeck * amp * sw;                 // THE DIAMONDS, AS GEOMETRY: a waist at each node
-    w *= 1.0 + mix(0.06, 0.34, smoothstep(0.04, 0.92, t)) * uTurb * (nA - 0.5) * 2.0;
-    w *= 1.0 + 0.13 * uTurb * (nB - 0.5) * 2.0 * smoothstep(0.08, 0.70, t);
+    w *= 1.0 + mix(0.06, 0.46, smoothstep(0.04, 0.92, t)) * uTurb * (nA - 0.5) * 2.0;
+    w *= 1.0 + 0.15 * uTurb * (nB - 0.5) * 2.0 * smoothstep(0.08, 0.70, t);
     // The mouth is a POINT on the outlet, not a cut: uv.y = 0 is one straight row of vertices
     // across the full throat, so anything that ramps alpha in over the first few per cent draws
     // the near end as a dead straight vertical edge. Closing the half-width instead gives the
     // column a rounded nose that converges onto the exhaust tip.
-    w  = max(w * sqrt(smoothstep(0.0, 0.050, t)), 0.006);
+    w  = max(w * sqrt(smoothstep(0.0, 0.050, t)), 0.005);
 
     // the axis wanders, in units of the LOCAL half-width so the tail does not snake off centre
-    float cx = (nA - 0.5) * 0.40 * uTurb * max(w, 0.20) * smoothstep(0.03, 0.66, t);
+    float cx = (nA - 0.5) * 0.42 * uTurb * max(w, 0.16) * smoothstep(0.03, 0.66, t);
 
     float b  = (x - cx) / w;                     // impact parameter, in LOCAL half-widths
     float b2 = b * b;
     if (b2 >= uReach * uReach) discard;          // outside the gas entirely — nothing to march
 
-    // the column ends by running out of gas, at a different t at every radius and in every frame
-    float ax = 1.0 - smoothstep(uEnd0, uEnd1, t + 0.20 * (nA - 0.5));
+    // The column ends by running out of gas, at a different t at every radius, on every SIDE and
+    // in every frame: the axial jitter alone still terminated the whole cross-section at once,
+    // which is an analytic point on the end of an analytic cone. With the azimuthal term the tail
+    // frays — one side outruns the other and the last of the gas breaks up into wisps.
+    float endJ = 0.26 * (nA - 0.5)
+               + 0.17 * (vn(vec2(b * 1.7 + 5.0, t * 2.4 + uPhase * 3.0)) - 0.5);
+    float ax = 1.0 - smoothstep(uEnd0, uEnd1, t + endJ);
     if (ax < 0.003) discard;
 
     // ── 3. HOW MUCH GAS, AND HOW HOT, AT THIS STATION ─────────────────────────────────────────
     float puff   = 0.86 + 0.28 * fbm2(vec2(t * 2.2 - uTime * 1.7, uPhase * 7.0 + 2.0));
-    float bodyA  = (0.22 + 0.78 * exp(-t * 1.60)) * puff;
-    float skirtA = uSkirtI * (0.34 + 0.66 * smoothstep(0.0, 0.24, t)) * exp(-t * 0.90) * puff;
-    // The filament is the ONLY thing in the jet allowed past the bloom threshold, and what drives
-    // it there is a shock NODE, not the base level — so the clipped, blooming, white part of the
-    // plume is a row of knots that get smaller, dimmer and closer together, and between them the
-    // core is merely hot. A filament that is white for the whole first third is the "hard-edged
-    // uniform white stripe" every critic has named, and under bloom that bar is also what
-    // re-inflates a 10:1 taper back to a constant-width rod.
-    float hotA   = uHot * exp(-t / uBurn) * (0.19 + node * 3.40);
-    float kc = uFilW * (1.0 + node * 1.45);      // a node SWELLS the filament, never pinches it
+    float bodyA  = (0.20 + 0.80 * exp(-t * 1.75)) * puff;
+    float skirtA = uSkirtI * (0.32 + 0.68 * smoothstep(0.0, 0.24, t)) * exp(-t * 0.95) * puff;
+    // ── THE ONLY THING ALLOWED PAST THE BLOOM THRESHOLD IS A KNOT ─────────────────────────────
+    // Base authority 0.10, and what drives the filament white is node SQUARED — so a knot is
+    // shorter than the cell that carries it, the bright part of the jet is a row of small hot
+    // beads that shrink and close up with distance, and between them the core is merely hot.
+    // r14 ran this at 0.19 + 3.40·node and measured 247-255 for a third of the column: above the
+    // clip everything looks identical, so a wide saturated core does not merely look bad, it
+    // deletes every piece of structure the march computed inside it.
+    float hotA   = uHot * exp(-t / uBurn) * (0.10 + node * node * 2.60);
+    float kc = uFilW * (1.0 + node * 1.30);      // a node SWELLS the filament, never pinches it
     float kb = uBodyW;
     float ks = uSkirtW;
 
     // ── 4. MARCH THE VIEW CHORD THROUGH THE COLUMN ────────────────────────────────────────────
-    // This is the round-14 change, and it is the reason the previous nine rounds could not get
-    // there by tuning. Everything before this evaluated ONE closed-form radial profile per pixel:
-    // a 2-D field painted on a quad, which is an airbrushed ribbon however cleverly it is shaded,
-    // because a ribbon is what it is. Here the fragment integrates emission and absorption along
-    // the ray THROUGH the gas, front to back, and three things fall out that no 2-D field has:
+    // The fragment integrates emission and absorption along the ray THROUGH the gas, front to
+    // back. Three things fall out that no 2-D radial profile painted on a quad has:
     //
     //   · SELF-OCCLUSION. Gas nearer the lens absorbs the gas behind it, so the column has an
     //     inside. The hot core is seen THROUGH the cool skirt and takes its colour on the way out,
     //     which is what makes a fringe with no edge in it — there is no zone to draw a rim around.
     //   · FLUTES THAT WRAP. The turbulence is sampled on the UNIT CIRCLE around the axis, so it is
     //     periodic around the column by construction and varies with depth as well as across the
-    //     quad. That is what a jet's shear layer looks like, and it is not something a 2-D field
-    //     can fake: it breaks the silhouette AND the interior together, in a correlated way.
+    //     quad. That is what a jet's shear layer looks like, and it breaks the silhouette AND the
+    //     interior together, in a correlated way.
     //   · A CHORD THAT SHORTENS WITH THE TAPER. The ray passes through less gas at the tail
     //     because the tail is narrower, so the necking is automatically also a dimming.
     //
@@ -956,16 +1026,12 @@ const PLUME_FRAG = /* glsl */`
     float halfC = sqrt(uReach * uReach - b2);
     float du = 2.0 * halfC / float(STEPS);
     // The integral is taken in units of the LOCAL half-width, so it is the same integral at every
-    // station; wk is what converts it back to world path length.
-    //
-    // ── THIS EXPONENT IS THE TAPER ────────────────────────────────────────────────────────────
-    // It was 0.42-0.55 for six rounds and it is most of why the note kept coming back as
-    // "near-constant width". The bloom pass hangs a halo of FIXED SCREEN RADIUS on anything above
-    // its threshold, so a column whose whole length sits above that threshold arrives at the frame
-    // with ~20 px of halo welded to both sides at every station — and a 7:1 taper on a 100 px
-    // throat photographs as 1.4:1. At ^0.95 the emission falls almost as fast as the width does:
-    // the throat is over the threshold and blooms, the tail is well under it and has no halo at
-    // all, so what reaches the frame is the taper the geometry actually has.
+    // station; wk is what converts it back to world path length. The exponent is high (^0.95) so
+    // the emission falls almost as fast as the width does: the throat is over the bloom threshold
+    // and haloes, the tail is well under it and has no halo at all. UnrealBloomPass hangs a halo
+    // of FIXED SCREEN RADIUS on everything above its threshold, so a column that is above it along
+    // its whole length arrives at the frame with ~20 px welded to both sides at every station and
+    // a 7:1 taper photographs as 1.4:1.
     float wk = pow(clamp(w, 0.03, 1.6), 0.95);
     float dl = du * wk;
 
@@ -985,8 +1051,9 @@ const PLUME_FRAG = /* glsl */`
       // anything that varies fast around the axis averages straight back out to a smooth ribbon.
       float fl = vn(vec2(c.x * 1.55 + t * 5.2 - uTime * 3.1, c.y * 1.55 + 11.0)) * 0.62
                + vn(vec2(c.x * 3.10 - t * 9.6 + uTime * 1.7, c.y * 3.10 + 31.0)) * 0.38;
+      float shear = smoothstep(0.10, 0.80, rlen);
       // the supersonic core is smooth; only the shear layer outside it boils
-      fl = mix(1.0, 0.12 + 1.86 * fl, uTurb * smoothstep(0.10, 0.80, rlen));
+      float flm = mix(1.0, 0.12 + 1.86 * fl, uTurb * shear);
 
       float g1 = exp(-rr2 / (kc * kc));          // incandescent filament
       // ── THE BODY IS A SUPER-GAUSSIAN, exp(-(r/kb)^3) ──────────────────────────────────────
@@ -997,50 +1064,66 @@ const PLUME_FRAG = /* glsl */`
       // across the middle and falls faster outside, so the same total light arrives as a WIDE
       // SATURATED column that never leaves the tonemap's slope. It still has zero derivative on
       // the axis and no shoulder, so there is no contour anywhere for the eye to read as an edge.
-      // (rr2*rlen == r^3, and rlen is already in hand from the flute lookup — no extra transcendental.)
       float g2 = exp(-rr2 * rlen / (kb * kb * kb));
-      float g3 = exp(-rr2 / (ks * ks));          // the cool skirt — this is what draws the outline
+      float g3 = exp(-rr2 / (ks * ks));          // the cool skirt
+      // ── DETACHED WISPS: THE SILHOUETTE HAS NO RADIUS ─────────────────────────────────────
+      // fl CUBED, gated to the outer radii and ramped in with t, is sparse: mostly zero, and
+      // occasionally a blob of real density well outside the column. That is what tears the
+      // outline up. Every previous round drew its outline with a smooth analytic falloff, which
+      // is an airbrushed edge however soft it is — softness is not irregularity, and the eye
+      // reads a smooth boundary as the edge of an OBJECT no matter how gradual it is.
+      float wsp = fl * fl * fl * uWisp
+                * exp(-rr2 / (1.55 * 1.55))
+                * smoothstep(0.30, 1.30, rlen) * smoothstep(0.04, 0.42, t);
 
       // ── WHAT DRAWS THE OUTLINE HAS TO BE THE TURBULENT PART ──────────────────────────────
-      // Rounds 6-13 all let the smooth BODY gaussian set the silhouette, with a skirt an order of
-      // magnitude too thin to be seen — which is the whole of "a smooth airbrushed ribbon". The
-      // two are now separated: the body is a dense, nearly smooth core (the supersonic part of a
-      // jet really is smooth), and the shear layer outside it is thick and modulated by fl SQUARED,
-      // so the boundary of the visible gas sits at a different radius at every station, in every
-      // frame, and is never the analytic curve.
-      float dens = g2 * uBodyD * mix(1.0, fl, 0.30)
-                 + g3 * skirtA * 1.5 * fl * fl;
+      // The body is a dense, nearly smooth core (the supersonic part of a jet really is smooth),
+      // and the shear layer outside it is thick and modulated by fl SQUARED, so the boundary of
+      // the visible gas sits at a different radius at every station, in every frame, and is never
+      // the analytic curve.
+      float dens = g2 * uBodyD * mix(1.0, flm, 0.34)
+                 + g3 * skirtA * 1.55 * flm * flm
+                 + wsp;
       // ...and what glows. T is a TEMPERATURE, and colour is a function of it — so core, body
       // and fringe are three readings of one continuous field rather than three stacked zones.
-      float T = g2 * bodyA + g3 * skirtA * 0.55 + g1 * node * 0.55;
-      vec3 col = mix(uEdge, uMid, smoothstep(0.045, 0.46, T));
-      col = mix(col, uCore, smoothstep(0.58, 1.15, T));
-      vec3 e = col * (dens * (0.22 + T * 1.10)) + uCore * (g1 * hotA);
+      // The white end of the ramp starts at T = 0.92 (r14: 0.58), which is above anything the
+      // body of the gas reaches: the column is the CLASS COLOUR and white belongs to the knots.
+      float T = g2 * bodyA + g3 * skirtA * 0.55 + g1 * node * 0.60;
+      vec3 col = mix(uEdge, uMid, smoothstep(0.05, 0.52, T));
+      col = mix(col, uCore, smoothstep(0.92, 1.85, T));
+      vec3 e = col * (dens * (0.20 + T * 1.05)) + uCore * (g1 * hotA);
 
       float dtau = dens * dl * uThick;
       acc   += trans * e * dl;
       trans *= exp(-dtau);
       u += du;
+      // Once the near side of the column has absorbed 97% of the light, nothing behind it can
+      // change the pixel by an 8-bit step. On the SUV's throat that is most of the march.
+      if (trans < 0.03) break;
     }
 
     vec3 em = acc * uGain;
-    // ── A SINGLE CHANNEL MUST NOT CLIP ON ITS OWN ─────────────────────────────────────────────
-    // uEdge is a deeply saturated class colour — the supercar's #2a2fff is (0.02, 0.03, 1.0) in
-    // linear — so its blue can reach 1.0 while red and green are still near zero. A lone clipped
-    // channel is a POSTERISED region with a hard boundary, and that boundary is the "crisp
-    // saturated rim line" this piece has been marked down for. Onset sits above anything the
-    // fringe or the body ever reaches, so only the knots give up chroma, and they give it up
-    // smoothly, into the white the filament is already heading for.
+    // ── NOTHING MAY ARRIVE AT THE FRAME ON A PLATEAU ──────────────────────────────────────────
+    // Two stages. First: a hot gas gives up its chroma before it gives up its structure, so as the
+    // peak channel climbs the colour walks towards neutral — which also stops uEdge (the supercar's
+    // #2a2fff is (0.02, 0.03, 1.0) in linear) clipping its blue alone, and a lone clipped channel
+    // is a POSTERISED region with a hard boundary. Second: a shoulder, em/(1 + em·uSoft), so a knot
+    // four times the body's brightness still lands on a curve. Between them, the difference between
+    // a knot and the gas around it survives the display transform instead of both going to 255.
     float pk = max(max(em.r, em.g), em.b);
-    em = mix(em, vec3(pk), clamp((pk - 1.60) * 0.26, 0.0, 0.55));
+    em = mix(em, vec3(pk), clamp((pk - 0.85) * 0.42, 0.0, 0.62));
+    em = em / (1.0 + em * uSoft);
 
     float a = (1.0 - trans) * uOcc;
 
     // ── THE ROAD MUST NOT CUT IT ──────────────────────────────────────────────────────────────
-    // Relative to the CAR's ground plane, not to world zero, so this works on a hill. A depth
-    // tested quad through the asphalt draws a dead straight line, which is a §7 hard edge no
-    // amount of shading fixes.
-    float gnd  = smoothstep(-0.55, 0.06, vWY - uGroundY);
+    // Relative to the CAR's ground plane, not to world zero, so this works on a hill. The column's
+    // own half-width is larger than the height its outlet sits at, so part of the gas is BELOW the
+    // road surface — and a depth-tested quad passing under the asphalt is occluded along a
+    // perfectly straight world-space line, i.e. a §7 hard edge drawn by the depth buffer rather
+    // than by anything in this shader. The band is ~0.76 m and centred so the alpha is already
+    // down to ~15% AT road level: the jet washes out into the tarmac instead of being sliced by it.
+    float gnd  = smoothstep(-0.18, 0.58, vWY - uGroundY);
     float near = smoothstep(uNear0, uNear1, vDepth);
     float k = uLevel * uFade * gnd * near * ax;
     em *= k; a *= k;
@@ -1129,6 +1212,19 @@ function plumeMaterial(fx, phase) {
       uFade: { value: 1 },
       uNear0: { value: 0.85 },
       uNear1: { value: 2.60 },
+      // ── THE PERSPECTIVE CORRECTION ────────────────────────────────────────────────────────
+      // depth(tip)/depth(throat) - 1, refreshed every frame from the live camera in update().
+      // 0 = the column is broadside to the lens and the world-space cone is what you see; -0.5 =
+      // the tail is half as far away as the throat, so it is being magnified 2x and the world
+      // half-width has to be halved along the way to put the DESIGNED taper on screen. See the
+      // block comment above PLUME_VERT: this is the whole of "near-constant width".
+      uPersp: { value: 0 },
+      // the shoulder on the plume's own emission, em/(1 + em*uSoft): 0.22 -> everything asymptotes
+      // to ~4.5, so a knot four times the body's brightness still lands on a curve rather than on
+      // a plateau, and the structure inside it survives the display transform.
+      uSoft: { value: 0.22 },
+      // density of the detached wisps outside the column (fl^3 — sparse by construction)
+      uWisp: { value: fx.wisp ?? 0.55 },
     },
     vertexShader: PLUME_VERT,
     fragmentShader: PLUME_FRAG,
@@ -1363,6 +1459,13 @@ const WHITE = new THREE.Color(0xffffff);
  * screen presence — the tip lands inside the frame far more often.
  */
 const VIS_T = 0.90;
+/**
+ * ...and where it actually STOPS. uEnd0/uEnd1 fade the gas out between t = 0.84 and 1.12 with a
+ * jitter either side, so the last visible wisp is at roughly 1.0 of the solved length. The frame
+ * containment clamp probes THIS point, not VIS_T: a column whose tip is outside the picture shows
+ * only its parallel front half, which is the composition half of "near-constant width".
+ */
+const END_T = 1.00;
 
 export class NitrousJet {
   /**
@@ -1661,10 +1764,17 @@ export class NitrousJet {
     // binding constraint in most framings, and every metre they took off the column was paid back
     // as WIDTH, which is how a jet becomes a slab. A tapering column that runs out of frame at the
     // very edge still shows its whole taper; one cropped at 8% in does not.
-    const halfW = camera.aspect * 0.5 - 0.045;
-    const halfH = 0.5 - 0.045;
+    const halfW = camera.aspect * 0.5 - 0.038;
+    const halfH = 0.5 - 0.038;
+    // (r15) The containment probe was at VIS_T = 0.90 L and the floor was 0.66, and on the LA
+    // supercar the pair of them put the tip at screen y = 916 on a 900 px frame: the whole necking
+    // half of the cone was off the bottom-left corner and the only thing in the picture was the
+    // fat, parallel FRONT of it. That is one of the two measured mechanisms behind "near-constant
+    // width" and it is a composition bug, not a shading one. The probe is now END_T (essentially
+    // the tip) and the floor is 0.86 — the jet may be shortened by a seventh to stay in shot, and
+    // if it still will not fit, it is because the car itself is half out of frame.
     const inBox = (L) => {
-      const t = L * VIS_T;
+      const t = L * END_T;
       return Math.abs(sxT(t)) < halfW && Math.abs(syT(t)) < halfH;
     };
     if (Math.abs(sx0) < halfW && Math.abs(sy0) < halfH && !inBox(out.len)) {
@@ -1673,7 +1783,7 @@ export class NitrousJet {
         const mid = (flo + fhi) * 0.5;
         if (inBox(mid)) flo = mid; else fhi = mid;
       }
-      const fitted = Math.max(flo, out.len * 0.66);
+      const fitted = Math.max(flo, out.len * 0.86);
       out.fit = fitted / out.len;
       out.len = fitted;
     }
@@ -1778,10 +1888,13 @@ export class NitrousJet {
     //            actually going.
     const hold = 1 - Math.exp(-Math.max(0, this.igT) / 0.42);
     const stretch = 0.94 + 0.12 * smoothstep(16, 82, speed);
-    // The floors are HIGH now (0.66, 0.78): the governor below sets the sustained size, and these
-    // two terms only carve the per-class spool out of it. A spooling SUV reads as a jet that has
-    // not opened up yet — about 2/3 size — rather than as the stub it used to be.
-    const lenDrive = (0.66 + 0.34 * ramp) * (0.78 + 0.22 * hold) * stretch;
+    // The floors are HIGH: the governor below sets the sustained size, and these two terms only
+    // carve the per-class spool out of it. A spooling SUV reads as a jet that has not opened up
+    // yet — about 4/5 size — rather than as the stub it used to be. (r14) 0.66/0.78 -> 0.80/0.86,
+    // because §8's canonical nitrous capture is taken 0.4 s in, i.e. while BOTH terms are still
+    // below 1, and the two of them compounding took a third off the one frame this piece is
+    // most often judged on.
+    const lenDrive = (0.80 + 0.20 * ramp) * (0.86 + 0.14 * hold) * stretch;
 
     // ── screen-space governor ────────────────────────────────────────────────────────────────
     // `hero` is opt-in (main.js passes it for the player). Opponent jets are seen from 20–120 m
@@ -1791,9 +1904,9 @@ export class NitrousJet {
     // to be the payoff — 240 mph, a second and a half in — showed exactly the same jet as the
     // ignition frame, and because the chase rig is further back and faster by then it photographed
     // as a SHRINK. The governor's target now opens up over the first ~1.1 s of sustained boost:
-    // ignition is short and hot at 0.84x, the sustain is 1.16x, so nitrous-long is guaranteed
+    // ignition is short and hot at 0.90x, the sustain is 1.18x, so nitrous-long is guaranteed
     // longer on screen than nitrous no matter what the rig is doing.
-    const grow = 0.84 + 0.32 * (1 - Math.exp(-Math.max(0, this.igT) / 1.10));
+    const grow = 0.90 + 0.28 * (1 - Math.exp(-Math.max(0, this.igT) / 1.10));
     let gLen = 1, gRad = 1, axial = 0;
     if (camera && opts.hero) {
       const g = this._governor(camera, (fx.screen ?? 0.40) * grow);
@@ -1863,11 +1976,41 @@ export class NitrousJet {
     // The plume's ground plane, so the gas can fade out where it meets the road instead of being
     // sliced by it. The jet's group sits on the car's origin, which is on the deck (see §Conventions).
     this.group.getWorldPosition(_v);
+
+    // ── THE PERSPECTIVE CORRECTION (r15) ─────────────────────────────────────────────────────
+    // The chase camera sits behind the car and the jet fires backwards, i.e. AT the lens, so the
+    // tail of the column is metres nearer the camera than its throat and perspective magnifies it
+    // by exactly that ratio. On the LA supercar the throat is ~8 m out and the visible end ~4 m
+    // out: a factor of two applied to the thin end of the cone, which turns a 4:1 geometric taper
+    // into 2:1 and a 2:1 taper into parallel sides. That is "near-constant width" — named by four
+    // critics in four different sets of words — and no profile can fix it, because the profile was
+    // never what was wrong. Screen half-width is world half-width / depth, so multiplying the
+    // world half-width by depth(t)/depth(0) puts the DESIGNED silhouette on screen from any
+    // camera. Depth along the axis is exactly linear in t, so `1 + uPersp*t` is exact.
+    let persp = 0;
+    if (camera) {
+      const n0 = this.nozzles[0];
+      n0.group.getWorldPosition(_gp);
+      n0.group.getWorldQuaternion(_gq);
+      _gd.set(0, 0, -1).applyQuaternion(_gq);
+      _gp.applyMatrix4(camera.matrixWorldInverse);
+      _gd.transformDirection(camera.matrixWorldInverse);
+      const d0 = -_gp.z;                                  // view depth at the throat
+      const dTip = -(_gp.z + _gd.z * baseLen);            // ...and at the tip
+      // Clamped both ways: a jet fired straight at a close lens would otherwise ask for a tail of
+      // literally zero width (and the strip fit in PLUME_VERT would collapse to a sliver), and a
+      // jet seen from in front would ask for a tail wider than its own throat, which is a torch
+      // beam. -0.72 still buys a 3.6x correction, which is more than any framing in the game needs.
+      if (d0 > 0.6 && dTip > 0.6) persp = clamp(dTip / d0 - 1, -0.72, 1.10);
+    }
+    this._persp = this._persp === undefined ? persp : this._persp + (persp - this._persp) * gk;
+
     for (const m of this.coreMats) {
       m.uniforms.uTime.value = this.t;
       m.uniforms.uLevel.value = jetLevel;
       m.uniforms.uFade.value = coreFade;
       m.uniforms.uGroundY.value = _v.y;
+      m.uniforms.uPersp.value = this._persp;
     }
 
     const camQ = camera ? camera.quaternion : null;
