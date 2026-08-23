@@ -788,6 +788,27 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     if (gr.fit) {
       const f = gr.fit, ox = gr.x ?? 0, oy = gr.y;
       const rel = (s, o) => (s ? [s[0] - o, s[1] - o] : null);
+      /**
+       * ---- A SCREEN MAY NOT BE WIDER THAN ITSELF -------------------------------------------
+       *
+       * ROUND-4. `span` is the measured cut of the APERTURE, and generating the weave from it is
+       * right for a screen that fills its hole — but three of these screens do not. The muscle
+       * car's chrome centre section lives BETWEEN its two pairs of sealed beams and the truck's
+       * slat pack lives between its two head units, and both were being generated across the whole
+       * mouth: at 8x the muscle's authored 0.60 m screen had laid two 140 mm satin slabs straight
+       * over both headlamp pairs. Every span is now intersected with the part's own rectangle, so
+       * a bar still dies into the recess wall wherever the screen reaches it and dies into its own
+       * frame everywhere else. Nothing changes for a screen that does fill its hole — the wall is
+       * inside the authored rectangle there, so the intersection is the wall.
+       */
+      const hwA = (gr.w ?? 0) * 0.5, hhA = (gr.h ?? 0) * 0.5;
+      const cutTo = (sp, lo, hi) => {
+        if (!sp) return null;
+        const a = Math.max(sp[0], lo), b = Math.min(sp[1], hi);
+        return b - a > 0.004 ? [a, b] : null;
+      };
+      const cutX = (sp) => cutTo(sp, -hwA, hwA);
+      const cutY = (sp) => cutTo(sp, -hhA, hhA);
       const bx = fitRect(f);
       let yLo = f.y - f.hh, yHi = f.y + f.hh, xLo = f.x - f.hw, xHi = f.x + f.hw;
       // the real extremes of the wall, so the weave covers the whole hole and not the rectangle
@@ -808,11 +829,27 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       }
       void bx;
       span = {
-        bounds: { yLo: yLo - oy, yHi: yHi - oy, xLo: xLo - ox, xHi: xHi - ox },
-        inX: (y) => rel(spanIn(f, y + oy), ox),
-        outX: (y) => rel(spanOut(f, y + oy), ox),
-        inY: (x) => rel(spanInY(f, x + ox), oy),
-        outY: (x) => rel(spanOutY(f, x + ox), oy),
+        bounds: {
+          yLo: Math.max(yLo - oy, -hhA), yHi: Math.min(yHi - oy, hhA),
+          xLo: Math.max(xLo - ox, -hwA), xHi: Math.min(xHi - ox, hwA),
+        },
+        /**
+         * HOW MUCH ROOM THERE ACTUALLY IS BEHIND THE SCREEN.
+         *
+         * ROUND-4. The muscle car's centre screen was NOT MISSING and NOT dark — it was inside the
+         * bodywork. `grilleMesh` set each bar's depth as a fraction of the authored `d` (160 mm),
+         * while `seat()` had put the screen's origin 27 mm in front of the recess floor, so every
+         * bar past the first third was 20-40 mm BEHIND that floor, i.e. sealed inside the closed
+         * body where nothing can see it. The mouth photographed as an empty black box.
+         *
+         * `d` is the LOOK the blueprint wants; `room` is what the hole can give. The weave is
+         * spread over the room and can no longer break through its own floor.
+         */
+        room: Math.abs(f.zFloor - (gr.z ?? 0)),
+        inX: (y) => cutX(rel(spanIn(f, y + oy), ox)),
+        outX: (y) => cutX(rel(spanOut(f, y + oy), ox)),
+        inY: (x) => cutY(rel(spanInY(f, x + ox), oy)),
+        outY: (x) => cutY(rel(spanOutY(f, x + ox), oy)),
       };
     }
     const g = grilleMesh({
@@ -835,10 +872,12 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     }
   }
 
-  // vents / intakes / louvres
+  // vents / intakes / louvres. Each one gets its OWN seed — see kit.js ventMesh: an identical
+  // louvre cell repeated at a constant pitch on every car is §7's repeat cap on its own.
+  let vSeed = 41;
   for (const v of bp.vents || []) {
     for (const sx of v.mirror === false ? [1] : [-1, 1]) {
-      const m = ventMesh({ w: v.w, h: v.h, fins: v.fins ?? 4, angle: v.angle ?? 0.5 });
+      const m = ventMesh({ w: v.w, h: v.h, fins: v.fins ?? 4, angle: v.angle ?? 0.5, seed: (vSeed += 37) });
       m.position.set(sx * (v.x ?? 0), v.y, v.z);
       m.rotation.set(v.rx ?? 0, sx * (v.ry ?? 0), v.rz ?? 0);
       detail.add(m);

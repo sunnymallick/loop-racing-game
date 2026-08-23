@@ -188,11 +188,11 @@ export const blueprint = {
      * get a 0.40 m square opening apiece, 30 mm clear of it, with the disc centred in the floor.
      */
     apertures: [
-      { y: 1.165, w: 1.04, h: 0.420, r: 0.050, depth: 0.070, rim: 0.034, shade: 1, lip: 0.016, lipW: 0.052 },
+      { y: 1.165, w: 1.04, h: 0.420, r: 0.050, depth: 0.104, rim: 0.034, shade: 1, lip: 0.016, lipW: 0.052 },
       { x: 0.750, y: 1.165, w: 0.40, h: 0.40, r: 0.062, depth: 0.062, rim: 0.032, shade: 1, lip: 0.014, lipW: 0.046, mirror: true },
       // 200 -> 230 mm so the driving lamps sit in the floor at their authored 155 mm instead of
       // being squeezed to 130 and dragging the intake screen down with them
-      { y: 0.790, w: 1.62, h: 0.230, r: 0.045, depth: 0.055, rim: 0.028, shade: 1, lip: 0.012, lipW: 0.044 },
+      { y: 0.790, w: 1.62, h: 0.230, r: 0.045, depth: 0.086, rim: 0.028, shade: 1, lip: 0.012, lipW: 0.044 },
     ],
   },
 

@@ -646,7 +646,7 @@ export function archReturn(mat, { depth = 0.30, rough = 0.55 } = {}) {
  * rather than crushing to #000 (§2.1). It rides `aCav`, which `loftTub` writes ONLY on the nose
  * and tail cap panels — the wheel arches keep `aWell` and are not touched by this.
  */
-export function capCavity(mat, { dark = 0.14, floor = 0.016 } = {}) {
+export function capCavity(mat, { dark = 0.155, floor = 0.024 } = {}) {
   const n = (x) => x.toFixed(4);
   return patchShader(mat, `cav|${n(dark)}|${n(floor)}`, (shader) => {
     shader.vertexShader = shader.vertexShader
@@ -2705,6 +2705,18 @@ export function loftTub(sections, {
     // ---- vertices ----------------------------------------------------------
     if (globalThis.__CAPLOG) console.log(`cap: LC=${LC} K=${K} verts=${LC * (K + 1)} dBar=${dBar.toFixed(2)}`);
     const base = V + extra.pos.length / 3;
+    /**
+     * ---- THE APEX IS ONE POINT, SO IT GETS ONE NORMAL ---------------------------------------
+     *
+     * ROUND-4. Level 0 is t = 0 in every column, so the fan's first row is LC COINCIDENT COPIES of
+     * the panel centre and the quads above it are LC slivers meeting at a point. Each of those
+     * copies accumulates only the two slivers that touch it, so each ends up with its own normal —
+     * and a few hundred slightly different normals radiating out of one point shades as a STAR.
+     * On the supercar, whose clip is a broad nearly flat face, that star was the X-shaped crease
+     * across the middle of the bumper that survived every other fix in this round. The row is
+     * welded below (see section 8): one summed normal, written back to all of them.
+     */
+    apexRows.push([base, LC]);
     for (let j = 0; j <= K; j++) {
       for (let i = 0; i < LC; i++) {
         const t = levels[i][j];
@@ -2888,6 +2900,7 @@ export function loftTub(sections, {
   };
   const noseFits = [], tailFits = [];
   const capCentres = [];
+  const apexRows = [];                       // [firstVertex, columns] of each cap fan's centre row
   let fits = tailFits;
   capPanel(0, true, tailCap);              // tail panel, facing -z
   fits = noseFits;
@@ -2921,6 +2934,12 @@ export function loftTub(sections, {
     }
   };
   accum(shell); accum(liner);
+  // weld each fan apex — see the note where `apexRows` is filled
+  for (const [a, n] of apexRows) {
+    let sx = 0, sy = 0, sz = 0;
+    for (let i = 0; i < n; i++) { sx += N[(a + i) * 3]; sy += N[(a + i) * 3 + 1]; sz += N[(a + i) * 3 + 2]; }
+    for (let i = 0; i < n; i++) { N[(a + i) * 3] = sx; N[(a + i) * 3 + 1] = sy; N[(a + i) * 3 + 2] = sz; }
+  }
   for (let i = 0; i < total; i++) {
     const l = Math.hypot(N[i * 3], N[i * 3 + 1], N[i * 3 + 2]) || 1;
     N[i * 3] /= l; N[i * 3 + 1] /= l; N[i * 3 + 2] /= l;
@@ -4299,13 +4318,26 @@ export function grilleMesh({
     yLo = b.yLo; yHi = b.yHi; xLo = b.xLo; xHi = b.xHi;
   }
   const H = Math.max(0.012, yHi - yLo), W = Math.max(0.012, xHi - xLo);
+  // how deep a bar may sit before it breaks through the recess floor — see the note on `room` in
+  // assemble.js. Without a measured hole the screen carries its own cavity box, so `d` is the room.
+  const room = span && span.room ? Math.max(0.010, span.room - 0.005) : d * 0.55;
 
   if (!span) {
     const back = new THREE.Mesh(roundedBox(w * 0.99, h * 0.99, d * 0.5, Math.max(0.02, CR * 0.92)), cavityMaterial());
     back.position.z = -d * 0.5;
     g.add(back);
   }
-  const barMat = frame === 'chrome' ? chromeMaterial({ color: '#b9bfc8', rough: 0.16 })
+  /**
+   * ROUND-4: a "chrome" grille bar is BRIGHT SATIN STEEL, not a mirror.
+   *
+   * A mirror has no diffuse term at all, so everything you see in it is its reflection — and now
+   * that `capCavity` closes an aperture down to a sixth of its shaded value (as it must, or the
+   * hole is a trough of body paint), a mirror standing inside that aperture reflects a black box
+   * and disappears. Measured on the muscle car's mouth: the 0.60 m centre screen came back within
+   * one level of the void behind it, i.e. the grille was not there. Satin steel keeps a diffuse
+   * term, so the bars catch the key light and draw themselves against the dark.
+   */
+  const barMat = frame === 'chrome' ? darkMetalMaterial({ color: '#aab2be', rough: 0.26, metal: 0.66 })
     : darkMetalMaterial({ color: '#1a1c21', rough: 0.45, metal: 0.7 });
   /**
    * ROUND-3: the mesh gets its own material, a SATIN STEEL rather than the frame's chrome.
@@ -4330,7 +4362,21 @@ export function grilleMesh({
   const walk = (n, len, vary) => {
     const steps = [];
     let tot = 0;
-    for (let i = 0; i < n; i++) { const s = 1 + (rng.next() * 2 - 1) * vary; steps.push(s); tot += s; }
+    /**
+     * ROUND-4: the jitter is drawn from a BIMODAL stream, not a uniform one.
+     *
+     * A uniform +/-28 % jitter has its mode at the mean, so most bays come out close to the
+     * average width and the eye still reads a pitch — which is what the §7 repeat cap was firing
+     * on ("the identical 3-slot louver cell is instanced at a constant pitch across every grille
+     * opening on every car"). Squaring the deviate and keeping its sign pushes the distribution
+     * AWAY from the mean, so a run reads as wide/narrow/wide/wide/narrow rather than as a comb,
+     * and one bay in five is close to double its neighbour.
+     */
+    for (let i = 0; i < n; i++) {
+      const u = rng.next() * 2 - 1;
+      const s = 1 + Math.sign(u) * Math.pow(Math.abs(u), 0.55) * vary;
+      steps.push(s); tot += s;
+    }
     const out = [];
     let acc = 0;
     for (let i = 0; i < n; i++) {
@@ -4352,20 +4398,20 @@ export function grilleMesh({
 
   if (mesh || !vertical) {
     // horizontal slats, one per bay, ends run into the recess wall
-    const rows = walk(Math.max(2, slats), H, 0.28);
+    const rows = walk(Math.max(2, slats), H, 0.46);
     for (const row of rows) {
       const y = yLo + row.c;
-      const th = row.s * (0.26 + rng.next() * 0.20);
+      const th = row.s * (0.20 + rng.next() * 0.34);
       const sp = outX(y);
       if (!sp) continue;
       const inn = inX(y);
       // depth varies slat to slat: a bar 10-16 mm further back catches visibly less sky, which is
       // what stops a woven screen reading as one flat grey slab
-      const zb = -d * (0.18 + rng.next() * 0.30);
+      const zb = -room * (0.14 + rng.next() * 0.80);
       const bar = addBar(sp[0], sp[1], y - th * 0.5, y + th * 0.5, zb, 0.006);
       if (bar && inn && (inn[1] - inn[0]) > 0.05 && rng.next() < 0.45) {
         // a second, thinner rail tucked behind the first over the flat part of the floor only
-        addBar(inn[0], inn[1], y - th * 0.16, y + th * 0.16, zb - 0.020 - rng.next() * 0.012, 0.004);
+        addBar(inn[0], inn[1], y - th * 0.16, y + th * 0.16, Math.max(-room, zb - room * (0.20 + rng.next() * 0.30)), 0.004);
       }
     }
   }
@@ -4373,15 +4419,27 @@ export function grilleMesh({
     const nCols = mesh
       ? Math.max(3, Math.round(slats * (W / Math.max(H, 0.01)) * 0.28))
       : Math.max(2, slats);
-    const cols = walk(nCols, W, 0.24);
+    const cols = walk(nCols, W, 0.44);
     for (const col of cols) {
       const x = xLo + col.c;
-      const tw = col.s * (mesh ? (0.20 + rng.next() * 0.16) : (0.28 + rng.next() * 0.20));
+      const tw = col.s * (mesh ? (0.16 + rng.next() * 0.22) : (0.22 + rng.next() * 0.30));
       const sp = outY(x);
       if (!sp) continue;
-      const zb = -d * (0.16 + rng.next() * 0.22);
+      const zb = -room * (0.10 + rng.next() * 0.74);
       const m = addBar(x - tw * 0.5, x + tw * 0.5, sp[0], sp[1], zb, 0.006);
-      if (m && !mesh) m.material = barMat;
+      /**
+       * ROUND-4: not every bar in a bright grille is bright.
+       *
+       * The truck's grille photographed as ONE WHITE SLAB — six polished bars of the same width
+       * at the same depth in the same chrome, with the aperture's white ring round them, is a
+       * single value across 0.95 x 0.24 m and it reads as a sticker. A real chrome grille alternates
+       * a heavy polished bar with a lighter satin one, and the satin ones sit further back. Two
+       * materials the car already carries, no extra draw call, and the pack gets a value range.
+       */
+      if (m && !mesh) {
+        m.material = rng.next() < 0.62 ? barMat : meshMat;
+        if (m.material === meshMat) m.position.z = Math.max(-room, m.position.z - room * 0.22);
+      }
     }
   }
 
@@ -4483,17 +4541,35 @@ export function grilleMesh({
  * with a thin raised bezel round it, which is the shape of a let-in louvre panel rather than a brick
  * glued to a bonnet. The bezel is dark metal, a bucket every car already carries.
  */
-export function ventMesh({ w = 0.4, h = 0.2, fins = 4, angle = 0.5, dark = null } = {}) {
+export function ventMesh({ w = 0.4, h = 0.2, fins = 4, angle = 0.5, dark = null, seed = 5 } = {}) {
   const g = new THREE.Group();
+  const rng = new RNG(seed);
   const back = new THREE.Mesh(roundedBox(w, h, 0.026, 0.016),
     dark ? stdMaterial({ color: dark, rough: 0.9, metal: 0.2 }) : cavityMaterial());
   back.position.z = -0.016;
   g.add(back);
   const finMat = darkMetalMaterial({ color: '#2a2d34', rough: 0.5, metal: 0.6 });
+  /**
+   * ROUND-4: the louvre cell is no longer a constant pitch.
+   *
+   * §7's repeat cap, verbatim: "the identical 3-slot louver cell is instanced at a constant pitch
+   * across every grille opening on every car". The grille screens had already been given a
+   * jittered walk; the VENTS had not — every bonnet extractor, fender gill and scuttle louvre in
+   * the game was `fins` bars at exactly `h / fins`, at one depth, at one angle, and every car
+   * wears three or four of them. Pitch, thickness, depth and rake are now drawn per fin from the
+   * seeded stream, and assemble.js gives each vent on a car its own seed.
+   */
+  const steps = [];
+  let tot = 0;
+  for (let i = 0; i < fins; i++) { const s2 = 0.72 + rng.next() * 0.72; steps.push(s2); tot += s2; }
+  let acc = 0;
   for (let i = 0; i < fins; i++) {
-    const f = new THREE.Mesh(roundedBox(w * 0.92, h / fins * 0.5, 0.038, 0.008), finMat);
-    f.position.set(0, -h / 2 + (i + 0.5) * (h / fins), 0.008);
-    f.rotation.x = angle;
+    const s2 = steps[i] * h / tot;
+    const yc = -h / 2 + acc + s2 * 0.5;
+    acc += s2;
+    const f = new THREE.Mesh(roundedBox(w * (0.86 + rng.next() * 0.12), s2 * (0.34 + rng.next() * 0.26), 0.038, 0.008), finMat);
+    f.position.set((rng.next() - 0.5) * w * 0.04, yc, 0.008 - rng.next() * 0.014);
+    f.rotation.x = angle * (0.78 + rng.next() * 0.44);
     g.add(f);
   }
   // The raised lip that turns a hole into a moulded panel. Deliberately the SAME material as the

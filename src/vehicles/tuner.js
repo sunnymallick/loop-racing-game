@@ -219,10 +219,10 @@ export const blueprint = {
       // default, so its floor is one plane and the woven screen lies on it. 175 -> 190 mm tall so a
       // 115 mm screen fits inside the fillet instead of being shrunk to 105 and losing 36 % of its
       // width with it.
-      { y: 0.490, w: 1.16, h: 0.190, r: 0.055, depth: 0.060, rim: 0.028, shade: 1, lip: 0.015, lipW: 0.054 },
+      { y: 0.490, w: 1.16, h: 0.190, r: 0.055, depth: 0.092, rim: 0.028, shade: 1, lip: 0.015, lipW: 0.054 },
       // The lower intake runs nearly the full width of the undertray step rather than being three
       // separate holes — one aperture instead of three costs 16 fewer radial levels on every column.
-      { y: 0.292, w: 1.30, h: 0.128, r: 0.046, depth: 0.050, rim: 0.026, shade: 1 },
+      { y: 0.292, w: 1.30, h: 0.128, r: 0.046, depth: 0.074, rim: 0.026, shade: 1 },
       // LAMP POD. Shallow, with a moulded brow standing 13 mm proud round it: the "ribbed headlight
       // pads meet the bodywork on a hard mismatched edge with a black shard poking through" was the
       // lamp's own housing box, mounted on the FLANK at z 2.115 where the panel is curving away.

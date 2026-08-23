@@ -159,13 +159,13 @@ export const blueprint = {
       // 235 -> 265 mm tall. The flat floor of an aperture is (h - 2·rim - 14 mm); at 235 that is
       // 161 mm, so the 195 mm sealed beams standing in it were scaled to 161 on the way in and the
       // centre screen with them. At 265 the floor is 191 mm and everything inside sits as authored.
-      { y: 0.775, w: 1.60, h: 0.265, r: 0.035, depth: 0.055, rim: 0.030, shade: 1, lip: 0.014, lipW: 0.050 },
+      { y: 0.775, w: 1.60, h: 0.265, r: 0.035, depth: 0.090, rim: 0.030, shade: 1, lip: 0.014, lipW: 0.050 },
       // THE VALANCE INTAKE. The old `front valance` was a 1.50 x 0.09 x 0.30 dark slab at y 0.44
       // with the tub's underside 105 mm ABOVE it — a plank hanging in open air under the nose.
       // The bodywork now runs down to y 0.295 and this is the hole in it.
       // …and the valance intake goes 128 -> 160 mm for the same reason, and because it now carries
       // the two amber park lamps as well as its screen (see `lights.drl`).
-      { y: 0.410, w: 1.18, h: 0.160, r: 0.040, depth: 0.048, rim: 0.028, shade: 1 },
+      { y: 0.410, w: 1.18, h: 0.160, r: 0.040, depth: 0.074, rim: 0.028, shade: 1 },
     ],
   },
 
@@ -296,7 +296,20 @@ export const blueprint = {
      * shows. At 1.72 the tips are 34 mm inside the flank, so the bar submerges into the wing at
      * x ~ 0.64 and there is no end anywhere for a camera to find.
      */
-    { w: 1.72, h: 0.135, d: 0.22, y: 0.565, z: 2.492, mat: 'chrome', r: 0.052, sweep: 0.18, sweepPow: 2.8, taper: 0.50 },
+    /**
+     * ROUND-4: sweep 0.18 -> 0.26, taper 0.50 -> 0.16.
+     *
+     * The tips were already geometrically buried — at x +/-0.86 with the flank at 0.905 and the
+     * nose face at z 2.486 they finish 45 mm inside the wing and 119 mm behind the panel — and the
+     * crop STILL read "the outboard end stops short of the fender and just stops". Being enclosed
+     * is not the same as reading as enclosed: a half-section bar crossing a nearly flat panel at a
+     * shallow angle leaves a fat rounded silhouette with a specular on it right where it enters,
+     * so the eye sees a bar with an end on it and paint beyond. Sweeping harder puts the crossing
+     * out on the shoulder where the panel is already turning away, and tapering to a sixth of the
+     * section means what enters the paint is a point, not a cap. Nothing about the bar's centre —
+     * the part that is actually a bumper — moves.
+     */
+    { w: 1.72, h: 0.135, d: 0.22, y: 0.565, z: 2.492, mat: 'chrome', r: 0.052, sweep: 0.26, sweepPow: 2.8, taper: 0.16 },
     // BUMPER OVERRIDERS. Two vertical chrome guards standing ON the bar — the period detail that
     // breaks a straight bumper into three lit shapes and throws a hard shadow either side of
     // itself. Their back faces are 100 mm inside the bar, so there is no joint to open up.

@@ -115,7 +115,7 @@ export const blueprint = {
       // 89 mm against a 138 mm screen, so `seat()` scaled the whole grille by 0.645 and a 1.50 m
       // mesh came out 0.97 m wide, floating in the middle of a 1.66 m mouth with 350 mm of painted
       // recess either side of it. That is the "letterbox with a small grille in it" read.
-      { y: 0.296, w: 1.66, h: 0.165, r: 0.048, depth: 0.052, rim: 0.026, shade: 1, lip: 0.012, lipW: 0.045 },
+      { y: 0.296, w: 1.66, h: 0.165, r: 0.048, depth: 0.086, rim: 0.026, shade: 1, lip: 0.012, lipW: 0.045 },
       // the lamp slot carries BOTH elements — the main strip and the cyan DRL bar under it — so the
       // signature reads as one moulded unit instead of two boxes stuck on a nose 65 mm behind them
       /**
