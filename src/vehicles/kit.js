@@ -4188,20 +4188,65 @@ export function grilleMesh({
     const surMat = bright ? chromeMaterial({ color: '#d3d8de', rough: 0.10 })
       : darkMetalMaterial({ color: '#3a3f49', rough: 0.34, metal: 0.78 });
     const t = clamp(Math.min(H, W) * 0.16, 0.012, 0.042);
+    const dz = d * (span ? 0.20 : 0.34);
     const zf = span ? -d * 0.060 : -d * 0.40;
-    for (const sy of [yLo + t * 0.5, yHi - t * 0.5]) {
-      const sp = outX(sy);
-      if (!sp || sp[1] - sp[0] < 0.02) continue;
-      const b = new THREE.Mesh(roundedBox(sp[1] - sp[0], t, d * (span ? 0.20 : 0.34), Math.min(0.012, t * 0.42)), surMat);
-      b.position.set((sp[0] + sp[1]) * 0.5, sy, zf);
-      g.add(b);
+    /**
+     * With a measured hole the frame is ONE CLOSED RING traced round that hole, not four bars.
+     *
+     * Four bars leave four CORNERS, and a corner is where the top rail's end and the side rail's
+     * end each bury themselves at their own place in a curved wall — which at 12x is a notch, and
+     * a notch beside a chrome rail on green paint is read, correctly, as a torn edge. A ring has
+     * no ends at all: it is a rounded-rect tube whose outer contour is the measured wall and whose
+     * inner contour is that contour brought in by the rail width. Nothing about it can be clipped
+     * at a grazing angle because nothing about it terminates.
+     */
+    let ring = null;
+    if (span) {
+      const NB = 56;
+      const outer = [], inner = [];
+      const walkEdge = (x0, x1, inset, hi) => {
+        const pts = [];
+        for (let i = 0; i <= NB; i++) {
+          const x = lerp(x0, x1, i / NB);
+          const sp = outY(x);
+          if (!sp) continue;
+          const y = hi ? sp[1] - inset : sp[0] + inset;
+          if (inset > 0 && sp[1] - sp[0] < inset * 2 + 0.006) continue;
+          pts.push([x, y]);
+        }
+        return pts;
+      };
+      const oTop = walkEdge(xLo, xHi, 0, true), oBot = walkEdge(xLo, xHi, 0, false);
+      const iTop = walkEdge(xLo + t, xHi - t, t, true), iBot = walkEdge(xLo + t, xHi - t, t, false);
+      if (oTop.length > 3 && iTop.length > 3 && iBot.length > 3) {
+        for (const p of oTop) outer.push(p);
+        for (let i = oBot.length - 1; i >= 0; i--) outer.push(oBot[i]);
+        for (const p of iTop) inner.push(p);
+        for (let i = iBot.length - 1; i >= 0; i--) inner.push(iBot[i]);
+        const shape = new THREE.Shape(outer.map(([x, y]) => new THREE.Vector2(x, y)));
+        shape.holes.push(new THREE.Path(inner.map(([x, y]) => new THREE.Vector2(x, y))));
+        ring = new THREE.ExtrudeGeometry(shape, { depth: dz, bevelEnabled: false, curveSegments: 2 });
+      }
     }
-    for (const sx of [xLo + t * 0.5, xHi - t * 0.5]) {
-      const sp = outY(sx);
-      if (!sp || sp[1] - sp[0] < 0.02) continue;
-      const b = new THREE.Mesh(roundedBox(t, sp[1] - sp[0], d * (span ? 0.20 : 0.34), Math.min(0.012, t * 0.42)), surMat);
-      b.position.set(sx, (sp[0] + sp[1]) * 0.5, zf);
-      g.add(b);
+    if (ring) {
+      const m = new THREE.Mesh(ring, surMat);
+      m.position.z = zf - dz * 0.5;
+      g.add(m);
+    } else {
+      for (const sy of [yLo + t * 0.5, yHi - t * 0.5]) {
+        const sp = outX(sy);
+        if (!sp || sp[1] - sp[0] < 0.02) continue;
+        const b = new THREE.Mesh(roundedBox(sp[1] - sp[0], t, dz, Math.min(0.012, t * 0.42)), surMat);
+        b.position.set((sp[0] + sp[1]) * 0.5, sy, zf);
+        g.add(b);
+      }
+      for (const sx of [xLo + t * 0.5, xHi - t * 0.5]) {
+        const sp = outY(sx);
+        if (!sp || sp[1] - sp[0] < 0.02) continue;
+        const b = new THREE.Mesh(roundedBox(t, sp[1] - sp[0], dz, Math.min(0.012, t * 0.42)), surMat);
+        b.position.set(sx, (sp[0] + sp[1]) * 0.5, zf);
+        g.add(b);
+      }
     }
   }
   return g;

@@ -283,11 +283,28 @@ export const blueprint = {
      * rather than stopping in front of it. Its back face is 120 mm inside the bodywork, so there is
      * no gap under it and nothing to see behind it.
      */
-    { w: 1.80, h: 0.135, d: 0.22, y: 0.565, z: 2.492, mat: 'chrome', r: 0.052, sweep: 0.16, sweepPow: 2.8, taper: 0.50 },
+    /**
+     * ROUND-3: 1.80 -> 1.72, and that 80 mm is the whole of "the chrome bumper bar's outboard end
+     * stops short of the fender and just stops, with an unlit open cavity behind it".
+     *
+     * The bar is swept, so its tips fall 180 mm back — well behind the nose face — and the intent
+     * was always that they finish INSIDE the wing. Measured, they did not: at w 1.80 the tips sat
+     * at x +/-0.900 and the tub's half-width at the bumper's own height (y 0.565, between the
+     * rocker point and the character line) is 0.894 over the whole of that z range. Six
+     * millimetres outboard of the paint is six millimetres of bar in open air with the road behind
+     * it, and a rounded cap on the end of it to catch the light — which is exactly what the crop
+     * shows. At 1.72 the tips are 34 mm inside the flank, so the bar submerges into the wing at
+     * x ~ 0.64 and there is no end anywhere for a camera to find.
+     */
+    { w: 1.72, h: 0.135, d: 0.22, y: 0.565, z: 2.492, mat: 'chrome', r: 0.052, sweep: 0.18, sweepPow: 2.8, taper: 0.50 },
     // BUMPER OVERRIDERS. Two vertical chrome guards standing ON the bar — the period detail that
     // breaks a straight bumper into three lit shapes and throws a hard shadow either side of
     // itself. Their back faces are 100 mm inside the bar, so there is no joint to open up.
-    { x: 0.315, w: 0.078, h: 0.220, d: 0.140, y: 0.565, z: 2.560, mat: 'chrome', mirror: true, r: 0.026 },
+    // ROUND-3: y 0.565 -> 0.600, h 0.220 -> 0.190. At the old numbers the guard ran from y 0.455 to
+    // 0.675 and the valance intake is cut from 0.330 to 0.490 — so its bottom 35 mm hung over the
+    // mouth of that recess with nothing under it. It now stands on the painted fascia between the
+    // two openings, which is where a bumper guard bolts.
+    { x: 0.315, w: 0.078, h: 0.190, d: 0.140, y: 0.600, z: 2.560, mat: 'chrome', mirror: true, r: 0.026 },
     { w: 1.20, h: 0.135, d: 0.22, y: 0.66, z: -2.585, mat: 'chrome', r: 0.055 },
     { x: 0.635, w: 0.42, h: 0.135, d: 0.20, y: 0.66, z: -2.505, mat: 'chrome', ry: -0.42, mirror: true, r: 0.05 },
     { w: 1.44, h: 0.30, d: 0.05, y: 0.865, z: -2.578, mat: 'dark', r: 0.03 },   // tail panel blackout
