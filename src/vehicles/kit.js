@@ -2065,6 +2065,7 @@ const LIP_STEPS = 96;
 
 export function loftTub(sections, {
   openings = [], capU = [0.100, 0.442], zNear = 0.030, zMid = 0.070, zFar = 0.175, linerAt = 0.34,
+  zTip = 0.055, zEnd = 0.62,
   flareAt = null, noseCap = {}, tailCap = {},
 } = {}) {
   const src = [...sections].sort((a, b) => a.z - b.z).map((s) => {
@@ -2081,8 +2082,22 @@ export function loftTub(sections, {
    * overhangs. On the supercar that is ~70 stations instead of the ~116 a flat 30 mm step gave,
    * which is a 2.3x saving on the whole tub for no visible change at the lip.
    */
+  /**
+   * ROUND-4 adds a fourth tier: THE OVERHANGS.
+   *
+   * The garage hero shot is a three-quarter FRONT, so the half metre of bodywork behind the nose
+   * panel is the largest piece of paint in the frame — and at `zFar` it carried a ring every
+   * 175 mm. On the tuner that is four rings between the cowl and the tip, over which the profile
+   * moves 70 mm in deck height, 100 mm in belt height and opens the undertray from 0.78 to 0.90.
+   * PCHIP through four stations sampled that coarsely is a ruled band, and a ruled band under a
+   * sharp clearcoat is a row of long soft folds — which is the "crumpled fabric" the last three
+   * verdicts have all photographed on the front clip and which survived every fix to the cap
+   * panel, because it was never in the cap panel. 55 mm here costs ~5 rings per end.
+   */
+  const zLo = src[0].z, zHi = src[src.length - 1].z;
   const stepAt = (z) => {
     let s = zFar;
+    if (z - zLo < zEnd || zHi - z < zEnd) s = Math.min(s, zTip);
     for (const o of openings) {
       const d = Math.abs(z - o.z);
       if (d < o.r) s = Math.min(s, zNear);
@@ -2365,7 +2380,19 @@ export function loftTub(sections, {
      * the recess walls inside the panel are resolved three times as finely and the grazing cut
      * lands on a curve instead of on a staircase.
      */
-    const CS = Math.max(1, Math.round(cfg.csub ?? 3));
+    /**
+     * ROUND-4: the floor goes 3 -> 1.
+     *
+     * A minimum of three columns per boundary SEGMENT sounds harmless and is not, because the
+     * segments do not subtend equal angles. The tuner's profile has segments spanning 0.4 degrees
+     * about the fan centre next to segments spanning 14: at a floor of three the short ones came
+     * out seven times denser than the target pitch, so the column density stepped abruptly at
+     * every profile corner. Facet size steps with it, and a step in facet size on a mirrored
+     * surface draws a ray — twenty-two of them, radiating out of the fan centre, which is the
+     * starburst left on the supercar's clip after the dome was fixed. `maxAng` already guarantees
+     * the density; the floor only ever fought it.
+     */
+    const CS = Math.max(1, Math.round(cfg.csub ?? 1));
     /**
      * The openings, resolved BEFORE anything else on the panel, because the first question the
      * grid has to answer is where it may put its centre — see `solveCentre` below.
@@ -2531,6 +2558,45 @@ export function loftTub(sections, {
     const crown = cfg.crown ?? 0, rake = cfg.rake ?? 0, nBase = Math.max(2, cfg.rings ?? 5);
 
     /**
+     * ---- THE DOME MAY NOT BE MEASURED IN `t` ------------------------------------------------
+     *
+     * ROUND-4, and this is the last and largest of the crumple. Ablation settles it beyond
+     * argument: build the tuner with `crown: 0, rake: 0` and every aperture's `lip: 0`, render it
+     * with the livery map and the flake normal off (`FLAT=1 NOFLAKE=1 tools/_fc3_shot.mjs tuner`),
+     * and the nose panel is GLASS — not one fold anywhere on it. Put the dome back and the folds
+     * come back with it, and only with it.
+     *
+     * The reason is geometric. The crown was `crown * (1 - t*t)`, i.e. a height that depends only
+     * on the LEVEL — so it is constant along a ring, and every ring is a scaled copy of the tub's
+     * own profile polyline. That polyline has a CORNER at each authored profile point (rocker,
+     * sill, character line, belt, deck — 22 of them round a full ring). Written as a graph,
+     * z(x, y) = f(|P - C| / R(theta)): wherever dR/dtheta jumps the gradient of z jumps with it,
+     * and the jump runs the whole way from the fan centre out to the corner. Twenty-two radial
+     * creases up to 46 mm deep, which under a clearcoat is exactly the sheet of crumpled fabric
+     * that three verdicts have photographed and that survived every fix to the grid itself.
+     *
+     * The crown is now a function of POSITION, not of the grid: the largest ellipse centred on the
+     * fan centre that fits inside the boundary. It is analytic, so it has no corners to inherit;
+     * it is INSCRIBED, so it has already fallen to zero by the time it reaches the bodywork and
+     * needs no closing ramp at the seam; and `^1.5` lands it with zero slope as well as zero
+     * height, so the flat outer margin of the panel joins the dome without an edge. `rake` rides
+     * the point's own y, which was never the problem — it is linear in position and therefore
+     * smooth wherever the shape function is.
+     */
+    let domeAX = 1e-3, domeAY = 1e-3;
+    for (let i = 0; i < LC - 1; i++) {
+      domeAX = Math.max(domeAX, Math.abs(B[i][0] - mx));
+      domeAY = Math.max(domeAY, Math.abs(B[i][1] - my));
+    }
+    let domeS = Infinity;
+    for (let i = 0; i < LC - 1; i++) {
+      const qx = (B[i][0] - mx) / domeAX, qy = (B[i][1] - my) / domeAY;
+      domeS = Math.min(domeS, Math.hypot(qx, qy));
+    }
+    domeS = clamp(domeS, 0.30, 1);
+    domeAX *= domeS; domeAY *= domeS;
+
+    /**
      * Total inward displacement at a point on the panel, how deep in the hole it is, and how much
      * of the panel's CROWN is cancelled there.
      *
@@ -2570,10 +2636,25 @@ export function loftTub(sections, {
            */
           const f = 1 - sd / a.lipW;
           const b2 = f * (1 - f);
-          out = Math.max(out, a.lip * 16 * b2 * b2);
+          /**
+           * SUMMED, not maxed, and applied whether or not the point is in someone else's hole.
+           *
+           * ROUND-4, and this is the last of the crumple. `max` of two smooth bumps is C0 but not
+           * C1 — it creases wherever they cross — and on every one of these four cars the lamp
+           * pod's skirt and the grille mouth's skirt OVERLAP: the tuner's brows run 0.574-0.639
+           * and 0.585-0.639 in y, so the crease ran horizontally across the whole face between
+           * the lamps and the mouth. That band is exactly where every FLAT+NOFLAKE ablation of
+           * this clip has shown its worst folding. The old form also switched the brow off
+           * entirely inside a recess, which put a second cliff on the far rim of every opening
+           * that had a neighbour.
+           *
+           * A sum of bumps is as smooth as the bumps are, and `d - out` lets a recess and a
+           * neighbour's brow coexist on the same point instead of one cancelling the other.
+           */
+          out += a.lip * 16 * b2 * b2;
         }
       }
-      return { d: d > 0 ? d : -out, sh, fl };
+      return { d: d - out, sh, fl };
     };
 
     /**
@@ -2683,19 +2764,32 @@ export function loftTub(sections, {
     for (const bands of colBands) dSum += fillDens(bands);
     const dBar = dSum / LC;
     // …and a panel with nothing cut into it needs no more than its authored dome resolution.
-    const K = dBar > 1.001
+    const K0 = dBar > 1.001
       ? clamp(Math.round(dBar / ((cfg.rimStep ?? 0.0090) * (1 + RIM_GAIN))), nBase + 2, 96)
       : Math.max(2, nBase);
+    /**
+     * THREE EXTRA RINGS CRUSHED INTO THE FAN'S CORE.
+     *
+     * t = 0 is the same point in all ~320 columns, so the first band of the grid is a fan of
+     * slivers as long as the first ring's radius — 44 mm at the density this panel wants — and
+     * 0.9 mm wide. A clearcoat highlight sampled on triangles that shape does not resolve: it
+     * speckles, and 320 speckles radiating out of one point read as a STARBURST stamped in the
+     * middle of the bumper. It is not a fold — the surface under it is a smooth dome — but at 8x
+     * it photographs as one. Three rings at 12 / 30 / 58 % of the first take the singular core
+     * down to 5 mm across, where it is under a pixel at any distance the game shows a car from.
+     */
+    const K = K0 + 3;
     const levels = colBands.map((bands) => {
       fillDens(bands);
       const tot = cum[NBIN];
       const v = new Float64Array(K + 1);
-      for (let j = 1; j < K; j++) {
-        const target = tot * (j / K);
+      for (let j = 1; j < K0; j++) {
+        const target = tot * (j / K0);
         let lo = 0, hi = NBIN - 1;
         while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m + 1] < target) lo = m + 1; else hi = m; }
-        v[j] = clamp((lo + (target - cum[lo]) / (dens[lo] || 1)) / NBIN, 0, 1);
+        v[j + 3] = clamp((lo + (target - cum[lo]) / (dens[lo] || 1)) / NBIN, 0, 1);
       }
+      v[1] = v[4] * 0.12; v[2] = v[4] * 0.30; v[3] = v[4] * 0.58;
       v[K] = 1;
       for (let j = 1; j <= K; j++) if (v[j] < v[j - 1]) v[j] = v[j - 1];
       return v;
@@ -2725,7 +2819,9 @@ export function loftTub(sections, {
         // break out through the edge of the bodywork (the round-6 "black shard poking through")
         const guard = smoothstep(0, 1, clamp((0.992 - t) / 0.085, 0, 1));
         const { d, sh, fl } = pushAt(px, py);
-        const dome = (crown + rake * (py - my)) * (1 - t * t) * (1 - fl * guard);
+        const qx = (px - mx) / domeAX, qy = (py - my) / domeAY;
+        const dome = (crown + rake * (py - my))
+          * Math.pow(Math.max(0, 1 - qx * qx - qy * qy), 1.5) * (1 - fl * guard);
         extra.pos.push(px, py, zc + dir * (dome - d * guard));
         extra.uvA.push(uOf(py), CV + ((px - mx) / ex) * R);
         extra.uvB.push(0, 1);
