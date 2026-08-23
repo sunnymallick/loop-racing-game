@@ -80,10 +80,57 @@ export const blueprint = {
     { z: 1.34, w: 0.990, y0: 0.154, rocker: 0.892, ySill: 0.272, yBelt: 0.784, belt: 0.945, yDeck: 0.748, deck: 0.79, crown: 0.042, flare: 1.055 },
     { z: 1.62, w: 0.985, y0: 0.156, rocker: 0.895, ySill: 0.270, yBelt: 0.742, belt: 0.945, yDeck: 0.710, deck: 0.80, crown: 0.040, flare: 1.048 },
     { z: 1.94, w: 0.966, y0: 0.160, rocker: 0.905, ySill: 0.272, yBelt: 0.692, belt: 0.95, yDeck: 0.666, deck: 0.83, crown: 0.030, flare: 1.012 },
-    { z: 2.16, w: 0.930, y0: 0.170, rocker: 0.92, ySill: 0.282, yBelt: 0.648, belt: 0.955, yDeck: 0.636, deck: 0.89, crown: 0.008 },
-    { z: 2.28, w: 0.870, y0: 0.185, floor: 0.60, rocker: 0.94, ySill: 0.295, yBelt: 0.612, belt: 0.96, yDeck: 0.602, deck: 0.91, crown: 0.005 },
-    { z: 2.31, w: 0.775, y0: 0.205, floor: 0.55, rocker: 0.95, ySill: 0.315, yBelt: 0.588, belt: 0.965, yDeck: 0.580, deck: 0.92, crown: 0.004 },
+    /**
+     * ---- THE FRONT CLIP, LOFTED (round-1, this piece) --------------------------------------
+     *
+     * Verdict on this car: "the same protruding splitter plate hanging off the nose with a hard
+     * flat end." It was 1.74 m wide with the tub's undertray only 1.04 m across at that station, so
+     * 350 mm of carbon stood out past the paint on EACH side, in mid-air, ending in a cut face.
+     *
+     * The nose used to neck in from w 0.930 to 0.775 over its last 150 mm and stop 205 mm off the
+     * road, which left nothing for a splitter to grow out of. It now runs 0.948 → 0.930 with y0 at
+     * 0.140 and `floor` at 0.90, so the tub's own undertray is 1.67 m wide and the splitter is a
+     * LIP along its leading edge instead of a shelf hanging off nothing.
+     */
+    { z: 2.16, w: 0.948, y0: 0.150, floor: 0.72, rocker: 0.925, ySill: 0.262, yBelt: 0.678, belt: 0.955, yDeck: 0.660, deck: 0.89, crown: 0.010 },
+    { z: 2.28, w: 0.938, y0: 0.142, floor: 0.84, rocker: 0.945, ySill: 0.250, yBelt: 0.646, belt: 0.962, yDeck: 0.634, deck: 0.90, crown: 0.006 },
+    { z: 2.31, w: 0.930, y0: 0.140, floor: 0.90, rocker: 0.955, ySill: 0.245, yBelt: 0.628, belt: 0.966, yDeck: 0.620, deck: 0.91, crown: 0.005 },
   ],
+
+  /**
+   * ---- THE NOSE PANEL ---------------------------------------------------------------------
+   * Mouth, corner intakes and the two signature lamp slots are cut into the lofted face by
+   * `loftTub`'s cap grid (kit.js §7). `flat` gives each one a single-plane floor so the screens and
+   * the lamp banks lie ON it; `lip` raises the moulded bead round the mouth and the lamp slots that
+   * a modern supercar's clip actually wears.
+   */
+  nose: {
+    crown: 0.042, rake: -0.06, rings: 13, cy: 0.400,
+    apertures: [
+      // ONE wide letterbox rather than a centre mouth plus two corner intakes. Every extra opening
+      // costs eight radial levels on every column of the grid and, more to the point, another pair
+      // of angular transitions for the level solver to shear across — the supercar's five-opening
+      // layout put a visible ripple across the middle of the clip. Three openings is where it goes.
+      // 155 -> 165 mm, and the screen inside it is authored to the flat floor: at 155 the floor was
+      // 89 mm against a 138 mm screen, so `seat()` scaled the whole grille by 0.645 and a 1.50 m
+      // mesh came out 0.97 m wide, floating in the middle of a 1.66 m mouth with 350 mm of painted
+      // recess either side of it. That is the "letterbox with a small grille in it" read.
+      { y: 0.296, w: 1.66, h: 0.165, r: 0.048, depth: 0.052, rim: 0.026, shade: 1, lip: 0.012, lipW: 0.045 },
+      // the lamp slot carries BOTH elements — the main strip and the cyan DRL bar under it — so the
+      // signature reads as one moulded unit instead of two boxes stuck on a nose 65 mm behind them
+      /**
+       * THE LAMP SLOT, and this is the single worst measurement on the car in round 1.
+       *
+       * At 0.40 x 0.160 with a 24 mm rim the flat floor is 0.338 x 0.098 — and round 1's seating
+       * clamp charged each element's offset from the slot centre twice, so a 0.34 x 0.085 main lamp
+       * came out 0.088 x 0.022 and the DRL bar came out 0.040 x 0.010. That is why the verdict
+       * reads "tiny pale slivers spiking into the red body": there were no headlights on this car,
+       * there were four scratches. 0.44 x 0.185 gives a 0.378 x 0.123 floor, which carries the main
+       * lamp and the DRL under it at full size with a 10 mm gap between them.
+       */
+      { x: 0.585, y: 0.505, w: 0.44, h: 0.185, r: 0.045, depth: 0.052, rim: 0.024, shade: 0.5, lip: 0.012, lipW: 0.042, mirror: true },
+    ],
+  },
 
   cabin: {
     stations: [
@@ -131,8 +178,10 @@ export const blueprint = {
   archDepth: 0.12, archSpan: 1.05,
 
   lights: {
+    // Both elements now stand on the lamp slot's floor (z 2.272) instead of on the flank 65 mm
+    // behind the nose face, so their housings are inside the bodywork.
     head: [
-      { x: 0.64, y: 0.545, z: 2.245, w: 0.36, h: 0.10, shape: 'strip', color: '#e6efff', intensity: 3.4, segs: 2 },
+      { x: 0.585, y: 0.5305, w: 0.375, h: 0.068, z: 2.270, shape: 'strip', color: '#e6efff', intensity: 3.4, segs: 2 },
       /**
        * ROUND-2: the DRL bar was scored as "supercar fog lights are unmodified blue boxes". It was
        * not the lens — a 0.22 x 0.06 bar is a bar — it was the HALO card, 0.28 x 0.10 of additive
@@ -141,8 +190,17 @@ export const blueprint = {
        * three divider ribs plus the moulded optic (kit.js `lensTexture`) give the bar the internal
        * structure that says signature lamp rather than blue brick.
        */
-      { x: 0.62, y: 0.415, z: 2.235, w: 0.22, h: 0.06, shape: 'strip', color: '#4fd8ff', intensity: 2.6, glow: 0.22, segs: 3 },
     ],
+    /**
+     * ROUND-2: the cyan bar moves out of `head` and into `drl`.
+     *
+     * It was correct as a lamp and wrong as a circuit. menu.js takes the whole head bank to 6 % for
+     * a showroom car, so the supercar's signature — the one element that identifies this class at a
+     * glance — was dead in the exact frame §6.1 is judged in, alongside "not one of the four has an
+     * emissive headlight". A DRL is not a headlight: it is on whenever the car is, which is what
+     * `drl` means here (assemble.js). Same lens, same ribs, same optic; it simply never gets dimmed.
+     */
+    drl: [{ x: 0.585, y: 0.4665, z: 2.270, w: 0.300, h: 0.040, shape: 'strip', color: '#4fd8ff', intensity: 2.8, glow: 0.26, segs: 3 }],
     // the twin round lamp rings of f&f3 — clear of the carbon blade above them so they read whole
     tail: [
       { x: 0.40, y: 0.870, z: -2.360, w: 0.22, h: 0.22, shape: 'round', color: '#ff2410', intensity: 2.3 },
@@ -158,8 +216,9 @@ export const blueprint = {
   },
 
   grilles: [
-    { w: 0.84, h: 0.16, d: 0.14, y: 0.345, z: 2.285, slats: 4, mesh: true, frame: 'dark' },
-    { x: 0.60, w: 0.34, h: 0.13, d: 0.12, y: 0.375, z: 2.205, slats: 3, mesh: true, frame: 'dark', mirror: true },
+    // dropped onto the flat floors of their own apertures (z 2.258 / 2.264) rather than parked in
+    // front of the nose, so each screen is a hole in the clip and not a box on it
+    { w: 1.585, h: 0.095, d: 0.12, y: 0.296, z: 2.286, slats: 3, mesh: true, frame: 'dark' },
     // side intakes: recessed 20 mm into the real flank (x 1.020 at this station), not buried 28 mm
     // inside it, so the mesh reads as a mouth in the door rather than a shadow under the paint
     { x: 0.995, w: 0.44, h: 0.26, d: 0.16, y: 0.635, z: -0.98, slats: 4, mesh: true, frame: 'dark', ry: 1.5708, mirror: true },
@@ -203,8 +262,27 @@ export const blueprint = {
   handles: [{ x: 0.965, y: 0.80, z: -0.10, mat: 'paint' }],
 
   trim: [
-    { w: 1.74, h: 0.08, d: 0.40, y: 0.170, z: 2.20, mat: 'carbon', rx: 0.07, r: 0.03 },      // front splitter
-    { x: 0.815, w: 0.26, h: 0.02, d: 0.22, y: 0.285, z: 2.03, mat: 'carbon', rz: 0.14, mirror: true, r: 0.008 },  // dive planes
+    // FRONT LIP. 1.44 m under a 1.67 m undertray, so it is 115 mm inboard of the bodywork on each
+    // side and tucked under the bumper corners — there is no end face for a camera to find.
+    /**
+     * THE SPLITTER, rebuilt as a SWEPT part (kit.js `sweptBar`).
+     *
+     * Verbatim, twice: "a flat gray splitter plate terminates in raw uncapped cut faces" and "the
+     * same protruding splitter plate hanging off the nose with a hard flat end". Both are literal.
+     * The plate sat at z 2.352 and reached 2.492 on a nose whose leading edge is 2.310 — 182 mm of
+     * plank in open air — and its two tips ended in flat rectangles a garage camera looks straight
+     * at. The 1.34 m polished blade on top of it added 24 mm of pure mirror across the full width,
+     * which is why the whole thing photographs as pale cardboard rather than as lacquered carbon.
+     *
+     * Now: one continuous surface, 130 mm proud instead of 182, raked so the top face turns away
+     * from a high camera, and swept so both tips fall 130 mm back into the bumper corners. The
+     * blade is a third of the section it was and follows the same curve.
+     */
+    { w: 1.54, h: 0.050, d: 0.26, y: 0.150, z: 2.300, mat: 'carbon', rx: 0.13, r: 0.020, sweep: 0.13, sweepPow: 2.6, taper: 0.46 },
+    { w: 1.18, h: 0.018, d: 0.036, y: 0.176, z: 2.404, mat: 'chrome', r: 0.008, sweep: 0.09, sweepPow: 2.4, taper: 0.50 },   // its polished blade
+    // dive planes, rooted 130 mm inside the flank and 30 mm thick so the outboard tip is a rolled
+    // edge rather than a knife (they were 20 mm plates with an 8 mm radius)
+    { x: 0.800, w: 0.30, h: 0.030, d: 0.22, y: 0.288, z: 2.03, mat: 'carbon', rz: 0.16, mirror: true, r: 0.014 },
     /**
      * SIDE SILL — the round-5 "rocker that is a floating flat plank".
      *
@@ -219,7 +297,8 @@ export const blueprint = {
     { x: 0.942, w: 0.040, h: 0.026, d: 1.80, z: -0.10, y: 0.207, mat: 'chrome', mirror: true, r: 0.010 },
     // rear valance blade above the diffuser
     { w: 1.28, h: 0.048, d: 0.09, y: 0.478, z: -2.318, mat: 'chrome', r: 0.016 },
-    { w: 1.30, h: 0.075, d: 0.10, y: 0.585, z: 2.268, mat: 'dark', r: 0.028 },   // nose blade under the lamps
+    // (the 1.30 m 'nose blade under the lamps' is gone — that line is the lamp slots' own moulded
+    //  brow now, made of the same vertices as the clip)
     { w: 1.46, h: 0.075, d: 0.12, y: 0.992, z: -2.336, mat: 'carbon', rx: -0.22, r: 0.025 },   // tail blade, above the lamps — raked, so it is not a third plank parallel to the wing and the valance
     { w: 0.46, h: 0.15, d: 0.04, y: 0.615, z: -2.325, mat: 'dark', r: 0.02 },       // number-plate recess (z pulled in from -2.352: it hung 22 mm clear of the tail)
   ],

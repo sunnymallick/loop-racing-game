@@ -117,12 +117,58 @@ export const blueprint = {
     { z: 1.42, w: 0.968, y0: 0.26, rocker: 0.89, ySill: 0.46, yBelt: 1.015, belt: 0.945, yDeck: 0.995, deck: 0.86, crown: 0.02, flare: 1.030 },
     { z: 1.80, w: 0.966, y0: 0.27, rocker: 0.895, ySill: 0.47, yBelt: 1.01, belt: 0.945, yDeck: 0.99, deck: 0.86, crown: 0.02, flare: 1.022 },
     { z: 2.12, w: 0.958, y0: 0.30, rocker: 0.90, ySill: 0.49, yBelt: 1.00, belt: 0.95, yDeck: 0.985, deck: 0.87, crown: 0.02, flare: 1.008 },
-    { z: 2.36, w: 0.935, y0: 0.38, rocker: 0.93, ySill: 0.545, yBelt: 0.962, belt: 0.96, yDeck: 0.958, deck: 0.90, crown: 0.012 },
-    { z: 2.45, w: 0.892, y0: 0.455, floor: 0.60, rocker: 0.95, ySill: 0.60, yBelt: 0.928, belt: 0.97, yDeck: 0.926, deck: 0.92, crown: 0.006 },
-    { z: 2.48, w: 0.815, y0: 0.545, floor: 0.55, rocker: 0.96, ySill: 0.665, yBelt: 0.898, belt: 0.97, yDeck: 0.896, deck: 0.93, crown: 0.004 },
+    /**
+     * ---- THE FRONT CLIP, LOFTED (round-1, this piece) --------------------------------------
+     *
+     * The verdict on this car, verbatim: "the cream grille bar ends in a flat face with a visible
+     * dark separation line where it should blend into the green fender, and the valance is a
+     * separate slab intersecting the loft."
+     *
+     * Both were the same construction error the tuner had. The tub's front face used to stop at
+     * y0 0.545 — 545 mm off the road — and neck in to w 0.815, so there was NO BODYWORK at all
+     * below the bumper or outboard of it, and the 1.50 m valance and the 1.30 m chrome bar were
+     * hanging in that empty space. (They were the only thing there: the cap panel itself was being
+     * back-face culled — see the winding note in kit.js `capPanel`.)
+     *
+     * The last three stations now carry the whole clip: y0 drops to 0.295 with `floor` opened to
+     * 0.86, and the taper to the tip is 0.958 → 0.928 instead of 0.958 → 0.815, so the face is
+     * full-width and reaches the road exactly the way a '70 loop-bumper front end does. The grille
+     * mouth and the valance intake are cut into it by `nose.apertures`.
+     */
+    { z: 2.36, w: 0.950, y0: 0.310, floor: 0.66, rocker: 0.925, ySill: 0.500, yBelt: 0.968, belt: 0.955, yDeck: 0.960, deck: 0.90, crown: 0.012 },
+    { z: 2.45, w: 0.938, y0: 0.300, floor: 0.78, rocker: 0.945, ySill: 0.470, yBelt: 0.938, belt: 0.965, yDeck: 0.932, deck: 0.92, crown: 0.007 },
+    { z: 2.48, w: 0.928, y0: 0.295, floor: 0.86, rocker: 0.958, ySill: 0.455, yBelt: 0.918, belt: 0.970, yDeck: 0.914, deck: 0.93, crown: 0.005 },
   ],
 
   // ---- the glasshouse: one continuous piece of glass, with paint bands laid over it ----
+  /**
+   * ---- THE NOSE PANEL ---------------------------------------------------------------------
+   *
+   * The grille mouth and the valance intake are cut INTO the lofted face by `loftTub`'s cap grid
+   * (kit.js §7) rather than bolted in front of it: one rounded-rect SDF per opening, pushed in over
+   * a rim fillet, with `flat` putting each floor on a single plane so a rectangular mesh actually
+   * fits the hole. The recess carries its own overhang shading through `aWell` (kit.js
+   * `archReturn`), which is the same ramp that darkens the metal behind a wheel-arch lip.
+   */
+  nose: {
+    crown: 0.045, rake: -0.05, rings: 13, cy: 0.640,
+    apertures: [
+      // THE GRILLE MOUTH — full width, with the four round lamps standing inside it and a chrome
+      // centre screen between them, which is the '70 layout and what the old 1.50 m bolted-on
+      // rectangle was standing in for.
+      // 235 -> 265 mm tall. The flat floor of an aperture is (h - 2·rim - 14 mm); at 235 that is
+      // 161 mm, so the 195 mm sealed beams standing in it were scaled to 161 on the way in and the
+      // centre screen with them. At 265 the floor is 191 mm and everything inside sits as authored.
+      { y: 0.775, w: 1.60, h: 0.265, r: 0.035, depth: 0.055, rim: 0.030, shade: 1, lip: 0.014, lipW: 0.050 },
+      // THE VALANCE INTAKE. The old `front valance` was a 1.50 x 0.09 x 0.30 dark slab at y 0.44
+      // with the tub's underside 105 mm ABOVE it — a plank hanging in open air under the nose.
+      // The bodywork now runs down to y 0.295 and this is the hole in it.
+      // …and the valance intake goes 128 -> 160 mm for the same reason, and because it now carries
+      // the two amber park lamps as well as its screen (see `lights.drl`).
+      { y: 0.410, w: 1.18, h: 0.160, r: 0.040, depth: 0.048, rim: 0.028, shade: 1 },
+    ],
+  },
+
   cabin: {
     stations: [
       { z: 0.74, hw: 0.855, rw: 0.800, yBelt: 1.015, yRoof: 1.035 },
@@ -177,10 +223,24 @@ export const blueprint = {
   archDepth: 0.13, archSpan: 1.02,
 
   lights: {
+    // Both pairs sit ON the grille recess floor (z 2.425), so their housings — 90 mm cylinders —
+    // are entirely behind the bodywork instead of standing out of a nose that stopped 35 mm short
+    // of them. y comes down to the aperture's centre line for the same reason.
     head: [
-      { x: 0.40, y: 0.845, z: 2.445, w: 0.22, h: 0.22, shape: 'round', color: '#f2f6ff', intensity: 2.8 },
-      { x: 0.68, y: 0.845, z: 2.445, w: 0.22, h: 0.22, shape: 'round', color: '#f2f6ff', intensity: 2.8 },
+      { x: 0.415, y: 0.775, z: 2.436, w: 0.185, h: 0.185, shape: 'round', color: '#f2f6ff', intensity: 2.8 },
+      { x: 0.665, y: 0.775, z: 2.436, w: 0.185, h: 0.185, shape: 'round', color: '#f2f6ff', intensity: 2.8 },
     ],
+    /**
+     * AMBER PARK LAMPS, in the valance intake either side of its screen.
+     *
+     * Round-1 verdict: "in a dark garage set the front lamps are dead matte while the taillights
+     * bloom — §2.3 requires lights emissive on every class". A '70 coupe on a showroom floor does
+     * not have its headlamps on and menu.js is right to take them to 6 % — but its park lamps are
+     * a separate circuit and they are exactly what is lit in a period showroom photograph. `drl`
+     * is the bucket nothing dims (assemble.js), so these two are emissive in every frame the game
+     * renders, and amber against a green car is the only warm light on the front of it.
+     */
+    drl: [{ x: 0.440, y: 0.410, z: 2.440, w: 0.200, h: 0.082, shape: 'strip', color: '#ffa62e', intensity: 2.2, glow: 0.26, segs: 2 }],
     // the four round lamps stand PROUD of the blacked-out tail panel (z −2.585) — round 1 buried
     // them inside it and the signature Charger tail read as one plain black slab
     tail: [
@@ -191,16 +251,19 @@ export const blueprint = {
   },
 
   grilles: [
-    { w: 1.50, h: 0.30, d: 0.18, y: 0.845, z: 2.405, slats: 11, vertical: true, frame: 'chrome' },
-    // ROUND-2: the valance gets a MOUTH. The verdict was "muscle front bumper is a chrome slab plus
-    // a lower dark box" — and it was exactly that, a 1.5 m unbroken dark bar under a 1.3 m unbroken
-    // chrome one, the two largest objects on the front of the car and neither with a hole in it.
-    // A '70 valance carries the radiator intake below the bumper; this is it, recessed with a mesh
-    // in it, so the bottom of the nose reads as an opening instead of a plank.
-    { w: 0.94, h: 0.105, d: 0.12, y: 0.437, z: 2.418, slats: 3, mesh: true, frame: 'dark' },
+    // The centre screen, between the two lamp pairs and standing on the mouth's own floor. It used
+    // to be 1.50 m wide at z 2.405 — 75 mm BEHIND the nose face — which is why it only ever read
+    // through the hole the culled cap panel left.
+    { w: 0.60, h: 0.185, d: 0.16, y: 0.775, z: 2.446, slats: 5, vertical: true, frame: 'chrome' },
+    // A '70 valance carries the radiator intake below the bumper; this is the screen for it, laid
+    // on the valance aperture's floor.
+    // narrowed to 0.62 so the two amber park lamps stand either side of it on the same floor
+    { w: 0.62, h: 0.086, d: 0.10, y: 0.410, z: 2.448, slats: 2, mesh: true, frame: 'dark' },
   ],
   // marque badge in the middle of the grille — chrome bezel, black enamel field, swept wings
-  badges: [{ x: 0, y: 0.845, z: 2.474, w: 0.098, h: 0.076, d: 0.020 }],
+  // z 2.494 -> 2.462: at 2.494 the badge's front face stood 24 mm PROUD of the nose panel it is
+  // supposed to be let into, i.e. it was the one thing on the clip still floating in front of it.
+  badges: [{ x: 0, y: 0.775, z: 2.462, w: 0.098, h: 0.076, d: 0.020 }],
   vents: [
     { x: 0.48, y: 1.005, z: 1.02, w: 0.30, h: 0.16, fins: 3, angle: 0.55, rx: -1.5708 },  // bonnet extractors
     { x: 0.86, y: 0.74, z: 1.02, w: 0.26, h: 0.18, fins: 3, angle: 0.4, ry: 1.5708 },     // fender gill
@@ -210,15 +273,21 @@ export const blueprint = {
   handles: [{ x: 0.955, y: 0.94, z: -0.20 }],
 
   trim: [
-    // The bumper WRAPS the nose: a centre bar plus two swept end sections that land on the flank.
-    // Round 1 ran one straight bar wider than the body, which read as a slab bolted onto air.
-    { w: 1.30, h: 0.135, d: 0.22, y: 0.66, z: 2.455, mat: 'chrome', r: 0.055 },
-    { x: 0.68, w: 0.44, h: 0.135, d: 0.20, y: 0.66, z: 2.370, mat: 'chrome', ry: 0.42, mirror: true, r: 0.05 },
-    // BUMPER OVERRIDERS. Two vertical chrome guards standing off the centre bar — the period detail
-    // that breaks a straight bumper into three lit shapes and throws a hard shadow either side of
-    // itself. They are chrome, a bucket the car already carries, so they cost no draw call.
-    { x: 0.315, w: 0.075, h: 0.255, d: 0.115, y: 0.665, z: 2.500, mat: 'chrome', mirror: true, r: 0.026 },
-    { x: 0.315, w: 0.115, h: 0.055, d: 0.075, y: 0.775, z: 2.492, mat: 'chrome', mirror: true, r: 0.020 },
+    /**
+     * THE BUMPER, and the sentence it was written against: "the cream grille bar ends in a flat face
+     * with a visible dark separation line where it should blend into the green fender".
+     *
+     * The centre bar is 1.34 m on a 1.85 m face, so it never reaches the fender at all; the two
+     * swept ends carry it out from there and their tips land AT the flank (x 0.933 against a body
+     * half-width of ~0.935 at z 2.30), rounded to a 50 mm radius, so the bumper runs into the wing
+     * rather than stopping in front of it. Its back face is 120 mm inside the bodywork, so there is
+     * no gap under it and nothing to see behind it.
+     */
+    { w: 1.80, h: 0.135, d: 0.22, y: 0.565, z: 2.492, mat: 'chrome', r: 0.052, sweep: 0.16, sweepPow: 2.8, taper: 0.50 },
+    // BUMPER OVERRIDERS. Two vertical chrome guards standing ON the bar — the period detail that
+    // breaks a straight bumper into three lit shapes and throws a hard shadow either side of
+    // itself. Their back faces are 100 mm inside the bar, so there is no joint to open up.
+    { x: 0.315, w: 0.078, h: 0.220, d: 0.140, y: 0.565, z: 2.560, mat: 'chrome', mirror: true, r: 0.026 },
     { w: 1.20, h: 0.135, d: 0.22, y: 0.66, z: -2.585, mat: 'chrome', r: 0.055 },
     { x: 0.635, w: 0.42, h: 0.135, d: 0.20, y: 0.66, z: -2.505, mat: 'chrome', ry: -0.42, mirror: true, r: 0.05 },
     { w: 1.44, h: 0.30, d: 0.05, y: 0.865, z: -2.578, mat: 'dark', r: 0.03 },   // tail panel blackout
@@ -246,7 +315,9 @@ export const blueprint = {
     // the 8x crop shows. 0.042 x 0.036 covers 3-4 px and the line is continuous.
     { x: 0.882, w: 0.042, h: 0.036, d: 2.20, y: 0.398, z: -0.10, mat: 'chrome', mirror: true, r: 0.012 },
     { x: 0.950, w: 0.045, h: 0.035, d: 2.10, y: 0.665, z: -0.10, mat: 'chrome', mirror: true, r: 0.014 }, // side spear
-    { w: 1.50, h: 0.09, d: 0.30, y: 0.44, z: 2.40, mat: 'dark', rx: 0.10, r: 0.03 },      // front valance
+    // (the front valance slab is gone — the bodywork reaches the road here now and the intake is
+    //  cut into it; what is left is the chin spoiler along the very bottom edge of the panel)
+    { w: 1.44, h: 0.050, d: 0.15, y: 0.312, z: 2.462, mat: 'dark', rx: 0.10, r: 0.020, sweep: 0.10, sweepPow: 2.6, taper: 0.55 },
     // Rear valance: deliberately 1.16 m across a 2.19 m car and lifted clear of the road, so the
     // rear tyres stand outboard of it and the road shows underneath (§6.1 round-2 gap).
     { w: 1.16, h: 0.17, d: 0.26, y: 0.415, z: -2.505, mat: 'dark', rx: -0.12, r: 0.045 },

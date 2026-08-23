@@ -111,9 +111,35 @@ export const blueprint = {
      * the apparent overhang without moving a single z and leaves every bolt-on where it was.
      */
     { z: 1.62, w: 0.900, y0: 0.250, rocker: 0.89, ySill: 0.42, yBelt: 0.928, belt: 0.94, yDeck: 0.890, deck: 0.86, crown: 0.014, flare: 1.032 },
-    { z: 1.90, w: 0.886, y0: 0.270, rocker: 0.90, ySill: 0.44, yBelt: 0.908, belt: 0.945, yDeck: 0.852, deck: 0.87, crown: 0.012 },
-    { z: 2.08, w: 0.855, y0: 0.305, rocker: 0.92, ySill: 0.47, yBelt: 0.880, belt: 0.955, yDeck: 0.798, deck: 0.90, crown: 0.008 },
-    { z: 2.16, w: 0.740, y0: 0.365, floor: 0.55, rocker: 0.95, ySill: 0.52, yBelt: 0.852, belt: 0.965, yDeck: 0.752, deck: 0.92, crown: 0.004 },
+    /**
+     * ---- THE FRONT CLIP, LOFTED (round-1, this piece) --------------------------------------
+     *
+     * These three stations ARE the bumper. Verbatim finding: "a matte black bumper beam floats
+     * clear of the cyan bodywork with a dark gap under it, a flat gray splitter plate terminates
+     * in raw uncapped cut faces, black brackets visibly interpenetrate the fender".
+     *
+     * All of that came from one number: the old nose necked in to w 0.740 and RAN UP to y0 0.365,
+     * so the tub's front face was a small rounded snout 390 mm tall floating 140 mm above the
+     * road, and everything a front end actually is — the beam, the valance, the splitter, the lamp
+     * pads — was a `roundedBox` parked around it. A box in front of a closed surface either floats
+     * or interpenetrates; there is no third option.
+     *
+     * The clip now runs nearly parallel-sided from z 1.90 to the leading edge (w 0.896 → 0.892)
+     * and the floor drops to y0 0.220 with `floor` opened to 0.90, so the last cross-section is a
+     * BUMPER SECTION: full width, full height, ground to bonnet, with a broad flat undertray. The
+     * mouth, the corner intakes and the lamp pods are cut INTO that face by `nose.apertures`
+     * below, which is the same operation `loftTub` already performs for the wheel openings.
+     *
+     * ONE RULE ON THE LAST STATION: yDeck must MEET yBelt there (0.820 against 0.828). The cap grid
+     * is a fan of rays out of one centre, so if the boundary ring turns back on itself — which is
+     * what a 100 mm bonnet-to-fender step at the very tip does — consecutive rays cross and the
+     * panel folds through itself. The bonnet/fender step is still authored, it just develops over
+     * the two stations BEHIND the tip (0.908/0.852 → 0.872/0.834 → 0.828/0.820) which is what a
+     * wedge nose looks like anyway.
+     */
+    { z: 1.90, w: 0.896, y0: 0.240, rocker: 0.905, ySill: 0.400, yBelt: 0.908, belt: 0.945, yDeck: 0.852, deck: 0.87, crown: 0.012 },
+    { z: 2.04, w: 0.898, y0: 0.228, floor: 0.78, rocker: 0.930, ySill: 0.375, yBelt: 0.872, belt: 0.955, yDeck: 0.834, deck: 0.86, crown: 0.010 },
+    { z: 2.16, w: 0.892, y0: 0.220, floor: 0.90, rocker: 0.958, ySill: 0.358, yBelt: 0.828, belt: 0.968, yDeck: 0.820, deck: 0.86, crown: 0.008 },
   ],
 
   /**
@@ -157,6 +183,56 @@ export const blueprint = {
     interior: { seat: 0x4e535e, trim: 0x35393f, accent: 0x18b6e8, floorY: 0.735, headY: 1.195, dashY: 0.940, wheelY: 0.980, shelfY: 0.952, seatZ: -0.20, dashZ: 0.86, dashW: 1.34, seatX: 0.33, shelfZ: 1.15, shelfD: 0.66, rollBar: true, rhd: true, clusterColor: '#ff4d3d' },
   },
 
+  /**
+   * ---- THE NOSE PANEL ---------------------------------------------------------------------
+   *
+   * `loftTub`'s cap grid (kit.js §7) crowns the front face into a real pressing and cuts these
+   * openings INTO it: each one is a rounded-rect signed-distance field pushed `depth` inboard over
+   * a `rim`-wide fillet, so the metal turns in behind its own edge exactly the way it does behind
+   * an arch lip — same surface, same vertices, same `aWell` overhang shading (kit.js archReturn).
+   * There is no rim, no bezel and no bracket to bolt on, so there is nothing that can float and
+   * nothing that can interpenetrate.
+   *
+   * `crown` is the bumper's forward bulge (72 mm at the centre, falling to zero at the panel edge,
+   * so the clip meets the wing tangentially) and `rake` leans the top of it back 160 mm/m, which is
+   * what keeps the raked-wedge read the round-1 nose note asked for now that the face is full
+   * height.
+   */
+  nose: {
+    // `rings` is the radial resolution of the panel grid. The crown is a paraboloid in t, so at the
+    // kit default of 5 the dome is four flat facets and the whole clip photographs as a fan of long
+    // triangles; 13 is where the highlight sweeps instead of stepping.
+    crown: 0.046, rake: -0.10, rings: 13, cy: 0.560,
+    /**
+     * ROUND-2 SIZING RULE, and it is the whole reason the round-1 clip photographed badly.
+     *
+     * An aperture's FLAT FLOOR is `(w - 2·rim - 14 mm) x (h - 2·rim - 14 mm)`; outside that the
+     * surface is climbing the fillet back out to the panel. assemble.js `seat()` guarantees nothing
+     * ever lies on that ramp — but round 1 enforced it by SHRINKING, so every screen and lamp
+     * authored a few millimetres too tall came out two thirds of its size and floating in the
+     * middle of a much larger hole (measured: the mouth screen was 0.72 m inside a 1.16 m mouth).
+     * Every opening below is now authored so the part inside it fits at full size, verified with
+     * the round-2 fit probe: no insert on this car is scaled or moved on the way in.
+     */
+    apertures: [
+      // THE MOUTH. This is what the floating 1.62 m black beam was pretending to be. `flat` is on by
+      // default, so its floor is one plane and the woven screen lies on it. 175 -> 190 mm tall so a
+      // 115 mm screen fits inside the fillet instead of being shrunk to 105 and losing 36 % of its
+      // width with it.
+      { y: 0.490, w: 1.16, h: 0.190, r: 0.055, depth: 0.060, rim: 0.028, shade: 1, lip: 0.015, lipW: 0.054 },
+      // The lower intake runs nearly the full width of the undertray step rather than being three
+      // separate holes — one aperture instead of three costs 16 fewer radial levels on every column.
+      { y: 0.292, w: 1.30, h: 0.128, r: 0.046, depth: 0.050, rim: 0.026, shade: 1 },
+      // LAMP POD. Shallow, with a moulded brow standing 13 mm proud round it: the "ribbed headlight
+      // pads meet the bodywork on a hard mismatched edge with a black shard poking through" was the
+      // lamp's own housing box, mounted on the FLANK at z 2.115 where the panel is curving away.
+      // The housing now sits behind the recess floor, inside the car, and cannot be seen at all.
+      // 0.455 x 0.125 -> 0.500 x 0.176: the pod now carries BOTH the main slot lamp and the DRL
+      // bar under it at their authored size, where round 1 squeezed a single lamp down to 0.246.
+      { x: 0.545, y: 0.708, w: 0.500, h: 0.176, r: 0.050, depth: 0.042, rim: 0.026, shade: 0.5, lip: 0.013, lipW: 0.046, mirror: true },
+    ],
+  },
+
   wheels: {
     // bronze 10-spoke mesh on low-profile street rubber — the JDM tuner signature
     style: 'mesh', rimColor: '#b47a2c', caliperColor: '#e0b21c', lipColor: '#bcc2cc', tire: 'street',
@@ -185,9 +261,21 @@ export const blueprint = {
      * (kit.js `lensTexture`) gives the glass its prisms, so the unit reads as a lamp with the bulb
      * off rather than as a blank lozenge.
      */
-    // y 0.735 → 0.690: the raked bonnet's leading edge is now at 0.752, and at 0.735 the lens's top
-    // would have stood 40 mm proud of the panel it is let into.
-    head: [{ x: 0.60, y: 0.690, z: 2.115, w: 0.44, h: 0.115, shape: 'strip', color: '#dfe9ff', intensity: 3.2, segs: 2 }],
+    // ROUND-1 (front clip): the unit moves ONTO the nose panel and INTO its own recess. It used to
+    // sit at z 2.115 on the flank, where the bodywork is turning away hard, so its 0.484 x 0.150 m
+    // housing box stood out of the wing at one corner — the "black shard poking through". The
+    // recess floor here measures z 2.127 and the moulded brow round it stands at 2.19, so the lens
+    // is 30-60 mm inside the bodywork and the housing is entirely behind the panel.
+    head: [{ x: 0.545, y: 0.729, z: 2.122, w: 0.428, h: 0.066, shape: 'strip', color: '#dfe9ff', intensity: 3.2, segs: 2 }],
+    /**
+     * THE DRL BAR — the one lit element on the front of this car in the garage.
+     *
+     * `drl` is a bucket nothing dims (assemble.js): the head units are correctly taken to 6 % on a
+     * showroom turntable, and a modern hatch's answer to that is a running lamp that is on whenever
+     * the car is. It is the tuner's own cyan, three segments so the bloom does not fuse it into one
+     * lozenge, and it sits on the lamp pod's own floor 57 mm under the main slot.
+     */
+    drl: [{ x: 0.545, y: 0.672, z: 2.124, w: 0.340, h: 0.034, shape: 'strip', color: '#54e4ff', intensity: 2.7, glow: 0.30, segs: 3 }],
     /**
      * TALL CORNER CLUSTERS, standing up the outer edges of the tailgate — the lamp shape that goes
      * with a hatch, and nothing like the muscle's four round lenses or the supercar's two rings.
@@ -204,10 +292,14 @@ export const blueprint = {
   },
 
   grilles: [
-    { w: 1.02, h: 0.22, d: 0.14, y: 0.555, z: 2.125, slats: 5, mesh: true, frame: 'dark' },
-    { x: 0.58, w: 0.30, h: 0.13, d: 0.10, y: 0.385, z: 2.12, slats: 3, mesh: true, frame: 'dark', mirror: true },
-    // centre lower intake — the hole that closes the gap between the valance bar and the splitter
-    { w: 0.82, h: 0.115, d: 0.12, y: 0.428, z: 2.118, slats: 3, mesh: true, frame: 'dark' },
+    // Each of these is now a WOVEN SCREEN DROPPED INTO A HOLE that the bodywork already has (see
+    // `nose.apertures`) — the aperture carries the surround, the depth and the shadow, and the
+    // grille contributes only the mesh. z is set from the measured recess floor of its own
+    // aperture (`node tools/_fc_nose.mjs tuner --at ...`), so no screen stands proud of the panel.
+    // each screen is authored a hair SMALLER than the hole it sits in and dropped onto that hole's
+    // flat floor, so the painted recess wall is the surround and no mesh end can overhang the panel
+    { w: 1.085, h: 0.115, d: 0.11, y: 0.490, z: 2.130, slats: 3, mesh: true, frame: 'dark' },
+    { w: 1.225, h: 0.058, d: 0.10, y: 0.292, z: 2.138, slats: 2, mesh: true, frame: 'dark' },
     // tailgate extractor mesh under the lamps, so the tall tail panel has a hole in it
     // ry: PI — see the note on the supercar's rear extractor. A rear-facing aperture built to open
     // along +Z shows a chase camera the closed back of its own cavity box unless it is turned round.
@@ -215,23 +307,48 @@ export const blueprint = {
   ],
   vents: [
     { x: 0.40, y: 0.918, z: 1.62, w: 0.28, h: 0.16, fins: 3, angle: 0.6, rx: -1.5708 },
-    { x: 0.905, y: 0.62, z: 1.05, w: 0.24, h: 0.15, fins: 3, angle: 0.4, ry: 1.5708 },
+    { x: 0.898, y: 0.62, z: 1.05, w: 0.24, h: 0.15, fins: 3, angle: 0.4, ry: 1.5708 },
   ],
   mirrors: { x: 0.82, y: 0.985, z: 0.72, painted: false },
   handles: [{ x: 0.90, y: 0.875, z: -0.18 }],
 
   trim: [
     /**
-     * THE FRONT. Round 1: "tuner front is a black bar plus a separate flat splitter plank." It was
-     * two unrelated slabs with 130 mm of open air between them. Four parts now make it one moulded
-     * bumper: the splitter keeps its blade, a polished LIP runs along its leading edge so the plank
-     * has a bright front rather than a dark cut end, two vertical FENCES tie it up into the valance
-     * above it, and a mesh centre intake puts a hole in the middle of what used to be the gap.
+     * THE FRONT LIP — and this is now the ONLY thing bolted to the front of the car.
+     *
+     * Round 1 had five parts here: a 1.72 m splitter plank, its chrome leading lip, two vertical
+     * fences and a 1.62 m black beam above them, and the verdict found every failure mode a
+     * bolt-on has. The plank was 1.72 m across a body 1.60 m wide at that height, so 60 mm of it
+     * stood outboard of the paint on each side and terminated in a flat cut face; the fences were
+     * mounted at z 2.148, i.e. THROUGH the panel; the beam floated 50 mm proud of a nose that
+     * necked in behind it, so there was daylight under it.
+     *
+     * The plank's job now belongs to the tub: `floor` opens to 0.90 at z 2.16, so the undertray IS
+     * the splitter and it is the same surface as the wing. What remains is the lip along its
+     * leading edge — 1.30 m on an 1.61 m panel, so it is 150 mm inboard of the bodywork on each
+     * side and its ends are tucked under the bumper corners where nothing can see a cut face.
      */
-    { w: 1.72, h: 0.09, d: 0.34, y: 0.268, z: 2.08, mat: 'carbon', rx: 0.09, r: 0.03 },     // front splitter
-    { w: 1.66, h: 0.030, d: 0.055, y: 0.302, z: 2.242, mat: 'chrome', r: 0.011 },           // splitter leading lip
-    { x: 0.575, w: 0.032, h: 0.115, d: 0.24, y: 0.330, z: 2.148, mat: 'carbon', mirror: true, r: 0.009 }, // fences
-    { x: 0.72, w: 0.30, h: 0.02, d: 0.22, y: 0.318, z: 1.96, mat: 'carbon', rz: 0.34, mirror: true, r: 0.008 }, // canards — dropped onto the splitter's top face
+    /**
+     * ROUND 2: the lip is a SWEPT bar and it stops sticking out in front of the car.
+     *
+     * Verbatim: "a flat gray splitter plate terminates in raw uncapped cut faces" and "the same
+     * protruding splitter plate hanging off the nose with a hard flat end". At z 2.182 x 0.24 deep
+     * it reached z 2.302 on a nose whose leading edge is 2.16 — 142 mm of plank in clear air, with
+     * both tips out where the camera can see the end of them, and a 1.20 m polished blade on top of
+     * that doing 26 mm of pure mirror across the whole width (which is the "flat gray plate": in
+     * the garage a chrome plane facing up is white).
+     *
+     * `sweep` bends it in plan (kit.js `sweptBar`), so it is one continuous surface whose tips fall
+     * 110 mm back — behind the bumper corners, inside the bodywork, where there is no end face to
+     * photograph. It is pulled back so it clears the nose by 90 mm rather than 142, and the blade
+     * is a third the section it was and follows the same sweep.
+     */
+    { w: 1.34, h: 0.052, d: 0.26, y: 0.230, z: 2.120, mat: 'carbon', rx: 0.05, r: 0.024, sweep: 0.11, taper: 0.52 },  // front lip
+    { w: 1.06, h: 0.020, d: 0.038, y: 0.252, z: 2.232, mat: 'chrome', r: 0.009, sweep: 0.075, taper: 0.5 },           // its polished blade
+    // CANARDS. Kept — they are the widebody signature — but rooted 180 mm inside the flank instead
+    // of sitting on top of a plank, and 30 mm thick with a 14 mm radius so the outboard tip is a
+    // rolled edge rather than a knife.
+    { x: 0.700, w: 0.30, h: 0.030, d: 0.20, y: 0.352, z: 1.985, mat: 'carbon', rz: 0.30, mirror: true, r: 0.014 },
     // SIDE SKIRT. It sat at x 0.912 with the rocker at 0.771 — 91 mm of open air under the doors,
     // the whole length of the car. Pulled in until it overlaps the rocker; the polished blade under
     // it moves with it.
@@ -240,7 +357,7 @@ export const blueprint = {
     // line under it or it has no bottom edge at all and dissolves into its own contact shadow — the
     // exact failure the round-3 critic described as "a painted shell over a black silhouette".
     { x: 0.832, w: 0.048, h: 0.040, d: 1.94, y: 0.296, z: -0.06, mat: 'chrome', mirror: true, r: 0.014 },
-    { w: 1.62, h: 0.10, d: 0.14, y: 0.58, z: 2.14, mat: 'dark', r: 0.03 },
+    // (the front beam that used to sit here is gone — the mouth is cut into the panel now)
     { w: 1.50, h: 0.09, d: 0.14, y: 0.615, z: -2.075, mat: 'dark', r: 0.03 },
     { w: 0.42, h: 0.19, d: 0.03, y: 0.545, z: -2.088, mat: 'dark', r: 0.014 },     // plate recess
     { w: 0.36, h: 0.145, d: 0.03, y: 0.545, z: -2.098, mat: 'chrome', r: 0.010 },

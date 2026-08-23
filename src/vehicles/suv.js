@@ -89,8 +89,18 @@ export const blueprint = {
     { z: 1.525, w: 1.058, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.874, yBelt: 1.50, belt: 0.985, yDeck: 1.505, deck: 0.93, crown: 0.010, flare: 1.078 },
     { z: 1.80, w: 1.054, y0: 0.605, floor: 0.72, rocker: 0.955, ySill: 0.878, yBelt: 1.495, belt: 0.985, yDeck: 1.50, deck: 0.93, crown: 0.010, flare: 1.048 },
     { z: 2.10, w: 1.048, y0: 0.62, floor: 0.72, rocker: 0.96, ySill: 0.885, yBelt: 1.49, belt: 0.985, yDeck: 1.495, deck: 0.935, crown: 0.008 },
-    { z: 2.34, w: 1.032, y0: 0.66, floor: 0.70, rocker: 0.965, ySill: 0.92, yBelt: 1.47, belt: 0.985, yDeck: 1.475, deck: 0.945, crown: 0.006 },
-    { z: 2.46, w: 0.985, y0: 0.74, floor: 0.66, rocker: 0.97, ySill: 1.00, yBelt: 1.45, belt: 0.99, yDeck: 1.45, deck: 0.955, crown: 0.004 },
+    /**
+     * ---- THE FRONT CLIP, LOFTED (round-1, this piece) --------------------------------------
+     *
+     * The truck's front bumper was a 2.04 x 0.26 x 0.30 m dark box at z 2.44 in front of a face
+     * that stopped at y0 0.74 and necked in to w 0.985 — i.e. 35 mm wider than the bodywork behind
+     * it on each side and standing 130 mm proud of it, with the road visible underneath. It is now
+     * the last two cross-sections of the tub: y0 down to 0.615 with `floor` opened to 0.86, and the
+     * taper held at 1.038 → 1.028 so the face is full width. The grille and the bumper intake are
+     * cut into it by `nose.apertures`.
+     */
+    { z: 2.34, w: 1.038, y0: 0.640, floor: 0.78, rocker: 0.965, ySill: 0.895, yBelt: 1.472, belt: 0.985, yDeck: 1.478, deck: 0.945, crown: 0.006 },
+    { z: 2.46, w: 1.028, y0: 0.615, floor: 0.86, rocker: 0.972, ySill: 0.870, yBelt: 1.452, belt: 0.990, yDeck: 1.456, deck: 0.955, crown: 0.004 },
   ],
 
   cabin: {
@@ -156,6 +166,36 @@ export const blueprint = {
     interior: { seat: 0x3d382f, trim: 0x2a2721, accent: 0x34302a, floorY: 1.275, headY: 1.815, dashY: 1.505, wheelY: 1.545, shelfY: 1.55, seatZ: 0.28, dashZ: 0.78, dashW: 1.76, seatX: 0.46, shelfZ: 1.70, shelfD: 0.66, clusterColor: '#9fe8a0' },
   },
 
+  /**
+   * ---- THE NOSE PANEL ---------------------------------------------------------------------
+   * Two openings, both cut into the lofted face: the tall vertical-slat grille with the head units
+   * standing inside it, and the bumper intake with the driving lamps standing inside that. Putting
+   * the lamps INSIDE their aperture rather than on the panel is what removes the last four bolt-ons
+   * from the front of this car — their housings are now behind the bodywork.
+   */
+  nose: {
+    crown: 0.050, rake: -0.02, rings: 13, cy: 1.050,
+    /**
+     * ROUND-2: THE HEAD UNITS GET THEIR OWN OPENINGS.
+     *
+     * Verbatim: "the round lamp discs are HALF-BURIED in the yellow sheetmetal; only crescent
+     * slivers emerge". Both halves of that were caused by one decision — the lamps stood at
+     * x ±0.70 inside the 1.62 m GRILLE aperture, i.e. 34 mm from its rim. The flat floor of an
+     * opening stops `rim` inside the edge and everything beyond that is the fillet climbing back
+     * out to the panel, so the outboard half of each disc was on the ramp: `seat()` scaled it to
+     * 46 % to keep it off, and what was left sat in the corner of the recess with the wall curving
+     * over it. A lamp needs a hole of its own. The grille comes in to 1.04 m and the two head units
+     * get a 0.40 m square opening apiece, 30 mm clear of it, with the disc centred in the floor.
+     */
+    apertures: [
+      { y: 1.165, w: 1.04, h: 0.420, r: 0.050, depth: 0.070, rim: 0.034, shade: 1, lip: 0.016, lipW: 0.052 },
+      { x: 0.750, y: 1.165, w: 0.40, h: 0.40, r: 0.062, depth: 0.062, rim: 0.032, shade: 1, lip: 0.014, lipW: 0.046, mirror: true },
+      // 200 -> 230 mm so the driving lamps sit in the floor at their authored 155 mm instead of
+      // being squeezed to 130 and dragging the intake screen down with them
+      { y: 0.790, w: 1.62, h: 0.230, r: 0.045, depth: 0.055, rim: 0.028, shade: 1, lip: 0.012, lipW: 0.044 },
+    ],
+  },
+
   wheels: {
     // gunmetal six-spoke beadlocks — the ONLY class that wears a knobby off-road carcass
     // gunmetal six-spoke BEADLOCKS — a bronze clamp ring and twelve bolts round the outer rim, the
@@ -178,12 +218,22 @@ export const blueprint = {
 
   lights: {
     head: [
-      { x: 0.70, y: 1.13, z: 2.455, w: 0.30, h: 0.30, shape: 'round', color: '#f4f8ff', intensity: 3.0 },
+      { x: 0.750, y: 1.165, z: 2.410, w: 0.315, h: 0.315, shape: 'round', color: '#f4f8ff', intensity: 3.0 },
       // DRIVING LAMPS in the bumper. The front bumper is 1.98 x 0.26 m of unbroken dark plastic
       // sitting under the widest, flattest nose in the game — the single largest blank surface on
       // any of the four cars. Same colour, intensity and halo as the head units, so they join that
       // bank and cost no draw call; they sit either side of the intake below.
-      { x: 0.62, y: 0.835, z: 2.598, w: 0.17, h: 0.17, shape: 'round', color: '#f4f8ff', intensity: 3.0 },
+      { x: 0.62, y: 0.790, z: 2.416, w: 0.155, h: 0.155, shape: 'round', color: '#f4f8ff', intensity: 3.0 },
+    ],
+    /**
+     * AMBER CLEARANCE LAMPS across the top of the grille — the one lamp signature that belongs to
+     * a wide-body truck and to nothing else in this game, and the front of this car's answer to
+     * "the front lamps are dead matte while the taillights bloom". `drl` is the bucket nothing
+     * dims (assemble.js), so all three are lit on the turntable, on the grid and at night.
+     */
+    drl: [
+      { x: 0.170, y: 1.296, z: 2.404, w: 0.078, h: 0.048, shape: 'strip', color: '#ffa62e', intensity: 2.3, glow: 0.24 },
+      { x: 0, y: 1.296, z: 2.404, w: 0.078, h: 0.048, shape: 'strip', color: '#ffa62e', intensity: 2.3, glow: 0.24, mirror: false },
     ],
     // Four-segment stacked lens. A 0.20 x 0.46 m lens is 2.4x the area of the muscle car's round
     // lamps, so at the same emissive it carries 2.4x the energy into the bloom pass: the two rear
@@ -202,12 +252,18 @@ export const blueprint = {
   },
 
   grilles: [
-    { w: 1.30, h: 0.46, d: 0.16, y: 1.13, z: 2.46, slats: 7, vertical: true, frame: 'chrome' },
-    // …and the intake between the driving lamps, so the bumper has a mouth
-    { w: 0.86, h: 0.115, d: 0.10, y: 0.835, z: 2.592, slats: 3, mesh: true, frame: 'dark' },
+    // the chrome-framed slat pack, between the two head units and standing on the grille
+    // aperture's own floor (z 2.390) rather than 60 mm in front of the nose
+    // …and it is pulled 16 mm further into its own recess so the bull bar's rail passes cleanly in
+    // front of the slats instead of through them (see `extras` below)
+    { w: 0.950, h: 0.240, d: 0.16, y: 1.120, z: 2.405, slats: 6, vertical: true, frame: 'chrome' },
+    // …and the intake between the driving lamps, on the bumper aperture's floor
+    { w: 0.84, h: 0.150, d: 0.10, y: 0.790, z: 2.410, slats: 3, mesh: true, frame: 'dark' },
   ],
-  // above the bull bar's tube (y 1.16) so it is not hidden behind it
-  badges: [{ x: 0, y: 1.295, z: 2.526, w: 0.112, h: 0.090, d: 0.022 }],
+  // on the grille's centre bar, inside the recess — clear of the bull bar's tube in front of it
+  // on the grille's centre bar, inside the recess and 30 mm behind the panel plane — at z 2.470 its
+  // front face stood proud of the nose, which is the one thing a badge must never do
+  badges: [{ x: 0, y: 1.120, z: 2.430, w: 0.112, h: 0.090, d: 0.022 }],
   vents: [
     { x: 0.0, y: 1.505, z: 1.72, w: 0.62, h: 0.22, fins: 4, angle: 0.5, rx: -1.5708, mirror: false },
     { x: 1.06, y: 1.12, z: 1.18, w: 0.30, h: 0.20, fins: 3, angle: 0.4, ry: 1.5708 },
@@ -216,15 +272,17 @@ export const blueprint = {
   handles: [{ x: 1.055, y: 1.40, z: 0.30 }, { x: 1.055, y: 1.40, z: -0.86 }],
 
   trim: [
-    { w: 2.04, h: 0.26, d: 0.30, y: 0.86, z: 2.44, mat: 'dark', r: 0.05 },     // front bumper
+    // (the front bumper box is gone — the tub carries it now, see the z 2.34/2.46 stations)
     { w: 2.02, h: 0.24, d: 0.28, y: 0.86, z: -2.42, mat: 'dark', r: 0.05 },    // rear bumper
     // Body-colour caps along the top of both bumpers. A 2 m black bar under a gold truck welded the
     // bumper, the flares and the tyres into one silhouette in every chase frame; a painted upper
     // half splits that bar in two and carries the car's colour all the way down the tailgate.
-    { w: 1.98, h: 0.075, d: 0.30, y: 1.005, z: 2.442, mat: 'paint', r: 0.026 },
+    // (the front bumper's painted cap goes with it: the face between the two apertures IS paint now)
     { w: 1.96, h: 0.070, d: 0.28, y: 0.995, z: -2.422, mat: 'paint', r: 0.026 },
     // and a satin blade along the bottom of each, so the bumper has a lit lower edge
-    { w: 1.78, h: 0.032, d: 0.26, y: 0.730, z: 2.446, mat: 'chrome', r: 0.011 },
+    // the front blade drops to the bottom edge of the clip, 100 mm inboard of the bodywork so its
+    // ends are tucked under the bumper corners rather than terminating in open air
+    { w: 1.66, h: 0.038, d: 0.10, y: 0.662, z: 2.436, mat: 'chrome', r: 0.013 },
     { w: 1.74, h: 0.032, d: 0.25, y: 0.740, z: -2.426, mat: 'chrome', r: 0.011 },
     // ROCK SLIDER. At x 1.16 its inner face was 109 mm outboard of the rocker it is meant to be
     // welded to, so the truck had a black bar hovering under each door with the garage floor
@@ -239,7 +297,7 @@ export const blueprint = {
      * one is dark alloy: it is the piece directly under the tail lamps in every chase frame and a
      * mirror there was the brightest thing on the back of the car.
      */
-    { w: 1.38, h: 0.10, d: 0.66, y: 0.682, z: 2.06, mat: 'chrome', r: 0.03 },   // front skid plate
+    { w: 1.38, h: 0.10, d: 0.60, y: 0.700, z: 1.98, mat: 'chrome', r: 0.03 },   // front skid plate (tucked up inside the lofted undertray, which now reaches y 0.615 at the nose)
     { w: 1.30, h: 0.10, d: 0.58, y: 0.682, z: -2.08, mat: 'dark', r: 0.03 },    // rear skid plate
     { w: 1.72, h: 0.055, d: 0.10, y: 1.435, z: -2.485, mat: 'dark', r: 0.02 },  // tailgate top lip
     // chrome garnish bridging the two lamp stacks: at night this is the only thing back here with
@@ -249,7 +307,17 @@ export const blueprint = {
   ],
   exhaust: [{ x: 0.78, y: 0.74, z: -2.46, r: 0.075, len: 0.24 }],
   extras: [
-    { type: 'bullbar', w: 1.90, h: 0.60, y: 1.16, z: 2.53 },
+    // z 2.53 → 2.465: at 2.53 the bar's own 1.05 m skid plate hung 180 mm clear of the nose with
+    // the front tyre visible under it — a bright floating plank, and the last §7 gap on this car.
+    // It now half-buries into the clip and the rail crosses the grille mouth, which is where a bull
+    // bar's rail actually sits.
+    // z 2.465 -> 2.508. The rail is a 110 mm tube and the grille's vertical slats reach z 2.435,
+    // so at 2.465 the tube's back half and the slats occupied the same 25 mm of space: at 6x the
+    // cream slats poke THROUGH the black rail, which is the §7 "bull bar passes through a grille
+    // slat" finding verbatim. The grille also moved 16 mm deeper into its recess; between them
+    // there is now 45 mm of clear air behind the rail. The stays still reach 340 mm back into the
+    // clip, so nothing floats.
+    { type: 'bullbar', w: 1.90, h: 0.56, y: 1.16, z: 2.508 },
     { type: 'rack', w: 1.78, d: 2.10, y: 2.11, z: -0.62, jerry: true },
     { type: 'lightbar', w: 1.56, count: 7, y: 2.24, z: 0.42 },
     { type: 'snorkel', x: 1.07, y: 1.66, z: 1.34, h: 1.05 },

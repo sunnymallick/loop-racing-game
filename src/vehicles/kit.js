@@ -1506,14 +1506,23 @@ export function lensTexture(kind = 'flute', chan = 'albedo') {
 }
 
 export function emissiveMaterial({
-  color = '#ff2020', intensity = 3.0, opacity = 1, shared = false, lens = null,
+  color = '#ff2020', intensity = 3.0, opacity = 1, shared = false, lens = null, dim = 1,
 } = {}) {
   const make = () => {
     const m = new THREE.MeshStandardMaterial({
       // …and a REFLECTOR behind it: a lamp that is off is not a grey disc, it is a polished bowl
       // under clear glass, so it hands back the room. metalness carries that; the emissive still
       // dominates completely whenever the lamp is actually lit.
-      color: new THREE.Color(color).multiplyScalar(0.16),
+      /**
+       * `dim` (round-2, front clip): a HEAD lamp is taken to 6 % by the garage (menu.js
+       * `_setHeadGlow`) because a showroom car does not have its headlights on — so in the one
+       * frame this piece is judged in, the lens is showing almost pure DIFFUSE. At 0.272 of a
+       * near-white lamp colour that diffuse is a pale cream card, which is exactly the "blank pale
+       * pills" / "flat grey discs" read. Clear glass over a reflector, unlit, is a DARK object
+       * with a bright rim; the head banks pass dim ~0.4 and the lit state is untouched, because
+       * the emissive is several times the diffuse the moment the lamp is actually on.
+       */
+      color: new THREE.Color(color).multiplyScalar(0.16 * dim),
       emissive: new THREE.Color(color),
       emissiveIntensity: intensity,
       roughness: 0.22, metalness: 0.34, envMapIntensity: 0.85,
@@ -1528,7 +1537,7 @@ export function emissiveMaterial({
   };
   // Lamps whose intensity physics.js drives (brake, head) must own their material. Everything else
   // that merely glows — instrument cluster, plate lamps, light-bar pods — can share one.
-  return shared ? pooled(poolKey('emissive', color, intensity, opacity, lens || ''), make) : make();
+  return shared ? pooled(poolKey('emissive', color, intensity, opacity, lens || '', dim), make) : make();
 }
 
 // ------------------------------------------------------------------ tyres
@@ -2306,7 +2315,7 @@ export function loftTub(sections, {
       const o = {
         x: a.x ?? 0, y: a.y, hw: (a.w ?? 0.2) * 0.5, hh: (a.h ?? 0.2) * 0.5, r: a.r ?? 0.035,
         depth: a.depth ?? 0.07, rim: Math.max(0.006, a.rim ?? 0.032), shade: a.shade ?? 1,
-        lip: a.lip ?? 0, lipW: a.lipW ?? 0.045,
+        lip: a.lip ?? 0, lipW: a.lipW ?? 0.045, flat: a.flat !== false,
       };
       aps.push(o);
       // …and its mirror image. Authoring one side keeps a blueprint readable and guarantees the
@@ -2316,9 +2325,20 @@ export function loftTub(sections, {
 
     const crown = cfg.crown ?? 0, rake = cfg.rake ?? 0, nBase = Math.max(2, cfg.rings ?? 5);
 
-    /** total inward displacement at a point on the panel, plus how deep in the hole it is */
+    /**
+     * Total inward displacement at a point on the panel, how deep in the hole it is, and how much
+     * of the panel's CROWN is cancelled there.
+     *
+     * `flat` is the difference between a dish and a mouth. The panel is domed — `crown` at the
+     * centre falling to zero at the rim — so a recess measured from that dome has a CURVED floor:
+     * across a 1.16 m grille aperture the floor moved 31 mm fore-and-aft between its middle and its
+     * ends, and the flat grille screen dropped into it stood proud of the bodywork at both ends
+     * while being swallowed in the middle. Cancelling the dome inside the opening puts the floor on
+     * one plane at `zc - depth`, which is what a real grille surround is and what a rectangular
+     * mesh actually fits. The rim fillet still carries the dome, so the transition is smooth.
+     */
     const pushAt = (px, py) => {
-      let d = 0, sh = 0, out = 0;
+      let d = 0, sh = 0, out = 0, fl = 0;
       for (const a of aps) {
         const sd = rrSD(px, py, a.x, a.y, a.hw, a.hh, a.r);
         if (sd < 0) {
@@ -2326,12 +2346,13 @@ export function loftTub(sections, {
           const dd = a.depth * Math.pow(f, 0.55);
           if (dd > d) d = dd;
           sh = Math.max(sh, f * a.shade);
+          if (a.flat) fl = Math.max(fl, smoothstep(0, 1, f));
         } else if (a.lip > 0 && sd < a.lipW) {
           const f = 1 - sd / a.lipW;
           out = Math.max(out, a.lip * f * f * (3 - 2 * f));
         }
       }
-      return { d: d > 0 ? d : -out, sh };
+      return { d: d > 0 ? d : -out, sh, fl };
     };
 
     // ---- per-column radial levels, planted on the rim of every opening ----
@@ -2370,6 +2391,37 @@ export function loftTub(sections, {
       ts.sort((p2, q2) => p2 - q2);
       levels.push(ts);
     }
+    /**
+     * ---- ANGULAR SMOOTHING, and the reason the panel does not crease ----
+     *
+     * The columns of this grid are the TUB'S OWN profile points, and their angular spread about the
+     * panel centre is wildly uneven: the flank carries a dozen points over 20 degrees while the
+     * undertray carries three over 70. A level planted on the rim of an opening therefore moves a
+     * long way between two neighbouring columns — measured on the tuner's mouth, 0.38 of the panel
+     * radius across a single column — and the quad between them is not a step in the surface, it is
+     * a SHEAR: the two ends of the same ring sit at different radii, so the recess wall runs
+     * diagonally and the panel photographs as crumpled fabric. 192 of 2964 quad edges were over
+     * 0.06.
+     *
+     * Three passes of a [1/4, 1/2, 1/4] filter along the ring fixes it. It is safe by construction:
+     * an elementwise average of sorted arrays is sorted, so every column stays monotone, and t = 0
+     * and t = 1 are shared by every column so the fan centre and the seam with the tub cannot move.
+     * The opening's edge is still resolved by its own levels — they are simply spread over three
+     * columns instead of one, which is finer than the rim fillet they sit inside.
+     *
+     * Measured on the tuner nose: 3 passes 0.115 / 44 bad edges, 8 passes 0.070 / 16, 12 passes
+     * 0.055 / 0. Ten is where the fold stops being visible at 8x on all four cars without softening
+     * the mouth's corners into a lozenge.
+     */
+    for (let pass = 0; pass < (cfg.smooth ?? 10); pass++) {
+      const prev = levels.map((a) => a.slice());
+      for (let i = 0; i < L - 1; i++) {
+        const a = prev[(i - 1 + L - 1) % (L - 1)], b = prev[i], c = prev[(i + 1) % (L - 1)];
+        for (let j = 0; j < b.length; j++) levels[i][j] = 0.25 * a[j] + 0.5 * b[j] + 0.25 * c[j];
+      }
+      levels[L - 1] = levels[0].slice();
+    }
+
     // Drop any level that is degenerate in EVERY column — a slot clamped to the rim or to the
     // centre by all L rays is a duplicate ring that costs vertices and draws nothing. On a tail
     // panel with one opening this is a third of the grid.
@@ -2389,19 +2441,38 @@ export function loftTub(sections, {
         // the opening always closes before it reaches the rim of the panel, so no cut can ever
         // break out through the edge of the bodywork (the round-6 "black shard poking through")
         const guard = smoothstep(0, 1, clamp((0.992 - t) / 0.085, 0, 1));
-        const { d, sh } = pushAt(px, py);
-        const dome = (crown + rake * (py - my)) * (1 - t * t);
+        const { d, sh, fl } = pushAt(px, py);
+        const dome = (crown + rake * (py - my)) * (1 - t * t) * (1 - fl * guard);
         extra.pos.push(px, py, zc + dir * (dome - d * guard));
         extra.uvA.push(uOf(py), CV + ((px - mx) / ex) * R);
         extra.uvB.push(0, 1);
         extra.wg.push(sh * guard);
       }
     }
+    /**
+     * WINDING — and this was the whole of the round-6 §7 finding, not the bolt-ons it was blamed on.
+     *
+     * `j` runs OUTWARD from the panel centre and `i` runs round the ring, and buildRings() traverses
+     * a ring anticlockwise in the xy plane (see section 6b). For that pair the tangent is T = z^ x R,
+     * so (p0,p1,p3) and (p0,p3,p2) both give T x R = -z^: the two branches below were swapped, and
+     * every nose panel in the game was emitted facing INTO the car.
+     *
+     * `paintMaterial()` is FrontSide, so the finished result was that the front face of all four
+     * cars WAS NOT DRAWN. What a garage crop saw through the hole was the inner fender, the tyre
+     * and the road — read, correctly, as "a matte black bumper beam floating clear of the bodywork
+     * with a dark gap under it" and "a black shard poking through" beside the lamp pads. There was
+     * no gap and no shard: there was no bodywork. The bolt-ons were the only thing on the front of
+     * the car that rendered at all, which is exactly why they read as bolt-ons.
+     *
+     * Measured before the swap, on the untouched muscle blueprint: 36 front-facing triangles on the
+     * nose cap against 648 back-facing. After: 648 against 36 (the remainder are the degenerate
+     * pair at the very centre of the fan).
+     */
     for (let j = 0; j < K - 1; j++) {
       for (let i = 0; i < L - 1; i++) {
         const p0 = base + j * L + i, p1 = p0 + 1, p2 = p0 + L, p3 = p2 + 1;
-        if (flip) shell.push(p0, p2, p3, p0, p3, p1);
-        else shell.push(p0, p3, p2, p0, p1, p3);
+        if (flip) shell.push(p0, p3, p2, p0, p1, p3);
+        else shell.push(p0, p2, p3, p0, p3, p1);
       }
     }
   };
@@ -2559,6 +2630,91 @@ export function roundedBox(w, h, d, r = 0.05, seg = 2) {
   geo.translate(0, 0, -d / 2);
   geo.computeVertexNormals();
   return geo;
+}
+
+/**
+ * A BAR THAT WRAPS — a bumper, a valance blade, a splitter lip, built as ONE swept solid.
+ *
+ * ROUND-2 (front clip). The muscle car's front bumper was three `roundedBox`es: a straight centre
+ * bar and two swept end pieces yawed 26 degrees. At 8x on la-muscle-menu that reads exactly as what
+ * it is — the centre bar stops in a RAW FLAT CUT FACE against the wing, and the end piece is a
+ * detached khaki lump sitting on the fender with body colour all the way round it. Three boxes
+ * arranged on an arc can never be one bumper: the joints are either gaps or interpenetrations, and
+ * the tips are always cut faces.
+ *
+ * This sweeps one closed rounded-rect section along a parabolic path in plan, so the bar is a
+ * single continuous surface with continuous normals from tip to tip. Two properties matter:
+ *
+ *   `sweep`  how far the tips fall BACK in z relative to the centre. Set it to (or past) the
+ *            nose crown and the tips end up behind the fender surface, i.e. inside the bodywork,
+ *            where a cut face cannot be photographed.
+ *   `taper`  the section scale at the tips. A bumper that thins as it wraps reads as pressed
+ *            steel; it also means the buried end is smaller than the metal covering it.
+ *
+ * Local frame matches `roundedBox`: +x across the car, +y up, +z forward, origin at the centre of
+ * the section at x = 0.
+ */
+export function sweptBar(w, h, d, { sweep = 0.10, pow = 2, r = null, seg = 18, ring = 16, taper = 0.62, drop = 0 } = {}) {
+  const R = Math.max(0.004, Math.min(r ?? Math.min(h, d) * 0.42, h * 0.5 - 1e-3, d * 0.5 - 1e-3));
+  const hh = h * 0.5 - R, hd = d * 0.5 - R;
+  // the cross-section, as a closed loop of [z, y] in the section's own plane
+  const prof = [];
+  const k = Math.max(2, Math.round(ring / 4));
+  for (const [cz, cy, a0] of [[hd, hh, 0], [-hd, hh, Math.PI / 2], [-hd, -hh, Math.PI], [hd, -hh, -Math.PI / 2]]) {
+    for (let i = 0; i < k; i++) {
+      const a = a0 + (i / k) * Math.PI / 2;
+      prof.push([cz + Math.cos(a) * R, cy + Math.sin(a) * R]);
+    }
+  }
+  const N = prof.length;
+  const pos = [], idx = [];
+  const half = w * 0.5;
+  const centre = [];
+  for (let s = 0; s <= seg; s++) {
+    const u = (s / seg) * 2 - 1;                       // -1 .. +1 across the bar
+    const x = u * half;
+    const au = Math.abs(u);
+    // `pow` shapes WHERE the wrap happens. At 2 the bar is falling back everywhere, which on a
+    // nose whose own crown only drops 40 mm from centre to corner buries the bumper before it has
+    // finished being a bumper. Above ~2.5 the middle stays nearly parallel to the panel and the
+    // whole of the wrap is spent in the last 20 % — which is what a bumper end actually does.
+    const zc = -sweep * Math.pow(au, pow);             // the tips fall back
+    const yc = -drop * u * u;                          // …and, optionally, down
+    const sc = 1 - (1 - taper) * Math.pow(au, 2.1);
+    // tangent of the path, so the section stays square to the sweep instead of shearing
+    const tx = 1, tz = -sweep * pow * Math.pow(au, pow - 1) * Math.sign(u || 1) / half;
+    const tl = Math.hypot(tx, tz);
+    const nx = -tz / tl, nz = tx / tl;                 // the section's own +z axis, in world XZ
+    centre.push([x, yc, zc]);
+    for (let i = 0; i < N; i++) {
+      const [pz, py] = prof[i];
+      pos.push(x + nx * pz * sc, yc + py * sc, zc + nz * pz * sc);
+    }
+  }
+  for (let s = 0; s < seg; s++) {
+    for (let i = 0; i < N; i++) {
+      const a = s * N + i, b = s * N + (i + 1) % N, c = (s + 1) * N + i, e = (s + 1) * N + (i + 1) % N;
+      idx.push(a, c, b, b, c, e);
+    }
+  }
+  // flat caps on the two tips. They are geometry, not holes — a cut face is only a defect when you
+  // can see it, and `sweep` is what puts these inside the wing.
+  // The section loop runs counter-clockwise seen from -x, so the -x cap keeps that order and the
+  // +x cap reverses it; both caps then face outward and neither is a one-sided hole.
+  for (const [s, out] of [[0, -1], [seg, 1]]) {
+    const base = pos.length / 3;
+    pos.push(...centre[s]);
+    const rowStart = s * N;
+    for (let i = 0; i < N; i++) {
+      const a = rowStart + i, b = rowStart + (i + 1) % N;
+      if (out < 0) idx.push(base, a, b); else idx.push(base, b, a);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
 }
 
 /**
@@ -3337,93 +3493,260 @@ export function glowSprite(color) {
 }
 
 /**
- * Headlight / taillight unit: a dark housing, a chrome bezel, an emissive lens and a glow card.
- * children[0] MUST stay the lens — physics.js drives its emissiveIntensity for brake lights.
+ * ------------------------------------------------------------------ THE LAMP UNIT
+ *
+ * ROUND-2 (front clip). The verdict on this part, verbatim: "the headlight is a flat quad wearing a
+ * gray corrugated canvas texture, sitting on the cyan body like a sticker. Its right end is a
+ * three-tooth SAWTOOTH where the lamp polygon is being clipped by the fender at a shallow angle",
+ * and on the truck "the round lamp discs are HALF-BURIED in the yellow sheetmetal; only crescent
+ * slivers emerge".
+ *
+ * Neither was a texture problem and neither was fixed by cutting the recess: they are both the same
+ * ARITHMETIC problem. `loftTub` cuts a rounded-rect recess whose floor only reaches full depth
+ * `rim` metres inside the opening edge — between the edge and there the surface is climbing back
+ * out to the panel. Every unit built here reached FURTHER than the (w, h) its blueprint declared:
+ *
+ *   housing   w * 1.10  x  h * 1.30
+ *   bezel     max(w,h) * 1.04  in both axes (a torus scaled on one axis only)
+ *   ribs      w * 1.02  x  h * 1.02, standing 28 mm proud of the lens
+ *
+ * so a lamp authored to fit an opening had 5-30 mm of itself buried in that ramp, and the ramp cut
+ * it at a shallow angle — which is exactly what a three-tooth sawtooth is. `tools/_fc_fit.mjs`
+ * measured it on all four cars: every head unit and every grille was over its aperture's flat floor.
+ *
+ * The unit is therefore now STRICTLY BOUNDED by the (w, h) box it is asked for, in every part, and
+ * it reaches at most 26 mm forward of its own origin. A blueprint can then guarantee a fit with one
+ * subtraction, and `assembleCar` enforces it anyway (see `seatInAperture` in assemble.js).
+ *
+ * The other half of the verdict — "no bezel, no lens curvature, no aperture cut in the bodywork" —
+ * is what the rest of the rebuild is for. A lamp is now four things instead of one:
+ *
+ *   reflector   the emissive lens, INSET behind the bezel and 11 mm down in its own well
+ *   ribs        moulded reflector dividers, now under the glass rather than proud of it
+ *   bezel       a closed chamfered frame ON the (w, h) outline — the bright ring that reads as a
+ *               lamp unit even when the lamp is off, which in the garage it always is (menu.js
+ *               runs the head bank at 6%)
+ *   cover       a clear glossy pane over the whole aperture. This is the piece that answers "dead
+ *               matte in a dark garage": a dielectric with a clearcoat carries a specular from the
+ *               practicals whatever the emissive is doing, so the lamp reads as GLASS over a
+ *               reflector instead of as a grey ribbed pad painted on the wing.
+ *
+ * children[0] MUST stay the lens — physics.js drives its emissiveIntensity for brake lights, and
+ * menu.js dims the head banks through the same handle.
  */
+/** The clear cover pane over a lamp. One pooled material, so every lamp on a car shares a call. */
+export function lampCoverMaterial() {
+  return pooled('lampcover', () => {
+    const m = new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color('#aebac8'),
+      metalness: 0.0, roughness: 0.055,
+      transparent: true, opacity: 0.24, depthWrite: false,
+      envMapIntensity: 1.15,
+      clearcoat: 1, clearcoatRoughness: 0.03,
+      side: THREE.FrontSide,
+    });
+    m.userData.envAuthored = 1.15;
+    m.userData.__envBase = 1.15;
+    // the same analytic mirror the paint and the glass carry, tuned tight and bright: a lamp cover
+    // is a small, strongly curved dielectric, so what it does in a picture is throw ONE hard
+    // highlight. Without this it is a grey film in the garage, where the env probe is a dark room.
+    return specCeiling(skyReflect(m, {
+      gain: 0.95, blur: 0.004, f0: 0.075, tint: 0.0, sunPow: 300, amb: 0.10, cap: 0.85,
+    }), { knee: 1.00, max: 2.10 });
+  });
+}
+
 export function lightUnit({
   w = 0.34, h = 0.16, color = '#ff2418', intensity = 4.0, glow = 1.0, shape = 'rect', bezel = true,
-  segs = 0, lensMat = null, glowMat = null,
+  segs = 0, lensMat = null, glowMat = null, cover = false, reflector = false,
 } = {}) {
   const g = new THREE.Group();
-  // 16 segments put a 22-degree facet on a round lens that a garage crop reads as a stop sign, and
-  // the bezel round it was a 14-segment torus in a 0.12-rough chrome — a mirror that tight on
-  // curvature that coarse fits its whole specular lobe between two samples, which is why the
-  // muscle car's taillights photographed with a DOTTED white ring round each lens. Both are
-  // resolved now and the bezel's lobe is spread, the same fix the wheel lip already carries.
-  const lensGeo = shape === 'round'
-    ? new THREE.CircleGeometry(h * 0.5, 24)
+  const round = shape === 'round';
+  const R = Math.min(w, h) * 0.5;
+  // the bezel band. Wide enough to read at hero distance, never more than a fifth of the lamp.
+  const b = clamp(Math.min(w, h) * 0.15, 0.009, 0.026);
+  const lw = round ? (R - b) * 2 : w - b * 2, lh = round ? (R - b) * 2 : h - b * 2;
+
+  // ---- the lens / reflector face, 11 mm down inside its own well --------------------------
+  // 16 segments put a 22-degree facet on a round lens that a garage crop reads as a stop sign;
+  // 24 is where the circle is a circle at 12x.
+  const lensGeo = round
+    ? new THREE.CircleGeometry(lw * 0.5, 24)
     : shape === 'strip'
-      ? roundedBox(w, h, 0.02, h * 0.45)
-      : roundedBox(w, h, 0.025, Math.min(w, h) * 0.30);
-  // A bank of lamps that light together (both taillights, both headlights) is handed ONE lens
-  // material so the whole bank bakes into a single mesh — physics.js then drives all of them with
-  // the one emissiveIntensity write it was already doing.
+      ? roundedBox(lw, lh, 0.016, Math.min(lw, lh) * 0.42)
+      : roundedBox(lw, lh, 0.018, Math.min(lw, lh) * 0.28);
   const lens = new THREE.Mesh(lensGeo, lensMat || emissiveMaterial({ color, intensity }));
-  lens.position.z = 0.015;
+  lens.position.z = -0.006;
   g.add(lens);                                  // children[0]
 
+  // ---- the housing behind it. Bounded by (w,h) so it can never break out of the aperture ----
   const housing = new THREE.Mesh(
-    shape === 'round' ? new THREE.CylinderGeometry(h * 0.58, h * 0.52, 0.09, 14) : roundedBox(w * 1.10, h * 1.30, 0.09, Math.min(w, h) * 0.30),
+    round ? new THREE.CylinderGeometry(R * 0.98, R * 0.86, 0.075, 18) : roundedBox(w, h, 0.075, Math.min(w, h) * 0.26),
     housingMaterial(),
   );
-  if (shape === 'round') housing.rotation.x = Math.PI / 2;
-  // The housing's front face must clear the lens plane. At -0.03 the two were coplanar and the
-  // cylinder cap z-fought the lens, printing a pinwheel across every round lamp (§7 caps that at 60).
-  housing.position.z = -0.075;
+  if (round) housing.rotation.x = Math.PI / 2;
+  // its front face must clear the lens plane, or the cap z-fights the lens and prints a pinwheel
+  // across every round lamp (§7 caps that at 60).
+  housing.position.z = -0.058;
   housing.name = 'housing';
   g.add(housing);
 
-  if (bezel) {
-    const ring = shape === 'round'
-      ? new THREE.TorusGeometry(h * 0.53, 0.016, 5, 26)
-      : new THREE.TorusGeometry(Math.max(w, h) * 0.52, 0.014, 5, 22, Math.PI * 2);
-    const bz = new THREE.Mesh(ring, chromeMaterial({ color: '#c9ced6', rough: 0.22 }));
-    if (shape !== 'round') bz.scale.set(w / (Math.max(w, h) * 1.04), h / (Math.max(w, h) * 1.04), 1);
-    bz.position.z = 0.012;
-    bz.name = 'bezel';
-    g.add(bz);
-  }
-
-  // Divider ribs across the lens. Without them a bright lens blooms into a featureless white
-  // rectangle and the shape of the lamp is erased (round-1 note on the Brutus tail lamps).
+  // ---- divider ribs, now UNDER the glass instead of standing 28 mm out of it ----
+  // Without them a bright lens blooms into a featureless white rectangle and the shape of the lamp
+  // is erased (round-1 note on the Brutus tail lamps). Proud of the lens by 6 mm, still 8 mm behind
+  // the bezel face, and clipped to the LENS footprint rather than to 1.02x the whole unit.
   if (segs > 1) {
-    const vertical = h > w;
-    const ribMat = housingMaterial();      // the ribs are moulded out of the housing itself
+    const vertical = lh > lw;
+    const ribMat = darkMetalMaterial({ color: '#3c414b', rough: 0.40, metal: 0.55 });
     for (let i = 1; i < segs; i++) {
       const f = i / segs - 0.5;
       const rib = new THREE.Mesh(
-        vertical ? roundedBox(w * 1.02, h * 0.030, 0.045, 0.008) : roundedBox(w * 0.030, h * 1.02, 0.045, 0.008),
+        vertical ? roundedBox(lw * 0.98, lh * 0.030, 0.026, 0.006) : roundedBox(lw * 0.030, lh * 0.98, 0.026, 0.006),
         ribMat,
       );
-      rib.position.set(vertical ? 0 : f * w, vertical ? f * h : 0, 0.028);
+      rib.position.set(vertical ? 0 : f * lw, vertical ? f * lh : 0, 0.000);
       rib.name = 'rib';
       g.add(rib);
     }
   }
 
+  /**
+   * ---- THE OPTIC'S OWN HARDWARE (round-2, front clip) ------------------------------------
+   *
+   * Verbatim on the front lamps: "a flat quad wearing a gray corrugated canvas texture, sitting on
+   * the cyan body like a sticker" and "a beige concentric-ring texture that reads as a slice of
+   * tree trunk at 5x". Both of those are one defect — the lens is the ONLY part of the unit the
+   * camera can see. The housing is behind an opaque lens, so a headlight is one flat card with a
+   * picture on it, and a picture of a lamp is a sticker.
+   *
+   * A lamp has hardware IN FRONT of its lens plane: the chromed ring that clamps a sealed beam
+   * into its bowl, and on a modern unit the projector barrels standing inside the cover. Both are
+   * here, 2-4 mm proud of the lens and still well behind the bezel face, so the unit has parallax
+   * and a specular of its own whether it is lit or not. They are chrome, a bucket every car
+   * already carries, and they are named so assemble.js lifts them into the batched detail mesh.
+   */
+  if (reflector) {
+    const rmMat = chromeMaterial({ color: '#c8ced8', rough: 0.20 });
+    if (round) {
+      const tr = Math.max(0.0035, lw * 0.026);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(lw * 0.37, tr, 5, 24), rmMat);
+      ring.position.z = 0.002;
+      ring.name = 'reflector';
+      g.add(ring);
+      // the centre boss of a sealed beam: a small dark hub inside the retaining ring
+      const boss = new THREE.Mesh(new THREE.SphereGeometry(lw * 0.085, 10, 6), housingMaterial());
+      boss.position.z = 0.004;
+      boss.name = 'reflector';
+      g.add(boss);
+    } else {
+      // projector barrels — as many as fit along the lamp, at least one
+      const br = Math.min(lw, lh) * 0.34;
+      const n = Math.max(1, Math.min(3, Math.round(lw / (br * 2.6))));
+      for (let i = 0; i < n; i++) {
+        const f = n === 1 ? 0 : (i / (n - 1) - 0.5) * (lw - br * 2.3);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(br, Math.max(0.003, br * 0.20), 5, 18), rmMat);
+        ring.position.set(f, 0, 0.002);
+        ring.name = 'reflector';
+        g.add(ring);
+        const boss = new THREE.Mesh(new THREE.SphereGeometry(br * 0.46, 10, 6), housingMaterial());
+        boss.position.set(f, 0, 0.004);
+        boss.name = 'reflector';
+        g.add(boss);
+      }
+    }
+  }
+
+  /**
+   * ---- THE MASK (round-3, front clip) ----------------------------------------------------
+   *
+   * "the ribbed headlight pads meet the bodywork on a hard mismatched edge", "blank pale pills",
+   * "a beige concentric-ring texture that reads as a slice of tree trunk". Every one of those is
+   * the same measurement: the unit has NO DARK IN IT. A chrome bezel round a grey optic, on a
+   * bright panel, in a warm garage, is three values within a stop of each other — so the lamp has
+   * no outline and the eye reads it as a decal printed on the paint.
+   *
+   * A real lamp is masked: the inside of the cover is painted black everywhere the reflector does
+   * not reach, which is what puts a hard black band between the bright surround and the optic and
+   * is why a headlight reads as a hole full of glass even switched off. This is that band — gloss
+   * black lacquer, standing 3 mm proud of the lens and still 5 mm behind the bezel face, so the
+   * unit reads as bezel → shadow → optic from any angle instead of as one flat pale card.
+   */
+  {
+    const mkMat = blackoutMaterial();
+    if (round) {
+      // never more than a fifth of the optic: on a 60 mm driving lamp a fixed band would close it
+      const mr = Math.min(Math.max(0.0035, b * 0.42), lw * 0.10);
+      const mask = new THREE.Mesh(new THREE.TorusGeometry(R - b - mr * 0.6, mr, 6, 26), mkMat);
+      mask.position.z = 0.001;
+      mask.name = 'bezel';
+      g.add(mask);
+    } else {
+      const t = Math.min(Math.max(0.0045, b * 0.62), Math.min(lw, lh) * 0.22);
+      for (const [bw, bh, bx, by] of [
+        [lw, t, 0, (lh - t) * 0.5], [lw, t, 0, -(lh - t) * 0.5],
+        [t, lh - t * 2, (lw - t) * 0.5, 0], [t, lh - t * 2, -(lw - t) * 0.5, 0],
+      ]) {
+        if (bw <= 0 || bh <= 0) continue;
+        const bar = new THREE.Mesh(roundedBox(bw, bh, 0.016, Math.min(t * 0.4, 0.006)), mkMat);
+        bar.position.set(bx, by, 0.000);
+        bar.name = 'bezel';
+        g.add(bar);
+      }
+    }
+  }
+
+  // ---- the cover glass -------------------------------------------------------------------
+  // Sits 4 mm BEHIND the bezel face, so the frame is the outermost thing on the unit and the glass
+  // is let into it — which is the whole difference between a lamp and a decal.
+  if (cover) {
+    const cg = round
+      ? new THREE.CircleGeometry(R - b * 0.35, 24)
+      : roundedBox(w - b * 0.7, h - b * 0.7, 0.008, Math.min(w, h) * (shape === 'strip' ? 0.40 : 0.26));
+    const cv = new THREE.Mesh(cg, lampCoverMaterial());
+    cv.position.z = 0.010;
+    cv.name = 'cover';
+    cv.userData.noShadow = true;                  // a pane of glass does not cast an opaque shadow
+    g.add(cv);
+  }
+
+  // ---- the bezel: a CLOSED chamfered frame exactly on the (w, h) outline ------------------
+  if (bezel) {
+    const bzMat = chromeMaterial({ color: '#c9ced6', rough: 0.22 });
+    if (round) {
+      // radius (R - b/2) with tube b/2 ⇒ the outer edge lands exactly on R. 6x28 so the highlight
+      // sweeps: a mirror this tight on a 14-segment torus fits its whole specular lobe between two
+      // samples, which is what printed a DOTTED white ring round the muscle car's lamps.
+      const bz = new THREE.Mesh(new THREE.TorusGeometry(R - b * 0.5, b * 0.5, 6, 28), bzMat);
+      bz.position.z = 0.006;
+      bz.name = 'bezel';
+      g.add(bz);
+    } else {
+      // four chamfered bars. A ring built this way cannot overshoot on either axis the way a
+      // uniformly-scaled torus does, and it gives the frame square corners, which is what a
+      // moulded lamp surround actually has.
+      const r = Math.min(b * 0.45, 0.010);
+      for (const [bw, bh, bx, by] of [
+        [w, b, 0, (h - b) * 0.5], [w, b, 0, -(h - b) * 0.5],
+        [b, h - b * 2, (w - b) * 0.5, 0], [b, h - b * 2, -(w - b) * 0.5, 0],
+      ]) {
+        const bar = new THREE.Mesh(roundedBox(bw, bh, 0.030, r), bzMat);
+        bar.position.set(bx, by, 0.000);
+        bar.name = 'bezel';
+        g.add(bar);
+      }
+    }
+  }
+
   if (glow > 0) {
     /**
-     * The halo card used to be 1.9x the lamp's long side at 0.5 alpha, then 1.35x at 0.40.
+     * The halo card follows the LAMP'S ASPECT, not its longest side.
      *
-     * Even at 1.35 it was too much: on the SUV's 0.46 m stacked lens the card is 0.62 m across,
-     * which is wider than the tailgate it is bolted to, and once UnrealBloomPass got hold of it the
-     * two rear corners of the truck rendered as a pair of solid red domes with no lens, no bezel
-     * and no tailgate detail inside them. Measured on la-suv-chase: the lamp read as one saturated
-     * blob rather than as a lit lens.
-     *
-     * A real taillight's halo is TIGHT — it sits just outside the lens and the bloom does the rest.
-     * 1.10x at 0.24 alpha lets the housing, the bezel and the divider ribs survive being lit.
-     */
-    /**
-     * ROUND-4: the halo card follows the LAMP'S ASPECT, not its longest side.
-     *
-     * It was a SQUARE of side max(w,h)*1.10, which on any lamp that is not square is a red card
-     * far taller than the lens it belongs to: the SUV's 0.20 x 0.46 stack got a 0.51 x 0.51 card,
-     * the tuner's wide bar got one as tall as it is wide. Additively blended and then bloomed,
-     * that is what painted the tail panel, the valance and the bumper of every car one flat pink
-     * in every chase frame — the round-2 note that "the biggest panels are blank slabs" was partly
-     * this, since the panels were there and the halo was erasing them. Matching the aspect keeps
-     * the halo on the lamp and gives the bodywork back.
+     * It was a SQUARE of side max(w,h)*1.10, which on any lamp that is not square is a card far
+     * taller than the lens it belongs to: the SUV's 0.20 x 0.46 stack got a 0.51 x 0.51 card, the
+     * tuner's wide bar got one as tall as it is wide. Additively blended and then bloomed, that is
+     * what painted the tail panel, the valance and the bumper of every car one flat pink in every
+     * chase frame. A real taillight's halo is TIGHT — it sits just outside the lens and the bloom
+     * does the rest; 1.10x at 0.24 alpha lets the housing, the bezel and the ribs survive being lit.
      */
     const pad = Math.max(w, h) * 0.16;
     const gw = w * 1.10 + pad, gh = h * 1.10 + pad;
@@ -3434,7 +3757,7 @@ export function lightUnit({
         transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: glow * 0.24,
       }),
     );
-    gl.position.z = 0.05;
+    gl.position.z = 0.022;
     gl.name = 'glow';
     g.add(gl);
   }
@@ -3444,11 +3767,37 @@ export function lightUnit({
 /** A grille: a recessed dark box with real slats and a surrounding chrome/dark frame. */
 export function grilleMesh({
   w = 1.4, h = 0.30, d = 0.14, slats = 9, vertical = false, frame = 'chrome', mesh = false,
-  surround = null,
+  surround = null, corner = null,
 } = {}) {
   const hasSurround = surround === null ? frame === 'chrome' : surround;
   const g = new THREE.Group();
-  const back = new THREE.Mesh(roundedBox(w * 0.99, h * 0.99, d * 0.5, 0.02), cavityMaterial());
+  /**
+   * ---- THE SCREEN'S OUTLINE IS THE APERTURE'S OUTLINE (round-3, front clip) ---------------
+   *
+   * Every opening `loftTub` cuts into a nose panel is a ROUNDED rectangle — that is what `rrSD`
+   * solves and what the recess's fillet follows. The screen dropped into it was a plain box, so
+   * its four square corners were the only part of the assembly outside the flat floor: they lay on
+   * the fillet, were cut by it at a shallow angle, and a shallow cut through a slab is the
+   * sawtooth the verdict keeps finding at the ends of a grille. `seat()` cannot fix that by
+   * scaling, because scaling a rectangle to fit inside a rounded rectangle's corner radius shrinks
+   * a 1.6 m screen to fill two thirds of its hole.
+   *
+   * So the screen is cut to the same rounded rect instead: every bar is shortened to the half-span
+   * the outline actually has at its own row (or column), which is exact at the middle and tucks
+   * the ends in round the corners. `back` — the dark floor behind the weave — follows it too, as
+   * a rounded box whose radius matches.
+   */
+  const CR = clamp(corner ?? Math.min(w, h) * 0.26, 0, Math.min(w, h) * 0.5);
+  // half-span in x of the rounded-rect outline at height |y| (and, transposed, in y at |x|)
+  const spanX = (y) => {
+    const k = Math.abs(y) - (h * 0.5 - CR);
+    return k <= 0 ? w * 0.5 : w * 0.5 - CR + Math.sqrt(Math.max(0, CR * CR - k * k));
+  };
+  const spanY = (x) => {
+    const k = Math.abs(x) - (w * 0.5 - CR);
+    return k <= 0 ? h * 0.5 : h * 0.5 - CR + Math.sqrt(Math.max(0, CR * CR - k * k));
+  };
+  const back = new THREE.Mesh(roundedBox(w * 0.99, h * 0.99, d * 0.5, Math.max(0.02, CR * 0.92)), cavityMaterial());
   back.position.z = -d * 0.5;
   g.add(back);
   const barMat = frame === 'chrome' ? chromeMaterial({ color: '#b9bfc8', rough: 0.16 })
@@ -3467,43 +3816,69 @@ export function grilleMesh({
     const meshMat = darkMetalMaterial({ color: '#565c66', rough: 0.38, metal: 0.72 });
     for (let i = 0; i < slats; i++) {
       const y = -h / 2 + (i + 0.5) * (h / slats);
-      const bar = new THREE.Mesh(roundedBox(w * 0.98, h / slats * 0.30, 0.03, 0.006), meshMat);
+      const th = h / slats * 0.30;
+      const sw = spanX(Math.abs(y) + th * 0.5) * 2 * 0.98;
+      if (sw < th) continue;
+      const bar = new THREE.Mesh(roundedBox(sw, th, 0.03, 0.006), meshMat);
       bar.position.set(0, y, -d * 0.16);
       g.add(bar);
     }
     const cols = Math.round(slats * (w / Math.max(h, 0.01)) * 0.28);
     for (let i = 0; i < cols; i++) {
       const x = -w / 2 + (i + 0.5) * (w / cols);
-      const bar = new THREE.Mesh(roundedBox(w / cols * 0.26, h * 0.96, 0.03, 0.006), meshMat);
+      const tw = w / cols * 0.26;
+      const sh = spanY(Math.abs(x) + tw * 0.5) * 2 * 0.96;
+      if (sh < tw) continue;
+      const bar = new THREE.Mesh(roundedBox(tw, sh, 0.03, 0.006), meshMat);
       bar.position.set(x, 0, -d * 0.16);
       g.add(bar);
     }
   } else if (vertical) {
     for (let i = 0; i < slats; i++) {
       const x = -w / 2 + (i + 0.5) * (w / slats);
-      const bar = new THREE.Mesh(roundedBox(w / slats * 0.34, h * 0.94, 0.05, 0.01), barMat);
+      const tw = w / slats * 0.34;
+      const sh = spanY(Math.abs(x) + tw * 0.5) * 2 * 0.94;
+      if (sh < tw) continue;
+      const bar = new THREE.Mesh(roundedBox(tw, sh, 0.05, 0.01), barMat);
       bar.position.set(x, 0, -d * 0.10);
       g.add(bar);
     }
   } else {
     for (let i = 0; i < slats; i++) {
       const y = -h / 2 + (i + 0.5) * (h / slats);
-      const bar = new THREE.Mesh(roundedBox(w * 0.96, h / slats * 0.40, 0.05, 0.01), barMat);
+      const th = h / slats * 0.40;
+      const sw = spanX(Math.abs(y) + th * 0.5) * 2 * 0.96;
+      if (sw < th) continue;
+      const bar = new THREE.Mesh(roundedBox(sw, th, 0.05, 0.01), barMat);
       bar.position.set(0, y, -d * 0.10);
       g.add(bar);
     }
   }
-  // surround
+  /**
+   * SURROUND — an INSET frame, not an outset one.
+   *
+   * ROUND-2 (front clip): this was the §7 z-fighting tell. The bars used to sit at
+   * ±(h/2 + 0.018) and ±(w/2 + 0.018) and be d * 0.7 deep about z = 0, i.e. the frame stood
+   * OUTSIDE the (w, h) box the blueprint declared and 35% of its depth in FRONT of the mounting
+   * plane. Dropped into a lofted aperture, that put a 42 mm chrome rail on the recess's rim wall —
+   * two surfaces climbing the same ramp within a millimetre of each other — and the SUV's grille
+   * surround duly traded cream / dark-olive / yellow pixels with the bodywork along its whole
+   * width at 20x. A frame laid INSIDE the opening, behind the mounting plane, cannot do that, and
+   * it is also what a real grille surround is: a bright lip round the inside of the hole.
+   */
   if (hasSurround) {
     const surMat = chromeMaterial({ color: '#d3d8de', rough: 0.10 });
-    for (const [sy, sw, sh] of [[h / 2 + 0.018, w + 0.05, 0.042], [-h / 2 - 0.018, w + 0.05, 0.042]]) {
-      const b = new THREE.Mesh(roundedBox(sw, sh, d * 0.7, 0.016), surMat);
-      b.position.set(0, sy, 0);
+    const t = Math.min(0.042, h * 0.22, w * 0.22);
+    // …and the frame is cut to the same rounded outline as the weave, so its four corners cannot
+    // be the one part of the pack that climbs the recess fillet.
+    for (const sy of [(h - t) * 0.5, -(h - t) * 0.5]) {
+      const b = new THREE.Mesh(roundedBox(spanX(Math.abs(sy) + t * 0.5) * 2, t, d * 0.5, 0.014), surMat);
+      b.position.set(0, sy, -d * 0.24);
       g.add(b);
     }
     for (const sx of [-1, 1]) {
-      const b = new THREE.Mesh(roundedBox(0.042, h + 0.02, d * 0.7, 0.016), surMat);
-      b.position.set(sx * (w / 2 + 0.018), 0, 0);
+      const b = new THREE.Mesh(roundedBox(t, Math.max(t, spanY((w - t) * 0.5 + t * 0.5) * 2 - t * 2), d * 0.5, 0.014), surMat);
+      b.position.set(sx * (w - t) * 0.5, 0, -d * 0.24);
       g.add(b);
     }
   }

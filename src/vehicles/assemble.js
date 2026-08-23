@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  loftBody, loftTub, loftBand, roundedBox, buildWheel, wheelParts, wheelScalable, WheelRig,
+  loftBody, loftTub, loftBand, roundedBox, sweptBar, buildWheel, wheelParts, wheelScalable, WheelRig,
   wellLinerMaterial, flareBand, archReturn, paintMaterial, glassMaterial,
   chromeMaterial, darkTrimMaterial, plasticMaterial, carbonMaterial, emissiveMaterial,
   cavityMaterial, darkMetalMaterial, stdMaterial, interiorMaterial, glowSprite, hemiTint,
@@ -394,7 +394,9 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   }
 
   // ---------------- 4. the glasshouse ----------------
-  const lights = { head: [], tail: [], brake: [], reverse: [] };
+  // `drl` — daytime running lamps, the one bucket nothing dims or drives. See the note at the
+  // point they are built, below.
+  const lights = { head: [], tail: [], brake: [], reverse: [], drl: [] };
   if (bp.cabin) {
     const cb = bp.cabin;
     const st = cb.stations[0].z <= cb.stations[cb.stations.length - 1].z
@@ -550,6 +552,91 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     rig.batch(rearParts.statics, staticIds.rear, wheelSphere);
   }
 
+  /**
+   * ---------------- SEATING INTO THE LOFTED APERTURES ----------------
+   *
+   * ROUND-2 (front clip). `loftTub` cuts each nose opening as a rounded-rect recess, but its floor
+   * only reaches full depth `rim` metres inside the opening edge — between the edge and there the
+   * surface is a RAMP climbing back out to the panel. Anything dropped in wider or taller than
+   * (w - 2*rim, h - 2*rim) therefore has its ends buried in that ramp, cut at a shallow angle, and
+   * a shallow cut through a slab is a sawtooth. That is the whole of the round-1 §7 finding:
+   *
+   *   "the headlight … right end is a three-tooth SAWTOOTH where the lamp polygon is being clipped
+   *    by the fender at a shallow angle" (tuner, supercar)
+   *   "the round lamp discs are HALF-BURIED in the yellow sheetmetal" (SUV — 74 mm over in x)
+   *   "along the top rail of the SUV grille surround a single-pixel-thick edge is trading cream /
+   *    dark-olive / yellow patches for its full width" (the grille pack, 14 mm over in y)
+   *
+   * `tools/_fc_fit.mjs` measured every insert on all four cars against its own aperture and every
+   * single one was over. The blueprints are authored to fit now — but authoring is not a guarantee,
+   * and this is a §7 hard cap, so the fit is ENFORCED here: an insert is scaled down (uniformly, so
+   * its aspect survives) until it lies inside the flat floor with a 7 mm margin, and its z is
+   * clamped so its front face stays at least 6 mm behind the panel plane and never sinks behind the
+   * floor. If a blueprint is right this is the identity; if it is wrong the car still cannot show a
+   * torn edge.
+   *
+   * Nose only. The tail panels were rebuilt in an earlier round and verified good; leave them.
+   */
+  const seatAps = [];
+  {
+    const zNose = bp.body.reduce((m, s2) => Math.max(m, s2.z), -9);
+    for (const a of bp.nose?.apertures || []) {
+      const o = {
+        x: a.x ?? 0, y: a.y, hw: (a.w ?? 0.2) * 0.5, hh: (a.h ?? 0.2) * 0.5,
+        rim: Math.max(0.006, a.rim ?? 0.032), depth: a.depth ?? 0.07, z: zNose,
+      };
+      seatAps.push(o);
+      if (a.mirror && o.x !== 0) seatAps.push({ ...o, x: -o.x });
+    }
+  }
+  /**
+   * @param cfg  {x,y,z,w,h} of the insert, in car space
+   * @param out  how far the insert reaches FORWARD of its own origin (lamp unit 0.026, grille 0.016)
+   */
+  const seat = (cfg, out) => {
+    const x = cfg.x ?? 0, y = cfg.y ?? 0, z = cfg.z ?? 0;
+    const a = seatAps.find((q) => Math.abs(Math.abs(x) - Math.abs(q.x)) <= q.hw
+      && Math.abs(y - q.y) <= q.hh && Math.abs(z - q.z) < 0.30);
+    if (!a) return cfg;
+    const PAD = 0.007;
+    /**
+     * ROUND-2 (front clip): SHIFT FIRST, SHRINK ONLY IF IT STILL WILL NOT FIT.
+     *
+     * Round 1 measured the free floor as `hw - rim - PAD - |offset|`, i.e. it assumed every insert
+     * had to be centred on the opening and charged its offset TWICE. On a part deliberately parked
+     * off-centre — which is every headlamp on this project — that collapses to nothing:
+     *
+     *   supercar main head lamp   0.340 x 0.085  ->  0.088 x 0.022   (26 %)
+     *   supercar DRL bar          0.220 x 0.055  ->  0.040 x 0.010   (18 %)
+     *   SUV head lamp             0.300 dia      ->  0.138 dia       (46 %)
+     *   tuner mouth screen        1.090 x 0.158  ->  0.725 x 0.105   (67 %)
+     *
+     * That is the whole of "the supercar has tiny pale slivers where its headlights should be",
+     * "the SUV lamp discs are half-buried" and "the grille screen does not fill its own hole" —
+     * the blueprints authored real lamps and this clamp shredded them on the way in.
+     *
+     * The floor is a rectangle. A part fits if it fits ANYWHERE in that rectangle, so: size it
+     * against the WHOLE floor, then slide its centre until it lies inside. A blueprint that is
+     * already right is untouched; one that is out by a few millimetres is nudged, not destroyed;
+     * and only a part genuinely larger than the opening is scaled — which is still the §7 guard
+     * that stops anything climbing the rim wall and tearing.
+     */
+    const fhw = Math.max(0.005, a.hw - a.rim - PAD);      // half the flat floor, in x
+    const fhh = Math.max(0.005, a.hh - a.rim - PAD);      // …and in y
+    const k = Math.min(1, (fhw * 2) / Math.max(cfg.w ?? 0.01, 1e-4), (fhh * 2) / Math.max(cfg.h ?? 0.01, 1e-4));
+    const hw = (cfg.w ?? 0) * k * 0.5, hh = (cfg.h ?? 0) * k * 0.5;
+    const ax = Math.abs(a.x);
+    const px = clamp(Math.abs(x), ax - (fhw - hw), ax + (fhw - hw));
+    const py = clamp(y, a.y - (fhh - hh), a.y + (fhh - hh));
+    // s is "how far out of the panel", so the floor is -depth and the panel plane is 0
+    const s = clamp(z - a.z, -a.depth - 0.002, -out - 0.006);
+    const moved = k < 0.999 || Math.abs(px - Math.abs(x)) > 1e-4 || Math.abs(py - y) > 1e-4
+      || Math.abs(s - (z - a.z)) > 1e-4;
+    return moved
+      ? { ...cfg, w: (cfg.w ?? 0) * k, h: (cfg.h ?? 0) * k, x: (x < 0 ? -px : px), y: py, z: a.z + s }
+      : cfg;
+  };
+
   // ---------------- 6. lights + detail ----------------
   const detail = new THREE.Group();
   detail.name = 'detail';
@@ -569,7 +656,9 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    * every lamp in it, which is exactly what writing each lamp's did.
    */
   const banks = new Map();
-  const addLight = (cfg, bucket, yaw, kind) => {
+  const addLight = (raw, bucket, yaw, kind) => {
+    // head units are let into the nose panel; seat them (see SEATING above)
+    const cfg = kind === 'head' ? seat(raw, 0.028) : raw;
     /**
      * The OPTIC joins the bank key (kit.js `lensTexture`). A round lens carries a CircleGeometry's
      * 0..1 UVs and a rectangular one carries ExtrudeGeometry's object-space metres, so the two need
@@ -582,7 +671,13 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     if (!bank) {
       bank = {
         group: new THREE.Group(),
-        lensMat: emissiveMaterial({ color: cfg.color, intensity: cfg.intensity ?? 3.0, lens: optic }),
+        lensMat: emissiveMaterial({
+          color: cfg.color, intensity: cfg.intensity ?? 3.0, lens: optic,
+          // see kit.js emissiveMaterial: an UNLIT head lamp must be a dark object with a bright
+          // rim, not a pale card. The garage runs this bucket at 6 %, so its diffuse is the whole
+          // of what the hero frame shows. Daytime running lamps are never off, so they keep theirs.
+          dim: kind === 'head' ? 0.40 : 1,
+        }),
         glowMat: (cfg.glow ?? 0.85) > 0 ? new THREE.MeshBasicMaterial({
           map: glowSprite(cfg.color),
           transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
@@ -597,13 +692,22 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
         w: cfg.w, h: cfg.h, color: cfg.color, intensity: cfg.intensity ?? 3.0,
         shape: cfg.shape, glow: cfg.glow ?? 0.85, bezel: cfg.bezel !== false, segs: cfg.segs ?? 0,
         lensMat: bank.lensMat, glowMat: bank.glowMat,
+        // the chromed retaining ring / projector barrels that stand in front of the lens plane,
+        // on every lamp that faces forward (kit.js lightUnit) — this is what stops a front lamp
+        // reading as one flat card with a picture of a lamp on it
+        reflector: cfg.reflector ?? (kind === 'head' || kind === 'drl'),
+        // The clear cover pane, on every lamp that is let into a panel. It is the answer to "in a
+        // dark garage set the front lamps are dead matte while the taillights bloom": menu.js runs
+        // the head bank at 6% emissive, so the lens itself contributes nothing there, and a
+        // dielectric with a clearcoat over it is the only thing that will still throw a highlight.
+        cover: cfg.cover ?? (kind === 'head'),
       });
       u.position.set(sx * cfg.x, cfg.y, cfg.z);
       u.rotation.y = yaw;
       if (cfg.rx) u.rotation.x = cfg.rx;
       // the housing and bezel are static — lift them out so they join the batched detail mesh
       u.updateMatrix();
-      for (const part of u.children.filter((o) => ['housing', 'bezel', 'rib'].includes(o.name))) {
+      for (const part of u.children.filter((o) => ['housing', 'bezel', 'rib', 'cover', 'reflector'].includes(o.name))) {
         part.updateMatrix();
         const m = new THREE.Matrix4().multiplyMatrices(u.matrix, part.matrix);
         part.removeFromParent();
@@ -614,6 +718,22 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     }
   };
   for (const h of bp.lights?.head || []) addLight({ color: '#e8f0ff', ...h }, lights.head, 0, 'head');
+  /**
+   * DAYTIME RUNNING LAMPS — a bucket nothing dims.
+   *
+   * Round-1 verdict: "Not one of the four has an emissive headlight. In a dark garage set the
+   * front lamps are dead matte while the taillights bloom — §2.3 requires lights emissive on every
+   * class." Both halves of that are true and they PULL AGAINST EACH OTHER: a car on a showroom
+   * turntable does not have its headlights on, which is why menu.js takes the head bank to 6 %,
+   * and it is right to. What a modern car does have lit, always, the moment it is running, is its
+   * DRL signature — and a 1970 coupe has its amber park lamps.
+   *
+   * So this is a separate bucket. `lights.drl` is not in the set menu.js dims and not in the set
+   * physics.js drives, so it is emissive at its authored intensity in every frame the game renders:
+   * the front of every car now has a lit element in the garage, at night and in the rain, and it is
+   * a narrow signature strip rather than a headlight blazing at a showroom wall.
+   */
+  for (const d of bp.lights?.drl || []) addLight({ color: '#dff0ff', intensity: 2.4, glow: 0.30, ...d }, lights.drl, 0, 'drl');
   for (const t of bp.lights?.tail || []) {
     const before = lights.tail.length;
     // brake and non-brake lamps are banked separately even when they match, or a brake write would
@@ -639,7 +759,9 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
 
   // ---------------- 7. detail pass ----------------
   // grille(s)
-  for (const gr of bp.grilles || (bp.grille ? [bp.grille] : [])) {
+  for (const rawGr of bp.grilles || (bp.grille ? [bp.grille] : [])) {
+    // a screen dropped into a nose aperture is seated to its flat floor — see SEATING above
+    const gr = seat(rawGr, 0.016);
     const g = grilleMesh({
       w: gr.w, h: gr.h, d: gr.d ?? 0.14, slats: gr.slats ?? 8,
       vertical: gr.vertical, frame: gr.frame ?? 'chrome', mesh: gr.mesh,
@@ -799,7 +921,15 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
 
   // trim strips / sills / bumpers / splitters
   for (const t of bp.trim || []) {
-    const g = new THREE.Mesh(roundedBox(t.w, t.h, t.d, t.r ?? 0.02), matOf(t.mat));
+    // `sweep` builds the part as ONE continuous wrapping solid instead of a straight box (kit.js
+    // `sweptBar`) — a bumper whose tips fall back into the wing, with no joint to gap and no tip
+    // left in open air. See the note on the muscle car's front bumper.
+    const g = new THREE.Mesh(
+      t.sweep
+        ? sweptBar(t.w, t.h, t.d, { sweep: t.sweep, pow: t.sweepPow ?? 2, r: t.r, taper: t.taper ?? 0.62, drop: t.drop ?? 0 })
+        : roundedBox(t.w, t.h, t.d, t.r ?? 0.02),
+      matOf(t.mat),
+    );
     g.position.set(t.x ?? 0, t.y, t.z);
     if (t.rx) g.rotation.x = t.rx;
     if (t.ry) g.rotation.y = t.ry;

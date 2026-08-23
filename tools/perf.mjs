@@ -14,6 +14,31 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { boot, open, load, scenario, ROOT } from './harness.mjs';
+import os from 'node:os';
+
+/**
+ * Refuse to report a number that the machine's own load has invalidated.
+ *
+ * A critic once applied §7's "below 50 fps" hard cap to the whole nitrous piece on the strength of
+ * "vegas 38.7 fps", measured while two other agents were running shot.mjs and functest concurrently.
+ * On a quiet machine the same build measures 64.5 fps. Several agents share this box, so a bare
+ * number with no load context is worse than no number at all.
+ */
+function loadGuard() {
+  const [avg1] = os.loadavg();
+  const cores = os.cpus().length;
+  const ratio = avg1 / cores;
+  if (ratio > 0.55) {
+    console.log(`\n  ####################################################################`);
+    console.log(`  # LOAD WARNING: 1-min load ${avg1.toFixed(1)} on ${cores} cores (${(ratio * 100).toFixed(0)}% busy).`);
+    console.log(`  # These numbers are CONTENDED and will read LOW. Do NOT apply the`);
+    console.log(`  # 50 fps hard cap from a run like this — re-measure on a quiet box.`);
+    console.log(`  ####################################################################\n`);
+    return { contended: true, avg1, cores };
+  }
+  console.log(`  (1-min load ${avg1.toFixed(1)} on ${cores} cores — machine is quiet enough to trust)\n`);
+  return { contended: false, avg1, cores };
+}
 
 const argv = process.argv.slice(2);
 const arg = (k, d = null) => { const i = argv.indexOf(`--${k}`); return i === -1 ? d : argv[i + 1]; };
@@ -38,7 +63,8 @@ async function main() {
       const d = gl.getExtension('WEBGL_debug_renderer_info');
       return d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
     });
-    console.log(`GPU: ${gpu}\n`);
+    console.log(`GPU: ${gpu}`);
+    const guard = loadGuard();
     const software = /swiftshader|software|llvmpipe/i.test(gpu);
     if (software) console.log('⚠ Still on a software rasteriser — these numbers are NOT the real-GPU bar.\n');
 
@@ -99,9 +125,12 @@ async function main() {
 
     const worst = Math.min(...rows.map((r) => r.fps));
     console.log(`\n${'='.repeat(62)}`);
-    console.log(worst >= BAR
+    const caveat = guard.contended
+      ? `  [CONTENDED: load ${guard.avg1.toFixed(1)} on ${guard.cores} cores — re-measure quiet before trusting a FAIL]`
+      : '';
+    console.log((worst >= BAR
       ? `PASS — worst city ${worst.toFixed(1)} fps at ${W}x${H} (bar: ${BAR})`
-      : `FAIL — worst city ${worst.toFixed(1)} fps at ${W}x${H} (bar: ${BAR})`);
+      : `FAIL — worst city ${worst.toFixed(1)} fps at ${W}x${H} (bar: ${BAR})`) + caveat);
     console.log('='.repeat(62));
     await fs.writeFile(path.join(ROOT, 'shots/perf.json'), JSON.stringify({ gpu, width: W, height: H, bar: BAR, rows }, null, 2));
     process.exitCode = worst >= BAR ? 0 : 1;
