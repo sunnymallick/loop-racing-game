@@ -8,6 +8,7 @@ import {
   blackoutMaterial,
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
   panelNoise, cloneShaded, wingEndplate,
+  spanIn, spanOut, spanInY, spanOutY, fitRect,
 } from './kit.js';
 import { lerp, clamp, RNG } from '../core/rng.js';
 
@@ -555,86 +556,84 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   /**
    * ---------------- SEATING INTO THE LOFTED APERTURES ----------------
    *
-   * ROUND-2 (front clip). `loftTub` cuts each nose opening as a rounded-rect recess, but its floor
-   * only reaches full depth `rim` metres inside the opening edge — between the edge and there the
-   * surface is a RAMP climbing back out to the panel. Anything dropped in wider or taller than
-   * (w - 2*rim, h - 2*rim) therefore has its ends buried in that ramp, cut at a shallow angle, and
-   * a shallow cut through a slab is a sawtooth. That is the whole of the round-1 §7 finding:
+   * ROUND-3 (front clip). The verdict, verbatim: "the lower slat insert runs PAST its aperture,
+   * lies on top of the painted fascia, and ends in a ragged stair-stepped edge with the back of
+   * the slats visible."
    *
-   *   "the headlight … right end is a three-tooth SAWTOOTH where the lamp polygon is being clipped
-   *    by the fender at a shallow angle" (tuner, supercar)
-   *   "the round lamp discs are HALF-BURIED in the yellow sheetmetal" (SUV — 74 mm over in x)
-   *   "along the top rail of the SUV grille surround a single-pixel-thick edge is trading cream /
-   *    dark-olive / yellow patches for its full width" (the grille pack, 14 mm over in y)
+   * Rounds 1-2 tried to enforce the fit from the BLUEPRINT'S numbers — the authored (w, h) of the
+   * aperture, less its rim fillet. That is not the hole. `loftTub` cuts the recess into a domed,
+   * ray-parameterised panel whose rim `guard` fades the cut to nothing as it approaches the edge
+   * of the bodywork, so the hole that actually exists is smaller than the rectangle that asked for
+   * it, by an amount no blueprint can know:
    *
-   * `tools/_fc_fit.mjs` measured every insert on all four cars against its own aperture and every
-   * single one was over. The blueprints are authored to fit now — but authoring is not a guarantee,
-   * and this is a §7 hard cap, so the fit is ENFORCED here: an insert is scaled down (uniformly, so
-   * its aspect survives) until it lies inside the flat floor with a 7 mm margin, and its z is
-   * clamped so its front face stays at least 6 mm behind the panel plane and never sinks behind the
-   * floor. If a blueprint is right this is the identity; if it is wrong the car still cannot show a
-   * torn edge.
+   *   tuner  lower intake   authored 1.300 m wide   ->  the cut is 1.02 m at its own height,
+   *                                                     because the undertray is not 1.3 m wide
+   *   supercar mouth        authored 1.520 m        ->  1.30 m
    *
-   * Nose only. The tail panels were rebuilt in an earlier round and verified good; leave them.
+   * Both screens were authored to the authored number, so ~110 mm of slat pack at each end lay on
+   * a surface that is not recessed at all — i.e. on the paint — and was cut by the panel at a
+   * grazing angle, which is the stair-step.
+   *
+   * `loftTub` now MEASURES its own cut (kit.js capPanel §7b) and hands back a `fit` per opening:
+   * the flat floor's real extent row by row, the recess wall's extent row by row, and the plane
+   * the floor actually landed on. Everything below is seated against that measurement, so an
+   * insert cannot be outside its hole even if the blueprint asks for it.
    */
-  const seatAps = [];
-  {
-    const zNose = bp.body.reduce((m, s2) => Math.max(m, s2.z), -9);
-    for (const a of bp.nose?.apertures || []) {
-      const o = {
-        x: a.x ?? 0, y: a.y, hw: (a.w ?? 0.2) * 0.5, hh: (a.h ?? 0.2) * 0.5,
-        rim: Math.max(0.006, a.rim ?? 0.032), depth: a.depth ?? 0.07, z: zNose,
-      };
-      seatAps.push(o);
-      if (a.mirror && o.x !== 0) seatAps.push({ ...o, x: -o.x });
+  const noseFits = tubGeo.noseFits || [];
+  const fitAt = (x, y, z) => {
+    let best = null, bestD = Infinity;
+    for (const f of noseFits) {
+      if (Math.abs(z - f.zc) > 0.34) continue;
+      const dx = Math.max(0, Math.abs(x - f.x) - f.hw), dy = Math.max(0, Math.abs(y - f.y) - f.hh);
+      const d = Math.hypot(dx, dy);
+      if (d < bestD) { bestD = d; best = f; }
     }
-  }
+    return bestD <= 0.02 ? best : null;
+  };
   /**
    * @param cfg  {x,y,z,w,h} of the insert, in car space
    * @param out  how far the insert reaches FORWARD of its own origin (lamp unit 0.026, grille 0.016)
+   * @param back how far it reaches BEHIND its own origin, so its back never breaks the floor
    */
-  const seat = (cfg, out) => {
+  const seat = (cfg, out, back = 0.02) => {
     const x = cfg.x ?? 0, y = cfg.y ?? 0, z = cfg.z ?? 0;
-    const a = seatAps.find((q) => Math.abs(Math.abs(x) - Math.abs(q.x)) <= q.hw
-      && Math.abs(y - q.y) <= q.hh && Math.abs(z - q.z) < 0.30);
-    if (!a) return cfg;
-    const PAD = 0.007;
+    const f = fitAt(x, y, z);
+    if (!f) return cfg;
+    const PAD = 0.006;
     /**
-     * ROUND-2 (front clip): SHIFT FIRST, SHRINK ONLY IF IT STILL WILL NOT FIT.
-     *
-     * Round 1 measured the free floor as `hw - rim - PAD - |offset|`, i.e. it assumed every insert
-     * had to be centred on the opening and charged its offset TWICE. On a part deliberately parked
-     * off-centre — which is every headlamp on this project — that collapses to nothing:
-     *
-     *   supercar main head lamp   0.340 x 0.085  ->  0.088 x 0.022   (26 %)
-     *   supercar DRL bar          0.220 x 0.055  ->  0.040 x 0.010   (18 %)
-     *   SUV head lamp             0.300 dia      ->  0.138 dia       (46 %)
-     *   tuner mouth screen        1.090 x 0.158  ->  0.725 x 0.105   (67 %)
-     *
-     * That is the whole of "the supercar has tiny pale slivers where its headlights should be",
-     * "the SUV lamp discs are half-buried" and "the grille screen does not fill its own hole" —
-     * the blueprints authored real lamps and this clamp shredded them on the way in.
-     *
-     * The floor is a rectangle. A part fits if it fits ANYWHERE in that rectangle, so: size it
-     * against the WHOLE floor, then slide its centre until it lies inside. A blueprint that is
-     * already right is untouched; one that is out by a few millimetres is nudged, not destroyed;
-     * and only a part genuinely larger than the opening is scaled — which is still the §7 guard
-     * that stops anything climbing the rim wall and tearing.
+     * The floor is not a rectangle — it is a rounded region measured row by row — so a part is
+     * fitted by ITERATION rather than by one clamp: take the y band the part wants, ask the
+     * measurement for the narrowest x span across that band, size and slide to fit, then re-ask
+     * with the new band. Two passes converge; a blueprint that is already right is untouched.
      */
-    const fhw = Math.max(0.005, a.hw - a.rim - PAD);      // half the flat floor, in x
-    const fhh = Math.max(0.005, a.hh - a.rim - PAD);      // …and in y
-    const k = Math.min(1, (fhw * 2) / Math.max(cfg.w ?? 0.01, 1e-4), (fhh * 2) / Math.max(cfg.h ?? 0.01, 1e-4));
-    const hw = (cfg.w ?? 0) * k * 0.5, hh = (cfg.h ?? 0) * k * 0.5;
-    const ax = Math.abs(a.x);
-    const px = clamp(Math.abs(x), ax - (fhw - hw), ax + (fhw - hw));
-    const py = clamp(y, a.y - (fhh - hh), a.y + (fhh - hh));
-    // s is "how far out of the panel", so the floor is -depth and the panel plane is 0
-    const s = clamp(z - a.z, -a.depth - 0.002, -out - 0.006);
-    const moved = k < 0.999 || Math.abs(px - Math.abs(x)) > 1e-4 || Math.abs(py - y) > 1e-4
-      || Math.abs(s - (z - a.z)) > 1e-4;
-    return moved
-      ? { ...cfg, w: (cfg.w ?? 0) * k, h: (cfg.h ?? 0) * k, x: (x < 0 ? -px : px), y: py, z: a.z + s }
-      : cfg;
+    let w = cfg.w ?? 0.02, h = cfg.h ?? 0.02, cx = Math.abs(x), cy = y;
+    const yLo = f.y - f.hh, yHi = f.y + f.hh;
+    for (let pass = 0; pass < 3; pass++) {
+      cy = clamp(cy, yLo + h * 0.5, yHi - h * 0.5);
+      let lo = -Infinity, hi = Infinity, ok = true;
+      for (let i = 0; i <= 8; i++) {
+        const sp = spanIn(f, cy + (i / 8 - 0.5) * h);
+        if (!sp) { ok = false; break; }
+        lo = Math.max(lo, sp[0]); hi = Math.min(hi, sp[1]);
+      }
+      if (!ok || !(hi - lo > 0.01)) {
+        // the requested band does not exist at all — fall back to the largest rectangle there is
+        const rr = fitRect(f);
+        if (!rr) return cfg;
+        const k0 = Math.min(1, (rr.hw * 2 - PAD * 2) / Math.max(w, 1e-4), (rr.hh * 2 - PAD * 2) / Math.max(h, 1e-4));
+        w *= k0; h *= k0; cx = Math.abs(rr.x); cy = rr.y;
+        continue;
+      }
+      const k = Math.min(1, (hi - lo - PAD * 2) / Math.max(w, 1e-4));
+      w *= k; h *= k;
+      cx = clamp(cx, lo + w * 0.5 + PAD, hi - w * 0.5 - PAD);
+    }
+    // z: the part's BACK face sits `back` in front of the shallowest point of the measured floor,
+    // so it can never break through it, and its FRONT face stays inside the recess.
+    const zBack = f.zFloor + f.dir * (back + 0.004);
+    const zMax = f.zc - f.dir * (out + 0.008);
+    const z2 = f.dir > 0 ? Math.min(zBack, zMax) : Math.max(zBack, zMax);
+    return { ...cfg, w, h, x: (x < 0 ? -cx : cx), y: cy, z: z2, fit: f };
   };
 
   // ---------------- 6. lights + detail ----------------
@@ -657,8 +656,14 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    */
   const banks = new Map();
   const addLight = (raw, bucket, yaw, kind) => {
-    // head units are let into the nose panel; seat them (see SEATING above)
-    const cfg = kind === 'head' ? seat(raw, 0.028) : raw;
+    /**
+     * head units and running lamps are let into the nose panel; seat them (see SEATING above).
+     * `back` is 12 mm — the LENS has to stay in front of the recess floor, but the housing behind
+     * it is allowed to break through into the closed body, where it cannot be seen. That is what
+     * gives a lamp a real bowl instead of a 40 mm card, and it is why the seat is solved against
+     * the lens plane rather than against the deepest vertex of the unit.
+     */
+    const cfg = kind === 'head' || kind === 'drl' ? seat(raw, 0.028, 0.012) : raw;
     /**
      * The OPTIC joins the bank key (kit.js `lensTexture`). A round lens carries a CircleGeometry's
      * 0..1 UVs and a rectangular one carries ExtrudeGeometry's object-space metres, so the two need
@@ -758,17 +763,55 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   }
 
   // ---------------- 7. detail pass ----------------
-  // grille(s)
+  /**
+   * GRILLES.
+   *
+   * A screen seated in a lofted aperture is generated FROM that aperture's measured cut, in the
+   * aperture's own local frame — see `seat()` above and kit.js `grilleMesh`. `bounds` is the hole
+   * it must fill; `outX`/`outY` are the recess WALL, which is where every bar's end goes so that
+   * no end is ever in open air; `inX`/`inY` are the flat floor, for anything that has to lie flat.
+   */
+  let grSeed = 17;
   for (const rawGr of bp.grilles || (bp.grille ? [bp.grille] : [])) {
-    // a screen dropped into a nose aperture is seated to its flat floor — see SEATING above
-    const gr = seat(rawGr, 0.016);
+    const gr = seat(rawGr, 0.016, (rawGr.d ?? 0.14) * 0.16 + 0.020);
+    let span = null;
+    if (gr.fit) {
+      const f = gr.fit, ox = gr.x ?? 0, oy = gr.y;
+      const rel = (s, o) => (s ? [s[0] - o, s[1] - o] : null);
+      const bx = fitRect(f);
+      let yLo = f.y - f.hh, yHi = f.y + f.hh, xLo = f.x - f.hw, xHi = f.x + f.hw;
+      // the real extremes of the wall, so the weave covers the whole hole and not the rectangle
+      // that asked for it
+      let gotY = false;
+      for (let i = 0; i <= 48; i++) {
+        const yy = lerp(f.yA, f.yB, i / 48);
+        if (!spanOut(f, yy)) continue;
+        if (!gotY) { yLo = yy; gotY = true; }
+        yHi = yy;
+      }
+      let gotX = false;
+      for (let i = 0; i <= 96; i++) {
+        const xx = lerp(f.xA, f.xB, i / 96);
+        if (!spanOutY(f, xx)) continue;
+        if (!gotX) { xLo = xx; gotX = true; }
+        xHi = xx;
+      }
+      void bx;
+      span = {
+        bounds: { yLo: yLo - oy, yHi: yHi - oy, xLo: xLo - ox, xHi: xHi - ox },
+        inX: (y) => rel(spanIn(f, y + oy), ox),
+        outX: (y) => rel(spanOut(f, y + oy), ox),
+        inY: (x) => rel(spanInY(f, x + ox), oy),
+        outY: (x) => rel(spanOutY(f, x + ox), oy),
+      };
+    }
     const g = grilleMesh({
       w: gr.w, h: gr.h, d: gr.d ?? 0.14, slats: gr.slats ?? 8,
       vertical: gr.vertical, frame: gr.frame ?? 'chrome', mesh: gr.mesh,
       // A grille dropped into a lofted aperture already HAS a surround — the bodywork it is let
       // into. Bolting a second chrome frame on inside the hole is what used to read as two
       // unrelated rectangles stacked on the nose.
-      surround: gr.surround,
+      surround: gr.surround, span, seed: (grSeed += 29),
     });
     g.position.set(gr.x ?? 0, gr.y, gr.z);
     if (gr.rx) g.rotation.x = gr.rx;
@@ -1113,6 +1156,9 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     exhausts,
     dims: bp.dims,
     paintMaterial: paint,
+    // the measured cut of every nose opening — builder probes read this to check that nothing was
+    // seated outside its own hole (kit.js capPanel §7b)
+    noseFits,
   };
   void rng; void clamp; void liveryTexture; void emissiveMaterial;
   return car;

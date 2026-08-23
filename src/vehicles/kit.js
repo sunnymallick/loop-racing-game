@@ -2475,8 +2475,123 @@ export function loftTub(sections, {
         else shell.push(p0, p2, p3, p0, p3, p1);
       }
     }
+
+    /**
+     * ---- 7b. WHERE THE HOLE ACTUALLY IS ------------------------------------
+     *
+     * ROUND-3 (front clip), and this is the whole of the remaining §7 seam. The verdict:
+     * "the lower slat insert runs PAST its aperture, lies on top of the painted fascia, and ends
+     * in a ragged stair-stepped edge with the back of the slats visible" (tuner, and the same
+     * thing on the supercar's mouth).
+     *
+     * It was true, and no amount of retyping the blueprint could have fixed it, because an
+     * aperture's AUTHORED rectangle is not the hole that gets cut. Three things shrink it, all of
+     * them solved per-point against geometry the blueprint cannot see:
+     *
+     *   - `guard` fades the recess to nothing as the ray approaches the rim of the panel, so a
+     *     hole that reaches toward the corner of the face is simply not cut there. The tuner's
+     *     lower intake is authored 1.30 m wide; the cut is 1.02 m at its own height, because the
+     *     undertray is not 1.30 m wide down there.
+     *   - the fillet: the floor only reaches full depth `rim` inside the edge.
+     *   - the dome: outside the flat zone the surface is still climbing.
+     *
+     * So the panel now MEASURES its own cut and hands the answer back. For every aperture it
+     * samples a grid, inverts the fan mapping to recover `t` (and with it `guard`), and records
+     * two profiles per row and per column:
+     *
+     *   IN   where the recess is at 90 % of its depth and the floor is flat — the rectangle an
+     *        insert may occupy. Nothing outside this can lie flat.
+     *   OUT  where the recess is still 12 % deep — the wall. A bar whose end reaches OUT is
+     *        BEHIND the shell there, so its end face is inside the closed body and can never be
+     *        photographed. That is what "nothing may end in mid-air" means in a lofted clip.
+     *
+     * assemble.js seats every insert against IN and every slat END against OUT.
+     */
+    if (aps.length) {
+      // radius of the panel boundary as a function of polar angle about (mx,my) — the inverse of
+      // the fan's `t`, built once per panel as a 288-bin LUT.
+      const NA = 288;
+      const rad = new Float64Array(NA);
+      for (let bin = 0; bin < NA; bin++) {
+        const th = -Math.PI + (bin + 0.5) * (Math.PI * 2 / NA);
+        const ux = Math.cos(th), uy = Math.sin(th);
+        let best = Infinity;
+        for (let i = 0; i < L - 1; i++) {
+          const axp = B[i][0] - mx, ayp = B[i][1] - my;
+          const ex = B[i + 1][0] - B[i][0], ey = B[i + 1][1] - B[i][1];
+          const den = ux * ey - uy * ex;
+          if (Math.abs(den) < 1e-12) continue;
+          const s = (axp * ey - ayp * ex) / den;
+          if (s <= 1e-6 || s >= best) continue;
+          const q = (ayp * ux - axp * uy) / (ex * uy - ey * ux);
+          if (q < -1e-6 || q > 1 + 1e-6) continue;
+          best = s;
+        }
+        rad[bin] = best === Infinity ? 1e-4 : best;
+      }
+      const tOf = (px, py) => {
+        const dx = px - mx, dy = py - my;
+        const dl = Math.hypot(dx, dy);
+        if (dl < 1e-9) return 0;
+        const a = Math.atan2(dy, dx);
+        const f = ((a + Math.PI) / (Math.PI * 2)) * NA - 0.5;
+        const i0 = Math.floor(f);
+        const w1 = f - i0;
+        const r0 = rad[((i0 % NA) + NA) % NA], r1 = rad[(((i0 + 1) % NA) + NA) % NA];
+        return dl / Math.max(1e-4, lerp(r0, r1, w1));
+      };
+      for (const a of aps) {
+        const NR = 33, NC = 65;
+        const pad = a.rim + 0.006;
+        const yA = a.y - a.hh - pad, yB = a.y + a.hh + pad;
+        const xA = a.x - a.hw - pad, xB = a.x + a.hw + pad;
+        const rIn0 = new Float64Array(NR).fill(NaN), rIn1 = new Float64Array(NR).fill(NaN);
+        const rOut0 = new Float64Array(NR).fill(NaN), rOut1 = new Float64Array(NR).fill(NaN);
+        const cIn0 = new Float64Array(NC).fill(NaN), cIn1 = new Float64Array(NC).fill(NaN);
+        const cOut0 = new Float64Array(NC).fill(NaN), cOut1 = new Float64Array(NC).fill(NaN);
+        let sinkFloor = Infinity, any = false;
+        for (let r = 0; r < NR; r++) {
+          const py = lerp(yA, yB, NR === 1 ? 0.5 : r / (NR - 1));
+          for (let c = 0; c < NC; c++) {
+            const px = lerp(xA, xB, NC === 1 ? 0.5 : c / (NC - 1));
+            const sd = rrSD(px, py, a.x, a.y, a.hw, a.hh, a.r);
+            if (sd >= 0) continue;
+            const t = tOf(px, py);
+            const guard = smoothstep(0, 1, clamp((0.992 - t) / 0.085, 0, 1));
+            const f = clamp(-sd / a.rim, 0, 1);
+            const rel = Math.pow(f, 0.55) * guard;
+            if (rel >= 0.12) {
+              if (Number.isNaN(rOut0[r]) || px < rOut0[r]) rOut0[r] = px;
+              if (Number.isNaN(rOut1[r]) || px > rOut1[r]) rOut1[r] = px;
+              if (Number.isNaN(cOut0[c]) || py < cOut0[c]) cOut0[c] = py;
+              if (Number.isNaN(cOut1[c]) || py > cOut1[c]) cOut1[c] = py;
+            }
+            const fl = a.flat ? smoothstep(0, 1, f) * guard : 0;
+            if (rel >= 0.90 && (!a.flat || fl >= 0.90)) {
+              if (Number.isNaN(rIn0[r]) || px < rIn0[r]) rIn0[r] = px;
+              if (Number.isNaN(rIn1[r]) || px > rIn1[r]) rIn1[r] = px;
+              if (Number.isNaN(cIn0[c]) || py < cIn0[c]) cIn0[c] = py;
+              if (Number.isNaN(cIn1[c]) || py > cIn1[c]) cIn1[c] = py;
+              const dome = (crown + rake * (py - my)) * (1 - t * t) * (1 - fl);
+              const sink = a.depth * rel - dome;
+              if (sink < sinkFloor) sinkFloor = sink;
+              any = true;
+            }
+          }
+        }
+        if (!any) continue;
+        fits.push({
+          x: a.x, y: a.y, hw: a.hw, hh: a.hh, r: a.r, rim: a.rim, depth: a.depth,
+          zc, dir, sinkFloor, zFloor: zc - dir * sinkFloor,
+          yA, yB, xA, xB, NR, NC, rIn0, rIn1, rOut0, rOut1, cIn0, cIn1, cOut0, cOut1,
+        });
+      }
+    }
   };
+  const noseFits = [], tailFits = [];
+  let fits = tailFits;
   capPanel(0, true, tailCap);              // tail panel, facing -z
+  fits = noseFits;
   capPanel(NS - 1, false, noseCap);        // nose panel, facing +z
 
   // ---- 8. one normal field for all three buckets -------------------------
@@ -2548,7 +2663,75 @@ export function loftTub(sections, {
     anchors.push(us[k]);
     k += subs[i] || 0;
   }
-  return { shell: emit(shell, UA, flareAt !== null, true), liner: emit(liner, UB, false, false), anchors };
+  return {
+    shell: emit(shell, UA, flareAt !== null, true), liner: emit(liner, UB, false, false), anchors,
+    // the measured cut of every nose / tail opening — see capPanel §7b
+    noseFits, tailFits,
+  };
+}
+
+/**
+ * ------------------------------------------------------------------ READING A MEASURED APERTURE
+ *
+ * `loftTub` hands back one `fit` per opening it cut (see capPanel §7b). These are the four
+ * questions the rest of the kit asks of one:
+ *
+ *   spanIn(fit, y)    the x range of FLAT FLOOR at this height. An insert that stays inside this
+ *                     lies on one plane and can never climb the rim fillet — which is the whole of
+ *                     the "sawtooth where the lamp is clipped by the fender at a shallow angle"
+ *                     and "the slat pack lies on top of the painted fascia" class of defect.
+ *   spanOut(fit, y)   the x range of RECESS WALL. A bar that reaches this is behind the shell, so
+ *                     its end cap is inside the closed body: it terminates against a surface
+ *                     rather than in mid-air, and no backface can ever be seen.
+ *   spanInY / spanOutY  the same two, transposed, for vertical slats.
+ *   fitRect(fit)      the largest usable rectangle of flat floor, for seating a lamp or a screen.
+ *
+ * Every span is the INTERSECTION of the two sampled rows either side of the query, so the answer
+ * is always inside the measured region rather than interpolated across its edge.
+ */
+function spanLerp(a0, a1, lo, hi, n, v) {
+  if (!(hi > lo)) return null;
+  const f = clamp(((v - lo) / (hi - lo)) * (n - 1), 0, n - 1);
+  const i0 = Math.min(n - 2, Math.floor(f)), i1 = i0 + 1;
+  const p = a0[i0], q = a0[i1], r = a1[i0], s = a1[i1];
+  if (Number.isNaN(p) || Number.isNaN(q) || Number.isNaN(r) || Number.isNaN(s)) return null;
+  const x0 = Math.max(p, q), x1 = Math.min(r, s);
+  return x1 > x0 ? [x0, x1] : null;
+}
+export const spanIn = (f, y) => spanLerp(f.rIn0, f.rIn1, f.yA, f.yB, f.NR, y);
+export const spanOut = (f, y) => spanLerp(f.rOut0, f.rOut1, f.yA, f.yB, f.NR, y);
+export const spanInY = (f, x) => spanLerp(f.cIn0, f.cIn1, f.xA, f.xB, f.NC, x);
+export const spanOutY = (f, x) => spanLerp(f.cOut0, f.cOut1, f.xA, f.xB, f.NC, x);
+
+/** The largest rectangle of flat floor in an aperture, as {x, y, hw, hh}. */
+export function fitRect(f) {
+  const ys = [];
+  for (let r = 0; r < f.NR; r++) {
+    if (Number.isNaN(f.rIn0[r])) continue;
+    ys.push(lerp(f.yA, f.yB, r / (f.NR - 1)));
+  }
+  if (ys.length < 2) return null;
+  const yLo = ys[0], yHi = ys[ys.length - 1], yc0 = (yLo + yHi) * 0.5;
+  let best = null;
+  // a taller rectangle is strangled by the corner radius, a shorter one wastes the opening —
+  // scan the trade and keep the largest area
+  for (let k = 1; k <= 20; k++) {
+    const hh = ((yHi - yLo) * 0.5) * (k / 20);
+    for (const yc of [yc0, f.y]) {
+      const y0 = yc - hh, y1 = yc + hh;
+      if (y0 < yLo - 1e-6 || y1 > yHi + 1e-6) continue;
+      let lo = -Infinity, hi = Infinity, ok = true;
+      for (let i = 0; i <= 12 && ok; i++) {
+        const sp = spanIn(f, lerp(y0, y1, i / 12));
+        if (!sp) { ok = false; break; }
+        lo = Math.max(lo, sp[0]); hi = Math.min(hi, sp[1]);
+      }
+      if (!ok || !(hi > lo)) continue;
+      const area = (hi - lo) * hh * 2;
+      if (!best || area > best.area) best = { area, x: (lo + hi) * 0.5, y: yc, hw: (hi - lo) * 0.5, hh };
+    }
+  }
+  return best;
 }
 
 /**
@@ -3764,121 +3947,188 @@ export function lightUnit({
   return g;
 }
 
-/** A grille: a recessed dark box with real slats and a surrounding chrome/dark frame. */
+/**
+ * A grille.
+ *
+ * ---- ROUND-3 (front clip): A SCREEN IS CUT BY THE HOLE, NOT BY ITS OWN NUMBERS ----------------
+ *
+ * The verdict this is written against, verbatim: "the lower slat insert runs PAST its aperture,
+ * lies on top of the painted fascia, and ends in a ragged stair-stepped edge with the back of the
+ * slats visible", and the §7 repeat cap: "the identical 3-slot louver cell is instanced at a
+ * constant pitch across every grille opening on every car".
+ *
+ * Three things changed and they are all consequences of one decision — the screen is no longer a
+ * rectangle that hopes to land inside a hole, it is generated FROM the hole:
+ *
+ *  1. `span` is the measured cut of the aperture this screen is being dropped into (kit.js
+ *     capPanel §7b): `inX(y)` is the flat floor at that height, `outX(y)` is the recess WALL.
+ *     Every bar is built end-to-end across `outX`, so both of its ends are BEHIND the shell — the
+ *     end cap is inside the closed body and there is no backface, no free end and nothing lying on
+ *     the paint. Nothing here is clipped by the panel at a grazing angle any more, because nothing
+ *     here reaches the panel.
+ *  2. no back plate and no bolted-on chrome surround. The aperture's own floor is the back of the
+ *     cavity and the aperture's own rim is the surround: a second plate 20 mm in front of the first
+ *     is what used to show its four cut edges inside a hole that was bigger than it.
+ *  3. the weave is NOT a repeated cell. Slat pitch, thickness and depth are drawn from a seeded
+ *     RNG and walk across the opening, so no two bays are the same width and no two slats sit at
+ *     the same depth — which also does the shading work, since a slat 12 mm further back catches
+ *     less sky than its neighbour.
+ */
 export function grilleMesh({
   w = 1.4, h = 0.30, d = 0.14, slats = 9, vertical = false, frame = 'chrome', mesh = false,
-  surround = null, corner = null,
+  surround = null, corner = null, span = null, seed = 11,
 } = {}) {
-  const hasSurround = surround === null ? frame === 'chrome' : surround;
   const g = new THREE.Group();
-  /**
-   * ---- THE SCREEN'S OUTLINE IS THE APERTURE'S OUTLINE (round-3, front clip) ---------------
-   *
-   * Every opening `loftTub` cuts into a nose panel is a ROUNDED rectangle — that is what `rrSD`
-   * solves and what the recess's fillet follows. The screen dropped into it was a plain box, so
-   * its four square corners were the only part of the assembly outside the flat floor: they lay on
-   * the fillet, were cut by it at a shallow angle, and a shallow cut through a slab is the
-   * sawtooth the verdict keeps finding at the ends of a grille. `seat()` cannot fix that by
-   * scaling, because scaling a rectangle to fit inside a rounded rectangle's corner radius shrinks
-   * a 1.6 m screen to fill two thirds of its hole.
-   *
-   * So the screen is cut to the same rounded rect instead: every bar is shortened to the half-span
-   * the outline actually has at its own row (or column), which is exact at the middle and tucks
-   * the ends in round the corners. `back` — the dark floor behind the weave — follows it too, as
-   * a rounded box whose radius matches.
-   */
+  const rng = new RNG(seed);
   const CR = clamp(corner ?? Math.min(w, h) * 0.26, 0, Math.min(w, h) * 0.5);
-  // half-span in x of the rounded-rect outline at height |y| (and, transposed, in y at |x|)
-  const spanX = (y) => {
+  // half-span in x of the rounded-rect outline at height |y| (and, transposed, in y at |x|) — the
+  // fallback for a screen that is NOT seated in a measured aperture (the rear extractors)
+  const rrX = (y) => {
     const k = Math.abs(y) - (h * 0.5 - CR);
     return k <= 0 ? w * 0.5 : w * 0.5 - CR + Math.sqrt(Math.max(0, CR * CR - k * k));
   };
-  const spanY = (x) => {
+  const rrY = (x) => {
     const k = Math.abs(x) - (w * 0.5 - CR);
     return k <= 0 ? h * 0.5 : h * 0.5 - CR + Math.sqrt(Math.max(0, CR * CR - k * k));
   };
-  const back = new THREE.Mesh(roundedBox(w * 0.99, h * 0.99, d * 0.5, Math.max(0.02, CR * 0.92)), cavityMaterial());
-  back.position.z = -d * 0.5;
-  g.add(back);
+  // the four questions a bar asks. With a measured aperture they are answered by the geometry;
+  // without one they fall back to the authored rounded rectangle.
+  const inX = (y) => (span ? span.inX(y) : [-rrX(y), rrX(y)]);
+  const outX = (y) => (span ? span.outX(y) : [-rrX(y) * 0.99, rrX(y) * 0.99]);
+  const inY = (x) => (span ? span.inY(x) : [-rrY(x), rrY(x)]);
+  const outY = (x) => (span ? span.outY(x) : [-rrY(x) * 0.99, rrY(x) * 0.99]);
+
+  // the extent the weave has to cover, taken from the hole when there is one
+  let yLo = -h * 0.5, yHi = h * 0.5, xLo = -w * 0.5, xHi = w * 0.5;
+  if (span) {
+    const b = span.bounds;
+    yLo = b.yLo; yHi = b.yHi; xLo = b.xLo; xHi = b.xHi;
+  }
+  const H = Math.max(0.012, yHi - yLo), W = Math.max(0.012, xHi - xLo);
+
+  if (!span) {
+    const back = new THREE.Mesh(roundedBox(w * 0.99, h * 0.99, d * 0.5, Math.max(0.02, CR * 0.92)), cavityMaterial());
+    back.position.z = -d * 0.5;
+    g.add(back);
+  }
   const barMat = frame === 'chrome' ? chromeMaterial({ color: '#b9bfc8', rough: 0.16 })
     : darkMetalMaterial({ color: '#1a1c21', rough: 0.45, metal: 0.7 });
-  if (mesh) {
-    /**
-     * ROUND-3: the mesh gets its own material, a SATIN STEEL rather than the frame's chrome.
-     *
-     * A chrome bar is a pure metal — it has no diffuse at all, so everything you see in it is its
-     * reflection, and a bar lying 21 mm down inside a dark aperture reflects the inside of that
-     * aperture. Measured on the supercar's rear extractor, the whole 1.16 x 0.28 m of woven screen
-     * came back within two levels of the cavity behind it: the grille had depth and no VALUE, so
-     * the round-2 crop read the entire mouth as one black rectangle. A satin steel keeps a diffuse
-     * term, so the weave catches the sky above the car and draws itself against the hole.
-     */
-    const meshMat = darkMetalMaterial({ color: '#565c66', rough: 0.38, metal: 0.72 });
-    for (let i = 0; i < slats; i++) {
-      const y = -h / 2 + (i + 0.5) * (h / slats);
-      const th = h / slats * 0.30;
-      const sw = spanX(Math.abs(y) + th * 0.5) * 2 * 0.98;
-      if (sw < th) continue;
-      const bar = new THREE.Mesh(roundedBox(sw, th, 0.03, 0.006), meshMat);
-      bar.position.set(0, y, -d * 0.16);
-      g.add(bar);
+  /**
+   * ROUND-3: the mesh gets its own material, a SATIN STEEL rather than the frame's chrome.
+   *
+   * A chrome bar is a pure metal — it has no diffuse at all, so everything you see in it is its
+   * reflection, and a bar lying 21 mm down inside a dark aperture reflects the inside of that
+   * aperture. Measured on the supercar's rear extractor, the whole 1.16 x 0.28 m of woven screen
+   * came back within two levels of the cavity behind it: the grille had depth and no VALUE, so
+   * the round-2 crop read the entire mouth as one black rectangle. A satin steel keeps a diffuse
+   * term, so the weave catches the sky above the car and draws itself against the hole.
+   */
+  const meshMat = darkMetalMaterial({ color: '#565c66', rough: 0.38, metal: 0.72 });
+
+  /**
+   * A JITTERED WALK, not a pitch.
+   *
+   * `n` bays across `len`, each one a different width: the walk keeps a running position and takes
+   * a step of `avg * (1 + j)` with j in ±`vary`, renormalised at the end so the last slat still
+   * lands on the far edge. Thickness and depth are drawn per slat from the same stream. Two
+   * screens on the same car get different seeds, so no cell is ever repeated anywhere.
+   */
+  const walk = (n, len, vary) => {
+    const steps = [];
+    let tot = 0;
+    for (let i = 0; i < n; i++) { const s = 1 + (rng.next() * 2 - 1) * vary; steps.push(s); tot += s; }
+    const out = [];
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+      const s = steps[i] * len / tot;
+      out.push({ c: acc + s * 0.5, s });
+      acc += s;
     }
-    const cols = Math.round(slats * (w / Math.max(h, 0.01)) * 0.28);
-    for (let i = 0; i < cols; i++) {
-      const x = -w / 2 + (i + 0.5) * (w / cols);
-      const tw = w / cols * 0.26;
-      const sh = spanY(Math.abs(x) + tw * 0.5) * 2 * 0.96;
-      if (sh < tw) continue;
-      const bar = new THREE.Mesh(roundedBox(tw, sh, 0.03, 0.006), meshMat);
-      bar.position.set(x, 0, -d * 0.16);
-      g.add(bar);
-    }
-  } else if (vertical) {
-    for (let i = 0; i < slats; i++) {
-      const x = -w / 2 + (i + 0.5) * (w / slats);
-      const tw = w / slats * 0.34;
-      const sh = spanY(Math.abs(x) + tw * 0.5) * 2 * 0.94;
-      if (sh < tw) continue;
-      const bar = new THREE.Mesh(roundedBox(tw, sh, 0.05, 0.01), barMat);
-      bar.position.set(x, 0, -d * 0.10);
-      g.add(bar);
-    }
-  } else {
-    for (let i = 0; i < slats; i++) {
-      const y = -h / 2 + (i + 0.5) * (h / slats);
-      const th = h / slats * 0.40;
-      const sw = spanX(Math.abs(y) + th * 0.5) * 2 * 0.96;
-      if (sw < th) continue;
-      const bar = new THREE.Mesh(roundedBox(sw, th, 0.05, 0.01), barMat);
-      bar.position.set(0, y, -d * 0.10);
-      g.add(bar);
+    return out;
+  };
+
+  const addBar = (x0, x1, y0, y1, z, r) => {
+    const bw = x1 - x0, bh = y1 - y0;
+    if (bw < 0.004 || bh < 0.004) return null;
+    const m = new THREE.Mesh(roundedBox(bw, bh, 0.030, Math.min(r, bw * 0.45, bh * 0.45)), meshMat);
+    m.position.set((x0 + x1) * 0.5, (y0 + y1) * 0.5, z);
+    g.add(m);
+    return m;
+  };
+
+  if (mesh || !vertical) {
+    // horizontal slats, one per bay, ends run into the recess wall
+    const rows = walk(Math.max(2, slats), H, 0.28);
+    for (const row of rows) {
+      const y = yLo + row.c;
+      const th = row.s * (0.26 + rng.next() * 0.20);
+      const sp = outX(y);
+      if (!sp) continue;
+      const inn = inX(y);
+      // depth varies slat to slat: a bar 10-16 mm further back catches visibly less sky, which is
+      // what stops a woven screen reading as one flat grey slab
+      const zb = -d * (0.18 + rng.next() * 0.30);
+      const bar = addBar(sp[0], sp[1], y - th * 0.5, y + th * 0.5, zb, 0.006);
+      if (bar && inn && (inn[1] - inn[0]) > 0.05 && rng.next() < 0.45) {
+        // a second, thinner rail tucked behind the first over the flat part of the floor only
+        addBar(inn[0], inn[1], y - th * 0.16, y + th * 0.16, zb - 0.020 - rng.next() * 0.012, 0.004);
+      }
     }
   }
+  if (mesh || vertical) {
+    const nCols = mesh
+      ? Math.max(3, Math.round(slats * (W / Math.max(H, 0.01)) * 0.28))
+      : Math.max(2, slats);
+    const cols = walk(nCols, W, 0.24);
+    for (const col of cols) {
+      const x = xLo + col.c;
+      const tw = col.s * (mesh ? (0.20 + rng.next() * 0.16) : (0.28 + rng.next() * 0.20));
+      const sp = outY(x);
+      if (!sp) continue;
+      const zb = -d * (0.16 + rng.next() * 0.22);
+      const m = addBar(x - tw * 0.5, x + tw * 0.5, sp[0], sp[1], zb, 0.006);
+      if (m && !mesh) m.material = barMat;
+    }
+  }
+
   /**
-   * SURROUND — an INSET frame, not an outset one.
+   * ---- THE FRAME, and why every seated screen gets one ----------------------------------------
    *
-   * ROUND-2 (front clip): this was the §7 z-fighting tell. The bars used to sit at
-   * ±(h/2 + 0.018) and ±(w/2 + 0.018) and be d * 0.7 deep about z = 0, i.e. the frame stood
-   * OUTSIDE the (w, h) box the blueprint declared and 35% of its depth in FRONT of the mounting
-   * plane. Dropped into a lofted aperture, that put a 42 mm chrome rail on the recess's rim wall —
-   * two surfaces climbing the same ramp within a millimetre of each other — and the SUV's grille
-   * surround duly traded cream / dark-olive / yellow pixels with the bodywork along its whole
-   * width at 20x. A frame laid INSIDE the opening, behind the mounting plane, cannot do that, and
-   * it is also what a real grille surround is: a bright lip round the inside of the hole.
+   * A slat dies into the recess wall at the depth where the wall crosses the slat's own front
+   * face — and because the wall is a rounded fillet, every slat crosses it at a slightly different
+   * place. Geometrically that is airtight (the end cap is behind the shell, inside the closed
+   * body) but at 12x the ROW OF CROSSINGS reads as the same staircase the verdict has been
+   * calling a torn edge: "ends in a ragged stair-stepped edge with the back of the slats visible".
+   *
+   * A real grille does not present that. It has a frame: one continuous rail round the inside of
+   * the mouth, in FRONT of the weave, that every slat runs into. So does this one — cut to the
+   * measured wall span like everything else, so the rail's own four ends are the buried ones, and
+   * there is exactly one termination in the whole assembly instead of one per slat.
+   *
+   * ROUND-2 had a version of this that was the §7 z-fighting tell, because it stood OUTSIDE the
+   * declared box and in front of the mounting plane, which put a chrome rail on the rim wall — two
+   * surfaces climbing the same ramp within a millimetre of each other. This one lives entirely
+   * inside the recess and shares a plane with nothing.
    */
+  const hasSurround = surround === null ? !!span || frame === 'chrome' : surround;
   if (hasSurround) {
-    const surMat = chromeMaterial({ color: '#d3d8de', rough: 0.10 });
-    const t = Math.min(0.042, h * 0.22, w * 0.22);
-    // …and the frame is cut to the same rounded outline as the weave, so its four corners cannot
-    // be the one part of the pack that climbs the recess fillet.
-    for (const sy of [(h - t) * 0.5, -(h - t) * 0.5]) {
-      const b = new THREE.Mesh(roundedBox(spanX(Math.abs(sy) + t * 0.5) * 2, t, d * 0.5, 0.014), surMat);
-      b.position.set(0, sy, -d * 0.24);
+    const bright = frame === 'chrome';
+    const surMat = bright ? chromeMaterial({ color: '#d3d8de', rough: 0.10 })
+      : darkMetalMaterial({ color: '#3a3f49', rough: 0.34, metal: 0.78 });
+    const t = clamp(Math.min(H, W) * 0.16, 0.012, 0.042);
+    const zf = span ? -d * 0.060 : -d * 0.40;
+    for (const sy of [yLo + t * 0.5, yHi - t * 0.5]) {
+      const sp = outX(sy);
+      if (!sp || sp[1] - sp[0] < 0.02) continue;
+      const b = new THREE.Mesh(roundedBox(sp[1] - sp[0], t, d * (span ? 0.20 : 0.34), Math.min(0.012, t * 0.42)), surMat);
+      b.position.set((sp[0] + sp[1]) * 0.5, sy, zf);
       g.add(b);
     }
-    for (const sx of [-1, 1]) {
-      const b = new THREE.Mesh(roundedBox(t, Math.max(t, spanY((w - t) * 0.5 + t * 0.5) * 2 - t * 2), d * 0.5, 0.014), surMat);
-      b.position.set(sx * (w - t) * 0.5, 0, -d * 0.24);
+    for (const sx of [xLo + t * 0.5, xHi - t * 0.5]) {
+      const sp = outY(sx);
+      if (!sp || sp[1] - sp[0] < 0.02) continue;
+      const b = new THREE.Mesh(roundedBox(t, sp[1] - sp[0], d * (span ? 0.20 : 0.34), Math.min(0.012, t * 0.42)), surMat);
+      b.position.set(sx, (sp[0] + sp[1]) * 0.5, zf);
       g.add(b);
     }
   }

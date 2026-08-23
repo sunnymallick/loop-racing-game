@@ -855,172 +855,164 @@ const PLUME_FRAG = /* glsl */`
   uniform vec4 uProf;                 // neck, peakAt, spread, filament — the class silhouette
   uniform float uTime, uLevel, uPhase, uTurb, uFlick;
   uniform float uBands, uBandSpeed, uBandAmt, uNeck;
-  uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI;
-  uniform float uThick, uOcc, uPad, uReach, uFade, uPed;
+  uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD;
+  uniform float uThick, uOcc, uPad, uReach, uFade;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
   varying vec2 vUv;
   varying float vDepth;
   varying float vWY;
   ${NOISE_GLSL}
 
+  // How many samples down the view chord. The chord is CLIPPED to the gas (see below), so every
+  // one of them lands inside the column: 14 is enough that the banding on the integral is under
+  // one 8-bit step even on the widest SUV throat, and it is the whole of this shader's cost.
+  const int STEPS = 14;
+
   void main(){
     float t = clamp(vUv.y, 0.0, 1.0);
     float x = (vUv.x - 0.5) * 2.0 * uPad;      // lateral, in units of the column's reference radius
 
-    // ── THE SHOCK TRAIN IS SOLVED FIRST, BECAUSE IT IS A SHAPE ────────────────────────────────
-    // Every round up to r12 drew the train as a LUMINANCE ripple on a smooth column, and every one
-    // got "no banding" back from the frame. Two reasons it could never survive: the ACES shoulder
-    // is nearly flat above ~1.5, which is where the old exposure put the whole body of the jet, so
-    // a 2x pulse arrived as a 5% change in the file; and bloom then spread a fixed-radius halo over
-    // whatever was left. A CROSS-SECTION cannot be flattened by either. So the wave runs before the
-    // column is shaped, and the column's own half-width is what it modulates: the jet NECKS at each
-    // compression node and bulges back out between them, three or four times, each cell shorter and
-    // shallower than the last because the phase runs as t^1.38 (cells close up downstream, like
-    // real diamonds) and the amplitude decays as exp(-t/0.72).
-    float cellF = pow(t, 1.38) * uBands;
+    // ── 1. THE SHOCK TRAIN, SOLVED FIRST, AS A FUNCTION OF t ALONE ────────────────────────────
+    // Phase runs as t^1.30 and amplitude as exp(-t/0.40), so the cells get SHORTER, CLOSER
+    // TOGETHER and FAINTER downstream all at once — which is what a real diamond train does and
+    // the reason you cannot find a period in it. Cell 1 sits at ~0.62 authority, cell 2 at ~0.26,
+    // cell 3 at ~0.11 and there is no cell 4. Three objects that each halve are not a repeat.
+    float cellF = pow(t, 1.30) * uBands;
     float jit  = fbm2(vec2(cellF * 0.90 + uPhase * 5.0, 11.0)) - 0.5;
-    float bp   = (cellF + jit * 0.15 - 0.055) * 6.2831853 + uPhase * 1.7
-               + 0.28 * sin(uTime * uBandSpeed * 0.055);       // stands still; only breathes
+    float bp   = (cellF + jit * 0.16 - 0.050) * 6.2831853 + uPhase * 1.7
+               + 0.24 * sin(uTime * uBandSpeed * 0.055);       // stands still; only breathes
     float ci   = floor(bp * 0.1591549 + 0.5);
     float bf   = 0.86 + 0.18 * sin(uTime * uFlick * 0.29 + uPhase * 2.0)
                       + 0.12 * sin(uTime * uFlick * 0.83 + ci * 1.7);
-    float amp  = smoothstep(0.008, 0.050, t) * exp(-t / 0.50);
-    amp *= 0.60 + 0.72 * vn(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0));
+    float amp  = smoothstep(0.006, 0.055, t) * exp(-t / 0.40);
+    amp *= 0.52 + 0.84 * vn(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0));
     amp  = clamp(amp * uBandAmt * clamp(bf, 0.35, 1.30), 0.0, 1.0);
     float sw   = sin(bp);                        // signed: +1 at a node, -1 halfway between two
     float sh   = 1.05 + 0.70 * vn(vec2(ci * 0.37 + 7.3, uPhase * 4.0 + 1.7));
     float node = amp * pow(0.5 + 0.5 * sw, sh);  // the bright knot, one-sided, never a trough
 
-    // ── ONE HALF-WIDTH PER STATION ────────────────────────────────────────────────────────────
-    // Both fray fields are sampled along the AXIS only. A half-width that also varies across the
-    // column is not an outline, it is a per-pixel lens, and it pinches the silhouette into beads —
-    // which is where two separate rounds of "a chain of identical blobs" came from.
-    // ── ONE SCALE PER JOB ─────────────────────────────────────────────────────────────────────
-    // r12's fray ran at ~6 cycles over the column at ±45% of the half-width — the same frequency
-    // and the same amplitude as the shock train it was drawn on top of. Two width modulations at
-    // one scale do not add up to structure, they cancel into noise, which is most of why four
-    // rounds of shock-train work photographed as "a smooth airbrushed ribbon". The train now owns
-    // the low frequency (4-5 cells, ±35%), the fray is a high-frequency EDGE ripple (~11 cycles,
-    // ±18%) and nB is a fine second octave on top of that.
-    float nA = fbm3(vec2(t * 11.0 - uTime * 1.30, uPhase * 17.0 + 3.0));
-    float nB = vn(vec2(t * 19.0 - uTime * 2.60, uPhase * 23.0 + 5.0));
+    // ── 2. ONE HALF-WIDTH PER STATION ─────────────────────────────────────────────────────────
+    // Sampled along the AXIS only: a half-width that also varied across the column would be a
+    // per-pixel lens rather than an outline, and it pinches the silhouette into beads.
+    float nA = fbm3(vec2(t * 9.0 - uTime * 1.30, uPhase * 17.0 + 3.0));
+    float nB = vn(vec2(t * 21.0 - uTime * 2.60, uPhase * 23.0 + 5.0));
 
-    float wc = coneW(t, uProf);
-    wc *= 1.0 - uNeck * amp * sw;                // THE DIAMONDS, AS GEOMETRY
-    // frays harder downstream, so the column dissolves rather than tapering to a drawn point
-    wc *= 1.0 + mix(0.05, 0.30, smoothstep(0.04, 0.92, t)) * uTurb * (nA - 0.5) * 2.0;
-    wc *= 1.0 + 0.14 * uTurb * (nB - 0.5) * 2.0 * smoothstep(0.08, 0.70, t);
-    wc = max(wc, 0.010);
+    float w = coneW(t, uProf);
+    w *= 1.0 - uNeck * amp * sw;                 // THE DIAMONDS, AS GEOMETRY: a waist at each node
+    w *= 1.0 + mix(0.06, 0.34, smoothstep(0.04, 0.92, t)) * uTurb * (nA - 0.5) * 2.0;
+    w *= 1.0 + 0.13 * uTurb * (nB - 0.5) * 2.0 * smoothstep(0.08, 0.70, t);
+    // The mouth is a POINT on the outlet, not a cut: uv.y = 0 is one straight row of vertices
+    // across the full throat, so anything that ramps alpha in over the first few per cent draws
+    // the near end as a dead straight vertical edge. Closing the half-width instead gives the
+    // column a rounded nose that converges onto the exhaust tip.
+    w  = max(w * sqrt(smoothstep(0.0, 0.050, t)), 0.006);
 
-    // A THINNER COLUMN IS A SHORTER CHORD. This is the term that makes the taper survive bloom:
-    // the tail is not only narrower, it is fainter, so its halo shrinks with it. Taken from the
-    // column BEFORE the mouth cap below, or the jet would fade out at the exact point it leaves
-    // the pipe and hang detached in the air behind the car.
-    float chord = pow(clamp(wc, 0.03, 1.6), 0.42);
+    // the axis wanders, in units of the LOCAL half-width so the tail does not snake off centre
+    float cx = (nA - 0.5) * 0.40 * uTurb * max(w, 0.20) * smoothstep(0.03, 0.66, t);
 
-    // ── THE MOUTH IS A POINT ON THE OUTLET, NOT A CUT ─────────────────────────────────────────
-    // uv.y = 0 is one straight row of vertices across the full width of the throat, so any alpha
-    // that ramps in over a couple of per cent of the column draws the jet's near end as a DEAD
-    // STRAIGHT VERTICAL EDGE — a slab end, welded to nothing. Closing the half-width to zero over
-    // the first ~5% instead gives the column a rounded nose that converges onto the exhaust tip.
-    float w = max(wc * sqrt(smoothstep(0.0, 0.055, t)), 0.006);
-    // The axis wanders — but in units of the LOCAL half-width, not of the reference radius. Fixed
-    // in absolute units it is a fraction of a per cent at the throat and most of a half-width by
-    // the tail, so the necked end SNAKES away from the centreline and the jet reads as a wiggling
-    // ribbon rather than as a column of gas leaving a pipe at Mach 2.
-    float cx = (nA - 0.5) * 0.42 * uTurb * max(w, 0.22) * smoothstep(0.03, 0.66, t);
-
-    float y  = (x - cx) / w;                   // radius in units of the LOCAL half-width
-    float r2 = y * y;
-    // Not a silhouette: the gaussians below are at ~2e-2 of peak here and contribute less than one
-    // 8-bit step, so this cut is invisible. It exists only so the overhang of the strip is cheap.
-    if (r2 > uReach * uReach) discard;
+    float b  = (x - cx) / w;                     // impact parameter, in LOCAL half-widths
+    float b2 = b * b;
+    if (b2 >= uReach * uReach) discard;          // outside the gas entirely — nothing to march
 
     // the column ends by running out of gas, at a different t at every radius and in every frame
-    float ax = 1.0 - smoothstep(uEnd0, uEnd1, t + 0.22 * (nA - 0.5));
-    if (ax < 0.0025) discard;
+    float ax = 1.0 - smoothstep(uEnd0, uEnd1, t + 0.20 * (nA - 0.5));
+    if (ax < 0.003) discard;
 
-    // ── THREE CO-AXIAL GAUSSIANS = ONE VOLUME INTEGRAL ────────────────────────────────────────
-    // The line integral through a 3-D gaussian is a 2-D gaussian of the same width, so each term
-    // below IS the amount of gas the view ray passes through at this impact parameter. Peak on the
-    // axis, monotonic outward, no boundary at any radius. A shock cell SWELLS the filament (which
-    // is what a shock cell physically is) and never pinches it, so the thread lumps where the
-    // column necks — a bright knot filling the waist — and stays continuous everywhere.
-    float fw = uFilW * (1.0 + node * 1.55) * (0.80 + 0.20 * (1.0 - smoothstep(0.0, 0.70, t)));
-    float gf = exp(-r2 / max(fw * fw, 1e-4));
-    float gb = exp(-r2 / (uBodyW * uBodyW));
-    // The skirt is the only term still worth anything at the strip's cut (~5% of peak on the SUV),
-    // so its pedestal is subtracted and the remainder renormalised: it reaches EXACTLY zero at
-    // r = uReach with the gaussian's own (tiny) slope, and the cut cannot draw a step.
-    float gs = max(exp(-r2 / (uSkirtW * uSkirtW)) - uPed, 0.0) / max(1.0 - uPed, 1e-3);
+    // ── 3. HOW MUCH GAS, AND HOW HOT, AT THIS STATION ─────────────────────────────────────────
+    float puff   = 0.86 + 0.28 * fbm2(vec2(t * 2.2 - uTime * 1.7, uPhase * 7.0 + 2.0));
+    float bodyA  = (0.30 + 0.70 * exp(-t * 1.35)) * puff;
+    float skirtA = uSkirtI * (0.34 + 0.66 * smoothstep(0.0, 0.24, t)) * exp(-t * 0.90) * puff;
+    // The filament is the ONLY thing in the jet allowed past the bloom threshold, and what drives
+    // it there is a shock NODE, not the base level — so the clipped, blooming, white part of the
+    // plume is a row of knots that get smaller, dimmer and closer together, and between them the
+    // core is merely hot. A filament that is white for the whole first third is the "hard-edged
+    // uniform white stripe" every critic has named, and under bloom that bar is also what
+    // re-inflates a 10:1 taper back to a constant-width rod.
+    float hotA   = uHot * exp(-t / uBurn) * (0.30 + node * 3.10);
+    float kc = uFilW * (1.0 + node * 1.45);      // a node SWELLS the filament, never pinches it
+    float kb = uBodyW;
+    float ks = uSkirtW;
 
-    // ── THE OUTER GAS IS SHEARED, THE CORE IS NOT ─────────────────────────────────────────────
-    // Turbulence breaks the plume up along its length where it is cool and slow, and leaves the
-    // supersonic core alone — so the outline is never the analytic curve, and the boundary sits at
-    // a different radius at every station and in every frame.
-    float n2 = fbm2(vec2(t * 6.6 - uTime * 2.60 + uPhase * 3.3, y * 1.75 + 5.0));
-    float shear = mix(1.0, 0.22 + 1.56 * n2, smoothstep(0.26, 1.25, abs(y)));
-    gs *= shear;
-    gb *= mix(1.0, shear, 0.62);
-    // ...and the gas is not delivered at a constant rate. A slow lumpy fbm along the AXIS makes
-    // the column surge and gutter over its length. fbm has no period, so this can never be found
-    // as a repeating unit however far you zoom in — which is the whole charge against rounds 3-11.
-    float puff = 0.88 + 0.24 * fbm2(vec2(t * 2.2 - uTime * 1.7, uPhase * 7.0 + 2.0));
-
-    // ── EXPOSURE IS WHERE THE STRUCTURE LIVES OR DIES ─────────────────────────────────────────
-    // The grade's ACES fit maps 0.4 -> 0.30, 0.85 -> 0.56, 1.6 -> 0.75, 3.0 -> 0.87: all of the
-    // curve's slope is under ~1.0 and there is essentially none left above 2. Every round up to
-    // r12 ran the BODY of the jet at 1.3-3.2 linear, i.e. flat on the shoulder with at least one
-    // channel clipped, and that is the whole of why four rounds of shock-train work arrived at the
-    // frame as "a smooth airbrushed light-ribbon with a hard-edged uniform white stripe down its
-    // middle": the stripe was simply where the field crossed the clip, its edge was a contour of a
-    // steep gaussian rather than anything anyone drew, and bloom then hung a fixed-radius halo on
-    // it that re-inflated the tapered end back to the throat's width — the mechanism behind three
-    // separate rounds of "near-constant width".
+    // ── 4. MARCH THE VIEW CHORD THROUGH THE COLUMN ────────────────────────────────────────────
+    // This is the round-14 change, and it is the reason the previous nine rounds could not get
+    // there by tuning. Everything before this evaluated ONE closed-form radial profile per pixel:
+    // a 2-D field painted on a quad, which is an airbrushed ribbon however cleverly it is shaded,
+    // because a ribbon is what it is. Here the fragment integrates emission and absorption along
+    // the ray THROUGH the gas, front to back, and three things fall out that no 2-D field has:
     //
-    // So the three temperatures are now three DIFFERENT EXPOSURES of one field:
-    //   · the skirt lands at 0.2-0.4 linear — saturated class colour, deep on the curve;
-    //   · the body peaks just UNDER 1.0 in its strongest channel, where the tonemap still has real
-    //     slope, so a x2.9 shock node is a visible step rather than a 5% change;
-    //   · and only the filament — a thread ~0.15 of the LOCAL half-width, dead by mid-column — is
-    //     driven past 2.5, so it is the only thing in the jet that clips, blooms, or reads white.
-    float bodyA  = (0.34 + 0.66 * exp(-t * 1.20)) * puff;
-    float skirtA = uSkirtI * (0.40 + 0.60 * smoothstep(0.0, 0.26, t)) * exp(-t * 0.78) * puff;
-    // ── THE WHITE IS KNOTS, NOT A BAR ─────────────────────────────────────────────────────────
-    // Every round so far ran the filament far enough past the clip that it was pinned to white for
-    // the whole first third of the column — which is exactly the "hard-edged uniform white stripe
-    // down its middle" of the round-1 verdict, and under bloom that bar is also what re-inflated
-    // the taper back to a constant width. The thread now sits only just at the bloom threshold on
-    // its own; what drives it to white is a SHOCK NODE (x1 -> x4.2), so the clipped, blooming,
-    // white part of the jet is a row of knots that get smaller, dimmer and closer together, and
-    // between them the core is merely hot.
-    float hotA   = uHot * exp(-t / uBurn) * (1.0 + node * 3.20);
-    float nb = 1.0 + node * 1.55;
-    // A compression node is HOTTER, not merely brighter — its gas moves toward the filament's
-    // colour. A pure luminance pulse is what bloom flattens; a colour-temperature step survives it.
-    vec3 bodyC = mix(uMid, uCore, node * 0.42);
+    //   · SELF-OCCLUSION. Gas nearer the lens absorbs the gas behind it, so the column has an
+    //     inside. The hot core is seen THROUGH the cool skirt and takes its colour on the way out,
+    //     which is what makes a fringe with no edge in it — there is no zone to draw a rim around.
+    //   · FLUTES THAT WRAP. The turbulence is sampled on the UNIT CIRCLE around the axis, so it is
+    //     periodic around the column by construction and varies with depth as well as across the
+    //     quad. That is what a jet's shear layer looks like, and it is not something a 2-D field
+    //     can fake: it breaks the silhouette AND the interior together, in a correlated way.
+    //   · A CHORD THAT SHORTENS WITH THE TAPER. The ray passes through less gas at the tail
+    //     because the tail is narrower, so the necking is automatically also a dimming.
+    //
+    // The chord is clipped to the gas: for impact parameter b the ray is inside radius uReach
+    // between ±sqrt(uReach² − b²), so every sample lands in the column and the step count buys
+    // detail rather than empty space.
+    float halfC = sqrt(uReach * uReach - b2);
+    float du = 2.0 * halfC / float(STEPS);
+    // The integral is taken in units of the LOCAL half-width, so it is the same integral at every
+    // station; wk is what converts it back to world path length. Sub-linear (^0.45): a fully
+    // linear term makes the necked tail vanish, a constant one is the near-constant-width slab.
+    float wk = pow(clamp(w, 0.03, 1.6), 0.45);
+    float dl = du * wk;
 
-    vec3 em = uEdge * (gs * skirtA)
-            + bodyC * (gb * bodyA * nb)
-            + uCore * (gf * hotA);
-    em *= uGain * chord;
+    vec3  acc = vec3(0.0);
+    float trans = 1.0;
+    float u = -halfC + du * 0.5;
+    for (int i = 0; i < STEPS; i++){
+      float rr2  = b2 + u * u;
+      float rlen = sqrt(rr2);
+      // Direction on the unit circle around the plume's axis. Using the direction rather than an
+      // angle costs no atan2 and is continuous everywhere including across the seam an angle would
+      // have. Advected downstream and in time, so the flutes crawl along the column.
+      vec2 c = vec2(b, u) / max(rlen, 1e-3);
+      float fl = vn(vec2(c.x * 2.7 + t * 2.6 - uTime * 2.2, c.y * 2.7 + 11.0)) * 0.64
+               + vn(vec2(c.x * 6.3 - t * 4.4 + uTime * 1.3, c.y * 6.3 + 31.0)) * 0.36;
+      // the supersonic core is smooth; only the shear layer outside it boils
+      fl = mix(1.0, 0.26 + 1.62 * fl, uTurb * smoothstep(0.16, 0.95, rlen));
+
+      float g1 = exp(-rr2 / (kc * kc));          // incandescent filament
+      float g2 = exp(-rr2 / (kb * kb));          // the body of the jet
+      float g3 = exp(-rr2 / (ks * ks));          // the cool skirt — this is what draws the outline
+
+      // What absorbs: body + skirt, broken up by the flutes. The filament is a temperature, not a
+      // separate object, so it does not get its own density.
+      float dens = (g2 * uBodyD + g3 * skirtA * 2.2) * fl;
+      // ...and what glows. T is a TEMPERATURE, and colour is a function of it — so core, body
+      // and fringe are three readings of one continuous field rather than three stacked zones.
+      float T = g2 * bodyA + g3 * skirtA * 0.55 + g1 * node * 0.55;
+      vec3 col = mix(uEdge, uMid, smoothstep(0.045, 0.46, T));
+      col = mix(col, uCore, smoothstep(0.58, 1.15, T));
+      vec3 e = col * (dens * (0.22 + T * 1.10)) + uCore * (g1 * hotA);
+
+      float dtau = dens * dl * uThick;
+      acc   += trans * e * dl;
+      trans *= exp(-dtau);
+      u += du;
+    }
+
+    vec3 em = acc * uGain;
     // ── A SINGLE CHANNEL MUST NOT CLIP ON ITS OWN ─────────────────────────────────────────────
     // uEdge is a deeply saturated class colour — the supercar's #2a2fff is (0.02, 0.03, 1.0) in
     // linear — so its blue can reach 1.0 while red and green are still near zero. A lone clipped
-    // channel is a POSTERISED region with a hard boundary, and that boundary is exactly the "crisp
-    // saturated rim line" r11 was marked down for. Onset is above anything the fringe or the body
-    // ever reaches, so only the parts that were going to leave the curve anyway give up chroma —
-    // and they give it up smoothly, into the white the filament is already heading for.
+    // channel is a POSTERISED region with a hard boundary, and that boundary is the "crisp
+    // saturated rim line" this piece has been marked down for. Onset sits above anything the
+    // fringe or the body ever reaches, so only the knots give up chroma, and they give it up
+    // smoothly, into the white the filament is already heading for.
     float pk = max(max(em.r, em.g), em.b);
-    em = mix(em, vec3(pk), clamp((pk - 1.35) * 0.26, 0.0, 0.50));
+    em = mix(em, vec3(pk), clamp((pk - 1.25) * 0.30, 0.0, 0.55));
 
-    // Optical depth from the same field: the middle of the jet HIDES the lane line behind it, the
-    // wisps at the edge do not. One layer, both properties — see the premultiplied blend below.
-    float tau = uThick * chord * (gs * 0.30 + gb * 0.95 + gf * 0.45);
-    float a = (1.0 - exp(-tau)) * uOcc;
+    float a = (1.0 - trans) * uOcc;
 
     // ── THE ROAD MUST NOT CUT IT ──────────────────────────────────────────────────────────────
-    // Relative to the CAR's ground plane, not to world zero, so this works on a hill.
+    // Relative to the CAR's ground plane, not to world zero, so this works on a hill. A depth
+    // tested quad through the asphalt draws a dead straight line, which is a §7 hard edge no
+    // amount of shading fixes.
     float gnd  = smoothstep(-0.55, 0.06, vWY - uGroundY);
     float near = smoothstep(uNear0, uNear1, vDepth);
     float k = uLevel * uFade * gnd * near * ax;
@@ -1090,9 +1082,10 @@ function plumeMaterial(fx, phase) {
       uBodyW: { value: fx.bodyW ?? 0.46 },
       uSkirtW: { value: fx.skirtW ?? 0.88 },
       uSkirtI: { value: fx.skirtI ?? 0.36 },
-      // the skirt gaussian's value at the strip's cut, subtracted in the shader so the cut is not
-      // a step — see PLUME_FRAG
-      uPed: { value: Math.exp(-(PLUME_REACH * PLUME_REACH) / Math.pow(fx.skirtW ?? 0.88, 2)) },
+      // how much of the jet's own body ABSORBS. The raymarch's transmittance comes from this, so
+      // it is what decides whether the lane line behind the plume goes away — and, because the
+      // march is front-to-back, how strongly the near side of the column shades the far side.
+      uBodyD: { value: fx.bodyD ?? 0.90 },
       uThick: { value: fx.thick ?? 0.95 },
       uOcc: { value: fx.occ ?? 0.92 },
       uPad: { value: PLUME_PAD },
