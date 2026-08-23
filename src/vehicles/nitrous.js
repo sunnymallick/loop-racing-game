@@ -380,9 +380,9 @@ export const NITRO = {
     fx: {
       core: '#f4ffff', mid: '#34dcff', edge: '#0b46ff', spark: '#cdf4ff',
       len: 3.60, rad: 0.480, merge: 0.0, standoff: 0.10, flameRise: 0.045,
-      screen: 0.520, profile: [0.60, 0.10, 1.62, 0.022],  // slim needle: closes fastest of the four
+      screen: 0.610, profile: [0.60, 0.10, 1.62, 0.022],  // slim needle: closes fastest of the four
       bands: 11.5, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.46, flick: 62, turb: 0.92,
-      gasGain: 1.06, hotI: 4.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.50,
+      gasGain: 1.34, hotI: 4.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.50,
       skirtW: 0.90, skirtI: 0.80, bodyD: 1.45, thick: 1.15, occ: 0.90,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 1.4, smearWidth: 0.030,
@@ -396,9 +396,9 @@ export const NITRO = {
     fx: {
       core: '#fffaf2', mid: '#ff7d18', edge: '#e03a0a', spark: '#ffc477',
       len: 4.00, rad: 0.620, merge: 0.070, standoff: 0.12, flameRise: 0.15,
-      screen: 0.560, profile: [0.72, 0.08, 1.34, 0.030],  // fat barrel, widest right off the bumper
+      screen: 0.650, profile: [0.72, 0.08, 1.34, 0.030],  // fat barrel, widest right off the bumper
       bands: 9.0, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.44, flick: 28, turb: 1.06,
-      gasGain: 0.98, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.62,
+      gasGain: 1.26, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.62,
       skirtW: 0.98, skirtI: 0.92, bodyD: 1.45, thick: 1.25, occ: 0.92,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 1.4, smearWidth: 0.032,
@@ -413,14 +413,14 @@ export const NITRO = {
     fx: {
       core: '#fff3d6', mid: '#ff9a20', edge: '#e04a12', spark: '#ffd487',
       len: 3.70, rad: 0.700, merge: 0.050, standoff: 0.13, flameRise: 0.26,
-      screen: 0.540, profile: [0.80, 0.06, 1.42, 0.034],  // blunt bell — fat off the pipe, stubby
+      screen: 0.630, profile: [0.80, 0.06, 1.42, 0.034],  // blunt bell — fat off the pipe, stubby
       bands: 7.5, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.40, flick: 16, turb: 1.18,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 0.70, hotI: 3.40, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.66,
+      gasGain: 0.92, hotI: 3.40, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.66,
       skirtW: 1.06, skirtI: 0.90, bodyD: 1.30, thick: 1.25, occ: 0.92,
       sparkRate: 82, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 1.4, smearWidth: 0.050,
@@ -435,9 +435,9 @@ export const NITRO = {
     fx: {
       core: '#ffffff', mid: '#9a72ff', edge: '#2a2fff', spark: '#ded2ff',
       len: 4.60, rad: 0.520, merge: 0.085, standoff: 0.10, flameRise: 0.035,
-      screen: 0.550, profile: [0.56, 0.11, 1.72, 0.022],  // long spindle — the slenderest of the four
+      screen: 0.650, profile: [0.56, 0.11, 1.72, 0.022],  // long spindle — the slenderest of the four
       bands: 12.0, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.50, flick: 74, turb: 0.86,
-      gasGain: 0.88, hotI: 4.80, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.46,
+      gasGain: 1.14, hotI: 4.80, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.46,
       skirtW: 0.86, skirtI: 0.74, bodyD: 1.45, thick: 1.12, occ: 0.90,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 1.4, smearWidth: 0.042,
@@ -992,8 +992,8 @@ const PLUME_FRAG = /* glsl */`
 
     // ── 3. HOW MUCH GAS, AND HOW HOT, AT THIS STATION ─────────────────────────────────────────
     float puff   = 0.86 + 0.28 * fbm2(vec2(t * 2.2 - uTime * 1.7, uPhase * 7.0 + 2.0));
-    float bodyA  = (0.20 + 0.80 * exp(-t * 1.75)) * puff;
-    float skirtA = uSkirtI * (0.32 + 0.68 * smoothstep(0.0, 0.24, t)) * exp(-t * 0.95) * puff;
+    float bodyA  = (0.24 + 0.76 * exp(-t * 1.25)) * puff;
+    float skirtA = uSkirtI * (0.32 + 0.68 * smoothstep(0.0, 0.24, t)) * exp(-t * 0.78) * puff;
     // ── THE ONLY THING ALLOWED PAST THE BLOOM THRESHOLD IS A KNOT ─────────────────────────────
     // Base authority 0.10, and what drives the filament white is node SQUARED — so a knot is
     // shorter than the cell that carries it, the bright part of the jet is a row of small hot
@@ -1001,7 +1001,7 @@ const PLUME_FRAG = /* glsl */`
     // r14 ran this at 0.19 + 3.40·node and measured 247-255 for a third of the column: above the
     // clip everything looks identical, so a wide saturated core does not merely look bad, it
     // deletes every piece of structure the march computed inside it.
-    float hotA   = uHot * exp(-t / uBurn) * (0.10 + node * node * 2.60);
+    float hotA   = uHot * exp(-t / uBurn) * (0.17 + node * node * 3.00);
     float kc = uFilW * (1.0 + node * 1.30);      // a node SWELLS the filament, never pinches it
     float kb = uBodyW;
     float ks = uSkirtW;
@@ -1026,13 +1026,14 @@ const PLUME_FRAG = /* glsl */`
     float halfC = sqrt(uReach * uReach - b2);
     float du = 2.0 * halfC / float(STEPS);
     // The integral is taken in units of the LOCAL half-width, so it is the same integral at every
-    // station; wk is what converts it back to world path length. The exponent is high (^0.95) so
-    // the emission falls almost as fast as the width does: the throat is over the bloom threshold
-    // and haloes, the tail is well under it and has no halo at all. UnrealBloomPass hangs a halo
-    // of FIXED SCREEN RADIUS on everything above its threshold, so a column that is above it along
-    // its whole length arrives at the frame with ~20 px welded to both sides at every station and
-    // a 7:1 taper photographs as 1.4:1.
-    float wk = pow(clamp(w, 0.03, 1.6), 0.95);
+    // station; wk is what converts it back to world path length.
+    // (r15) 0.95 -> 0.70. The high exponent was there to make the tail fall under the bloom
+    // threshold, because bloom's fixed-screen-radius halo was the only thing setting the apparent
+    // width of a column that had no visible taper of its own. The perspective correction now puts
+    // the designed silhouette on screen directly, so the emission no longer has to be sacrificed to
+    // buy a taper — and at ^0.95, with the tail's world width now genuinely small, the last third
+    // of the column went so dark it stopped existing: the measured plume ended at t = 0.55.
+    float wk = pow(clamp(w, 0.03, 1.6), 0.70);
     float dl = du * wk;
 
     vec3  acc = vec3(0.0);
@@ -1088,7 +1089,9 @@ const PLUME_FRAG = /* glsl */`
       // and fringe are three readings of one continuous field rather than three stacked zones.
       // The white end of the ramp starts at T = 0.92 (r14: 0.58), which is above anything the
       // body of the gas reaches: the column is the CLASS COLOUR and white belongs to the knots.
-      float T = g2 * bodyA + g3 * skirtA * 0.55 + g1 * node * 0.60;
+      // ...and a shock cell brightens the GAS, not merely the thread down the middle of it: a
+      // diamond you can only see on the filament is a bead on a string, which is round 3's verdict.
+      float T = g2 * bodyA * (1.0 + node * 0.90) + g3 * skirtA * 0.55 + g1 * node * 0.60;
       vec3 col = mix(uEdge, uMid, smoothstep(0.05, 0.52, T));
       col = mix(col, uCore, smoothstep(0.92, 1.85, T));
       vec3 e = col * (dens * (0.20 + T * 1.05)) + uCore * (g1 * hotA);
@@ -1710,7 +1713,7 @@ export class NitrousJet {
    *          screen size — the column is a dot with a long tail — so the caller spends on width
    *          and on the burner disc instead.
    */
-  _governor(camera, target) {
+  _governor(camera, target, mul = 1) {
     // main.js updates the jet before the camera, so matrixWorldInverse can be a frame stale (and on
     // the very first frame of a capture, unset). PerspectiveCamera.updateMatrixWorld() refreshes the
     // inverse and is a cheap no-op when nothing moved.
@@ -1730,12 +1733,19 @@ export class NitrousJet {
     const syT = (t) => k * (_gp.y + _gd.y * t) / -(pz + _gd.z * t);
     // Separation, in frame heights, between the nozzle and the point the column visually ends at
     // when the whole column is L metres long.
+    // ── `mul` IS WHY THE CONTAINMENT CLAMP DID NOT WORK (r15) ────────────────────────────────
+    // The solver returns a length in metres, and the caller then multiplied it by lenDrive, by the
+    // per-frame flicker and by the surge — between 1.0x and ~1.35x — so the column that actually
+    // got drawn was up to a third longer than the one that was fitted to the frame. Measured on the
+    // LA supercar: the governor solved 3.4 m, the jet drew 3.6 m, and the tip landed at screen
+    // y = 916 on a 900 px frame. Every one of those multipliers is now known BEFORE the solve and
+    // folded in here, so what is fitted is what is drawn.
     const sep = (L) => {
-      const t = L * VIS_T;
+      const t = L * mul * VIS_T;
       return Math.hypot(sxT(t) - sx0, syT(t) - sy0);
     };
     // never let the solver walk the TIP (t = 1) into, or through, the lens
-    let hi = Math.min(30, _gd.z > 1e-4 ? (-2.2 - pz) / _gd.z : 30);
+    let hi = Math.min(30, _gd.z > 1e-4 ? (-2.2 - pz) / (_gd.z * mul) : 30);
     let lo = 0;
     const out = { len: 0.4, axial: clamp(Math.abs(_gd.z), 0, 1), fit: 1 };
     if (hi <= 0.4) return out;
@@ -1774,7 +1784,7 @@ export class NitrousJet {
     // the tip) and the floor is 0.86 — the jet may be shortened by a seventh to stay in shot, and
     // if it still will not fit, it is because the car itself is half out of frame.
     const inBox = (L) => {
-      const t = L * END_T;
+      const t = L * mul * END_T;
       return Math.abs(sxT(t)) < halfW && Math.abs(syT(t)) < halfH;
     };
     if (Math.abs(sx0) < halfW && Math.abs(sy0) < halfH && !inBox(out.len)) {
@@ -1783,7 +1793,7 @@ export class NitrousJet {
         const mid = (flo + fhi) * 0.5;
         if (inBox(mid)) flo = mid; else fhi = mid;
       }
-      const fitted = Math.max(flo, out.len * 0.86);
+      const fitted = Math.max(flo, out.len * 0.62);
       out.fit = fitted / out.len;
       out.len = fitted;
     }
@@ -1909,7 +1919,10 @@ export class NitrousJet {
     const grow = 0.90 + 0.28 * (1 - Math.exp(-Math.max(0, this.igT) / 1.10));
     let gLen = 1, gRad = 1, axial = 0;
     if (camera && opts.hero) {
-      const g = this._governor(camera, (fx.screen ?? 0.40) * grow);
+      // Everything the caller is going to multiply the solved length BY is handed to the solver,
+      // so what gets fitted to the frame is what actually gets drawn. See `mul` in _governor().
+      const g = this._governor(camera, (fx.screen ?? 0.40) * grow,
+        lenDrive * (1 + surge * 0.12) * flick);
       if (g) {
         gLen = clamp(g.len / (fx.len * this.scale), 0.50, 3.20);
         // Radius tracks the GOVERNED LENGTH, sub-linearly, rather than raw distance. Tying it to
