@@ -55,7 +55,7 @@ export const blueprint = {
   // (the tub reaches 0.958 / 0.969 half-width at z = ±1.31) — a tucked-in tyre caps §6.1 at 60.
   // staggered: 1.64 front / 1.70 rear, so the rear tyres stand ~9 cm outboard of the hatch tail and
   // break the silhouette from behind (§6.1 round-2: no wheel was readable in any harness frame)
-  dims: { length: 4.24, width: 2.10, height: 1.40, wheelbase: 2.62, track: 1.660, trackRear: 1.744, rideHeight: 0.13 },
+  dims: { length: 4.24, width: 2.10, height: 1.36, wheelbase: 2.62, track: 1.660, trackRear: 1.744, rideHeight: 0.13 },
   // envIntensity 0.70 (0.88 after the lighting piece's 1.25x) on a 0.15-metalness body put almost
   // no city into the paint, so the car sat in the frame as a flat coloured shape and went to a grey
   // silhouette in NYC. §1.6.3 wants "a sky reflection above and a dark ground reflection below" —
@@ -148,17 +148,38 @@ export const blueprint = {
    * FASTBACK — one continuous curve from the roof crown to the tail panel with a deck under it.
    * These two profiles are the class difference; nothing else on either car matters as much.
    */
+  /**
+   * ---- ROUND-5: THE ROOF WAS A PLATEAU, AND A PLATEAU IS A WAGON ---------------------------
+   *
+   * The verdict on the garage hero: "the tuner now reads as a TALL BOXY WAGON, not a compact
+   * tuner — its greenhouse is very tall, its roofline high, its tail long and estate-like." Put
+   * the four cars through `tools/_vs_silo.mjs` (the §2.3 black-outline test, orthographic) and it
+   * is exactly right: the muscle is a fastback, the truck is a box, the supercar is a wedge, and
+   * the tuner is a five-door estate — because its roof ran DEAD LEVEL at 1.374–1.380 from z 0.34
+   * to z -0.60 and was still at 1.336 at z -1.10. That is 1.44 m of flat roof on a 4.24 m car,
+   * 34 % of its length, and a flat roof that long over a tall belt is the estate silhouette
+   * whatever is bolted to the back of it.
+   *
+   * The roof now CRESTS at z 0.05 and falls continuously from there: 1.336 at the crest, 1.290 at
+   * z -0.60, 1.216 at -1.10, and into the tailgate. Peak height drops 44 mm and the rear of the
+   * cabin drops 120 mm, so the car is 40 mm lower overall and the last metre of roof is a ramp
+   * rather than a shelf. Nothing about the belt moves — the belt is shared with the tub's own
+   * `yBelt` column and a cabin that does not sit on it opens a seam along the whole flank.
+   *
+   * The A-pillar's foot comes down with it (0.966 → 0.952 at the cowl) so the screen keeps its
+   * rake instead of standing up to meet a lower roof.
+   */
   cabin: {
     stations: [
-      { z: 1.00, hw: 0.802, rw: 0.762, yBelt: 0.948, yRoof: 0.966 },
-      { z: 0.86, hw: 0.808, rw: 0.740, yBelt: 0.949, yRoof: 1.062 },
-      { z: 0.58, hw: 0.818, rw: 0.700, yBelt: 0.950, yRoof: 1.248 },
-      { z: 0.34, hw: 0.824, rw: 0.674, yBelt: 0.950, yRoof: 1.352 },
-      { z: 0.05, hw: 0.828, rw: 0.666, yBelt: 0.950, yRoof: 1.380 },
-      { z: -0.60, hw: 0.828, rw: 0.664, yBelt: 0.950, yRoof: 1.374 },
-      { z: -1.10, hw: 0.826, rw: 0.672, yBelt: 0.949, yRoof: 1.336 },
-      { z: -1.45, hw: 0.822, rw: 0.706, yBelt: 0.947, yRoof: 1.212 },
-      { z: -1.72, hw: 0.812, rw: 0.762, yBelt: 0.950, yRoof: 1.052 },
+      { z: 1.00, hw: 0.802, rw: 0.762, yBelt: 0.948, yRoof: 0.960 },
+      { z: 0.86, hw: 0.808, rw: 0.740, yBelt: 0.949, yRoof: 1.046 },
+      { z: 0.58, hw: 0.818, rw: 0.700, yBelt: 0.950, yRoof: 1.216 },
+      { z: 0.34, hw: 0.824, rw: 0.674, yBelt: 0.950, yRoof: 1.310 },
+      { z: 0.05, hw: 0.828, rw: 0.666, yBelt: 0.950, yRoof: 1.336 },
+      { z: -0.60, hw: 0.826, rw: 0.660, yBelt: 0.950, yRoof: 1.290 },
+      { z: -1.10, hw: 0.822, rw: 0.664, yBelt: 0.949, yRoof: 1.216 },
+      { z: -1.45, hw: 0.818, rw: 0.700, yBelt: 0.947, yRoof: 1.166 },
+      { z: -1.72, hw: 0.810, rw: 0.760, yBelt: 0.950, yRoof: 1.040 },
       { z: -1.87, hw: 0.800, rw: 0.792, yBelt: 0.951, yRoof: 0.958 },
     ],
     roof: { z0: -1.10, z1: 0.30, a: 5, offset: 0.014 },
@@ -168,11 +189,18 @@ export const blueprint = {
       // moulded gutter, not a bright strip, so it takes the dark trim the pillars already use.
       { z0: -1.12, z1: 0.32, a: 5, b: 6, mat: 'dark', steps: 9, offset: 0.018 },
       { z0: 0.34, z1: 1.00, a: 2, b: 5, mat: 'dark', steps: 5 },      // A
-      { z0: -0.44, z1: -0.30, a: 2, b: 5, mat: 'dark', steps: 2 },    // B
-      // C and D. A hatch has TWO pillars behind the door — a blacked-out C beside the quarter light
-      // and a broad painted D wrapping the tailgate — where the muscle has one long fastback sail.
-      { z0: -1.16, z1: -1.34, a: 2, b: 5, mat: 'dark', steps: 2 },
-      { z0: -1.56, z1: -1.87, a: 2, b: 5, mat: 'paint', steps: 5 },
+      /**
+       * ROUND-5: the B-pillar is gone, and that is what makes this a THREE-DOOR.
+       *
+       * With A, B, C and D there were FOUR panes of glass down each side, and four panes on a
+       * 4.24 m car is a five-door family hatch — half of why the outline test read "estate". A
+       * hot hatch (Type R, Focus RS, Integra) has one long door glass and a small quarter light,
+       * i.e. three panes: the B is deleted so the door glass runs 1.50 m from z 0.34 to -1.16,
+       * the C stays as the divider ahead of the quarter light, and the D wraps the tailgate.
+       * One fewer pillar is also one fewer bucket of geometry.
+       */
+      { z0: -1.16, z1: -1.34, a: 2, b: 5, mat: 'dark', steps: 2 },    // C
+      { z0: -1.56, z1: -1.87, a: 2, b: 5, mat: 'paint', steps: 5 },   // D
     ],
     beltZ0: -1.30, beltZ1: 0.28, beltMat: 'dark',
     // stripped-out JDM cabin: grey buckets, black cage, the car's own cyan on the harnesses and
@@ -180,7 +208,7 @@ export const blueprint = {
     // shelfZ/shelfD are now a BOOT FLOOR running back to z -1.68 — with the glass dropping onto the
     // tailgate there is a metre of cabin behind the seats in every chase frame's sightline, and an
     // unfilled one would show the inside of the tub through the hatch.
-    interior: { seat: 0x4e535e, trim: 0x35393f, accent: 0x18b6e8, floorY: 0.735, headY: 1.195, dashY: 0.940, wheelY: 0.980, shelfY: 0.952, seatZ: -0.20, dashZ: 0.86, dashW: 1.34, seatX: 0.33, shelfZ: 1.15, shelfD: 0.66, rollBar: true, rhd: true, clusterColor: '#ff4d3d' },
+    interior: { seat: 0x4e535e, trim: 0x35393f, accent: 0x18b6e8, floorY: 0.735, headY: 1.158, dashY: 0.940, wheelY: 0.980, shelfY: 0.952, seatZ: -0.20, dashZ: 0.86, dashW: 1.34, seatX: 0.33, shelfZ: 1.15, shelfD: 0.66, rollBar: true, rhd: true, clusterColor: '#ff4d3d' },
   },
 
   /**
@@ -289,7 +317,7 @@ export const blueprint = {
       { x: 0.665, y: 0.905, z: -2.055, w: 0.235, h: 0.30, color: '#ff2a18', intensity: 1.75, segs: 3 },
       { x: 0.34, y: 0.845, z: -2.065, w: 0.22, h: 0.075, shape: 'strip', color: '#ff2a18', intensity: 1.8, glow: 0.3 },
       // roof-spoiler stop lamp, at the TOP of the hatch glass where a hatchback's third lamp lives
-      { x: 0, y: 1.336, z: -1.15, w: 0.42, h: 0.042, shape: 'strip', color: '#ff2a18', intensity: 1.9, segs: 3, mirror: false, bezel: false },
+      { x: 0, y: 1.212, z: -1.16, w: 0.42, h: 0.042, shape: 'strip', color: '#ff2a18', intensity: 1.9, segs: 3, mirror: false, bezel: false },
     ],
     reverse: [{ x: 0.16, y: 0.70, z: -2.07, w: 0.14, h: 0.07, color: '#fff2d8', intensity: 1.4, glow: 0.25 }],
   },
@@ -373,7 +401,7 @@ export const blueprint = {
   // The wing stands on the tailgate's top edge rather than on a boot lid, and it is TALL — the
   // blade sits above the roofline (roof 1.380, blade 1.418), which §2.3 asks for and which no other
   // car in the game does.
-  wing: { type: 'pedestal', w: 1.46, chord: 0.30, x: 0.52, y: 1.418, z: -1.94, h: 0.48, mat: 'carbon', postMat: 'chrome', aoa: -0.20 },
+  wing: { type: 'pedestal', w: 1.46, chord: 0.30, x: 0.52, y: 1.372, z: -1.94, h: 0.44, mat: 'carbon', postMat: 'chrome', aoa: -0.20 },
   // narrow and lifted: the rear tyres are the widest thing back here, not the bodykit
   diffuser: { w: 1.06, h: 0.22, d: 0.30, y: 0.330, z: -1.995, strakes: 4, rx: 0.30, mat: 'carbon' },
   exhaust: [{ x: 0.0, y: 0.345, z: -2.10, r: 0.098, len: 0.24, mirror: false }],

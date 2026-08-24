@@ -4919,21 +4919,39 @@ function drawBodyPaint({
     ctx.fillStyle = accent || stripe;
     ctx.fillRect(size * 0.5 - size * 0.044, 0, size * 0.010, size);
     ctx.fillRect(size * 0.5 + size * 0.034, 0, size * 0.010, size);
+    /**
+     * ---- THE FLANK FLASH, ROUND-5 -------------------------------------------------------------
+     *
+     * The verdict on the garage hero shot: "its rear quarter carries a dark triangular livery
+     * panel that looks like a texture error rather than a design". It was not far off. The old
+     * flash ran belt-to-rocker across 0.10 of the skin's LENGTH — 420 mm on this car — in
+     * `accent`, which the tuner authors as #15171c, i.e. near black on cyan. A 420 mm near-black
+     * band laid diagonally across the rear quarter, abutting the satin over-fender band under it
+     * and cut off by the arch, does not read as a stripe: it reads as a wedge-shaped hole in the
+     * paint. Nothing about it said "graphic" — it had no parallel edges, no repeat, no relation
+     * to any panel line.
+     *
+     * A rally flash is a PAIR of parallel stripes that follow the shoulder and then cant down over
+     * the door. This draws exactly that: two bands of CONSTANT width in v (110 mm and 45 mm), the
+     * wide one in the bright stripe colour and the narrow one in the accent as a pinstripe under
+     * it, sitting on the door rather than on the rear quarter, and stopping short of the rocker so
+     * the black over-fender band is never something the flash runs into.
+     */
     mirrorDraw(() => {
-      ctx.beginPath();
-      ctx.moveTo(X(uAt(iShoulder)), Y(0.60));
-      ctx.lineTo(X(uAt(iShoulder)), Y(0.50));
-      ctx.lineTo(X(uAt(iRocker) + 0.012), Y(0.20));
-      ctx.lineTo(X(uAt(iRocker) + 0.012), Y(0.31));
-      ctx.closePath();
-      ctx.fillStyle = accent || stripe; ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(X(uAt(iShoulder)), Y(0.47));
-      ctx.lineTo(X(uAt(iShoulder)), Y(0.43));
-      ctx.lineTo(X(uAt(iRocker) + 0.012), Y(0.13));
-      ctx.lineTo(X(uAt(iRocker) + 0.012), Y(0.17));
-      ctx.closePath();
-      ctx.fillStyle = stripe; ctx.fill();
+      const uHi = uAt(iShoulder), uLo = uAt(iRocker) + 0.012;
+      const uMid = uHi + (uLo - uHi) * 0.72;           // stop above the rocker, clear of the flare
+      const flash = (vHi, vLo, wid, col) => {
+        ctx.beginPath();
+        ctx.moveTo(X(uHi), Y(vHi));
+        ctx.lineTo(X(uHi), Y(vHi - wid));
+        ctx.lineTo(X(uMid), Y(vLo - wid));
+        ctx.lineTo(X(uMid), Y(vLo));
+        ctx.closePath();
+        ctx.fillStyle = col; ctx.fill();
+      };
+      flash(0.615, 0.415, 0.026, accent || stripe);
+      flash(0.585, 0.385, 0.062, stripe);
+      flash(0.518, 0.318, 0.020, accent || stripe);
     });
   } else if (style === 'gt') {
     // GT livery: a centre band over the nose and roof plus a flank swoosh over the rear arch
