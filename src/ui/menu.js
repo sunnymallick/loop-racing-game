@@ -190,8 +190,13 @@ const GARAGE_LOOK = {
   wet: 0.32,
   sky: { haze: '#10202a' },
   sun: { color: '#ffd0a0', intensity: 2.05, dir: [-0.46, 0.60, 0.65] },
+  // ROUND 5: 1.08 → 0.84. This is the ENGINE's hemisphere, and it sits at scene root, so unlike
+  // everything in `buildGarage` it is never occluded by a wall, a roof or the car itself. At 1.08
+  // in #7fb6d8 it was pouring a cyan constant into every fragment in the room — including the ones
+  // the key and the flank are supposed to own — which is most of why the round-4 frame reads as one
+  // teal wash. It keeps its colour: cool ambient over warm practicals is the split.
   ambient: {
-    sky: '#7fb6d8', ground: '#4a382a', intensity: 1.08,
+    sky: '#7fb6d8', ground: '#4a382a', intensity: 0.84,
     fill: { color: '#79a8d0', intensity: 0.22, dir: [0.5, 0.4, -0.6] },
   },
   fog: { color: '#0b1218', near: 26, far: 160 },
@@ -1493,7 +1498,27 @@ function buildGarage() {
   // TWO washes, each opened from 0.74 to 1.02 rad so the pair covers the span the four used to.
   // Four narrow cones down one flat wall and two wide ones down the same wall differ by a gradient
   // nobody can see and by 2 × 3.4 ms a frame, which everybody can.
-  for (const [x, inten, col] of [[-6.0, 176, '#b6e0dc'], [2.6, 188, '#d8e8e2']]) {
+  /**
+   * ROUND 5 — the washes go WARM, and they move off the car's shoulder.
+   *
+   * Two separate faults, one edit.
+   *
+   * COLOUR. §1.4's garage is "teal-turquoise painted BRICK … warm practical lights from above": the
+   * wall is teal by pigment, and the light in the room is tungsten. Ours had it the other way round
+   * — the two biggest-area sources in the room were #b6e0dc and #d8e8e2, i.e. cyan light on cyan
+   * brick — so every surface in frame, wall, concrete, workbench and hero car alike, landed inside
+   * one narrow teal band and the picture had no warm/cool axis at all. §2.1 asks for a committed
+   * 3–5 hue palette; a monochrome is not one. Tungsten on teal brick keeps the wall teal (it is the
+   * albedo doing that) while the concrete, the bench and the drums go warm — and it is what finally
+   * lets the cool RIM read as cool, because until now it was the same hue as everything else.
+   *
+   * PLACEMENT. −6.0 / +2.6 put the right-hand cone directly behind the hero's rear shoulder, which
+   * is the one patch of wall that has to stay DOWN for the rim to have anything to separate against.
+   * Opened out to −6.6 / +5.4 so the pair still covers the same span of brick and the middle of the
+   * wall — the 4 m the car is standing in front of — falls a stop and a half darker. That gradient
+   * is doing the same job as the 2D radial scrim, in the room, where it survives the car moving.
+   */
+  for (const [x, inten, col] of [[-6.6, 158, '#ffd2a0'], [5.4, 168, '#ffdfba']]) {
     const w = new THREE.SpotLight(new THREE.Color(col), inten, 16, 1.02, 1.0, 2);
     w.position.set(x, 4.90, ROOM.zBack + 2.6);
     w.target.position.set(x, 1.25, ROOM.zBack + 0.05);
@@ -1666,7 +1691,11 @@ function buildGarage() {
   // free to do the job it is actually good at: reaching the recesses (arch liners, the inboard face
   // of the rocker, the back of the bumper stack) that a spot cannot get into at any intensity, and
   // which are exactly the surfaces the standing verdict calls holes.
-  const hemi = new THREE.HemisphereLight(new THREE.Color('#6d9ab5'), new THREE.Color('#3b2c1f'), 0.78);
+  // ROUND 5: 0.78 → 0.60. The hemisphere is the room's only remaining big COOL term, and with the
+  // wall washes warmed it is now the thing that tints the shadow side — which is the job §2.1 wants
+  // it doing ("deep shadows are tinted, never #000"). At 0.78 it was instead a second key, and an
+  // unoccludable one: it flattened the very warm/cool split the washes were re-cut to create.
+  const hemi = new THREE.HemisphereLight(new THREE.Color('#6d9ab5'), new THREE.Color('#3b2c1f'), 0.60);
   group.add(hemi);
   const amb = new THREE.AmbientLight(new THREE.Color('#1b2a38'), 0.30);
   group.add(amb);

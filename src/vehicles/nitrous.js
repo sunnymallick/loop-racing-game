@@ -2279,9 +2279,15 @@ export class NitrousJet {
         // (r10) took these to alpha 0.20-0.38 to stop a wake of white rods out-reading the column.
         // That worked and then some: the round-10 verdict counted "1-3 pale hairlines per frame"
         // against §1.2's "yellow-white spark streaks", and scored half of the 20-point supporting-FX
-        // dimension as unearned. 0.38-0.70 is legible against wet asphalt and neon both, and the
-        // column can afford it now that it is opaque rather than a glaze.
-        r.range(0.26, 0.52) * (0.45 + 0.55 * s),
+        // dimension as unearned.
+        // (r18) 0.26-0.52 -> 0.40-0.76. Counted at 3x on the r17 LA frames: four to six visible
+        // hairlines per boost, which is the same note again. The reason it is safe to raise now is
+        // that the thing they were drowning has changed — r18's column carries a shock train that
+        // necks and bellies its own silhouette, so the sparks read as a shower AROUND a structured
+        // jet rather than as the only structure in the frame. They are still born in an annulus
+        // outside the gas, still live inside the column's own length, and are still three
+        // temperatures rather than one.
+        r.range(0.40, 0.76) * (0.45 + 0.55 * s),
         3.2,
       );
     }
