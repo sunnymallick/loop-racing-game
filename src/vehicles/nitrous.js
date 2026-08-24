@@ -336,13 +336,16 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //   fx.profile    the class cone [neck, peakAt, spread, filament] — see coneW(). `spread` above ~1.1
 //                 and `filament` under ~0.12 are what make the column actually neck down over the
 //                 length you can see, which is what stops the shock train reading as a repeat.
-//   fx.bands      shock cells over the whole column, of which only the first two or three are ever
-//                 visible: phase runs as t^1.30 (cells get SHORTER and closer together with
-//                 distance, like real diamonds) and amplitude decays as exp(-t/0.40), so cell 1 is
-//                 at ~0.62 authority, cell 2 at ~0.26, cell 3 at ~0.11 and cell 4 does not exist.
-//                 There is no repeating unit to find because there are never three comparable
-//                 cells. (r14) Roughly doubled, because the part of the column that is BRIGHT is
-//                 now the first ~35% — at the old count there was barely one cell inside it.
+//   fx.bands      shock cells over the whole column. (r18) The phase runs on the station the LENS
+//                 sees — ts = t/(1 + uPersp·t), normalised — not on the world station, because the
+//                 jet fires at the chase camera and the tail is magnified by up to 3x: a train
+//                 pitched in world t comes out at a DEAD CONSTANT screen period, which is the
+//                 "chain of identical, uniformly-sized blobs at regular spacing" note in six
+//                 verdicts. At ts^1.45 with bands 3.2-4.8 the nodes land at ts ~ 0.14/0.42/0.63/
+//                 0.81 (screen spacings 0.28, 0.21, 0.18, 0.17) and amplitude falls as
+//                 exp(-ts/0.38), so cell 2 is half of cell 1, cell 3 a quarter, cell 4 a sixth —
+//                 and the cone underneath them has necked to 45%/26%/14% of the throat. Three
+//                 cells that each shrink is a sequence, not a texture.
 //   fx.gasGain    master exposure of the marched integral. The BODY has to land near 1.0-1.4 in
 //                 its strongest channel at the throat: saturated, still on the tonemap's slope,
 //                 never a posterised plateau with a rim around it. Verify it with
@@ -391,7 +394,7 @@ export const NITRO = {
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.58, 0.09, 1.42, 0.080],   // slim needle: closes fastest of the four
-      bands: 8.0, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.56, flick: 62, turb: 0.92,
+      bands: 4.6, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.58, flick: 62, turb: 0.92,
       gasGain: 1.30, hotI: 5.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.68,
       skirtW: 0.90, skirtI: 0.80, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -407,7 +410,7 @@ export const NITRO = {
       core: '#fffaf2', mid: '#ff7d18', edge: '#e03a0a', spark: '#ffc477',
       len: 4.00, rad: 0.530, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.70, 0.055, 1.20, 0.090],  // fat barrel, widest right off the bumper
-      bands: 5.5, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.58, flick: 28, turb: 1.06,
+      bands: 3.6, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.60, flick: 28, turb: 1.06,
       gasGain: 1.12, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.84,
       skirtW: 0.98, skirtI: 0.92, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
@@ -424,7 +427,7 @@ export const NITRO = {
       core: '#fff3d6', mid: '#ff9a20', edge: '#e04a12', spark: '#ffd487',
       len: 3.70, rad: 0.560, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.02, profile: [0.76, 0.045, 1.05, 0.105],  // blunt bell — fat off the pipe, stubby
-      bands: 5.0, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.52, flick: 16, turb: 1.18,
+      bands: 3.2, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.54, flick: 16, turb: 1.18,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
@@ -446,7 +449,7 @@ export const NITRO = {
       core: '#ffffff', mid: '#9a72ff', edge: '#2a2fff', spark: '#ded2ff',
       len: 4.60, rad: 0.560, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.55, 0.10, 1.38, 0.078],   // long spindle — the slenderest of the four
-      bands: 7.5, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.60, flick: 74, turb: 0.86,
+      bands: 4.8, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.86,
       gasGain: 1.02, hotI: 4.90, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.62,
       skirtW: 0.86, skirtI: 0.74, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -1022,21 +1025,35 @@ const PLUME_FRAG = /* glsl */`
       float lim = hw * ((1.0 + uNeck) * uReach + 0.90);
       if (dot(rq, rq) < lim * lim) {
 
-      // ── THE SHOCK TRAIN: ONE BIG DIAMOND, A SMALLER SECOND, A HINT OF A THIRD ──────────────
-      // Phase runs as t^1.42, so with uBands 5.5-8.0 the nodes sit at t ~ 0.24 / 0.40 / 0.52 /
-      // 0.62 / 0.72 — spacings 0.15, 0.12, 0.11, 0.10, monotonically shrinking — and the
-      // amplitude falls as exp(-t/0.42), so the second is 68% of the first, the third 48%, the
-      // fourth 35%, and by t = 0.8 the train has faded INTO the gas rather than continuing to
-      // punch identical holes in it. Three visible cells that each shrink is a SEQUENCE; twelve
-      // comparable ones is a texture, and a texture has a repeating unit however carefully each
-      // cell is shaped. (r17: 3.4-4.6 put the first node at t = 0.36, which left the whole first
-      // third of the column smooth — the jet came out of the pipe as a plain hot cone and the
-      // train only started where the gas was already dimming.)
-      float bp  = uBands * pow(t + 0.012, 1.42) * 6.2831853 + uPhase * 1.7
+      // ── THE SHOCK TRAIN IS PITCHED IN THE STATION THE LENS SEES, NOT THE ONE THE GAS HAS ──
+      // (r18) THIS is what six rounds of "a chain of identical, uniformly-sized blobs at regular
+      // spacing" was actually made of, and it is a bug of omission rather than of shaping. r15
+      // established that the jet fires BACKWARDS, i.e. towards the chase lens, so the tail sits
+      // metres nearer the camera than the throat and perspective magnifies it — and it corrected
+      // the SILHOUETTE for exactly that (see halfW's uPersp term) so the designed taper reaches
+      // the frame. The shock train was never given the same correction. Measured on the r17 LA
+      // tuner at 3x: world spacings 0.18 / 0.14 / 0.12 / 0.11 — monotonically shrinking, exactly
+      // as the r17 note claims — divided by a depth that falls from d0 to ~0.3·d0 over the same
+      // span, which lands them on screen at 0.20 / 0.20 / 0.19 / 0.20. A dead-constant screen
+      // period, drawn inside a cone that visibly necks: five equal white lozenges strung down a
+      // blue skirt. The taper was right, the train was a ruler laid over it.
+      //
+      // So the phase runs on ts, the station in SCREEN arc-length: t/(1 + uPersp·t), normalised
+      // so ts(1) = 1 for any rig. (Exactly ln(1+p·t)/ln(1+p); the half-angle form below is within
+      // 4% of it over the whole clamp range of uPersp and costs one divide.) With ts^1.45 and
+      // uBands 3.2-4.8 the nodes land at ts ~ 0.14 / 0.42 / 0.63 / 0.81 — screen spacings 0.28,
+      // 0.21, 0.18, 0.17, each ~three quarters of the one before — while the amplitude falls as
+      // exp(-ts/0.38), so cell 2 is half of cell 1, cell 3 a quarter and cell 4 a sixth, and the
+      // cone has necked to 45% / 26% / 14% of the throat underneath them. A cell that is shorter,
+      // narrower AND fainter than the one before it is perspective down a jet; you cannot find a
+      // period in it, because there isn't one.
+      float pk2 = uPersp * 0.5;
+      float ts  = t * (1.0 + pk2) / max(1.0 + pk2 * t, 0.15);
+      float bp  = uBands * pow(ts + 0.004, 1.45) * 6.2831853 + uPhase * 1.7
                 + 0.16 * sin(uTime * uBandSpeed * 0.055);
       float sw  = sin(bp);
       float ci  = floor(bp * 0.1591549 + 0.5);
-      float amp = smoothstep(0.008, 0.055, t) * exp(-t / 0.42) * uBandAmt
+      float amp = smoothstep(0.006, 0.045, ts) * exp(-ts / 0.38) * uBandAmt
                 * (0.60 + 0.72 * h21(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0)))
                 * (0.88 + 0.14 * sin(uTime * uFlick * 0.31 + ci * 1.7));
       amp = clamp(amp, 0.0, 1.0);
@@ -1126,15 +1143,21 @@ const PLUME_FRAG = /* glsl */`
           // A diamond is a LENS, brightest on the centreline and gone before the skirt — not a
           // rung laid across the jet. A row of rungs is a barcode.
           float nd = node * (0.24 + 0.96 * exp(-q2 * 1.05));
+          // ...and a diamond gets COOLER with distance as well as smaller and fainter. Without
+          // this every cell in the train pushed T past the white threshold and the column read as
+          // a row of identical white lozenges (the r17 LA tuner at 3x): the first cell is
+          // incandescent, the second warm, the third is a swell in the class colour. The white in
+          // the jet is therefore near the pipe, which is also where a real one is.
+          float ndT = nd * (0.40 + 0.60 * exp(-t * 1.90));
 
           float dens = (g2 * uBodyD * (1.0 + nd * 1.20) * mix(1.0, flm, 0.36)
                      +  g3 * skirtA * 1.60 * flm * flm
                      +  wsp) * cut;
           // T is a TEMPERATURE and colour is a function of it, so fringe, body and core are three
           // readings of one continuous field rather than three stacked zones with rims between.
-          float T = (g2 * bodyA * (1.0 + nd * 4.20)
-                  +  g3 * skirtA * (0.55 + nd * 0.55)
-                  +  g1 * nd * 0.60) * cut;
+          float T = (g2 * bodyA * (1.0 + ndT * 4.20)
+                  +  g3 * skirtA * (0.55 + ndT * 0.55)
+                  +  g1 * ndT * 0.60) * cut;
           vec3 warm = mix(uMid, uCore, 0.55);
           vec3 col = mix(uEdge, uMid, smoothstep(0.04, 0.40, T));
           col = mix(col, warm, smoothstep(0.38, 1.00, T));
