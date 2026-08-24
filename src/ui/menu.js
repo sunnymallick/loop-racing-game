@@ -2377,6 +2377,12 @@ export class Menu {
     this.tileT = VEHICLE_IDS.map(() => 0);
     this.cityT = CITY_IDS.map(() => 0);
     this.cityBusy = false;
+    this.cityPrev = 0;             // the destination the preview strip is dissolving OUT of
+    this.cityFade = 1;             // 0 → 1 across that dissolve
+    this.busyT = 0;                // spool bar phase while a destination is building
+    this.navDir = 0;               // which way the last NAVIGATE went; drives the fan's flick
+    this.navT = 1;                 // 0 → 1 as that flick decays
+    this._cityTimer = 0;
 
     this.thumbs = {};              // vehicle id → { canvas, color }
     this.thumbQueue = [];
@@ -2469,6 +2475,9 @@ export class Menu {
     this._statWant = [0, 0, 0];
     this._sig = null;               // force the first frame of every visit to repaint
     this.tileT = VEHICLE_IDS.map(() => 0);
+    this.cityPrev = this.cityIndex;
+    this.cityFade = 1;
+    this.navT = 1; this.navDir = 0;
     this._ensureStage();
     this._enterStage();
     this._stageCar();
@@ -2477,7 +2486,21 @@ export class Menu {
 
   close() {
     if (!this.open_) return;
+    /**
+     * A destination change queued by `_move` runs 32 ms from now, and closing before it does used
+     * to leave the race on the OLD city while the panel said the new one — then the queued build
+     * fired mid-race, tore the track out from under the player and re-applied the garage look on
+     * top. That is the worst dead end on this screen because it is on the one path a player in a
+     * hurry actually takes: DOWN, RIGHT, ENTER. Forcing the swap to completion here costs the
+     * build's own latency, exactly as if they had waited, and races the city they picked.
+     *
+     * Before `open_` goes false, so `_flushCity`'s completion still knows the garage was open —
+     * and before `_exitStage`, which is what hands the (now correct) city back to the renderer.
+     */
+    this._closing = true;
+    if (this.cityBusy) this._flushCity();
     this.open_ = false;
+    this._closing = false;
     this._exitStage();
   }
 
@@ -2901,6 +2924,9 @@ export class Menu {
     this.swapT = clamp(this.swapT + dt / 0.62, 0, 1);
     this.focusT = clamp(this.focusT + dt / 0.22, 0, 1);
     this.colorFlash = Math.max(0, this.colorFlash - dt / 0.35);
+    this.cityFade = clamp(this.cityFade + dt / 0.42, 0, 1);
+    this.navT = clamp(this.navT + dt / 0.30, 0, 1);
+    if (this.cityBusy) this.busyT += dt;
     for (let i = 0; i < this.tileT.length; i++) {
       const want = i === this.carIndex ? 1 : 0;
       this.tileT[i] = lerp(this.tileT[i], want, 1 - Math.exp(-11 * dt));
@@ -2921,7 +2947,13 @@ export class Menu {
     // ---- turntable ---------------------------------------------------------------------------
     // The hero angle breathes ±14° so the car is never presented flat, and a swap arrives as a
     // whip-round that eases into exactly the hero angle instead of a cut.
-    const ease = smoothstep(0, 1, this.swapT);
+    //
+    // ROUND 5: that ease is a SPRING, not a smoothstep. A deck this size has mass; a smoothstep
+    // decelerates to exactly zero and parks, which is the motion signature of a tween and not of an
+    // object. `1 − e^(−5.2t)·cos(5.4t)` crosses 1 at t ≈ 0.30, overshoots the hero angle by ~9° and
+    // settles back into it by t ≈ 0.75 — the deck arrives, rocks once and stops, and the camera's
+    // FOV punch (which reads `1 − ease`) inherits the same settle for free.
+    const ease = this.swapT >= 1 ? 1 : 1 - Math.exp(-5.2 * this.swapT) * Math.cos(this.swapT * 5.4);
     const breathe = Math.sin(this.t * 0.34) * 0.245;
     this.spin = HERO_YAW + breathe + this.spinKick * (1 - ease);
 
@@ -3012,6 +3044,9 @@ export class Menu {
   _move(d) {
     const g = this.game;
     g.audio.init(); g.audio.ui('move');
+    // The flick is the FAN's, so only a vehicle move arms it; a destination move parks it.
+    this.navDir = this.focus === 'car' ? d : 0;
+    this.navT = 0;
     if (this.focus === 'car') {
       this.carIndex = (this.carIndex + d + VEHICLE_IDS.length) % VEHICLE_IDS.length;
       this.colorIndex = 0;
@@ -3024,54 +3059,71 @@ export class Menu {
       this._queueThumbs();
     } else {
       if (this.cityBusy) return;
+      this.cityPrev = this.cityIndex;
       this.cityIndex = (this.cityIndex + d + CITY_IDS.length) % CITY_IDS.length;
+      this.cityFade = 0;
       this.cityBusy = true;
+      this.busyT = 0;
       /**
-       * Take the garage OUT of the scene for the duration, not merely hide it.
-       *
-       * A city build allocates a few hundred megabytes of geometry, textures, shadow maps and its
-       * own cube probe. Doing that on top of a resident 19 m room — two shadow-casting spots, a
-       * planar reflector, a PMREM probe, four softbox-lit walls — is enough to take the software
-       * rasteriser the capture harness runs on out of memory: the renderer process dies mid-swap
-       * and the menu never comes back. That crash was in the round-1 build too, and it is the
-       * worst kind of dead end because it is on the only path the destination list exists to serve.
-       *
-       * Hiding the group frees nothing — an invisible object is skipped at draw time but every
-       * buffer it owns is still uploaded. Unlinking it lets the renderer drop its render lists and
-       * its shadow allocations for the duration, and relinking afterwards costs nothing: the
-       * geometry, the textures and the env probe are all still ours.
-       */
-      const st = this.stage;
-      const done = () => {
-        if (st && !st.group.parent) g.engine.scene.add(st.group);
-        this.cityBusy = false;
-        this._enterStage();
-        this._stageCar();
-      };
-      /**
-       * And build on the NEXT task, not this one.
+       * Build on the NEXT task, not this one, and leave the panel TWO FRAMES to say so.
        *
        * Tearing down a city and building the next one is the single heaviest thing this game does.
-       * Run in the same task as the unlink above, the browser never gets to retire the WebGL
-       * deletes the teardown just queued before the build starts asking for the replacements, and
-       * on the software rasteriser the harness uses that is reliably fatal — the renderer process
-       * dies inside setCity and the menu never returns. Split across two tasks, every step of the
-       * same sequence survives. A frame of latency on a destination change is invisible; a crash
-       * on the destination change is the whole feature.
+       * Run in the same task as the teardown, the browser never gets to retire the WebGL deletes
+       * the teardown just queued before the build starts asking for the replacements, and on the
+       * software rasteriser the harness uses that is reliably fatal — the renderer process dies
+       * inside setCity and the menu never returns.
+       *
+       * ROUND 5 makes the delay 32 ms rather than 0 for a second reason, and it is the whole of
+       * §6.8's "no dead ends" on this control: `setCity` is synchronous inside, so from the frame
+       * you press the key the tab is BLOCKED until the new city exists — a second and a half in
+       * which the screen showed the new row already highlighted and nothing else. Two frames of
+       * head-start is enough for the compositor to put the SPOOLING state on screen first, so the
+       * freeze reads as the machine working rather than as the input having been dropped.
        */
-      setTimeout(() => {
-        if (st) {
-          st.group.visible = false;
-          g.engine.scene.remove(st.group);
-          g.engine.scene.environment = null;
-          g.engine.renderer.renderLists.dispose();
-        }
-        let p = null;
-        try { p = g.setCity(CITY_IDS[this.cityIndex]); } catch (e) { console.warn('city swap failed', e); }
-        if (p && typeof p.then === 'function') p.then(done, done);
-        else done();
-      }, 0);
+      this._cityTimer = setTimeout(() => this._flushCity(), 32);
     }
+  }
+
+  /**
+   * Actually perform the queued destination change.
+   *
+   * Split out of `_move` because ENTER has to be able to force it. The sequence is otherwise
+   * exactly what round 3 established:
+   *
+   * Take the garage OUT of the scene for the duration, not merely hide it. A city build allocates a
+   * few hundred megabytes of geometry, textures, shadow maps and its own cube probe. Doing that on
+   * top of a resident 19 m room — two shadow-casting spots, a planar reflector, a PMREM probe, four
+   * softbox-lit walls — is enough to take the software rasteriser out of memory: the renderer
+   * process dies mid-swap and the menu never comes back. Hiding the group frees nothing (an
+   * invisible object is skipped at draw time but every buffer it owns is still uploaded); unlinking
+   * it lets the renderer drop its render lists and its shadow allocations for the duration, and
+   * relinking afterwards costs nothing.
+   */
+  _flushCity() {
+    if (!this.cityBusy) return;
+    const g = this.game;
+    if (this._cityTimer) { clearTimeout(this._cityTimer); this._cityTimer = 0; }
+    const st = this.stage;
+    if (st) {
+      st.group.visible = false;
+      g.engine.scene.remove(st.group);
+      g.engine.scene.environment = null;
+      g.engine.renderer.renderLists.dispose();
+    }
+    const done = () => {
+      if (st && !st.group.parent) g.engine.scene.add(st.group);
+      this.cityBusy = false;
+      // If ENTER forced the flush the garage is already closing and the race is about to own the
+      // scene; do not re-light a stage nobody is standing on. `close()` sets this before it calls
+      // us, and `_exitStage` restores the (now correct) city itself.
+      if (this._closing || !this.open_) return;
+      this._enterStage();
+      this._stageCar();
+    };
+    let p = null;
+    try { p = g.setCity(CITY_IDS[this.cityIndex]); } catch (e) { console.warn('city swap failed', e); }
+    if (p && typeof p.then === 'function') p.then(done, done);
+    else done();
   }
 
   _cycleColor() {
@@ -3089,7 +3141,7 @@ export class Menu {
   _start() {
     const g = this.game;
     g.audio.init(); g.audio.ui('confirm');
-    this.close();
+    this.close();          // completes any queued destination change first — see close()
     g.startRace();
   }
 
@@ -3151,13 +3203,15 @@ export class Menu {
      * dust, the bad ballast in tube 2, the extractor fan).
      */
     const moving = this.intro < 1 || this.swapT < 1 || this.focusT < 1 || this.colorFlash > 0
+      || this.cityFade < 1 || this.navT < 1 || this.cityBusy
       || this.tileT.some((v, i) => Math.abs(v - (i === this.carIndex ? 1 : 0)) > 0.002)
       || this.cityT.some((v, i) => Math.abs(v - (i === this.cityIndex ? 1 : 0)) > 0.002)
       || this.statShown.some((v, i) => Math.abs(v - this._statWant[i]) > 0.002);
     const sig = [
       W, H, moving ? 0 : 1, this.carIndex, this.cityIndex, this.colorIndex, this.focus,
-      this.cityBusy ? 1 : 0, this._thumbGen || 0,
+      this.cityBusy ? 1 : 0, this.cityPrev, this._thumbGen || 0,
       this.intro.toFixed(3), this.swapT.toFixed(3), this.focusT.toFixed(3), this.colorFlash.toFixed(3),
+      this.cityFade.toFixed(3), this.navT.toFixed(3), this.cityBusy ? this.busyT.toFixed(2) : 0,
       this.tileT.map((v) => v.toFixed(3)).join(), this.cityT.map((v) => v.toFixed(3)).join(),
       this.statShown.map((v) => v.toFixed(3)).join(),
     ].join('|');
@@ -3295,6 +3349,26 @@ export class Menu {
     const TW = 246, TH = 126;
     const carFocus = this.focus === 'car';
 
+    /**
+     * ---- ROUND 5: THE FAN MOVES WHEN YOU MOVE IT -----------------------------------------------
+     *
+     * Two terms, and neither is on a timer.
+     *
+     * FLICK. Every plate hangs off one hub, so the honest response to LEFT/RIGHT is for the whole
+     * assembly to swing and settle — not for a gold border to teleport between two stationary
+     * plates while nothing else on screen acknowledges the key. ±4.9° of shared rotation, decaying
+     * as (1 − navT)², applied to the plates AND to the dashed arc AND to the spokes, so the fan
+     * stays one rigid object through the move.
+     *
+     * SPRING. `tileT` eases the selection exponentially, which never overshoots — the selected
+     * plate grows into its size and stops, which again is a tween's signature. The plate now
+     * arrives, springs 42% past its push-out and rings down over ~0.5 s, on the same clock as the
+     * turntable's own settle, so the tile and the car agree about when the swap happened.
+     */
+    const flick = this.navDir * (1 - this.navT) * (1 - this.navT) * 0.085;
+    const spring = 1 + 0.42 * Math.exp(-4.6 * this.swapT) * Math.sin(this.swapT * 11.0);
+    const ang = (i) => (i - (n - 1) / 2) * SPREAD + flick;
+
     // the arc the tiles hang off, plus its hub
     ctx.save();
     ctx.globalAlpha = 0.34 * io;
@@ -3302,13 +3376,13 @@ export class Menu {
     ctx.lineWidth = 1.4;
     ctx.setLineDash([7, 9]);
     ctx.beginPath();
-    ctx.arc(CX, CY, R + TW * 0.5 + 18, -SPREAD * 2.0, SPREAD * 2.0);
+    ctx.arc(CX, CY, R + TW * 0.5 + 18, -SPREAD * 2.0 + flick, SPREAD * 2.0 + flick);
     ctx.stroke();
     ctx.setLineDash([]);
     // spokes: one hairline from the hub to each plate, so the radial construction is legible
     ctx.globalAlpha = 0.18 * io;
     for (let i = 0; i < n; i++) {
-      const th = (i - (n - 1) / 2) * SPREAD;
+      const th = ang(i);
       ctx.beginPath();
       ctx.moveTo(CX + Math.cos(th) * (R - TW * 0.5), CY + Math.sin(th) * (R - TW * 0.5));
       ctx.lineTo(CX + Math.cos(th) * (R + TW * 0.5 + 18), CY + Math.sin(th) * (R + TW * 0.5 + 18));
@@ -3316,14 +3390,40 @@ export class Menu {
     }
     ctx.restore();
 
+    /**
+     * The READ HEAD: a gold bracket riding the outer arc, parked on whichever plate is selected and
+     * TRAVELLING between them. Its angle is the tileT-weighted mean index, so it leaves the old
+     * plate and arrives at the new one continuously — which is what turns four plates and a
+     * highlight into a mechanism with a position. It also gives the still frame the thing the fan
+     * did not have: a mark that says "this slot is the one being read", independent of colour.
+     */
+    let wsum = 0, wpos = 0;
+    for (let i = 0; i < n; i++) { wsum += this.tileT[i]; wpos += this.tileT[i] * i; }
+    const headI = wsum > 1e-3 ? wpos / wsum : this.carIndex;
+    const hth = (headI - (n - 1) / 2) * SPREAD + flick;
+    const hr = R + TW * 0.5 + 18;
+    ctx.save();
+    ctx.globalAlpha = io * (carFocus ? 1 : 0.45);
+    ctx.translate(CX + Math.cos(hth) * hr, CY + Math.sin(hth) * hr);
+    ctx.rotate(hth);
+    ctx.strokeStyle = GOLD; ctx.lineWidth = 2.6;
+    ctx.shadowBlur = 12; ctx.shadowColor = GOLD;
+    ctx.beginPath();
+    ctx.moveTo(-2, -30); ctx.lineTo(9, -30); ctx.lineTo(9, 30); ctx.lineTo(-2, 30);
+    ctx.stroke();
+    ctx.fillStyle = GOLD_HOT;
+    ctx.beginPath(); ctx.moveTo(20, 0); ctx.lineTo(34, -9); ctx.lineTo(34, 9); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+
     for (let i = 0; i < n; i++) {
       const id = VEHICLE_IDS[i];
       const s2 = getVehicle(id).spec;
       const sel = this.tileT[i];
-      const th = (i - (n - 1) / 2) * SPREAD;
+      const th = ang(i);
       const stagger = clamp((this.intro - i * 0.07) / 0.42, 0, 1);
       const ap = smoothstep(0, 1, stagger);
-      const push = sel * 30;
+      const push = sel * 30 * spring;
       const cx = CX + Math.cos(th) * (R + push) - (1 - ap) * 260;
       const cy = CY + Math.sin(th) * (R + push);
 
@@ -3331,7 +3431,8 @@ export class Menu {
       ctx.globalAlpha = ap;
       ctx.translate(cx, cy);
       ctx.rotate(th * 0.80);
-      const w = TW * (1 + sel * 0.085), h = TH * (1 + sel * 0.085);
+      const grow = sel * 0.085 * spring;
+      const w = TW * (1 + grow), h = TH * (1 + grow);
       const x = -w / 2, y = -h / 2;
 
       // drop the plate off the arc so the fan has depth
@@ -3620,6 +3721,17 @@ export class Menu {
 
     rows.forEach(([label, val, unit, col], i) => {
       const ry = y + 40 + i * 34;
+      /**
+       * ROUND 5: the rows re-deal on a car swap. The three numbers on this panel are the three that
+       * actually change between cars, and they were the only thing in the bottom third that CUT —
+       * the stat bars travel, the name underlines itself in, the class chip slides, and the spec
+       * sheet just contained different digits on the next frame. Staggered 0.09 s apart off the raw
+       * swap clock so the panel reads top-to-bottom like a board being re-set.
+       */
+      const rt = smoothstep(0, 1, clamp((this.swapT - i * 0.09) / 0.34, 0, 1));
+      ctx.save();
+      ctx.globalAlpha = io * rt;
+      ctx.translate((1 - rt) * 34, 0);
       if (i % 2 === 0) {
         ctx.fillStyle = 'rgba(255,255,255,0.045)';
         fillPlate(ctx, L(ry + 31) + 12, ry + 3, w - 30, 28, 'rgba(255,255,255,0.045)', S);
@@ -3639,6 +3751,7 @@ export class Menu {
         color: gradientFill([[0, '#ffffff'], [0.6, '#e8f1fa'], [1, col]]),
         shadow: { color: 'rgba(0,0,0,0.7)', dy: 2, blur: 3 },
       });
+      ctx.restore();
     });
     ctx.restore();
   }
@@ -3727,33 +3840,68 @@ export class Menu {
     // Sky + skyline preview, in the destination's OWN palette. Three depth bands, not one flat
     // stencil: a far range at 22% over the sky, a mid band at 55%, the hero silhouette solid. That
     // is the difference between "a row of black rectangles" and a one-second read of a place.
-    const sky = def.look?.sky || {};
-    const skyTop = sky.top || '#10222e';
-    const skyHz = sky.horizon || accent;
-    ctx.save();
-    ctx.beginPath(); ctx.rect(fl + 18, fy + 2, w - 44, 166); ctx.clip();
-    ctx.fillStyle = vgrad(ctx, fy + 2, fy + 168, [[0, skyTop], [0.50, skyHz], [1, sky.haze || skyHz]]);
-    ctx.fillRect(fl + 18, fy + 2, w - 44, 166);
-    // sun/moon disc, placed off-centre so the strip is composed
-    const sg = ctx.createRadialGradient(fl + w * 0.70, fy + 92, 1, fl + w * 0.70, fy + 92, 74);
-    sg.addColorStop(0, sky.sunColor || '#ffe0b0');
-    sg.addColorStop(0.28, `${(sky.sunColor || '#ffe0b0')}88`);
-    sg.addColorStop(1, 'rgba(255,224,176,0)');
-    ctx.fillStyle = sg; ctx.fillRect(fl + 18, fy + 2, w - 44, 166);
-    ctx.globalAlpha = io * 0.22;
-    drawSkyline(ctx, def.id, fl + 8, fy + 146, w - 24, 80, '#000000');
-    ctx.globalAlpha = io * 0.55;
-    drawSkyline(ctx, def.id, fl + 56, fy + 156, w - 84, 66, '#000000');
-    ctx.globalAlpha = io;
-    drawSkyline(ctx, def.id, fl + 26, fy + 168, w - 60, 96, 'rgba(4,7,12,0.97)');
-    // ground strip so the silhouettes stand on something
-    ctx.fillStyle = 'rgba(4,7,12,0.97)';
-    ctx.fillRect(fl + 18, fy + 162, w - 44, 8);
-    ctx.restore();
+    //
+    // ROUND 5: it is painted through a helper so a destination change can CROSS-DISSOLVE. Changing
+    // city used to swap 344 × 166 px of picture between two frames with nothing in between, which
+    // is the one place on this screen where a hard cut was doing real damage: the strip is the only
+    // element whose whole job is "where am I about to drive", and a cut reads as a redraw rather
+    // than as a change of place. The outgoing city stays under the incoming one and is wiped off
+    // left-to-right behind a bright edge in the NEW city's accent — the sky, the sun and all three
+    // silhouette bands travel together, so it reads as one place sliding over another.
+    const paintPreview = (d2, clip) => {
+      const sky = d2.look?.sky || {};
+      const skyTop = sky.top || '#10222e';
+      const skyHz = sky.horizon || d2.look?.accent || CYAN;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(clip[0], clip[1], clip[2], clip[3]); ctx.clip();
+      ctx.fillStyle = vgrad(ctx, fy + 2, fy + 168, [[0, skyTop], [0.50, skyHz], [1, sky.haze || skyHz]]);
+      ctx.fillRect(fl + 18, fy + 2, w - 44, 166);
+      // sun/moon disc, placed off-centre so the strip is composed
+      const sg = ctx.createRadialGradient(fl + w * 0.70, fy + 92, 1, fl + w * 0.70, fy + 92, 74);
+      sg.addColorStop(0, sky.sunColor || '#ffe0b0');
+      sg.addColorStop(0.28, `${(sky.sunColor || '#ffe0b0')}88`);
+      sg.addColorStop(1, 'rgba(255,224,176,0)');
+      ctx.fillStyle = sg; ctx.fillRect(fl + 18, fy + 2, w - 44, 166);
+      ctx.globalAlpha = io * 0.22;
+      drawSkyline(ctx, d2.id, fl + 8, fy + 146, w - 24, 80, '#000000');
+      ctx.globalAlpha = io * 0.55;
+      drawSkyline(ctx, d2.id, fl + 56, fy + 156, w - 84, 66, '#000000');
+      ctx.globalAlpha = io;
+      drawSkyline(ctx, d2.id, fl + 26, fy + 168, w - 60, 96, 'rgba(4,7,12,0.97)');
+      // ground strip so the silhouettes stand on something
+      ctx.fillStyle = 'rgba(4,7,12,0.97)';
+      ctx.fillRect(fl + 18, fy + 162, w - 44, 8);
+      ctx.restore();
+    };
+    const cx0 = fl + 18, cw0 = w - 44;
+    const fade = smoothstep(0, 1, this.cityFade);
+    const prev = getCity(CITY_IDS[this.cityPrev]).def;
+    if (fade < 1 && prev !== def) paintPreview(prev, [cx0, fy + 2, cw0, 166]);
+    paintPreview(def, [cx0, fy + 2, cw0 * (fade < 1 && prev !== def ? fade : 1), 166]);
+    if (fade < 1 && prev !== def) {
+      // the wipe's own leading edge, in the incoming city's accent
+      const ex = cx0 + cw0 * fade;
+      ctx.globalAlpha = io * (1 - fade);
+      ctx.fillStyle = hgrad(ctx, ex - 26, ex + 4,
+        [[0, 'rgba(255,255,255,0)'], [0.72, `${accent}cc`], [1, '#ffffff']]);
+      ctx.fillRect(ex - 26, fy + 2, 30, 166);
+      ctx.globalAlpha = io;
+    }
     ctx.fillStyle = accent;
     ctx.globalAlpha = io * 0.9;
     ctx.fillRect(fl + 18, fy + 170, w - 44, 1.8);
     ctx.globalAlpha = io;
+
+    // The place NAMED over its own picture, the way §1.2's frame banners YELLOWSTONE. The strip had
+    // the skyline and the list twenty rows above had the word, and neither on its own is a
+    // one-second read of where you are about to drive. Shrink-to-fit, because NEW YORK CITY is
+    // two-and-a-half times MIAMI and the strip is only 300 px wide.
+    let dn = 20;
+    while (dn > 13 && measure(def.name, { size: dn, tracking: 0.10 }).width > w - 82) dn -= 0.5;
+    drawText(ctx, def.name, {
+      x: fl + 26, y: fy + 152, size: dn, weight: 0.18, italic: 0.20, tracking: 0.10,
+      color: '#ffffff', shadow: { color: 'rgba(0,0,0,0.92)', dy: 2, blur: 6 },
+    });
 
     drawText(ctx, 'RECORD', {
       x: L(fy + 200) + 24, y: fy + 200, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
@@ -3761,6 +3909,48 @@ export class Menu {
     drawText(ctx, def.record || '--:--', {
       x: R(fy + 202) - 24, y: fy + 202, size: 22, weight: 0.19, italic: 0.20, align: 'right', color: GOLD,
     });
+
+    /**
+     * ---- SPOOLING — the state this control never had -------------------------------------------
+     *
+     * `setCity` is synchronous inside: from the frame the key is pressed the tab is BLOCKED until a
+     * whole city's geometry, textures, shadow maps and cube probe exist. On the software rasteriser
+     * that is well over a second, and until now the only thing on screen for the whole of it was
+     * the new row already highlighted — indistinguishable from the input having been dropped, which
+     * is exactly what §6.8's "no dead ends" is about. `_move` now leaves 32 ms of head-start so the
+     * compositor puts THIS on screen before the freeze starts, and the freeze reads as work.
+     *
+     * A barber-pole rather than a percentage: there is no progress to report from inside a
+     * synchronous build, and a fake percentage that jumps 0 → 100 is worse than an honest "busy".
+     */
+    if (this.cityBusy) {
+      const by = fy + 186;
+      const bx0 = L(by + 22) + 22, bx1 = R(by + 22) - 22;
+      ctx.save();
+      // scrim the RECORD line the bar replaces
+      ctx.fillStyle = 'rgba(4,8,13,0.90)';
+      ctx.fillRect(bx0 - 8, by - 4, bx1 - bx0 + 16, 44);
+      drawText(ctx, 'SPOOLING UP', {
+        x: bx0, y: by + 14, size: 13, weight: 0.15, tracking: 0.24, color: CYAN, face: 'geo',
+      });
+      const bw2 = bx1 - bx0, bh2 = 8, byy = by + 22;
+      ctx.fillStyle = 'rgba(8,14,22,0.92)';
+      ctx.fillRect(bx0, byy, bw2, bh2);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(bx0, byy, bw2, bh2); ctx.clip();
+      const ph = (this.busyT * 96) % 26;
+      for (let cx3 = bx0 - 26 + ph; cx3 < bx1 + 26; cx3 += 26) {
+        ctx.fillStyle = 'rgba(57,215,242,0.55)';
+        ctx.beginPath();
+        ctx.moveTo(cx3, byy + bh2); ctx.lineTo(cx3 + 11, byy + bh2);
+        ctx.lineTo(cx3 + 11 + bh2, byy); ctx.lineTo(cx3 + bh2, byy);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(57,215,242,0.75)'; ctx.lineWidth = 1.2;
+      ctx.strokeRect(bx0 + 0.5, byy + 0.5, bw2 - 1, bh2 - 1);
+      ctx.restore();
+    }
     ctx.restore();
   }
 

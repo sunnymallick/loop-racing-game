@@ -309,15 +309,42 @@ export const blueprint = {
      * section means what enters the paint is a point, not a cap. Nothing about the bar's centre —
      * the part that is actually a bumper — moves.
      */
-    { w: 1.72, h: 0.135, d: 0.22, y: 0.565, z: 2.492, mat: 'chrome', r: 0.052, sweep: 0.26, sweepPow: 2.8, taper: 0.16 },
-    // BUMPER OVERRIDERS. Two vertical chrome guards standing ON the bar — the period detail that
-    // breaks a straight bumper into three lit shapes and throws a hard shadow either side of
-    // itself. Their back faces are 100 mm inside the bar, so there is no joint to open up.
-    // ROUND-3: y 0.565 -> 0.600, h 0.220 -> 0.190. At the old numbers the guard ran from y 0.455 to
-    // 0.675 and the valance intake is cut from 0.330 to 0.490 — so its bottom 35 mm hung over the
-    // mouth of that recess with nothing under it. It now stands on the painted fascia between the
-    // two openings, which is where a bumper guard bolts.
-    { x: 0.315, w: 0.078, h: 0.190, d: 0.140, y: 0.600, z: 2.560, mat: 'chrome', mirror: true, r: 0.026 },
+    /**
+     * ROUND-5, and this one was MEASURED rather than argued.
+     *
+     * Round 4's reasoning was that a hard sweep puts the crossing out on the shoulder. The
+     * arithmetic says it puts the crossing nowhere near the shoulder. The nose crown falls only
+     * 45 mm from the centre of the panel to its edge, and the bar's front face stands 77 mm proud
+     * of the panel at the centre — so a bar that falls back 260 mm over its half length is BEHIND
+     * the paint by x 0.52, on a face that is 0.89 wide. Solve `zc(u) + halfDepth·sc(u)` against the
+     * panel and the bar stops being visible at |u| = 0.6. Everything outboard of that is buried,
+     * which is why the 7x crop reads "the bar stops in the middle of the fascia with a cut face":
+     * it does, because the sweep was eating it, and every extra millimetre of sweep ate more.
+     *
+     * sweep 0.26 -> 0.20 with pow 2.8 -> 5.0 keeps the bar essentially PARALLEL to the panel for
+     * the first 80 % of its length — at |u| 0.8 it is still 10 mm proud, i.e. still a bumper at
+     * x 0.70 — and then spends the whole of the wrap in the last 10 %, diving from 10 mm proud to
+     * 49 mm buried over 87 mm of x. That is a fast, well-conditioned crossing (no grazing skim to
+     * sawtooth along) and the visible bar now runs from wing to wing instead of stopping half way.
+     * taper 0.16 -> 0.42 so what runs into the paint is a bumper section, not a wire.
+     *
+     * w 1.72 -> 1.74: tips at x 0.87 against a measured flank half-width of 0.891 at this height
+     * (tools/_vs_width.mjs muscle 2.29 0.565), so the end caps finish 21 mm inside the wing.
+     */
+    { w: 1.74, h: 0.135, d: 0.22, y: 0.565, z: 2.492, mat: 'chrome', r: 0.052, sweep: 0.20, sweepPow: 5.0, taper: 0.42 },
+    /**
+     * The two BUMPER OVERRIDERS are gone, and that is the point.
+     *
+     * They were 78 x 190 x 140 mm chrome blocks standing 90 mm proud of the fascia at z 2.560 on
+     * a panel whose face is at 2.525 — so each one was a slab with 55 mm of open air behind its
+     * lower half and its top edge finishing on the skyline of the mouth's lower rim with nothing
+     * over it. At 4x (shots/vs-r1-crop-musclebar.png) you can see straight past the guard into the
+     * black of the grille recess on both sides of it, which is the verdict's "loose slabs bolted to
+     * the nose whose ends terminate in mid-air with open backfaces" word for word. A '70 Charger
+     * R/T does not wear bumper guards anyway — they are a base-model option — so nothing about the
+     * car's identity is lost, two boxes leave the triangle budget, and the bumper reads as one
+     * continuous loop across the whole front instead of being chopped into three by two blocks.
+     */
     { w: 1.20, h: 0.135, d: 0.22, y: 0.66, z: -2.585, mat: 'chrome', r: 0.055 },
     { x: 0.635, w: 0.42, h: 0.135, d: 0.20, y: 0.66, z: -2.505, mat: 'chrome', ry: -0.42, mirror: true, r: 0.05 },
     { w: 1.44, h: 0.30, d: 0.05, y: 0.865, z: -2.578, mat: 'dark', r: 0.03 },   // tail panel blackout
@@ -347,7 +374,16 @@ export const blueprint = {
     { x: 0.950, w: 0.045, h: 0.035, d: 2.10, y: 0.665, z: -0.10, mat: 'chrome', mirror: true, r: 0.014 }, // side spear
     // (the front valance slab is gone — the bodywork reaches the road here now and the intake is
     //  cut into it; what is left is the chin spoiler along the very bottom edge of the panel)
-    { w: 1.44, h: 0.050, d: 0.15, y: 0.312, z: 2.462, mat: 'dark', rx: 0.10, r: 0.020, sweep: 0.10, sweepPow: 2.6, taper: 0.55 },
+    /**
+     * ROUND-5: the chin spoiler was 1.44 m wide on an undertray that is 1.27 m wide where its tips
+     * land. `tools/_vs_width.mjs muscle 2.362 0.312` returns a half-width of 0.634; the tips sat at
+     * x 0.72. That is 86 mm of spoiler PER SIDE hanging in clear air below the front wing with a
+     * 27 x 82 mm rounded cap on the end of it — the single most literal instance of "loose slabs
+     * bolted to the nose whose ends terminate in mid-air" anywhere on the four cars, and it is
+     * directly under the bumper in every hero crop. 1.24 puts the tips at x 0.62, and the sweep
+     * comes down to 0.05 so they land at z 2.412 where the undertray is 0.70 wide: 80 mm inside.
+     */
+    { w: 1.24, h: 0.050, d: 0.15, y: 0.312, z: 2.462, mat: 'dark', rx: 0.10, r: 0.020, sweep: 0.05, sweepPow: 2.6, taper: 0.45 },
     // Rear valance: deliberately 1.16 m across a 2.19 m car and lifted clear of the road, so the
     // rear tyres stand outboard of it and the road shows underneath (§6.1 round-2 gap).
     { w: 1.16, h: 0.17, d: 0.26, y: 0.415, z: -2.505, mat: 'dark', rx: -0.12, r: 0.045 },

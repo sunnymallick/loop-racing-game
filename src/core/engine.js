@@ -182,6 +182,16 @@ export class Engine {
     this.composer.addPass(this.grade);
 
     this.smaa = new SMAAPass();
+    // SMAA's two intermediate targets are RGBA16F by default in three's pass. Both hold values that
+    // are 0..1 by construction — an edge mask and a set of blend weights — and the reference SMAA
+    // implementation stores exactly these in RGBA8. At 1600x900 that is two full-frame buffers
+    // written and read every frame at half the bytes, for an image that is bit-for-bit the same.
+    for (const rt of [this.smaa._edgesRT, this.smaa._weightsRT]) {
+      if (!rt) continue;
+      rt.texture.type = THREE.UnsignedByteType;
+      rt.texture.internalFormat = null;
+      rt.dispose();
+    }
     this.composer.addPass(this.smaa);
 
     this.postEnabled = true;
@@ -816,6 +826,13 @@ export class Engine {
 
     const boost = gu.uBoost.value;
     a.uBoost.value = boost;
+
+    // The speed pass is a full-screen read-modify-write of an RGBA16F buffer, and its own shader
+    // gates both of its effects at 0.004 — below that it is an exact copy, i.e. ~23 MB of traffic
+    // for nothing. Off the throttle, in the menu and through every slow corner, skip it outright.
+    // The thresholds here are the shader's, so the pass is only ever dropped when it was a no-op.
+    const su = this.speed.uniforms;
+    this.speed.enabled = su.uAmount.value > 0.004 || su.uLines.value > 0.004;
 
     // Both branches need an up-to-date camera and its view-projection: the atmosphere pass samples
     // it, and the shadow-caster cull tests against the frustum it defines.

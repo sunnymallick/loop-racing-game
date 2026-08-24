@@ -201,7 +201,9 @@ export const AtmosphereShader = {
           vec3 px = worldAt(vUv + vec2(texel.x, 0.0), dx) - wp.xyz;
           vec3 py = worldAt(vUv + vec2(0.0, texel.y), dy) - wp.xyz;
           float lim = dist * 0.06 + 0.5;
-          float valid = step(length(px), lim) * step(length(py), lim);
+          // squared compare: same predicate, two fewer square roots on every ground pixel
+          float lim2 = lim * lim;
+          float valid = step(dot(px, px), lim2) * step(dot(py, py), lim2);
           vec3 nrm = cross(px, py);
           float nl = length(nrm);
           nrm = nl > 1e-6 ? nrm / nl : vec3(0.0, 1.0, 0.0);
@@ -220,8 +222,16 @@ export const AtmosphereShader = {
             // Aggregate break-up. r2's single 2.6/m octave had ~0.4 m cells, which at 3x zoom read
             // as the "blocky dithered columns" the last critique called out. Two finer octaves at
             // half the contrast read as wet asphalt texture instead of as a reconstruction artifact.
-            float grain = vnoise(wp.xz * 6.0) * 0.6 + vnoise(wp.xz * 14.0) * 0.4;
-            wetness *= mix(1.0, 0.72 + 0.56 * grain, exp(-dist * 0.030));
+            // The aggregate octaves are two thirds of this block's ALU and they are multiplied by
+            // exp(-dist*0.03), which is under 1.5% past ~140 m — i.e. they are already invisible
+            // there. Skipping them beyond that point changes the wetness term by under half a percent
+            // and takes eight hash evaluations off every distant road pixel, which is most of the
+            // road area in a chase frame.
+            float gfade = exp(-dist * 0.030);
+            if (gfade > 0.015) {
+              float grain = vnoise(wp.xz * 6.0) * 0.6 + vnoise(wp.xz * 14.0) * 0.4;
+              wetness *= mix(1.0, 0.72 + 0.56 * grain, gfade);
+            }
             // Schlick, but with a floor: physically a wet road at 50 degrees reflects ~5%, which
             // reads as nothing on screen. Arcade wet asphalt keeps a base term so the road under
             // the car still catches its own brake lights.
@@ -241,6 +251,7 @@ export const AtmosphereShader = {
             float dith = ign(vUv * uResolution);
             vec3 acc = vec3(0.0);
             float tot = 0.0;
+            vec3 expBal = uExposure * uBalance;      // loop-invariant; six mults per tap saved
             for (int i = 0; i < WET_TAPS; i++) {
               float t = (float(i) + dith) / float(WET_TAPS) - 0.5;
               float hx = fract(float(i) * 0.6180339 + dith) - 0.5;
@@ -249,7 +260,7 @@ export const AtmosphereShader = {
               vec2 suv = projectDir(rk);
               float inside = step(0.0, suv.x) * step(suv.x, 1.0)
                            * step(0.0, suv.y) * step(suv.y, 1.0);
-              vec3 s = texture2D(tDiffuse, clamp(suv, 0.0, 1.0)).rgb * uExposure * uBalance * inside;
+              vec3 s = texture2D(tDiffuse, clamp(suv, 0.0, 1.0)).rgb * expBal * inside;
               float w = 1.0 - abs(t) * 1.15;
               acc += s * smoothstep(uWetThresh, uWetThresh + uWetKnee, luma(s)) * w;
               tot += w;
@@ -279,7 +290,12 @@ export const AtmosphereShader = {
 
       // ---- light shafts (crepuscular rays). Gated well above zero: 20 full-res taps are not worth
       // paying for a contribution nobody can see. ----
-      if (uShaft > 0.02) {
+      // The radial falloff multiplies the whole accumulation, so a pixel with edge == 0 gets nothing from the
+      // loop no matter what it samples. Hoisting it above the loop makes that an early-out instead
+      // of twenty wasted full-res taps — and with the sun near or past a frame edge, which is most
+      // of the time it is visible at all, that is a large share of the frame.
+      float edge = 1.0 - smoothstep(0.35, 1.25, length(vUv - uSunScreen));
+      if (uShaft > 0.02 && edge > 0.0015) {
         vec2 delta = (vUv - uSunScreen) * (uShaftDensity / float(SHAFT_SAMPLES));
         vec2 uv = vUv;
         float illum = 1.0;
@@ -294,7 +310,6 @@ export const AtmosphereShader = {
           illum *= uShaftDecay;
         }
         acc /= float(SHAFT_SAMPLES);
-        float edge = 1.0 - smoothstep(0.35, 1.25, length(vUv - uSunScreen));
         col += acc * uShaftTint * uShaft * uSunVisible * edge;
       }
 

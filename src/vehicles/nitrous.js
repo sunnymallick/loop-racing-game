@@ -2087,8 +2087,16 @@ export class NitrousJet {
         // already 230 px across on a 795 px column — a 3.5:1 wedge, which is a blob with a
         // whisker, not a jet. The target aspect is a throat about a third of the car's width on a
         // column 6-8x as long: only that has room to visibly neck down over the part you can see.
-        gRad = clamp(Math.pow(gLen, 0.26), 0.86, 1.10) * (1 + axial * 0.30)
-             * (1 + (1 - g.fit) * 0.14);
+        // (r18) exponent 0.26 -> 0.52, floor 0.86 -> 0.72, containment payback 0.14 -> 0.06.
+        // THE GOVERNOR MAY CHANGE THE JET'S SIZE, NOT ITS SHAPE. Measured on the r17 LA SUV at
+        // 0.4 s: the solver returned gLen 0.66 — a 483 px column — while gRad only fell to 0.93,
+        // so the throat came out 334 px across. A 1.4:1 wedge is a lozenge, not a jet, and it is
+        // the same object critic E measured as "a ~180 px stub". At 0.52 a third off the length
+        // takes a fifth off the width instead of a fifteenth, so the aspect ratio the class was
+        // tuned at survives the framings where containment binds hardest — which are exactly the
+        // §8 canonical captures, taken 0.4 s in with the rig at its closest.
+        gRad = clamp(Math.pow(gLen, 0.52), 0.72, 1.10) * (1 + axial * 0.30)
+             * (1 + (1 - g.fit) * 0.06);
       }
     }
     // Smoothed, or the column pumps every time the rig settles or a shake displaces the lens.
