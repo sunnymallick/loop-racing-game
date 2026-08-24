@@ -1091,8 +1091,14 @@ const PLUME_FRAG = /* glsl */`
         // LOW angular frequency, HIGH axial frequency: a jet's shear layer is a set of
         // longitudinal flutes that crawl downstream. Anything that varies fast around the axis is
         // exactly what a line integral through the column averages back out to a smooth ribbon.
-        float fl = vn(vec2(c.x * 1.60 + t * 5.4 - uTime * 3.1, c.y * 1.60 + 11.0)) * 0.58
-                 + vn(vec2(q * 1.55 + t * 6.2 - uTime * 2.2, c.x * 2.05 + uPhase * 13.0 + 3.0)) * 0.42;
+        // (r18) azimuthal frequency 1.60 -> 3.05. The note above is right about the INTERIOR — a
+        // long chord averages fast azimuthal detail away — but the silhouette is decided where the
+        // chord is SHORT, so at the outline azimuthal detail is the only thing that survives, and
+        // at 1.60 the edge had barely one lobe around the whole column: a smooth analytic curve,
+        // which is what makes gas read as an object. It is also the one frequency the speed pass'
+        // radial blur cannot touch, because it runs across the column and the blur runs along it.
+        float fl = vn(vec2(c.x * 3.05 + t * 5.4 - uTime * 3.1, c.y * 3.05 + 11.0)) * 0.58
+                 + vn(vec2(q * 1.55 + t * 6.2 - uTime * 2.2, c.x * 3.40 + uPhase * 13.0 + 3.0)) * 0.42;
         float shear = smoothstep(0.10, 0.82, q);
         float flm = mix(1.0, 0.10 + 1.90 * fl, uTurb * shear);
 
@@ -1142,7 +1148,16 @@ const PLUME_FRAG = /* glsl */`
           float hotA = uHot * exp(-t / uBurn) * (0.34 + node * 1.24);
           // A diamond is a LENS, brightest on the centreline and gone before the skirt — not a
           // rung laid across the jet. A row of rungs is a barcode.
-          float nd = node * (0.24 + 0.96 * exp(-q2 * 1.05));
+          // (r18) exp(-q2·1.05) was still 0.77 at half the half-width and 0.35 at the full one, so
+          // a node lifted the temperature across essentially the WHOLE cross-section — and since
+          // the body term g2 is a super-gaussian (deliberately flat across the middle), T went
+          // over the white threshold as a PLATEAU the full width of the column. That is critic D's
+          // "hard-edged uniform white stripe down its middle" exactly, and it is what makes the
+          // near half of the plume photograph as pale steam instead of as saturated burning gas.
+          // At exp(-q2·2.9) the lens is 0.77 at a third of the half-width and 0.05 at the edge:
+          // the colour ramp can now reach uCore on a THREAD, and the wide part of the column keeps
+          // the class chroma that tells you which car fired it.
+          float nd = node * (0.14 + 1.06 * exp(-q2 * 2.90));
           // ...and a diamond gets COOLER with distance as well as smaller and fainter. Without
           // this every cell in the train pushed T past the white threshold and the column read as
           // a row of identical white lozenges (the r17 LA tuner at 3x): the first cell is
@@ -1158,10 +1173,14 @@ const PLUME_FRAG = /* glsl */`
           float T = (g2 * bodyA * (1.0 + ndT * 4.20)
                   +  g3 * skirtA * (0.55 + ndT * 0.55)
                   +  g1 * ndT * 0.60) * cut;
-          vec3 warm = mix(uMid, uCore, 0.55);
+          // (r18) The white step used to open at T = 1.0, which the body alone reaches at a node
+          // anywhere in the first third — so "white core" meant "the entire throat". It opens at
+          // 1.35 now and only the narrow lens above can push T there, so the white is a thread
+          // with knots on it and everything around it is uMid at full chroma.
+          vec3 warm = mix(uMid, uCore, 0.42);
           vec3 col = mix(uEdge, uMid, smoothstep(0.04, 0.40, T));
-          col = mix(col, warm, smoothstep(0.38, 1.00, T));
-          col = mix(col, uCore, smoothstep(1.00, 2.10, T));
+          col = mix(col, warm, smoothstep(0.42, 1.15, T));
+          col = mix(col, uCore, smoothstep(1.35, 2.45, T));
           vec3 fil = mix(uMid, uCore, clamp(hotA * 0.60, 0.0, 1.0));
           // ── LIGHT AND GAS ARE NOT THE SAME CURVE ─────────────────────────────────────────
           // The r17-a column measured 247 at the throat and 195 at four fifths of its length: a
@@ -1194,7 +1213,11 @@ const PLUME_FRAG = /* glsl */`
     // is a posterised region with a hard boundary. Second: a shoulder, em/(1 + em·uSoft), so a
     // knot four times the body's brightness still lands on a curve.
     float pk = max(max(em.r, em.g), em.b);
-    em = mix(em, vec3(pk), clamp((pk - 1.35) * 0.40, 0.0, 0.46));
+    // (r18) 1.35/0.40/0.46 -> 1.70/0.34/0.34. This term exists so a lone channel cannot clip on
+    // its own (uEdge #2a2fff is (0.02, 0.03, 1.0) linear), but it was firing across the whole
+    // bright half of the column and bleaching the class colour out of it before the tonemap even
+    // saw it. It now only reaches the knots, which are the only place a jet is genuinely white.
+    em = mix(em, vec3(pk), clamp((pk - 1.70) * 0.34, 0.0, 0.34));
     em = em / (1.0 + em * uSoft);
 
     float a = (1.0 - trans) * uOcc;

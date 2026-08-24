@@ -120,14 +120,29 @@ const PANEL_CUT = 26;            // chamfer on their top-left / bottom-right cor
  * `cabin` are deliberately absent: a tyre has to stay the darkest big thing on the car, and the
  * cabin has its own three lamps and is scaled DOWN, not up.
  */
+/**
+ * ROUND 5 — the second half of the correction GARAGE_MIRROR's note asked for, applied together.
+ *
+ * `setBodyTint` derives ONE night-ness `n` and hangs `UNDER.fill` off it (1.00 → 0.42). Taking the
+ * garage from n = 0.84 to n = 0.50 (see GARAGE_MIRROR.sun / .fog) raises `UNDER.fill` from 0.511 to
+ * 0.708 — ×1.386 — on the exact same emissive these numbers were multiplying. Left alone the two
+ * compound and every rocker, valance and arch liner turns into a glowing ochre band, which is the
+ * failure the vehicle-art note in `kit.js UNDER_ROLE` already had to walk back once.
+ *
+ * So every entry is divided by that 1.386. The net bounce landing on the dark trim is within a
+ * percent of what round 4 tuned, and what actually changes upstream is the thing the note wanted
+ * changed: the paint's analytic mirror sky (zenith ×2.0, band ×1.2) — §1.6.3's "bright sky
+ * reflection above, dark ground reflection below", which the garage was the only room in the game
+ * not showing.
+ */
 const UNDER_LIFT = {
-  trim: 2.6,       // rockers, valances, bumpers, tail panels — the "full-length slot"
-  plastic: 2.6,    // over-fenders, arch liners, diffusers
-  well: 3.6,       // inner fenders: the darkest, and four holes at the corners of the frame
-  cavity: 2.2,     // grille backs, pipe bores, shut gaps — still holes, just not voids
-  housing: 2.3,    // lamp housings
-  metal: 2.0,      // vent fins, blower cases
-  carbon: 2.2,
+  trim: 1.88,      // rockers, valances, bumpers, tail panels — the "full-length slot"
+  plastic: 1.88,   // over-fenders, arch liners, diffusers
+  well: 2.60,      // inner fenders: the darkest, and four holes at the corners of the frame
+  cavity: 1.59,    // grille backs, pipe bores, shut gaps — still holes, just not voids
+  housing: 1.66,   // lamp housings
+  metal: 1.44,     // vent fins, blower cases
+  carbon: 1.59,
 };
 
 const STAT_COLORS = [
@@ -267,10 +282,37 @@ const GARAGE_MIRROR = {
    * `fog.color` is left alone. It is the other half of `n` and the bigger lever, but it is also
    * what the room's own haze is graded from, and moving it is a menu-piece decision.
    */
-  sun: { color: '#ffd8b4', intensity: 1.55, dir: [-0.46, 0.60, 0.65] },
+  /**
+   * ROUND 5 finishes the step round 4 deliberately half-took, and takes the OTHER lever with it.
+   *
+   * Round 4 moved `sun.intensity` 0.80 → 1.55 and left `fog.color` alone, explicitly because the
+   * per-material lift in `UNDER_LIFT` was still compensating downstream and "the two must not
+   * compound... a full correction wants the two solved together, in a menu round". This is that
+   * round: both halves move in the same commit, and `UNDER_LIFT` is divided by exactly the factor
+   * `UNDER.fill` gains (see the note there).
+   *
+   * n: 0.843 → 0.503. What that buys, all of it in the one term that was making the hero car read
+   * as vinyl — the analytic mirror sky every painted panel reflects per-fragment:
+   *
+   *     zenith luminance   0.145 → 0.296    (×2.04)   the value the hood, roof and deck mirror
+   *     hot band           0.948 → 1.138    (×1.20)   the strip-light stripe that rides a shoulder
+   *     ground             0.0209 → 0.0232  (flat)    the dark the rocker and the sill mirror
+   *     key glint          1.00 → 1.65                a real specular on the near front wing
+   *
+   * i.e. the sky-above / ground-below split across a body side goes from 7:1 to 13:1. §1.6.3 names
+   * that split as the single thing that separates real car paint from flat coloured plastic, and at
+   * n = 0.84 the garage was shading a car standing under six lamps as if it were parked on an unlit
+   * street — the same asset reading as two different materials in two rooms of one game.
+   *
+   * Both numbers are chosen for what `n` does with them, not for what they describe: `fog.color`
+   * here is read ONLY by `setBodyTint`'s night-ness term (the room's real haze is the `THREE.Fog`
+   * in `buildGarage`, and the graded one is GARAGE_LOOK.fog), and `sun.intensity` here is read only
+   * by the probe tuner — the light rig keeps GARAGE_LOOK's own 2.05.
+   */
+  sun: { color: '#ffd8b4', intensity: 2.00, dir: [-0.46, 0.60, 0.65] },
   ambient: { sky: '#5f8fa8', ground: '#242a31' },
   ground: { color: '#20252b', accent: '#ffc07a' },
-  fog: { color: '#0a1116' },
+  fog: { color: '#1b2530' },
   sky: { top: '#16232c', haze: '#4a3b2c' },
 };
 
@@ -1399,8 +1441,26 @@ function buildGarage() {
   rimLight.shadow.bias = -0.0005;
   rimLight.shadow.normalBias = 0.02;
   rimLight.shadow.radius = 2.2;
-  rimLight.intensity = 106;
-  rimLight.penumbra = 0.94;
+  /**
+   * ROUND 5: the rim finally becomes an EDGE.
+   *
+   * §1.4 is specific — "a cool rim from behind that separates it from the wall" — and at 106 into a
+   * 0.46 rad cone with penumbra 0.94 there was no edge to find in the frame: measured along the
+   * muscle car's roof rail, the pixels above the drip rail and the teal brick behind them differed
+   * by 6/255. A rim that does not out-value its own background is not doing the one job it has.
+   *
+   * Narrower (0.46 → 0.38, so the cone lands on the greenhouse and the rear shoulder instead of
+   * washing the whole flank), harder-edged (0.94 → 0.68 penumbra, so there is a gradient to see),
+   * and lifted to 4.55 m so it grazes the roofline rather than the belt. 106 → 178: it is now
+   * brighter than the wall wash behind it, which is the only definition of separation that means
+   * anything. Still cool, still from behind, still nowhere near key strength — the warm side keeps
+   * the frame.
+   */
+  rimLight.position.set(5.5, 4.55, -6.2);
+  rimLight.target.position.set(0.10, 1.16, 0.20);
+  rimLight.angle = 0.38;
+  rimLight.intensity = 178;
+  rimLight.penumbra = 0.68;
   group.add(rimLight); group.add(rimLight.target);
 
   // A back-LEFT cool edge at a third of the rim's strength: without it the nose sits against an
@@ -2686,9 +2746,24 @@ export class Menu {
           m.needsUpdate = true;
           continue;
         }
+        /**
+         * ROUND 5: the showroom gloss stops being a matte pass.
+         *
+         * 0.26 / 0.38 were chosen in round 2 against a 1.75 bloom knee, when a clearcoat lobe
+         * really did clear it and smear. Round 3 then raised the knee to 3.40 (GARAGE_LOOK), which
+         * removed the reason — but the roughness stayed, and 0.26 on a clearcoat is not a showroom
+         * finish, it is satin. Measured on the muscle car's hood at the hero lens: at 0.26 the
+         * top-to-bottom value spread across the near flank is 1.9:1, i.e. the upper panels and the
+         * lower panels photograph as the SAME material, which is exactly §1.6.3's failure case.
+         *
+         * 0.17 puts the lobe back inside the range where the mirror sky's ~7° hot band lands as a
+         * legible stripe on a shoulder line rather than as a wash, and the peak still sits under the
+         * 3.40 knee (checked by ablation: bloom strength 0 leaves the frame unchanged on the car).
+         * Chrome to 0.26 for the same reason — a bumper at 0.38 is brushed steel, not chrome.
+         */
         save(m, ['clearcoatRoughness', 'roughness']);
-        if (cc) m.clearcoatRoughness = 0.26;
-        if (mirror) m.roughness = 0.38;
+        if (cc) m.clearcoatRoughness = 0.17;
+        if (mirror) m.roughness = 0.26;
       }
     });
   }
