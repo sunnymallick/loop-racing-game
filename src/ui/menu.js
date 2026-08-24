@@ -3401,18 +3401,20 @@ export class Menu {
     for (let i = 0; i < n; i++) { wsum += this.tileT[i]; wpos += this.tileT[i] * i; }
     const headI = wsum > 1e-3 ? wpos / wsum : this.carIndex;
     const hth = (headI - (n - 1) / 2) * SPREAD + flick;
-    const hr = R + TW * 0.5 + 18;
+    // Outside the plates, not on them: a selected plate is scaled 8.5% and pushed 30 px down its
+    // own spoke, so its outer edge reaches 623 and anything drawn on the 611 guide is behind it.
+    const hr = R + TW * 0.5 + 56;
     ctx.save();
-    ctx.globalAlpha = io * (carFocus ? 1 : 0.45);
+    ctx.globalAlpha = io * (carFocus ? 1 : 0.42);
     ctx.translate(CX + Math.cos(hth) * hr, CY + Math.sin(hth) * hr);
     ctx.rotate(hth);
-    ctx.strokeStyle = GOLD; ctx.lineWidth = 2.6;
-    ctx.shadowBlur = 12; ctx.shadowColor = GOLD;
-    ctx.beginPath();
-    ctx.moveTo(-2, -30); ctx.lineTo(9, -30); ctx.lineTo(9, 30); ctx.lineTo(-2, 30);
-    ctx.stroke();
+    ctx.shadowBlur = 14; ctx.shadowColor = GOLD;
     ctx.fillStyle = GOLD_HOT;
-    ctx.beginPath(); ctx.moveTo(20, 0); ctx.lineTo(34, -9); ctx.lineTo(34, 9); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-16, 0); ctx.lineTo(2, -11); ctx.lineTo(2, 11); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = GOLD; ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.moveTo(8, -22); ctx.lineTo(8, 22);
+    ctx.stroke();
     ctx.restore();
     ctx.globalAlpha = 1;
 
