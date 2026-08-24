@@ -1429,7 +1429,7 @@ function buildGarage() {
   // 168 × 2.24 — the key plus the two lamps it used to be split into, folded back into one. The
   // three sat within 2 m of each other aimed at the same point, so their contribution at the car was
   // very close to additive; measured, dropping to 232 cost the car 30% of its mean luminance.
-  key.intensity = 452;
+  key.intensity = 512;
   key.penumbra = 0.70;
 
   // RIM — cool, from behind and screen-right, grazing. Its whole job is one bright edge down the
@@ -1454,18 +1454,23 @@ function buildGarage() {
    * muscle car's roof rail, the pixels above the drip rail and the teal brick behind them differed
    * by 6/255. A rim that does not out-value its own background is not doing the one job it has.
    *
-   * Narrower (0.46 → 0.38, so the cone lands on the greenhouse and the rear shoulder instead of
-   * washing the whole flank), harder-edged (0.94 → 0.68 penumbra, so there is a gradient to see),
-   * and lifted to 4.55 m so it grazes the roofline rather than the belt. 106 → 178: it is now
-   * brighter than the wall wash behind it, which is the only definition of separation that means
-   * anything. Still cool, still from behind, still nowhere near key strength — the warm side keeps
-   * the frame.
+   * It also moves. Resolved along the LENS axis, (5.4, −6.2) was 7.5 m screen-right and only 3.6 m
+   * behind — a three-quarter side light, which grazes nothing and simply adds a second broad wash to
+   * the flank the flank light already owns. (1.9, −7.7) is 4.6 m right and 6.3 m BEHIND, i.e. an
+   * actual backlight: at that angle the roof rail, the C-pillar, the top of the rear arch and the
+   * decklid edge all present themselves to it at grazing incidence, so what it draws is a line
+   * along the silhouette instead of a field across a panel. Up to 4.85 m for the same reason.
+   *
+   * Narrower (0.46 → 0.40), harder-edged (0.94 → 0.62 penumbra, so there is a gradient to see),
+   * and 106 → 205 so the edge out-values the wall behind it — which is the only definition of
+   * separation that means anything. Still cool, still from behind, still well under key strength:
+   * the warm side keeps the frame.
    */
-  rimLight.position.set(5.5, 4.55, -6.2);
-  rimLight.target.position.set(0.10, 1.16, 0.20);
-  rimLight.angle = 0.38;
-  rimLight.intensity = 178;
-  rimLight.penumbra = 0.68;
+  rimLight.position.set(1.9, 4.85, -7.7);
+  rimLight.target.position.set(0.05, 1.20, 0.30);
+  rimLight.angle = 0.40;
+  rimLight.intensity = 205;
+  rimLight.penumbra = 0.62;
   group.add(rimLight); group.add(rimLight.target);
 
   // A back-LEFT cool edge at a third of the rim's strength: without it the nose sits against an
@@ -1518,7 +1523,7 @@ function buildGarage() {
    * wall — the 4 m the car is standing in front of — falls a stop and a half darker. That gradient
    * is doing the same job as the 2D radial scrim, in the room, where it survives the car moving.
    */
-  for (const [x, inten, col] of [[-6.6, 158, '#ffd2a0'], [5.4, 168, '#ffdfba']]) {
+  for (const [x, inten, col] of [[-6.6, 162, '#ffe6cc'], [5.4, 172, '#fff0e0']]) {
     const w = new THREE.SpotLight(new THREE.Color(col), inten, 16, 1.02, 1.0, 2);
     w.position.set(x, 4.90, ROOM.zBack + 2.6);
     w.target.position.set(x, 1.25, ROOM.zBack + 0.05);
@@ -1535,7 +1540,13 @@ function buildGarage() {
   // Round 4: 70 → 92 and up to 4.05 m. The lens moved back to 9.55 m and up ~0.22 m, so the flank
   // it has to model is both further away (inverse-square costs ~35% at the new distance) and seen
   // at a steeper rake. Same light, re-aimed at the same job.
-  const flank = new THREE.SpotLight(new THREE.Color('#ffcaa8'), 268, 26, 0.62, 0.90, 2);
+  // ROUND 5: 268 → 186. Measured against the same car in `la-muscle-chase`: on the road the flank
+  // runs a 2.6:1 spread from the shoulder to the rocker and the paint keeps its chroma; in the
+  // garage it ran 1.5:1 and the mint went pale. A flank light exists to stop the near side being a
+  // muddy slab — at 268 it had stopped being a fill and become a second key aimed straight down the
+  // one 700 px surface the picture is about, and it took §1.6.3's bright-above / dark-below split
+  // with it. Same position, same colour, two-thirds the level.
+  const flank = new THREE.SpotLight(new THREE.Color('#ffcaa8'), 186, 26, 0.62, 0.90, 2);
   flank.position.set(6.9, 4.05, 4.80);
   flank.target.position.set(0.30, 1.02, -0.20);
   group.add(flank); group.add(flank.target);
