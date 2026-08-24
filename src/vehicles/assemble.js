@@ -1641,7 +1641,7 @@ function buildExtra(x, mats) {
      * metal keeps a diffuse term, so the plate has a value and the scratches in it read.
      */
     const skidMat = darkMetalMaterial({ color: '#9199a3', rough: 0.42, metal: 0.72 });
-    const plateH = 0.115, plateD = 0.26;
+    const plateH = 0.115, plateD = 0.30;
     /**
      * rail -> ELBOW -> leg, as one continuous tube. A quarter-torus corner is what removes the
      * last cap from the top of the frame: with a straight leg butted under a straight rail the
@@ -1666,15 +1666,45 @@ function buildExtra(x, mats) {
      * legs. It has to reach past the legs (they die into it) and a plate that reaches past them
      * and then simply stops is the same defect one member further out.
      */
+    /**
+     * ROUND-5, and this is where the last free end on the truck was.
+     *
+     * At sweep 0.15 the plate falls back 120 mm by the time it reaches the OUTER LEGS — they stand
+     * at |u| = 0.91 of its half length — so the two legs, which live at z = 0, stood 120 mm IN
+     * FRONT of the plate they are supposed to die into, and each one finished in clear air with
+     * the road visible under it (shots/vs-r1-c/suv-lamp.png, left leg). The bar was a closed hoop
+     * on paper and an open one in the frame.
+     *
+     * The plate is wider (half length xo + 2R rather than xo + 1.5R, so the legs sit at |u| 0.88
+     * and the weld fillets are inboard of its edge), deeper, 18 mm further forward, and swept a
+     * third as hard on a gentler exponent. Solved at the leg station it is now 34 mm in front of
+     * the tube instead of 120 mm behind it, and the tips still fall 50 mm back so neither end is a
+     * flat face square to the camera.
+     */
     const skid = new THREE.Mesh(
-      sweptBar((xo + R * 1.5) * 2, plateH, plateD, { sweep: 0.15, pow: 2.4, r: 0.030, taper: 0.70, seg: 20 }),
+      sweptBar((xo + R * 2.0) * 2, plateH, plateD, { sweep: 0.05, pow: 2.2, r: 0.030, taper: 0.62, seg: 20 }),
       skidMat,
     );
-    skid.position.set(0, -Hh, -0.010);
+    skid.position.set(0, -Hh, 0.018);
     mesh.add(skid);
-    // a satin rub strip along the plate's face, so a polished plank is not one flat mirror
-    const strip = new THREE.Mesh(roundedBox(xo * 1.55, plateH * 0.30, plateD * 0.24, 0.010), trim);
-    strip.position.set(0, -Hh + plateH * 0.16, plateD * 0.40);
+    /**
+     * The rub strip follows the PLATE, and dies where the plate dies.
+     *
+     * ROUND-5. It was a straight `roundedBox` 1.21 m long lying on a plate 1.71 m long, so both of
+     * its rounded ends finished 250 mm short of the plate's, in the middle of a flat polished face
+     * with the plate carrying on past them. At 4x (shots/vs-r1-crop-suvpost.png) that is a black
+     * slab with a cap on the end sitting on a shelf — "loose slabs whose ends terminate in mid-air"
+     * word for word, and the more legible of the two on this car because the plate behind it is the
+     * brightest surface on the truck. Swept on the plate's own path and 4 % shorter than it, the
+     * strip now tapers away exactly where the plate tapers away and neither has an end the other
+     * does not hide.
+     */
+    const strip = new THREE.Mesh(
+      sweptBar((xo + R * 2.0) * 2 * 0.96, plateH * 0.30, plateD * 0.26,
+        { sweep: 0.05, pow: 2.2, r: 0.010, taper: 0.40, seg: 20 }),
+      trim,
+    );
+    strip.position.set(0, -Hh + plateH * 0.16, 0.018 + plateD * 0.40);
     mesh.add(strip);
     // legs and inner uprights: the legs hang off the elbows, the uprights' top caps are inside the
     // rail, and every bottom cap is inside the plate
@@ -1688,12 +1718,31 @@ function buildExtra(x, mats) {
      * from any angle, and the corner is a continuous bend again.
      */
     const legTop = -bend + Math.min(bend * 0.55, R * 0.7);
+    const plateTop = -Hh + plateH * 0.5;
     for (const [ux, r, yTop] of [[-xo, R, legTop], [xo, R, legTop],
       [-W * 0.20, R * 0.86, 0], [W * 0.20, R * 0.86, 0]]) {
       const yBot = -Hh + plateH * 0.06;
       const up = new THREE.Mesh(new THREE.CylinderGeometry(r, r, yTop - yBot, 14), trim);
       up.position.set(ux, (yTop + yBot) * 0.5, 0);
       mesh.add(up);
+      /**
+       * ---- THE WELD, ROUND-5 -------------------------------------------------------------
+       *
+       * The verdict has been reading these four tubes as "terminating unterminated in black
+       * space" for three rounds and the fix has been to push their end caps further inside the
+       * plate — which they already are: yBot sits 55 mm above the plate's underside and the
+       * plate's face is 75 mm in FRONT of the tube. The cap is not visible. What IS visible, and
+       * what the 4x crop actually shows, is a straight polished tube meeting a flat polished
+       * plate on a bare elliptical line, with the plate's rounded top edge curving under it. A
+       * tube that stops dead on a shelf reads as a tube resting on a shelf however deep the
+       * unseen part goes; a tube that stops with a WELD FILLET round it reads as a tube welded
+       * to a plate. That is the whole difference and it is one 14-sided cone per upright.
+       */
+      const boss = new THREE.Mesh(
+        new THREE.CylinderGeometry(r * 1.02, r * 1.58, plateH * 0.62, 14, 1, true), trim,
+      );
+      boss.position.set(ux, plateTop + plateH * 0.08, 0);
+      mesh.add(boss);
     }
     /**
      * Mounting stays back into the chassis — otherwise the bar floats in front of the nose.
