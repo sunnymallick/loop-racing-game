@@ -3875,6 +3875,30 @@ export class Menu {
       ctx.fillRect(fl + 18, fy + 162, w - 44, 8);
       ctx.restore();
     };
+
+    /**
+     * The place NAMED on its own picture, the way §1.2's frame banners YELLOWSTONE. The strip had
+     * the skyline, and the list twenty rows above had the word, and neither on its own is a
+     * one-second read of where you are about to drive.
+     *
+     * It CROSS-FADES where the picture WIPES, and that is not a stylistic preference: run through
+     * the same left-to-right clip as the skyline, LOS ANGELES sliding under LAS VEGAS spends a
+     * third of a second reading `LAS ANGELES` — a wipe is fine on a picture and never on a word.
+     * Outgoing goes fast (square law), incoming waits until the wipe is a third across, so at no
+     * point are both legible.
+     */
+    const nameAt = (d2, a) => {
+      if (a <= 0.004) return;
+      let dn = 20;
+      while (dn > 13 && measure(d2.name, { size: dn, tracking: 0.10 }).width > w - 82) dn -= 0.5;
+      ctx.save();
+      ctx.globalAlpha = io * a;
+      drawText(ctx, d2.name, {
+        x: fl + 26, y: fy + 152, size: dn, weight: 0.18, italic: 0.20, tracking: 0.10,
+        color: '#ffffff', shadow: { color: 'rgba(0,0,0,0.92)', dy: 2, blur: 6 },
+      });
+      ctx.restore();
+    };
     const cx0 = fl + 18, cw0 = w - 44;
     const fade = smoothstep(0, 1, this.cityFade);
     const prev = getCity(CITY_IDS[this.cityPrev]).def;
@@ -3889,28 +3913,25 @@ export class Menu {
       ctx.fillRect(ex - 26, fy + 2, 30, 166);
       ctx.globalAlpha = io;
     }
+    if (fade < 1 && prev !== def) nameAt(prev, (1 - fade) * (1 - fade));
+    nameAt(def, fade < 1 && prev !== def ? smoothstep(0.34, 1, fade) : 1);
     ctx.fillStyle = accent;
     ctx.globalAlpha = io * 0.9;
     ctx.fillRect(fl + 18, fy + 170, w - 44, 1.8);
     ctx.globalAlpha = io;
 
-    // The place NAMED over its own picture, the way §1.2's frame banners YELLOWSTONE. The strip had
-    // the skyline and the list twenty rows above had the word, and neither on its own is a
-    // one-second read of where you are about to drive. Shrink-to-fit, because NEW YORK CITY is
-    // two-and-a-half times MIAMI and the strip is only 300 px wide.
-    let dn = 20;
-    while (dn > 13 && measure(def.name, { size: dn, tracking: 0.10 }).width > w - 82) dn -= 0.5;
-    drawText(ctx, def.name, {
-      x: fl + 26, y: fy + 152, size: dn, weight: 0.18, italic: 0.20, tracking: 0.10,
-      color: '#ffffff', shadow: { color: 'rgba(0,0,0,0.92)', dy: 2, blur: 6 },
-    });
 
-    drawText(ctx, 'RECORD', {
-      x: L(fy + 200) + 24, y: fy + 200, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
-    });
-    drawText(ctx, def.record || '--:--', {
-      x: R(fy + 202) - 24, y: fy + 202, size: 22, weight: 0.19, italic: 0.20, align: 'right', color: GOLD,
-    });
+    // The RECORD line and the SPOOLING bar occupy the same slot — a record for a city that does not
+    // exist yet is not a fact, and overlaying them left the outgoing city's time reading through
+    // the plate.
+    if (!this.cityBusy) {
+      drawText(ctx, 'RECORD', {
+        x: L(fy + 200) + 24, y: fy + 200, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
+      });
+      drawText(ctx, def.record || '--:--', {
+        x: R(fy + 202) - 24, y: fy + 202, size: 22, weight: 0.19, italic: 0.20, align: 'right', color: GOLD,
+      });
+    }
 
     /**
      * ---- SPOOLING — the state this control never had -------------------------------------------
@@ -3926,16 +3947,15 @@ export class Menu {
      * synchronous build, and a fake percentage that jumps 0 → 100 is worse than an honest "busy".
      */
     if (this.cityBusy) {
-      const by = fy + 186;
+      // Sits in the RECORD slot, which is the last line INSIDE the panel: at fy + 186 the bar fell
+      // on the plate's own bottom edge.
+      const by = fy + 172;
       const bx0 = L(by + 22) + 22, bx1 = R(by + 22) - 22;
       ctx.save();
-      // scrim the RECORD line the bar replaces
-      ctx.fillStyle = 'rgba(4,8,13,0.90)';
-      ctx.fillRect(bx0 - 8, by - 4, bx1 - bx0 + 16, 44);
       drawText(ctx, 'SPOOLING UP', {
         x: bx0, y: by + 14, size: 13, weight: 0.15, tracking: 0.24, color: CYAN, face: 'geo',
       });
-      const bw2 = bx1 - bx0, bh2 = 8, byy = by + 22;
+      const bw2 = bx1 - bx0, bh2 = 8, byy = by + 20;
       ctx.fillStyle = 'rgba(8,14,22,0.92)';
       ctx.fillRect(bx0, byy, bw2, bh2);
       ctx.save();
