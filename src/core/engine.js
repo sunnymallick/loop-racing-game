@@ -200,7 +200,13 @@ export class Engine {
 
     // ---- shadow-caster culling (see _cullShadowCasters) --------------------------------------
     this.shadowCull = true;
-    this._casters = [];          // [{ o, base }] every mesh the scene authored as a shadow caster
+    this._casters = [];          // every mesh the scene authored as a shadow caster
+    // World-space bounding sphere cache, parallel to _casters: [cx, cy, cz, r] per caster, plus a
+    // 5-element fingerprint of the matrix it was built from. A city is ~1000 casters that never
+    // move, and re-deriving their world spheres every frame costs more than the cull saves.
+    this._casterSphere = new Float32Array(0);
+    this._casterMat = new Float32Array(0);
+    this._casterBase = new Uint8Array(0);
     this._casterStamp = { n: -1, geo: -1, frame: 1e9 };
     this._frustum = new THREE.Frustum();
     this._planeShadowDot = new Float32Array(6);
@@ -693,10 +699,18 @@ export class Engine {
       o.userData.__shadowBase = !!o.castShadow;
       if (o.castShadow) list.push(o);
     });
+    const n = list.length;
+    if (this._casterBase.length < n) {
+      this._casterSphere = new Float32Array(n * 4 + 256);
+      this._casterMat = new Float32Array(n * 5 + 320);
+      this._casterBase = new Uint8Array(n + 64);
+    }
+    this._casterMat.fill(NaN);      // force every world sphere to be rebuilt on the next cull
+    for (let i = 0; i < n; i++) this._casterBase[i] = 1;
     this._casterStamp.n = this.scene.children.length;
     this._casterStamp.geo = this.renderer.info.memory.geometries;
     this._casterStamp.frame = 0;
-    this.shadowCullStats.total = list.length;
+    this.shadowCullStats.total = n;
   }
 
   /**
@@ -706,10 +720,8 @@ export class Engine {
    */
   _restoreShadowCasters() {
     const list = this._casters;
-    for (let i = 0; i < list.length; i++) {
-      const o = list[i];
-      o.castShadow = o.userData.__shadowBase !== false;
-    }
+    const base = this._casterBase;
+    for (let i = 0; i < list.length; i++) if (base[i]) list[i].castShadow = true;
   }
 
   /** Set castShadow=false on every caster whose shadow cannot land inside the view frustum. */
@@ -748,26 +760,47 @@ export class Engine {
 
     const sphere = this._cullSphere;
     const invSy = 1 / Math.max(sy, 0.15);
+    const cache = this._casterSphere;
+    const fp = this._casterMat;
+    const base = this._casterBase;
+    const p0 = planes[0], p1 = planes[1], p2 = planes[2],
+          p3 = planes[3], p4 = planes[4], p5 = planes[5];
+    const n0 = p0.normal, n1 = p1.normal, n2 = p2.normal,
+          n3 = p3.normal, n4 = p4.normal, n5 = p5.normal;
+    const d0 = dot[0], d1 = dot[1], d2 = dot[2], d3 = dot[3], d4 = dot[4], d5 = dot[5];
     let drawn = 0;
     for (let i = 0; i < list.length; i++) {
       const o = list[i];
-      const src = o.boundingSphere !== undefined ? o.boundingSphere : o.geometry?.boundingSphere;
-      if (!src) { drawn++; continue; }             // unknown extent — never cull blind
-      sphere.copy(src).applyMatrix4(o.matrixWorld);
-      const c = sphere.center;
-      const r = sphere.radius * 1.05 + PAD;
+      const j = i * 4, m = i * 5;
+      const e = o.matrixWorld.elements;
+      // Rebuild this caster's world sphere only when the matrix it came from actually changed.
+      // e[0]/e[5] catch any rotation or scale, e[12..14] catch any translation; a static building
+      // therefore costs five float compares a frame instead of a matrix transform.
+      if (fp[m] !== e[0] || fp[m + 1] !== e[5] || fp[m + 2] !== e[12]
+          || fp[m + 3] !== e[13] || fp[m + 4] !== e[14]) {
+        const src = o.boundingSphere !== undefined ? o.boundingSphere : o.geometry?.boundingSphere;
+        if (!src) { drawn++; continue; }           // unknown extent — never cull blind
+        sphere.copy(src).applyMatrix4(o.matrixWorld);
+        cache[j] = sphere.center.x; cache[j + 1] = sphere.center.y;
+        cache[j + 2] = sphere.center.z; cache[j + 3] = sphere.radius;
+        fp[m] = e[0]; fp[m + 1] = e[5]; fp[m + 2] = e[12];
+        fp[m + 3] = e[13]; fp[m + 4] = e[14];
+      }
+      const cx = cache[j], cy = cache[j + 1], cz = cache[j + 2], rad = cache[j + 3];
+      const r = rad * 1.05 + PAD;
       // How far this caster's shadow travels before it reaches the road. Clamped: a 10 m prop does
       // not need a 400 m sweep, and nothing in these cities casts usefully past 420 m.
-      let len = (c.y + sphere.radius) * invSy;
+      let len = (cy + rad) * invSy;
       if (!(len > 12)) len = 12; else if (len > 420) len = 420;
 
-      let keep = true;
-      for (let k = 0; k < 6; k++) {
-        const p = planes[k];
-        const n = p.normal;
-        if (n.x * c.x + n.y * c.y + n.z * c.z + p.constant + dot[k] * len + r < 0) { keep = false; break; }
-      }
-      if (keep) drawn++; else o.castShadow = false;
+      if (n0.x * cx + n0.y * cy + n0.z * cz + p0.constant + d0 * len + r < 0
+       || n1.x * cx + n1.y * cy + n1.z * cz + p1.constant + d1 * len + r < 0
+       || n2.x * cx + n2.y * cy + n2.z * cz + p2.constant + d2 * len + r < 0
+       || n3.x * cx + n3.y * cy + n3.z * cz + p3.constant + d3 * len + r < 0
+       || n4.x * cx + n4.y * cy + n4.z * cz + p4.constant + d4 * len + r < 0
+       || n5.x * cx + n5.y * cy + n5.z * cz + p5.constant + d5 * len + r < 0) {
+        if (base[i]) o.castShadow = false;
+      } else drawn++;
     }
     this.shadowCullStats.drawn = drawn;
   }
