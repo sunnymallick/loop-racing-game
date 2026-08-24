@@ -1286,6 +1286,31 @@ export function cavityMaterial() {
   });
 }
 
+/**
+ * THE BACK WALL OF A LOFTED APERTURE — `cavityMaterial` with the street taken out of it.
+ *
+ * ROUND-2 (front clip). `cavityMaterial` is right for an exhaust bore or a vent slot, which are
+ * small and shallow and want a bit of the world in them. A 1.6 x 0.26 m grille mouth is neither:
+ * at envMapIntensity 0.60 the probe puts the same pink facade on the back wall that it puts on the
+ * bars in front of it, and the mouth reads as a mirror in a frame. This one keeps the moulded
+ * surface and the lit-from-above hemisphere ramp — the two things that stop it being §7's flat
+ * untextured slab — and takes the probe down to a tenth, which is what the back of a radiator
+ * shroud actually sees.
+ */
+export function apertureCoreMaterial() {
+  return pooled('apcore', () => {
+    const s = trimSurface();
+    const m = underbody(new THREE.MeshStandardMaterial({
+      color: 0x0f1116, roughness: 0.94, metalness: 0.10,
+      map: s.map, normalMap: s.normalMap, roughnessMap: s.roughnessMap,
+      envMapIntensity: 0.08,
+    }), 'cavity');
+    hemiTint(m, { sky: [1.30, 1.32, 1.42], ground: [0.34, 0.34, 0.38], lo: -0.25, hi: 0.85, y0: 0.12, y1: 1.25, wN: 0.70 });
+    skyReflect(m, { gain: 0.08, blur: 0.24, f0: 0.020, tint: 0.0, sunPow: 8, bumpy: true, amb: 0.22, cap: 0.10 });
+    return specCeiling(m, { knee: 0.60, max: 0.85 });
+  });
+}
+
 /** Semi-gloss dark plastic: lamp housings and the ribs across a lens. */
 export function housingMaterial() {
   return pooled('housing', () => skyReflect(underbody(new THREE.MeshStandardMaterial({
@@ -1294,10 +1319,20 @@ export function housingMaterial() {
 }
 
 /** Dark machined metal: vent fins, blower cases, grille frames that are not chrome. */
-export function darkMetalMaterial({ color = '#3a3e47', rough = 0.44, metal = 0.60 } = {}) {
-  return pooled(poolKey('darkmetal', color, rough, metal), () => skyReflect(underbody(new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color), roughness: rough, metalness: metal, envMapIntensity: 0.95,
-  }), 'metal'), { gain: 0.44, blur: 0.06, f0: 0.30, tint: 0.60, sunPow: 60, amb: 0.34 }));
+/**
+ * `env` — how much of the city probe this part is allowed to see.
+ *
+ * ROUND-2 (front clip). At 1750 px/m the tuner's grille returns a legible PINK BUILDING FACADE
+ * washed across its bars AND across the gaps between them, symmetric left and right — i.e. the two
+ * rows of buildings either side of the street, arriving through the environment probe onto every
+ * metal surface inside the mouth at once. A part 90 mm down inside a hole cannot see the street; it
+ * sees the inside of the hole. Anything seated in a lofted aperture now takes the probe at a third,
+ * which leaves it its key light and its diffuse and takes away the picture of the city.
+ */
+export function darkMetalMaterial({ color = '#3a3e47', rough = 0.44, metal = 0.60, env = 0.95 } = {}) {
+  return pooled(poolKey('darkmetal', color, rough, metal, env), () => skyReflect(underbody(new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), roughness: rough, metalness: metal, envMapIntensity: env,
+  }), 'metal'), { gain: 0.44 * clamp(env / 0.95, 0.25, 1), blur: 0.06, f0: 0.30, tint: 0.60, sunPow: 60, amb: 0.34 }));
 }
 
 /**
@@ -2519,17 +2554,32 @@ export function loftTub(sections, {
     /**
      * ---- AND WHICH SLICE ACROSS THE CAR ------------------------------------------------------
      *
-     * v is the length axis, so a cap's v band decides which SHUT LINES it can catch. At
-     * 0.95 +/- 0.022 the nose cap's band was 0.928-0.972 and every car in the game has its bonnet's
-     * leading shut line inside that (SUV 0.967, muscle 0.968, tuner 0.962) — so a hard dark line
-     * meant for the panel gap between bonnet and clip was being drawn ACROSS the nose face by a
-     * radial fan, which is the torn contour left round the truck's grille after the u range was
-     * fixed. Pulled in to 0.92 and narrowed to +/- 0.006 the band cannot reach any of them, and the
-     * across-panel variation it used to give is not missed: the value ramp that matters on a cap is
-     * the vertical one, and that is u.
+     * v is the length axis, so a cap's v band decides which SHUT LINES it can catch — and this is
+     * the whole of the round-1 (front clip) §7 z-fighting read, verbatim: "a shut line runs from
+     * the left headlight bezel's lower-right corner rightward across the bumper and dissolves into
+     * disconnected single dark-navy pixels on flat cyan … isolated non-contiguous pixels several
+     * px apart on a smooth surface — not an antialiased edge". There is no decal and no coplanar
+     * geometry anywhere on this panel. It is a 5-px black line in the LIVERY CANVAS, printed
+     * across the nose by the cap's own uv, and minified to about one texel per pixel — which is
+     * exactly what a hard line does when it is sampled at its own Nyquist limit.
+     *
+     * Round 3 tried to dodge it in v and moved the band the WRONG WAY. The lines it was avoiding
+     * (SUV 0.967, muscle 0.968, tuner 0.962) are `panels.hood[1]` — but drawBodyPaint never draws
+     * a line at hood[1]. What it draws is `shutU`, the bonnet's two SIDE gaps: a line at constant
+     * u = deck - 0.005 that SPANS hood[0] … hood[1]. Pulling the band from 0.95 down to 0.92 kept
+     * it inside that span (0.74 … 0.96 on the tuner) and left the line exactly where it was.
+     * Measured with `tools/_fcz_uv.mjs`: u = 0.3341 +/- 0.0025 against a nose cap u range of
+     * 0.2701 … 0.3391 — i.e. 93 % of the way up the nose panel, across both lamp pods. All four
+     * cars, both ends (the boot's side gaps do the same thing to the tail panel).
+     *
+     * A cap is the extreme END of the skin, so its honest v is the end of the skin: 0 at the tail
+     * panel, 1 at the nose. Nothing is ever authored out there — a bonnet's side gap stops at the
+     * bonnet's leading edge, which is what `SHUT_V_MARGIN` in drawBodyPaint now guarantees — so
+     * the band is clear of every hard line by 10x its own width, and the u ramp that carries the
+     * panel's sky-to-ground value sweep is untouched.
      */
     capCentres.push([+mx.toFixed(4), +my.toFixed(4)]);
-    const CV = clamp(vs[si], 0.08, 0.92), R = 0.006;
+    const CV = clamp(vs[si], 0.005, 0.995), R = 0.004;
     /**
      * ---- WHICH SLICE OF THE PAINT A CAP PANEL WEARS ----------------------------------------
      *
@@ -4399,6 +4449,90 @@ export function lightUnit({
  *     the same depth — which also does the shading work, since a slat 12 mm further back catches
  *     less sky than its neighbour.
  */
+/**
+ * ---- THE BACK WALL THAT CLOSES AN APERTURE --------------------------------------------------
+ *
+ * ROUND-2 (front clip), and this is the whole of "every opening is filled with body paint … there
+ * is no dark backing, no radiator, no shadow inside a single aperture on any of the four cars".
+ *
+ * The recess itself is right: `loftTub` steps the shell INWARD over a rim fillet, so the mouth has
+ * real walls and real depth and the body stays watertight. What it does not have is a FLOOR MADE
+ * OF SOMETHING ELSE. The floor of a lofted recess is the same surface as the panel around it, so it
+ * wears the same clearcoat, the same analytic horizon and the same environment probe — and a
+ * mirror at the bottom of a 90 mm hole still shows you the street. Measured at 1750 px/m on the
+ * tuner's mouth: the ends of the opening return a legible PINK BUILDING FACADE, sampled off the
+ * city probe, inside what is supposed to be a void; the supercar's letterbox shows #ef331c body
+ * red straight through its slats.
+ *
+ * `capCavity()` cannot fix that and was never going to. It is a multiply on the shaded result, so a
+ * bright enough reflection survives it — a value of 2.0 closed down to 0.155 is still 0.31, which
+ * is a legible picture of a building, not a hole.
+ *
+ * The answer is the one a real car uses: the opening is CLOSED AT THE BACK by a separate part. This
+ * builds that part from the aperture's own measurement (`loftTub` capPanel §7b) rather than from
+ * the blueprint, so it cannot be the wrong size:
+ *
+ *   - its outline is the measured RECESS WALL (`rOut`), grown a further `grow` outward. The wall is
+ *     between the plate's rim and the camera from every angle the game can reach, so the plate has
+ *     no visible edge anywhere — which is what "nothing may end in mid-air" means for a part that
+ *     is not lofted.
+ *   - its face sits `gap` in FRONT of the shallowest point of the measured floor, so no square
+ *     millimetre of paint is left in front of it and nothing is coplanar with anything.
+ *   - it is a closed solid — face, four walls, back — so there is no backface to catch.
+ *
+ * The result is that an aperture's value comes from `cavityMaterial()`, which is a moulded dark
+ * plastic lit from above, and the slat pack in front of it finally has something to be seen
+ * against.
+ */
+export function apertureBack(fit, { gap = 0.0028, depth = 0.055, grow = 0.008, cols = 12 } = {}) {
+  const N = fit.NR;
+  const rows = [];
+  for (let r = 0; r < N; r++) {
+    const a = fit.rOut0[r], b = fit.rOut1[r];
+    if (Number.isNaN(a) || Number.isNaN(b) || !(b - a > 0.004)) continue;
+    rows.push([lerp(fit.yA, fit.yB, N === 1 ? 0.5 : r / (N - 1)), a - grow, b + grow]);
+  }
+  if (rows.length < 2) return null;
+  const dir = fit.dir, zF = fit.zFloor + dir * gap, zB = zF - dir * depth;
+  const NC = Math.max(2, cols | 0);
+  const pos = [], uv = [], idx = [];
+  const F = [], B = [];
+  const push = (x, y, z) => { const i = pos.length / 3; pos.push(x, y, z); uv.push(x, y); return i; };
+  for (const [y, x0, x1] of rows) {
+    const fr = [], br = [];
+    for (let j = 0; j <= NC; j++) {
+      const x = lerp(x0, x1, j / NC);
+      fr.push(push(x, y, zF));
+      br.push(push(x, y, zB));
+    }
+    F.push(fr); B.push(br);
+  }
+  // (a,b,c,d) traversed so the face looks OUT of the solid; reversed wholesale for a tail panel,
+  // whose whole local frame is mirrored in z.
+  const quad = (a, b, c, d) => { if (dir > 0) idx.push(a, b, c, a, c, d); else idx.push(a, c, b, a, d, c); };
+  const R = rows.length;
+  for (let r = 0; r + 1 < R; r++) {
+    for (let j = 0; j < NC; j++) {
+      quad(F[r][j], F[r][j + 1], F[r + 1][j + 1], F[r + 1][j]);
+      quad(B[r][j], B[r + 1][j], B[r + 1][j + 1], B[r][j + 1]);
+    }
+    quad(F[r][0], F[r + 1][0], B[r + 1][0], B[r][0]);
+    quad(F[r][NC], B[r][NC], B[r + 1][NC], F[r + 1][NC]);
+  }
+  for (let j = 0; j < NC; j++) {
+    quad(F[0][j], B[0][j], B[0][j + 1], F[0][j + 1]);
+    quad(F[R - 1][j], F[R - 1][j + 1], B[R - 1][j + 1], B[R - 1][j]);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  // planar uv in METRES, so the moulding grain on the back of a mouth is the same size as the
+  // grain on the bumper skin beside it
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 export function grilleMesh({
   w = 1.4, h = 0.30, d = 0.14, slats = 9, vertical = false, frame = 'chrome', mesh = false,
   surround = null, corner = null, span = null, seed = 11,
@@ -4449,8 +4583,12 @@ export function grilleMesh({
    * one level of the void behind it, i.e. the grille was not there. Satin steel keeps a diffuse
    * term, so the bars catch the key light and draw themselves against the dark.
    */
-  const barMat = frame === 'chrome' ? darkMetalMaterial({ color: '#aab2be', rough: 0.26, metal: 0.66 })
-    : darkMetalMaterial({ color: '#1a1c21', rough: 0.45, metal: 0.7 });
+  // …and a screen that is DOWN A HOLE takes the environment probe at a third — see the note on
+  // `env` over darkMetalMaterial(). Without it the whole weave wears a mirror of the street and
+  // the mouth reads as one pale slab with a picture on it.
+  const envIn = span ? 0.30 : 0.95;
+  const barMat = frame === 'chrome' ? darkMetalMaterial({ color: '#aab2be', rough: 0.26, metal: 0.66, env: envIn })
+    : darkMetalMaterial({ color: '#1a1c21', rough: 0.45, metal: 0.7, env: envIn });
   /**
    * ROUND-3: the mesh gets its own material, a SATIN STEEL rather than the frame's chrome.
    *
@@ -4461,7 +4599,7 @@ export function grilleMesh({
    * the round-2 crop read the entire mouth as one black rectangle. A satin steel keeps a diffuse
    * term, so the weave catches the sky above the car and draws itself against the hole.
    */
-  const meshMat = darkMetalMaterial({ color: '#565c66', rough: 0.38, metal: 0.72 });
+  const meshMat = darkMetalMaterial({ color: '#565c66', rough: 0.38, metal: 0.72, env: envIn });
 
   /**
    * A JITTERED WALK, not a pitch.
@@ -4577,8 +4715,17 @@ export function grilleMesh({
   const hasSurround = surround === null ? !!span || frame === 'chrome' : surround;
   if (hasSurround) {
     const bright = frame === 'chrome';
-    const surMat = bright ? chromeMaterial({ color: '#d3d8de', rough: 0.10 })
-      : darkMetalMaterial({ color: '#3a3f49', rough: 0.34, metal: 0.78 });
+    /**
+     * A frame INSIDE a hole is not a mirror either. `chromeMaterial` is metalness 1 with no diffuse
+     * at all, so 100 % of what it shows is the environment probe — and at 1750 px/m that is the
+     * street, printed round the inside of the mouth. Seated frames get bright satin steel at the
+     * same reduced probe the weave takes, so the rail still draws a hard specular line round the
+     * opening but draws it from the key light instead of from a picture of Los Angeles.
+     */
+    const surMat = span
+      ? darkMetalMaterial({ color: bright ? '#c8ced7' : '#3a3f49', rough: bright ? 0.16 : 0.34, metal: bright ? 0.82 : 0.78, env: envIn })
+      : (bright ? chromeMaterial({ color: '#d3d8de', rough: 0.10 })
+        : darkMetalMaterial({ color: '#3a3f49', rough: 0.34, metal: 0.78 }));
     const t = clamp(Math.min(H, W) * 0.16, 0.012, 0.042);
     const dz = d * (span ? 0.20 : 0.34);
     const zf = span ? -d * 0.060 : -d * 0.40;
@@ -4905,7 +5052,22 @@ function drawBodyPaint({
   });
 
   // ---- 3. shut lines ----
-  const shut = (v, u0, u1, wpx = 3.0) => {
+  /**
+   * A PANEL GAP STOPS WHERE ITS PANEL STOPS — and that is a hard guarantee, not a nicety.
+   *
+   * The two cap panels (kit.js `loftTub` capPanel) wear the first and last 0.9 % of this canvas in
+   * v, and they wear it through a RADIAL FAN: a line at constant u inside their band is drawn as a
+   * closed contour across the whole nose or tail face, and at ~1 texel per pixel it minifies into
+   * the trail of isolated dark pixels the round-1 verdict read as z-fighting. Clamping every shut
+   * span to leave the last 2.2 % of the car at each end costs nothing that was ever visible — a
+   * bonnet's side gap already dies into the leading edge of the bonnet, 160-260 mm short of the
+   * nose panel on all four cars — and it means no future livery can put a hard line where a cap
+   * can catch it.
+   */
+  const SHUT_V_MARGIN = 0.022;
+  const vClamp = (v) => clamp(v, SHUT_V_MARGIN, 1 - SHUT_V_MARGIN);
+  const shut = (v0raw, u0, u1, wpx = 3.0) => {
+    const v = vClamp(v0raw);
     const y = Y(v);
     for (const [a, b] of [[u0, u1], [1 - u1, 1 - u0]]) {
       const g = ctx.createLinearGradient(0, y - wpx, 0, y + wpx);
@@ -4917,7 +5079,9 @@ function drawBodyPaint({
       ctx.fillRect(X(a), y - wpx, X(b) - X(a), wpx * 2);
     }
   };
-  const shutU = (u, v0, v1, wpx = 3.0) => {
+  const shutU = (u, v0raw, v1raw, wpx = 3.0) => {
+    const v0 = vClamp(v0raw), v1 = vClamp(v1raw);
+    if (!(v1 > v0)) return;
     for (const uu of [u, 1 - u]) {
       const x = X(uu);
       const g = ctx.createLinearGradient(x - wpx, 0, x + wpx, 0);

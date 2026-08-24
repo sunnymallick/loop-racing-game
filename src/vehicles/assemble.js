@@ -8,7 +8,7 @@ import {
   blackoutMaterial,
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
   panelNoise, cloneShaded, wingEndplate,
-  spanIn, spanOut, spanInY, spanOutY, fitRect,
+  spanIn, spanOut, spanInY, spanOutY, fitRect, apertureBack, apertureCoreMaterial,
 } from './kit.js';
 import { lerp, clamp, RNG } from '../core/rng.js';
 
@@ -652,6 +652,31 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   bodyGroup.add(detail);
 
   /**
+   * ---- EVERY APERTURE IS CLOSED AT THE BACK ------------------------------------------------
+   *
+   * ROUND-2 (front clip). The recess is cut into the shell and it is watertight, but its FLOOR is
+   * still the shell — same paint, same clearcoat, same environment probe — so at 1750 px/m the
+   * tuner's mouth returns a legible pink building facade off the city probe and the supercar's
+   * letterbox shows body red straight through its slats. A hole that mirrors the street is not a
+   * hole.
+   *
+   * One closed dark solid per measured opening, sized from the measurement and not from the
+   * blueprint, seated a hair in front of the shallowest point of the floor with its rim buried in
+   * the recess wall. See kit.js `apertureBack`. Nothing else in the front clip has to know about
+   * it: the slat packs, the lamp units and the badges are all seated in FRONT of the floor plane
+   * this sits on, so they keep their clearance, and every one of them finally has a void behind it
+   * instead of a mirror.
+   */
+  for (const f of noseFits) {
+    const geo = apertureBack(f);
+    if (!geo) continue;
+    const m = new THREE.Mesh(geo, apertureCoreMaterial());
+    m.name = 'apertureBack';
+    m.castShadow = false;
+    detail.add(m);
+  }
+
+  /**
    * LAMP BANKS.
    *
    * A lamp used to be its own Group of a lens plus a halo card, so a car with four round taillights
@@ -845,7 +870,11 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
          * `d` is the LOOK the blueprint wants; `room` is what the hole can give. The weave is
          * spread over the room and can no longer break through its own floor.
          */
-        room: Math.abs(f.zFloor - (gr.z ?? 0)),
+        // …less the 16 mm the aperture's own back wall now occupies in front of that floor
+        // (kit.js `apertureBack`). A bar allowed the whole depth would sit BEHIND the wall, i.e.
+        // sealed inside the closed body where nothing can see it — which is exactly the failure
+        // the `room` clamp was introduced to fix, one surface further forward.
+        room: Math.max(0.012, Math.abs(f.zFloor - (gr.z ?? 0)) - 0.016),
         inX: (y) => cutX(rel(spanIn(f, y + oy), ox)),
         outX: (y) => cutX(rel(spanOut(f, y + oy), ox)),
         inY: (x) => cutY(rel(spanInY(f, x + ox), oy)),
