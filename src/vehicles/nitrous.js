@@ -388,7 +388,7 @@ export const NITRO = {
     thrust: 0.92, duration: 1.8, drain: 1.0, refill: 0.62, topSpeedMul: 1.50,
     ramp: 0.13, curve: 0.52, surge: 0.88, surgeTime: 0.22, color: '#3ce0ff',
     fx: {
-      core: '#f4ffff', mid: '#34dcff', edge: '#0b46ff', spark: '#cdf4ff',
+      core: '#f4ffff', mid: '#1ecfff', edge: '#0a30f5', spark: '#cdf4ff',
       len: 3.60, rad: 0.530, merge: 0.0, standoff: 0.10, flameRise: 0.045,
       // profile = [throat fraction, station of the widest point, decay exponent, TAIL fraction].
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
@@ -407,7 +407,7 @@ export const NITRO = {
     thrust: 1.10, duration: 3.4, drain: 1.0, refill: 0.34, topSpeedMul: 1.26,
     ramp: 0.52, curve: 1.20, surge: 0.62, surgeTime: 0.44, color: '#ff7a1e',
     fx: {
-      core: '#fffaf2', mid: '#ff7d18', edge: '#e03a0a', spark: '#ffc477',
+      core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
       len: 4.00, rad: 0.530, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.70, 0.055, 1.20, 0.090],  // fat barrel, widest right off the bumper
       bands: 3.6, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.60, flick: 28, turb: 1.06,
@@ -424,7 +424,7 @@ export const NITRO = {
     thrust: 1.26, duration: 4.6, drain: 1.0, refill: 0.28, topSpeedMul: 1.29,
     ramp: 0.78, curve: 1.55, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
-      core: '#fff3d6', mid: '#ff9a20', edge: '#e04a12', spark: '#ffd487',
+      core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
       len: 3.70, rad: 0.560, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.02, profile: [0.76, 0.045, 1.05, 0.105],  // blunt bell — fat off the pipe, stubby
       bands: 3.2, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.54, flick: 16, turb: 1.18,
@@ -446,7 +446,7 @@ export const NITRO = {
     thrust: 1.08, duration: 2.3, drain: 1.0, refill: 0.46, topSpeedMul: 1.56,
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
-      core: '#ffffff', mid: '#9a72ff', edge: '#2a2fff', spark: '#ded2ff',
+      core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
       len: 4.60, rad: 0.560, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.55, 0.10, 1.38, 0.078],   // long spindle — the slenderest of the four
       bands: 4.8, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.86,
