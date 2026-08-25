@@ -2368,12 +2368,17 @@ export class Track {
         polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6,
         envMapIntensity: rough < 0.5 ? 1.6 : 0.85, alphaTest: 0.012,
       });
-      // Same floor the run-off itself carries at night: a decal that goes to pure black at dusk
-      // takes a hole out of the surface it was supposed to add history to.
+      // Same floor the run-off itself carries: a decal that goes to pure black in shade takes a
+      // hole out of the surface it was supposed to add history to, and in a day city the band it
+      // sits on is now carrying a self-lit copy of its own map — so the decal has to as well or
+      // every patch reads as a shadow.
+      m.emissiveMap = map;
       if (night) {
-        m.emissiveMap = map;
         m.emissive = new THREE.Color(0xffffff);
         m.emissiveIntensity = lit;
+      } else {
+        m.emissive = new THREE.Color(tint);
+        m.emissiveIntensity = (lit / 0.20) * 0.95;
       }
       return m;
     };
@@ -2433,8 +2438,10 @@ export class Track {
         const bump = Math.pow(Math.sin(Math.PI * s), 0.85);
         const t = tIn + (tMax - tIn) * bump + Math.sin(s * 5.6 + jitter) * 0.035;
         const ww = w * (0.82 + 0.35 * bump);
-        const a = at(u, side, clamp(t - ww, -0.02, 1.02));
-        const b = at(u, side, clamp(t + ww, -0.02, 1.02));
+        // never below 0: t = 0 is the paved lip, and a decal that extrapolates INSIDE it lands on
+        // the 26-degree face at the back of the sidewalk and z-fights it (§7 caps that at 60).
+        const a = at(u, side, clamp(t - ww, 0.004, 1.02));
+        const b = at(u, side, clamp(t + ww, 0.004, 1.02));
         if (prevA) sheet.addV(scarMat, [prevA, prevB, a, b, UP], (i - 1) / N, i / N);
         prevA = a; prevB = b;
       }
@@ -2535,15 +2542,15 @@ export class Track {
           if (ok(u0, side) < 0.5) continue;
           const lenM = rng.range(6, 15);          // along the road, i.e. the drag is a smear
           const N = 5;
-          const t0 = rng.range(0.16, 0.40), t1 = rng.range(-0.02, 0.02);
+          const t0 = rng.range(0.16, 0.40), t1 = rng.range(0.004, 0.03);
           const wM = rng.range(1.2, 3.0), w = wM / spanM;
           let prevA = null, prevB = null;
           for (let i = 0; i <= N; i++) {
             const s = i / N;
             const u = u0 + (lenM * s) / this.length;
             const t = lerp(t0, t1, s);
-            const a = at(u, side, t - w, 0.024);
-            const b = at(u, side, t + w, 0.024);
+            const a = at(u, side, Math.max(0.002, t - w), 0.024);
+            const b = at(u, side, Math.max(0.004, t + w), 0.024);
             if (prevA) sheet.addV(dragMat, [prevA, prevB, a, b, UP], (i - 1) / N, i / N);
             prevA = a; prevB = b;
           }

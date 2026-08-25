@@ -1716,6 +1716,40 @@ export function streetLamp({ h = 8, style = 'modern', color = '#ffd39a', night =
   return g;
 }
 
+let _contactMap = null;
+/**
+ * A soft dark pool for the ground directly under a standing object.
+ *
+ * Round 1: "props standing on the ground do not touch it — the palm base cone meets the plane
+ * with a hard stair-stepped silhouette and zero contact darkening; same for the jersey barrier."
+ * A cast shadow only exists where the key light reaches, so it cannot do this job in shade or at
+ * night. This is unlit, and it is the difference between an object ON the ground and an object
+ * intersecting it.
+ */
+export function contactPatch({ r = 1, color = '#1a1712', opacity = 0.5, cache = null, y = 0.012 } = {}) {
+  if (!_contactMap) {
+    const S = 64;
+    const { c, ctx } = canvas(S, S);
+    ctx.clearRect(0, 0, S, S);
+    const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.38, 'rgba(255,255,255,0.78)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+    _contactMap = toTexture(c, { srgb: false, wrap: THREE.ClampToEdgeWrapping });
+  }
+  const m = mat(cache, `contact|${color}|${opacity}`, () => new THREE.MeshBasicMaterial({
+    map: _contactMap, transparent: true, depthWrite: false, fog: true,
+    color: new THREE.Color(color), opacity,
+    polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8,
+  }));
+  const q = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2), m);
+  q.rotation.x = -Math.PI / 2;
+  q.position.y = y;
+  q.renderOrder = 1;
+  return q;
+}
+
 export function palmTree({ h = 11, seed = 1, lean = 0.12, cache = null }) {
   const rng = new RNG(seed);
   const g = new THREE.Group();
@@ -1743,6 +1777,14 @@ export function palmTree({ h = 11, seed = 1, lean = 0.12, cache = null }) {
   trunk.castShadow = true;
   trunk.geometry.scale(1, 1, 1);
   g.add(trunk);
+  // A root flare, so the trunk widens INTO the ground instead of ending on a hexagonal cut, and
+  // the pool of occluded ambient underneath it. Between them they are the whole of round 1's
+  // "the palm base meets the plane with a hard stair-stepped silhouette".
+  const flare = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.62, 0.55, 7, 1, true), barkMat);
+  flare.position.y = 0.20;
+  flare.castShadow = true;
+  g.add(flare);
+  g.add(contactPatch({ r: 1.15, opacity: 0.55, cache }));
   const top = curve.getPointAt(1);
 
   // (coherence pass) THE UNDERSIDE OF A FROND IS NOT BLACK. A frond is a flat double-sided blade
@@ -1885,6 +1927,11 @@ export function jerseyBarrier({ len = 4, striped = true, cache = null, seed = 1 
   })));
   m.castShadow = true; m.receiveShadow = true;
   g.add(m);
+  {
+    const cp = contactPatch({ r: 0.7, opacity: 0.5, cache });
+    cp.scale.set(1, len / 1.4 + 0.5, 1);
+    g.add(cp);
+  }
   // a reflector post every so often
   const rng = new RNG(seed);
   if (rng.bool(0.34)) {
