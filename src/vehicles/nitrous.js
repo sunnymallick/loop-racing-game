@@ -402,7 +402,7 @@ export const NITRO = {
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
-      bands: 5.0, knot: 0.80, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.58, flick: 62, turb: 0.84,
+      bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.58, flick: 62, turb: 0.84,
       gasGain: 1.30, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -418,7 +418,7 @@ export const NITRO = {
       core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
       len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
-      bands: 3.6, knot: 0.42, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.56, flick: 28, turb: 1.12,
+      bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.56, flick: 28, turb: 1.12,
       gasGain: 1.12, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
       skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
@@ -435,7 +435,7 @@ export const NITRO = {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
       len: 3.70, rad: 0.600, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.02, profile: [0.86, 0.038, 0.94, 0.118],  // blunt bell — fat off the pipe, stubby
-      bands: 3.0, knot: 0.14, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.50, flick: 16, turb: 1.28,
+      bands: 3.0, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.50, flick: 16, turb: 1.28,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
@@ -457,7 +457,7 @@ export const NITRO = {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
       len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
-      bands: 5.6, knot: 0.92, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.76,
+      bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.76,
       gasGain: 1.02, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -939,7 +939,7 @@ const PLUME_FRAG = /* glsl */`
   uniform vec4 uProf;                 // neck, peakAt, spread, tip fraction — the class silhouette
   uniform float uLen, uR0, uRmax;
   uniform float uTime, uLevel, uPhase, uTurb, uFlick;
-  uniform float uBands, uBandSpeed, uBandAmt, uNeck, uKnot, uBandDrift;
+  uniform float uBands, uBandSpeed, uBandAmt, uNeck, uKnot, uBandDrift, uXsh;
   uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD;
   uniform float uThick, uOcc, uReach, uFade, uPersp, uSoft, uWisp;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
@@ -1120,6 +1120,9 @@ const PLUME_FRAG = /* glsl */`
       float l2   = lobe * lobe;
       float node = amp * lobe;
       float knot = amp * mix(l2, l2 * l2 * lobe, uKnot);
+      // |cos| of the cell phase — the RADIUS of the oblique shock sheet, see the X below. It is
+      // free: sin is already in hand and the sheet has no sign.
+      float cph  = sqrt(max(0.0, 1.0 - sw * sw));
 
       // ── 2. THE LOCAL HALF-WIDTH ───────────────────────────────────────────────────────────
       // halfW() carries the class cone AND the perspective correction: the jet fires backwards,
@@ -1242,7 +1245,19 @@ const PLUME_FRAG = /* glsl */`
           // At exp(-q2·2.9) the lens is 0.77 at a third of the half-width and 0.05 at the edge:
           // the colour ramp can now reach uCore on a THREAD, and the wide part of the column keeps
           // the class chroma that tells you which car fired it.
-          float nd = node * (0.14 + 1.06 * exp(-q2 * 2.90));
+          // ── (r19) A SHOCK DIAMOND IS AN X, NOT A RUNG ────────────────────────────────────
+          // Every round so far has drawn a cell as a brightening ON THE AXIS, which is a bead; a
+          // real one is an oblique compression that leaves the shear layer, converges on the axis
+          // and reflects, so an afterburner photographs as a chain of X's whose crossing points
+          // are the bright knots. The radius of that sheet over a cell is exactly |cos| of the
+          // cell phase — full width where the cell begins and ends, zero at the node — so the
+          // whole figure costs one square root (of a sine already in hand) and one exponential.
+          // It is what gives the train structure ACROSS the column, which is the one thing
+          // SpeedShader's radial blur cannot average away, and it is smooth in every direction:
+          // a gaussian in radius whose centre slides continuously from the skirt to the axis.
+          float dsh = (q - 0.94 * cph) / 0.22;
+          float xsh = amp * exp(-dsh * dsh) * exp(-q2 * 0.42) * smoothstep(0.02, 0.11, ts) * uXsh;
+          float nd = node * (0.14 + 1.06 * exp(-q2 * 2.90)) + xsh * 0.70;
           // ...and a diamond gets COOLER with distance as well as smaller and fainter. Without
           // this every cell in the train pushed T past the white threshold and the column read as
           // a row of identical white lozenges (the r17 LA tuner at 3x): the first cell is
@@ -1251,7 +1266,8 @@ const PLUME_FRAG = /* glsl */`
           // (r19) ...and it is the KNOT, not the broad lobe, that carries the heat: the density
           // bump may be as long as the cell (a compression is), but the incandescence inside it
           // is a pip. Driving T off the broad lobe is what put a continuous white bar down the throat.
-          float ndT = knot * (0.10 + 1.15 * exp(-q2 * 2.90)) * (0.40 + 0.60 * exp(-t * 1.90));
+          float ndT = (knot * (0.10 + 1.15 * exp(-q2 * 2.90)) + xsh * 0.80)
+                    * (0.40 + 0.60 * exp(-t * 1.90));
 
           float dens = (g2 * uBodyD * (1.0 + nd * 1.20) * mix(1.0, flm, 0.36)
                      +  g3 * skirtA * 1.60 * flm * flm
@@ -1388,6 +1404,10 @@ function plumeMaterial(fx, phase) {
       // (r19) how compact the incandescent pip inside a shock cell is: 0 = lobe^2 (the SUV's lazy
       // swell, half-max over ~36% of the cell), 1 = lobe^5 (the supercar's hard pip, ~23%).
       uKnot: { value: fx.knot ?? 0.5 },
+      // (r19) strength of the oblique shock sheet — the X between two nodes. High on the tight
+      // classes, whose cells are short enough that the crossings read; low on the SUV, whose bell
+      // is so wide that a sheet at 0.94 half-widths is most of the frame.
+      uXsh: { value: fx.xsh ?? 0.55 },
       // how deeply a shock node necks the column. THE knob the speed pass cannot flatten: the
       // blur runs ALONG the plume, so a waist and a belly survive where a brightness pulse does not.
       uNeck: { value: fx.neckAmt ?? 0.30 },
