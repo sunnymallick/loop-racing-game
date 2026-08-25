@@ -1479,7 +1479,10 @@ class Game {
       recordSec: stood,
       recordBy: took ? took.name : null,          // who owns it now, if it changed hands today
       recordTime: took ? took.time : null,
-      recordBeaten: !!(took && took.you && !took.dnf),
+      // …and it is only the PLAYER'S when every other datum on the screen agrees: they hold the
+      // fastest time, they were classified, and they were classified first. Anything else and the
+      // panel falls through to naming the holder, which cannot contradict the ordinal.
+      recordBeaten: !!(took && took.you && !took.dnf && (me?.pos ?? 1) === 1),
     };
   }
 

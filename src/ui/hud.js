@@ -2567,6 +2567,10 @@ export class HUD {
     // draws whatever it says: green and unqualified when the record is the player's, steel and
     // NAMED when somebody else took it today. There is no path through here that can claim a
     // record for a player the table shows in eighth.
+    // The unqualified form is reserved for the case where the whole screen already agrees it is
+    // yours — first, classified, holding the fastest time (main.js sets `recordBeaten` on exactly
+    // that). Every other shape of result falls through to the NAMED form, which states the holder
+    // and their time and therefore cannot contradict the ordinal beside it.
     const mine = !!r.recordBeaten;
     const badge = mine ? 'NEW COURSE RECORD'
       : r.recordBy ? `NEW COURSE RECORD  ${String(r.recordBy).toUpperCase()}  ${fmtTime(r.recordTime)}`
