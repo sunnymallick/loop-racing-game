@@ -354,6 +354,14 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //                 exp(-ts/0.38), so cell 2 is half of cell 1, cell 3 a quarter, cell 4 a sixth —
 //                 and the cone underneath them has necked to 45%/26%/14% of the throat. Three
 //                 cells that each shrink is a sequence, not a texture.
+//   fx.bandFade   (r20) how far the train fades from ONE DIAMOND TO THE NEXT. The shock phase is
+//                 uBands·ts², so ts² IS the cell index and exp(-bandFade·uBands·ts²) is a fixed
+//                 ratio per cell however hard the spacing crowds: 0.30 -> 0.74x (the supercar's
+//                 six-cell train, still 22% of full amplitude at the tip), 0.42 -> 0.66x (the
+//                 SUV, three cells and done). Under the old exp(-ts/τ) the ratio ran towards 1.0
+//                 exactly where the cells crowded together, which gave a cliff at the head of the
+//                 train and a row of equal ripples at the tail — measured, only diamond ONE was
+//                 ever drawn (see the r20 note in PLUME_FRAG).
 //   fx.gasGain    master exposure of the marched integral. The BODY has to land near 1.0-1.4 in
 //                 its strongest channel at the throat: saturated, still on the tonemap's slope,
 //                 never a posterised plateau with a rim around it. Verify it with
@@ -406,7 +414,7 @@ export const NITRO = {
       gasGain: 1.38, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
-      wake: 0.16, cone: 0.22, smearRate: 7.0, smearWidth: 0.030,
+      wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
     },
   },
@@ -422,7 +430,7 @@ export const NITRO = {
       gasGain: 1.20, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
       skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
-      wake: 0.21, cone: 0.28, smearRate: 6.0, smearWidth: 0.032,
+      wake: 0.21, cone: 0.28, smearRate: 13.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
     },
   },
@@ -444,7 +452,7 @@ export const NITRO = {
       gasGain: 1.18, hotI: 4.50, burn: 0.44, filW: 0.152, bodyW: 0.54, wisp: 1.05,
       skirtW: 1.10, skirtI: 1.04, bodyD: 1.62, thick: 1.25, occ: 0.97,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
-      wake: 0.25, cone: 0.32, smearRate: 5.0, smearWidth: 0.050,
+      wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
     },
   },
@@ -461,7 +469,7 @@ export const NITRO = {
       gasGain: 1.10, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
-      wake: 0.14, cone: 0.20, smearRate: 8.0, smearWidth: 0.042,
+      wake: 0.14, cone: 0.20, smearRate: 17.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
     },
   },
