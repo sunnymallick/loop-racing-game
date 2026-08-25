@@ -980,7 +980,9 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     for (const sx of [-1, 1]) {
       if (sailX !== null) {
         const sail = new THREE.Mesh(roundedBox(0.024 * ms, 0.118 * ms, 0.150 * ms, 0.022 * ms), armMat);
-        sail.position.set(sx * (sailX - 0.010 * ms), mi.y - 0.014 * ms, mi.z - 0.004);
+        // centred ON the surface, so half the pad is buried in the panel and half stands proud of
+        // it — a pad set 10 mm inside would be flush, i.e. invisible, which is what it is replacing
+        sail.position.set(sx * (sailX - 0.001 * ms), mi.y - 0.014 * ms, mi.z - 0.004);
         detail.add(sail);
       }
       const arm = new THREE.Mesh(roundedBox(0.115 * ms, 0.038 * ms, 0.052 * ms, 0.018 * ms), armMat);

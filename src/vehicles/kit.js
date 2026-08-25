@@ -2209,7 +2209,7 @@ export function loftTub(sections, {
    * displacement of the loft's own vertices, on the same closed surface, with no ring bolted on and
    * nothing that can float or z-fight. It costs FIVE rings per gap — the floor, two walls and two
    * returns, at ±0, ±7.5 and ±20 mm — because a smooth valley wide enough to survive the natural
-   * 55-175 mm ring spacing would read as a crease, not as a joint. 15 mm wide and 5.5 mm deep is
+   * 55-175 mm ring spacing would read as a crease, not as a joint. 15 mm wide and 6.8 mm deep is
    * about 1.5 px at chase distance: a crisp dark line with a lit wall on the near side of it, which
    * is exactly what a shut line looks like on a real car and what the painted stroke never was.
    *
