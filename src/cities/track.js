@@ -3163,11 +3163,21 @@ class Branch {
        * the mask, so nothing is ever placed across the carriageway it joins.
        */
       if (ro.scatter !== false) {
+        // t is measured along the REAL cross-section, apron lip → verge → outer run-off, not
+        // along the chord between its two ends: the verge falls ~10 cm over 2.2 m and the run-off
+        // ~19 cm over eleven, so a straight lerp puts a stone up to 5 cm in the air over the verge
+        // — a hover, which is the one thing scatter exists to prevent.
         const pointAt = (u, side, t) => {
           const S = solved[side];
           if (!S) return null;
           const i = clamp(Math.round(u * segs), 0, segs);
-          return S.Ap[i].clone().lerp(S.R[i], t);
+          const a = S.Ap[i], v = S.V[i], r = S.R[i];
+          const dav = a.distanceTo(v), dvr = v.distanceTo(r);
+          if (dav + dvr < 1e-3) return null;
+          const d = t * (dav + dvr);
+          return d <= dav
+            ? a.clone().lerp(v, dav > 1e-6 ? d / dav : 0)
+            : v.clone().lerp(r, dvr > 1e-6 ? (d - dav) / dvr : 0);
         };
         g.add(Track.prototype.runoffScatter.call(this, {
           pointAt,
