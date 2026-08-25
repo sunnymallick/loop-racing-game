@@ -376,6 +376,66 @@ function rtext(ctx, text, o = {}) {
   return { width, height: size };
 }
 
+// ---------------------------------------------------------------- the shout's exclamation
+//
+// `NITRO!` was rendering as `NITROI`, and it is a real typographic fault, not a kerning nit.
+//
+// `!` is the only glyph in the display master whose counter is INSIDE the mark rather than a bowl:
+// a tapered stem from the cap line to 0.68, then a separate dot from 0.835 to the baseline —
+// 0.155 cap heights of white between them. Every pen the banner applies grows the ink OUTWARD into
+// that gap from both sides at once. At the shout's weight (0.225 against the master's 0.165) the
+// mitred pen is 0.060 a side; the black legibility outline is another 0.067 a side; the bevel then
+// paints two more offset copies. The dot welds to the stem, the mark becomes a full-height bar —
+// and `I` in this face is literally `box(0, 0, ST, 1)`, the same bar. Confirmed at 10x on a real
+// capture (shots/hud-r1-shout/c-bang2.png): the dot and stem were separated by one dark hairline
+// and the mark sat hard against the O.
+//
+// The cure is the one every heavy italic face uses: A BANG IS PUNCTUATION AND IS CUT LIGHTER THAN
+// THE CAPS BESIDE IT. So the trailing run of exclamation marks is set as its own run — a lighter
+// pen, a proportionally thinner outline, and an optical space in front of it, because 0.045 of a
+// left side bearing is not enough air after a round O at this weight. Everything else about the
+// run (glow, bevel, sheen, gradient, italic, size) is identical, so the mark still belongs to the
+// word.
+//
+// (The alternative fix is one number in core/font.js — move the dot down or shorten the stem — and
+// that is the better home for it, but the font is not this piece's to edit this round.)
+const BANG_W = 0.20;      // pen for the bang: leaves ~0.085 cap heights of white in the counter
+const BANG_OUT = 0.40;    // …and this fraction of the run's outline, so the black cannot flood it
+const BANG_LEAD = 0.07;   // optical space ahead of it, in cap heights, on top of the run's tracking
+
+/** Split a trailing run of `!` off a banner string. */
+function splitBang(text) {
+  const s = String(text);
+  const m = /!+$/.exec(s);
+  return m ? [s.slice(0, m.index), m[0]] : [s, ''];
+}
+
+/** Width of a banner string as `shout()` sets it. */
+function shoutWidth(text, size, tracking) {
+  const [head, bang] = splitBang(text);
+  const hw = head ? measure(head, { size, tracking }).width : 0;
+  if (!bang) return hw;
+  const bw = measure(bang, { size, tracking }).width;
+  return head ? hw + (tracking + BANG_LEAD) * size + bw : bw;
+}
+
+/** Draw a banner string LEFT-anchored at `o.x`, with the bang set as punctuation. */
+function shout(ctx, text, o) {
+  const [head, bang] = splitBang(text);
+  const size = o.size ?? 48, tracking = o.tracking ?? 0.10;
+  let x = o.x;
+  if (head) {
+    drawText(ctx, head, { ...o, x, align: 'left' });
+    x += measure(head, { size, tracking }).width + (tracking + BANG_LEAD) * size;
+  }
+  if (bang) {
+    drawText(ctx, bang, {
+      ...o, x, align: 'left', weight: BANG_W,
+      outline: o.outline ? { ...o.outline, width: (o.outline.width ?? size * 0.10) * BANG_OUT } : null,
+    });
+  }
+}
+
 /**
  * The garage's plate: the same leaning parallelogram, chamfered on the top-left and bottom-right.
  * Identical geometry to ui/menu.js `plate()` so the results panels are cut from the same shape as
@@ -2153,7 +2213,7 @@ export class HUD {
     const a = smoothstep(0, 0.12, t) * (1 - smoothstep(0.68, 1, t)) * fade;
     const sc = 1 + (1 - smoothstep(0, 0.25, t)) * 0.28;
     const size = 48;
-    const wpx = measure(m.text, { size, tracking: 0.10 }).width;
+    const wpx = shoutWidth(m.text, size, 0.10);
     ctx.save();
     ctx.translate(cx, cy);
     ctx.scale(sc, sc);
@@ -2199,8 +2259,10 @@ export class HUD {
       -(wpx * SCM) / 2 - PM, -size * SCM * 1.15 - PM, wpx * SCM + PM * 2, size * SCM * 1.7 + PM * 2,
       (c) => {
         c.scale(sc, sc);
-        drawText(c, m.text, {
-          x: 0, y: 0, size, weight: 0.225, italic: 0.24, align: 'center', alpha: a,
+        // left-anchored at -w/2 rather than align:'center', because the bang is a second run and
+        // the pair has to be centred as ONE word (see `shout`)
+        shout(c, m.text, {
+          x: -wpx / 2, y: 0, size, weight: 0.225, italic: 0.24, alpha: a,
           color: gradientFill([[0, '#ffffff'], [0.46, '#fff4dd'], [0.56, '#ffd79a'], [1, '#ffffff']]),
           glow: { color: m.color, blur: 34 },
           outline: { color: 'rgba(0,0,0,0.6)', width: 3.2 },
