@@ -1826,6 +1826,18 @@ window.__GAME = {
         // its best", and it was right. So the hold stops the moment the slide stops being worth
         // photographing: off the tarmac, or the angle collapsing back towards straight.
         let heldPeak = 0;
+        // WHERE "OUT OF ROAD" IS, FOR THIS CAR, ON THIS ENTRY. The bail below is an absolute
+        // 0.94 of half-width, and that is right for a car that commits from the racing line — but
+        // the muscle car's flick carries it out to lateral -1.01 BEFORE any opposite lock is
+        // applied, so the test was true on the first frame of the first hold, `hold()` returned
+        // immediately, the two deeper counter-steer holds never ran, and functest's
+        // `muscle: can drift` went red at "slip 18.0 drift 0.24" — the whole slide skipped. (The
+        // first hold is also what brings it back: see the lateral trim below.) Measured from the
+        // line the car actually committed on, the rule reads "stop when it runs out of MORE road
+        // than it started with", which is a no-op for every car that commits inside 0.94 — the
+        // tuner and the supercar bail exactly where they did.
+        const latBail = Math.max(0.94,
+          Math.abs(trk.nearest(game.body.pos, game.race?.playerU ?? null).lateral) + 0.04);
         const hold = (n, throttle, lockSteer) => {
           for (let i = 0; i < n; i++) {
             const nc = trk.nearest(game.body.pos, game.race?.playerU ?? null);
@@ -1841,7 +1853,7 @@ window.__GAME = {
             // Stop just BEFORE the tarmac edge, not at it: bailing at 1.02 (where surface flips to
             // dirt) captured the first frame already off the road, so five of six frames read
             // surface:dirt. 0.94 leaves the car sideways on asphalt with the kerb in shot.
-            if (Math.abs(nc.lateral) > 0.94) return true;
+            if (Math.abs(nc.lateral) > latBail) return true;
             // ...and so does the angle washing out after a real slide has been established
             if (heldPeak > 18 && slipNow < heldPeak * 0.55 && slipNow < 16) return true;
           }
