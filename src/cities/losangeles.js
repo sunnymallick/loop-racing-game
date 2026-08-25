@@ -1987,7 +1987,16 @@ export const def = {
     // completely once the surface is in shadow. LA's off-road ground is dirt lots WITH concrete
     // parking aprons on them, so naming the apron gives the plane a second surface that differs in
     // hue as well as value and survives being lit by nothing but bounce.
-    ground: { color: '#86735a', accent: '#cbbfa4' },
+    // (round 3) '#cbbfa4' -> '#c0a276'. The accent is the concrete-apron half of the plane, and
+    // under the freeway deck — where the key light never reaches and the only term left is a
+    // blue-ish hemisphere — a 19%-chroma warm grey cancels to a neutral: the shoulder under the
+    // overpass measured rgb(55,58,54) at saturation 0.069, i.e. "just gray", which §2.1 calls an
+    // explicit failure and which is the largest single surface in the la-suv drift capture.
+    // 38% chroma is still a concrete apron in the sun and it still reads as a second surface
+    // against the dirt, but it cannot cancel to neutral in the shade.
+    // `shade` lifts the same plane's self-lit floor from the shared 1.7 to 2.1 for the same
+    // reason: the floor is what carries material into a surface nothing is lighting.
+    ground: { color: '#86735a', accent: '#c0a276', shade: 2.1 },
     sidewalk: '#b3a893',
     grade: {
       /**

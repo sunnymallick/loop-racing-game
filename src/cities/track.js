@@ -1965,8 +1965,28 @@ export class Track {
       const gm = new THREE.MeshStandardMaterial({
         map: asp.map, roughnessMap: asp.roughnessMap, normalMap: asp.normalMap,
         emissiveMap: asp.map, emissive: new THREE.Color(0xffffff),
-        emissiveIntensity: surface.night ? 0.20 : 0.32,
-        roughness: 1, envMapIntensity: surface.wet ? 1.5 : 1.0,
+        // THE BLACK TRENCH. The gutter is the FIRST band off the racing line and it was measuring
+        // lum 29-40 against the carriageway's 111 in the same Miami frame — five and a half metres
+        // of near-featureless dark running the whole length of every frame between the rumble kerb
+        // and the sidewalk, which is the §2.1 failure the brief is about, one band in from where
+        // it was last found. 0.32/0.36 keeps it clearly under the carriageway (0.52/0.34 plus the
+        // road's retroreflective paint and its higher env term) while leaving aggregate in it.
+        emissiveIntensity: surface.night ? 0.32 : 0.36,
+        // ...and THE GUTTER IS THE WETTEST PART OF THE STREET. Marking the band with a pure
+        // emissive magenta proved the mechanism: it is not that the gutter is unlit, it is that
+        // it is the one band with a uniformly rough map, so where the carriageway's polished
+        // wheel tracks mirror the sky (lum 111 in the same frame) the gutter can only return
+        // diffuse irradiance (lum 33) and the eye reads five metres of black trench between the
+        // rumble kerb and the sidewalk. Water pools against a kerb before it pools anywhere else,
+        // so the wet cities get the sheen here FIRST, not last.
+        roughness: 1 - 0.5 * (surface.wet || 0),
+        envMapIntensity: surface.wet ? 1.55 : 1.05,
+      });
+      // ...and the same world-space octaves every other ground band carries. Its own map is a
+      // 1024 tile stretched over 5.5 m x the whole lap, so at the distance a gutter is actually
+      // read at there is nothing in it smaller than a metre — hf 8.75 against the road's 16.5.
+      applyGroundDetail(gm, {
+        seed: (surface.seed ?? 3) + 11, strength: 0.20, normalStrength: 0.30, broad: 0.10,
       });
       for (const side of [-1, 1]) strip(side, S.curbOut, S.gutterOut, gm, { vScale: 0.06, uA: 0, uB: 1.4 });
     }
