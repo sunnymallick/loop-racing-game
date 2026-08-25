@@ -796,6 +796,23 @@ function tuftTexture(blade = '#9c8a5e', dirt = '#6b6459') {
   return t;
 }
 
+const _contactTex = { t: null };
+/** Soft round darkening for the ground directly under a small object. */
+function contactTexture() {
+  if (_contactTex.t) return _contactTex.t;
+  const S = 64;
+  const { c, ctx } = canvas(S, S);
+  ctx.clearRect(0, 0, S, S);
+  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.42, 'rgba(255,255,255,0.72)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+  _contactTex.t = toTexture(c, { srgb: false, wrap: THREE.ClampToEdgeWrapping });
+  return _contactTex.t;
+}
+
 const _detailTex = new Map();
 /**
  * WORLD-SPACE GROUND DETAIL — the answer to "hfH 1.20 / hfV 1.28 for the run-off against
@@ -1325,6 +1342,79 @@ export function groundPatchTexture(kind = 'puddle', { tint = '#6b6459', gravel =
   const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
   _patchCache.set(key, t);
   return t;
+}
+
+const _litterCache = { t: null };
+/**
+ * Four pieces of rubbish in a 1x4 vertical strip: a paper scrap, a crushed can, a bag, a piece of
+ * cardboard. Dealt through DecalSheet.addV, so one material and one draw call covers the lap.
+ * Litter is the cheapest possible statement that people have been here — round 1 measured "no
+ * potholes, patches, puddles, litter or kerb weeds anywhere in 24 frames".
+ */
+function litterTexture() {
+  if (_litterCache.t) return _litterCache.t;
+  const W = 128, H = 512;
+  const { c, ctx } = canvas(W, H);
+  const rng = new RNG(9137);
+  ctx.clearRect(0, 0, W, H);
+  const cell = (i, draw) => {
+    ctx.save();
+    ctx.translate(W / 2, i * 128 + 64);
+    ctx.beginPath(); ctx.rect(-W / 2, -64, W, 128); ctx.clip();
+    draw();
+    ctx.restore();
+  };
+  // 0: paper — a crumpled sheet, bright, with a folded shadow across it
+  cell(0, () => {
+    ctx.fillStyle = 'rgba(226,222,208,0.95)';
+    ctx.beginPath();
+    for (let k = 0; k < 7; k++) {
+      const a = (k / 7) * Math.PI * 2;
+      const r = rng.range(22, 40);
+      ctx[k ? 'lineTo' : 'moveTo'](Math.cos(a) * r, Math.sin(a) * r * 0.8);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(120,116,106,0.55)';
+    ctx.beginPath(); ctx.moveTo(-34, -6); ctx.lineTo(6, -22); ctx.lineTo(30, 16); ctx.lineTo(-16, 24);
+    ctx.closePath(); ctx.fill();
+  });
+  // 1: a crushed can, still holding a bit of its label
+  cell(1, () => {
+    ctx.rotate(0.5);
+    ctx.fillStyle = 'rgba(178,182,188,0.95)';
+    ctx.beginPath(); ctx.ellipse(0, 0, 34, 12, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(196,54,44,0.9)';
+    ctx.fillRect(-14, -11, 20, 22);
+    ctx.fillStyle = 'rgba(70,72,78,0.8)';
+    ctx.beginPath(); ctx.ellipse(-30, 0, 6, 11, 0, 0, 7); ctx.fill();
+  });
+  // 2: a bag, pale and formless
+  cell(2, () => {
+    const g = ctx.createRadialGradient(0, 0, 2, 0, 0, 48);
+    g.addColorStop(0, 'rgba(206,208,204,0.82)');
+    g.addColorStop(0.7, 'rgba(186,188,186,0.5)');
+    g.addColorStop(1, 'rgba(180,182,180,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    for (let k = 0; k < 9; k++) {
+      const a = (k / 9) * Math.PI * 2;
+      const r = rng.range(24, 50);
+      ctx[k ? 'lineTo' : 'moveTo'](Math.cos(a) * r, Math.sin(a) * r * 0.7);
+    }
+    ctx.closePath(); ctx.fill();
+  });
+  // 3: cardboard, soaked and flat
+  cell(3, () => {
+    ctx.rotate(-0.35);
+    ctx.fillStyle = 'rgba(126,98,66,0.92)';
+    ctx.fillRect(-40, -22, 80, 44);
+    ctx.fillStyle = 'rgba(88,68,46,0.7)';
+    ctx.fillRect(-40, 6, 80, 16);
+    ctx.strokeStyle = 'rgba(60,46,32,0.6)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-40, -4); ctx.lineTo(40, -8); ctx.stroke();
+  });
+  _litterCache.t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  return _litterCache.t;
 }
 
 const _dragCache = new Map();
@@ -1881,11 +1971,15 @@ export class Track {
     // It is deliberately BELOW the road's: the carriageway must stay the brightest thing on the
     // ground or the racing line stops reading. Sidewalk 0.30, kerb face 0.34 (it is the edge the
     // eye tracks), apron 0.24 — all far under the ~0.6 bloom threshold, so none of it glows.
+    // …and a smaller version of the same floor in DAYLIGHT. The 26-degree face at the back of the
+    // sidewalk points away from every key light there is, and in the Miami dusk capture it printed
+    // a near-black band running the whole length of the frame between the paving and the dirt —
+    // read at 4x that is exactly the straight road-parallel line §7's seam cap is about. A third
+    // of the night floor is enough to keep aggregate in it without lifting it off the ground.
     const floorLit = (m, k) => {
-      if (!surface.night) return m;
       m.emissiveMap = m.map;
       m.emissive = new THREE.Color(0xffffff);
-      m.emissiveIntensity = k;
+      m.emissiveIntensity = surface.night ? k : k * 0.34;
       return m;
     };
     // raised sidewalk with a real kerb face
@@ -1940,7 +2034,8 @@ export class Track {
       }), 0.24);
       vm.normalScale.set(0.85, 0.85);
       for (const side of [-1, 1]) {
-        strip(side, S.apronLip, S.vergeOut, vm, { vScale: 1 / vt.tileM, uA: 0, uB: 1, mask: runoff.mask || null });
+        strip(side, S.apronLip, S.vergeOut, vm, { vScale: 1 / vt.tileM, uA: 0, uB: 1, mask: runoff.mask || null })
+          .name = 'vergeStrip';
       }
 
       const rt = runoffTexture({
@@ -1967,10 +2062,16 @@ export class Track {
       applyGroundDetail(rm, {
         seed: (surface.seed ?? 3) + 2, strength: 0.46, normalStrength: 0.62, broad: 0.26,
       });
+      // Same floor the ground plane carries, and for the same reason: in shade the hemisphere's
+      // upper colour is the only light this band gets, and without a self-lit copy of its own map
+      // the dirt arrives as one flat hue of the sky's colour (§2.1).
+      rm.emissiveMap = rt.map;
       if (surface.night) {
-        rm.emissiveMap = rt.map;
         rm.emissive = new THREE.Color(runoff.glowColor || '#ffffff');
         rm.emissiveIntensity = runoff.glow ?? 0.24;
+      } else {
+        rm.emissive = new THREE.Color(dirtTint);
+        rm.emissiveIntensity = runoff.shade ?? 0.72;
       }
       for (const side of [-1, 1]) {
         // receiveShadow stays ON: §7 caps a car with no contact shadow at 55, and the car spends
@@ -1978,6 +2079,7 @@ export class Track {
         const m = strip(side, S.runoffIn, S.runoffOut, rm, {
           vScale: 1 / rt.tileM, uA: 0, uB: 1, mask: runoff.mask || null,
         });
+        m.name = 'runoffStrip';
         m.renderOrder = -1;                                  // under every other transparent thing
       }
 
@@ -1998,10 +2100,13 @@ export class Track {
       // good its aggregate is (§7's cap-50 tell, one band out).
       if (runoff.scatter !== false) {
         g.add(this.runoffScatter({
-          F, segs, from: S.vergeOut, to: S.runoffOut,
+          // `from` is the PAVED LIP, not the outer edge of the verge: the first half-metre of
+          // ground is where weeds actually grow, and round 1 had nothing standing there at all.
+          F, segs, from: S.apronLip, to: S.runoffOut,
           seed: (surface.seed ?? 5) + 17, tint: dirtTint,
           rock: runoff.rock || '#8d8375', scrub: runoff.scrub || null,
           night: surface.night, mask: runoff.mask || null,
+          density: runoff.scatterDensity ?? 1,
         }));
       }
     }
@@ -2020,7 +2125,7 @@ export class Track {
    */
   runoffScatter({
     F, segs, from, to, seed = 5, tint = '#6b6459', rock = '#8d8375', scrub = null,
-    night = false, mask = null, chunk = 420, rockGap = 13, tuftGap = 11,
+    night = false, mask = null, chunk = 420, rockGap = 3.4, tuftGap = 2.9, density = 1,
   } = {}) {
     const g = new THREE.Group();
     g.name = 'runoffScatter';
@@ -2031,7 +2136,10 @@ export class Track {
     const stone = concrete({ size: 256, seed: 71, tint: preGamma(rock), stains: false });
     const rockMat = new THREE.MeshStandardMaterial({
       map: stone.map, roughnessMap: stone.roughnessMap, normalMap: stone.normalMap,
-      roughness: 1, metalness: 0, envMapIntensity: 0.8,
+      // 0.8 let the sky probe own the up-faces, and against warm dirt every stone came back a
+      // cold blue-grey — a scatter that reads as a different material from the ground it is
+      // lying on is worse than no scatter at all.
+      roughness: 1, metalness: 0, envMapIntensity: 0.42,
     });
     if (night) {
       rockMat.emissiveMap = stone.map;
@@ -2089,6 +2197,17 @@ export class Track {
       b.list.push(m);
     };
     const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler();
+    // CONTACT DARKENING. Round 1: "props standing on the ground do not touch it — the palm base
+    // meets the plane with a hard stair-stepped silhouette and zero contact darkening". A cast
+    // shadow only exists where the sun reaches; what grounds an object in shade and at night is
+    // the pool of occluded ambient right underneath it, and that is what this is. Unlit on
+    // purpose, so it survives every lighting condition the four cities have.
+    const contact = new Map();
+    const pushContact = (cell, p, r) => {
+      let a = contact.get(cell);
+      if (!a) { a = []; contact.set(cell, a); }
+      a.push(p.x, p.y, p.z, r);
+    };
     const place = (kind, gap, sizeLo, sizeHi, latLo, latHi) => {
       for (const side of [-1, 1]) {
         let travelled = rng.range(0, gap);
@@ -2108,14 +2227,71 @@ export class Track {
           E.set(kind === 'rock' ? rng.range(-0.25, 0.25) : rng.range(-0.06, 0.06),
             rng.range(0, Math.PI * 2), rng.range(-0.18, 0.18));
           Q.setFromEuler(E);
-          M.compose(p, Q, new THREE.Vector3(sc * rng.range(0.75, 1.3), sc * rng.range(0.7, 1.25), sc * rng.range(0.75, 1.3)));
-          push(kind, rng.int(0, 2), Math.floor((travelled / chunk)), M.clone());
+          // 'slab' is the rock prototype crushed flat — a broken piece of paving lying where it
+          // was dumped. Same geometry, same material, same bucket, so it is free.
+          const flat = kind === 'slab' ? 0.14 : 1;
+          M.compose(p, Q, new THREE.Vector3(
+            sc * rng.range(0.75, 1.3) * (kind === 'slab' ? 1.35 : 1),
+            sc * rng.range(0.7, 1.25) * flat,
+            sc * rng.range(0.75, 1.3) * (kind === 'slab' ? 1.35 : 1)));
+          const cell = Math.floor(travelled / chunk);
+          push(kind === 'slab' ? 'rock' : kind, rng.int(0, 2), cell, M.clone());
+          pushContact(cell, p, sc * (kind === 'slab' ? 1.5 : kind === 'tuft' ? 0.55 : 0.85));
         }
       }
     };
-    place('rock', rockGap, 0.22, 0.95, 0.10, 0.92);
-    if (tuftMat) place('tuft', tuftGap, 0.30, 0.85, 0.22, 0.95);
+    // DENSITY. Round 1 measured "one scrub tuft and one pebble in that entire 450x120 source
+    // region" and "two tufts and one stone in 260x150 px of the LA plaza" — a gap of 13 m between
+    // stones over a 17 m band is one object per 110 m2, which is a lawn, not a verge. The gaps are
+    // now 3-4 m, and the cost of that is instances, not draw calls: every one of them lands in a
+    // bucket that already existed.
+    place('rock', rockGap / density, 0.16, 0.90, 0.05, 0.94);
+    // ...and the big ones, sparse, so the field has a size range in it rather than one pebble
+    // repeated: a stone you could not drive over is what gives the small ones their scale.
+    place('rock', 24 / density, 0.85, 1.9, 0.22, 0.92);
+    // broken slabs — kerb, paving, a piece of a lot — lying flat where they were dumped
+    place('slab', 30 / density, 0.45, 1.15, 0.10, 0.85);
+    if (tuftMat) {
+      place('tuft', tuftGap / density, 0.26, 0.80, 0.12, 0.95);
+      // kerb weeds: the strip of green that grows in the joint between paving and dirt, and the
+      // single cheapest thing that stops the road edge reading as a cut line
+      place('tuft', 2.4 / density, 0.16, 0.42, 0.004, 0.085);
+      // the odd bigger bush, so the scrub is not one size either
+      place('tuft', 26 / density, 0.9, 1.8, 0.24, 0.9);
+    }
 
+    {
+      const cm = new THREE.MeshBasicMaterial({
+        map: contactTexture(), transparent: true, depthWrite: false, fog: true,
+        color: new THREE.Color(tint).multiplyScalar(0.30),
+        opacity: 0.62, blending: THREE.NormalBlending,
+        polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8,
+      });
+      for (const [cell, arr] of contact) {
+        const n = arr.length / 4;
+        const pos = new Float32Array(n * 12), uv = new Float32Array(n * 8), nor = new Float32Array(n * 12);
+        const idx = new Uint32Array(n * 6);
+        for (let i = 0; i < n; i++) {
+          const x = arr[i * 4], y = arr[i * 4 + 1], z = arr[i * 4 + 2], r = arr[i * 4 + 3] * 1.35;
+          const o = i * 12, q = i * 8, k = i * 4;
+          const yy = y + 0.012;
+          pos.set([x - r, yy, z - r, x + r, yy, z - r, x - r, yy, z + r, x + r, yy, z + r], o);
+          nor.set([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], o);
+          uv.set([0, 0, 1, 0, 0, 1, 1, 1], q);
+          idx.set([k, k + 1, k + 2, k + 1, k + 3, k + 2], i * 6);
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+        geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+        geo.setIndex(new THREE.BufferAttribute(idx, 1));
+        const m = new THREE.Mesh(geo, cm);
+        m.renderOrder = 1;
+        m.userData.noMerge = true;
+        void cell;
+        g.add(m);
+      }
+    }
     for (const b of buckets.values()) {
       const geo = b.kind === 'rock' ? rockGeos[b.v] : tuftGeos[b.v];
       const mat = b.kind === 'rock' ? rockMat : tuftMat;
@@ -2294,7 +2470,36 @@ export class Track {
       }
     }
 
-    // ---- 3. dust dragged across the join ----
+    // ---- 3. litter ----
+    {
+      const litMat = decalMat(litterTexture(), { rough: 0.7, lit: 0.30 });
+      const gap = 19 / density;
+      for (const side of [-1, 1]) {
+        let travelled = rng.range(0, gap);
+        while (travelled < this.length) {
+          const u = travelled / this.length;
+          travelled += gap * rng.range(0.25, 2.1);
+          if (ok(u, side) < 0.5) continue;
+          const cell = rng.int(0, 3);
+          const f = frameAt(u);
+          // biased hard toward the kerb: rubbish collects where the wind off the traffic drops it
+          const c = at(u, side, Math.pow(rng.next(), 2.0) * 0.55 + 0.01, 0.026);
+          const eT = f.tan.clone().setY(0).normalize();
+          const eR = f.rightFlat.clone().setY(0).normalize().multiplyScalar(side);
+          const rot = rng.range(0, Math.PI * 2);
+          const sz = rng.range(0.30, 0.66);
+          const cs = Math.cos(rot), sn = Math.sin(rot);
+          const ax = eT.clone().multiplyScalar(cs).addScaledVector(eR, sn).multiplyScalar(sz);
+          const ay = eR.clone().multiplyScalar(cs).addScaledVector(eT, -sn).multiplyScalar(sz);
+          sheet.addV(litMat, [
+            c.clone().sub(ax).sub(ay), c.clone().add(ax).sub(ay),
+            c.clone().sub(ax).add(ay), c.clone().add(ax).add(ay), UP,
+          ], cell / 4, (cell + 1) / 4);
+        }
+      }
+    }
+
+    // ---- 4. dust dragged across the join ----
     //
     // Laid ACROSS the verge instead of along it. §7's geometry-seam tell is read from a line that
     // runs the whole length of the frame parallel to the road; a dozen streaks crossing that line

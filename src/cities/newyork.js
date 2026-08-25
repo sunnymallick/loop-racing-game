@@ -3063,7 +3063,11 @@ export const def = {
     // but no scrub.
     runoff: {
       width: 13, tint: '#3d424c', accent: '#4c525e',
-      gravel: '#6b7078', scrub: null, rock: '#5a5f68',
+      // New York's off-line ground is cracked paving and rail ballast, not dirt — but weeds still
+      // come up through the joint at the back of every kerb, and round 1's note that the ground
+      // "has no history of use" applies hardest to the city that is supposed to be the oldest.
+      // A dark sooty green, so it reads as something growing in a crack rather than as lawn.
+      gravel: '#6b7078', scrub: '#4d5a3c', rock: '#5a5f68',
     },
     // (round 3) '#8f8b84' is a 56%-value warm grey, and under a sodium rig at this exposure it
     // arrives on screen as a pale sand band that is the single largest flat area in the drift

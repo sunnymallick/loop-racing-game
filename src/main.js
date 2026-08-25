@@ -1550,6 +1550,14 @@ class Game {
       lapsRun: r.playerLap ?? 0,
       lapCount: r.laps ?? 3,
       carName: getVehicle(this.carId).spec.full,
+      // …and what the garage says about it. The results card is cut from the garage's own parts
+      // (its plates, its rules, its chevrons), and the stage's lower half was empty road under a
+      // car that fills a fifth of the bracket it sits in. These are the same three numbers the
+      // garage's stat bars draw (ui/menu.js STATS) and the same colour chip, so the end card
+      // closes on the object the player picked rather than on a hole.
+      carClass: getVehicle(this.carId).spec.klass || '',
+      carStats: { ...getVehicle(this.carId).spec.stats },
+      carColor: this.carColor || getVehicle(this.carId).spec.colors[0],
       cityName: this.city?.name || '',
       record,                                     // the time that stood coming in
       recordSec: stood,

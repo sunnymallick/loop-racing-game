@@ -4167,10 +4167,21 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     // not a surface (§2.1). Turning the knob harder was never going to work; the knob was the
     // wrong colour. `groundGlowColor` lets a city name the light its ground is actually sitting
     // in — sodium, casino spill, moon — independently of what it fogs to.
+    // …and a DAYTIME floor, for a different reason. A day city's shade is lit by the hemisphere
+    // alone, and a hemisphere's upper colour lands on every horizontal surface unmixed: LA's is
+    // '#4fb0ea', so the whole off-road ground in the freeway's shadow came back as one flat
+    // cyan — measured on `la-suv-drift` as "one hue with roughly a 10-level wispy noise", which
+    // is §2.1's "shadows keep material" broken over the largest area in the frame. A dim self-lit
+    // copy of the ground's own map, in the ground's OWN colour, puts the material back into the
+    // shade without touching the key light or the sunlit ground, which is already correct.
+    // 0.18 is a tenth of what the road carries, so the racing line still owns the frame.
+    groundMat.emissiveMap = gt.map;
     if (night) {
-      groundMat.emissiveMap = gt.map;
       groundMat.emissive = new THREE.Color(L.groundGlowColor || L.fog.color);
       groundMat.emissiveIntensity = L.groundGlow ?? 0.85;
+    } else {
+      groundMat.emissive = new THREE.Color(L.ground?.shadeColor || L.ground?.color || '#3a3d43');
+      groundMat.emissiveIntensity = L.ground?.shade ?? 0.72;
     }
     // The 176 m tile is 17 cm per texel, which is why the off-road ground measured hfH 1.20
     // against the carriageway's 7.46 at the same depth: there is nothing in that map smaller than
@@ -4191,6 +4202,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     });
   }
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), groundMat);
+  ground.name = 'worldGround';
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = GROUND_Y;
   ground.receiveShadow = true;

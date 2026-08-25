@@ -305,7 +305,7 @@ function steelMaterial(tint, seed = 77) {
  *     repeated cell read as a different can of paint rather than a copy.
  * The atlas is 6 x 4, mapped through `cols`/`rows` rather than a hard-coded 3.
  */
-const TAG_COLS = 8, TAG_ROWS = 4;
+const TAG_COLS = 8, TAG_ROWS = 6;
 function graffitiAtlas(seed) {
   const cell = 256, half = 128;
   const N = TAG_COLS * TAG_ROWS;
@@ -316,7 +316,11 @@ function graffitiAtlas(seed) {
   const words = ['NITRO', 'ESTE', 'DTLA', 'CIRCUIT', '213', 'SUNSET', 'CREW', 'RIOS', 'VATO',
     'ECHO', 'BOYLE', 'LOKE', 'SUR', 'FIGGY', 'ARTE', 'CHAVEZ', 'WHITTIER', 'MALO',
     'PICO', 'SOTO', 'CUDA', 'BRAVO', 'ONDA', 'SEXTO', 'LOS', 'NORTE', 'RAMPART', 'ELAY',
-    'SIX', 'ZOOT', 'ADIOS', 'FLACO'];
+    'SIX', 'ZOOT', 'ADIOS', 'FLACO',
+    // …and sixteen more, because 32 cells over 112 placed pieces is three and a half passes of
+    // the deck and the eye only has to catch one pair. See the dealer below.
+    'HOLLYWOOD', 'VERNON', 'ALVARADO', 'SLAUSON', 'CYPRESS', 'AVE43', 'HAZARD', 'TEMPLE',
+    'MARAVILLA', 'GLASSELL', 'CRENSHAW', 'LINCOLN', 'OLYMPIC', 'SANTEE', 'FLORES', 'DOGTOWN'];
   for (let i = 0; i < N; i++) {
     const ox = (i % TAG_COLS) * cell, oy = Math.floor(i / TAG_COLS) * half;
     ctx.save();
@@ -2587,9 +2591,28 @@ export const def = {
         for (let i = d.length - 1; i > 0; i--) { const j = R.int(0, i); const t = d[i]; d[i] = d[j]; d[j] = t; }
         deck.push(...d);
       };
-      for (const u of us) {
+      // THE SEAM BETWEEN TWO DECKS.
+      //
+      // Dealing from a shuffled deck makes any 48 consecutive pieces distinct, but says nothing
+      // about the JOIN: a cell dealt last out of one deck and first out of the next lands twice
+      // inside a few metres of wall, and that is exactly what the whole-game critic measured —
+      // two copies of the same piece within one screen width at 3x (`shots/cw2/la_graf2.png`,
+      // 'LOS' twice). A window of the last dozen cells dealt, skipped over when the deck turns
+      // over, closes it: the only pool the dealer will not touch is the one you can still see.
+      const recent = [];
+      const RECENT = 14;
+      const dealCell = () => {
         if (!deck.length) reshuffle();
-        const cellIdx = deck.shift();
+        let k = 0;
+        while (k < deck.length && recent.includes(deck[k])) k++;
+        if (k >= deck.length) k = 0;
+        const [cell] = deck.splice(k, 1);
+        recent.push(cell);
+        if (recent.length > RECENT) recent.shift();
+        return cell;
+      };
+      for (const u of us) {
+        const cellIdx = dealCell();
         const cx = cellIdx % TAG_COLS, cy = Math.floor(cellIdx / TAG_COLS);
         const w = R.range(9, 31), h = w * R.range(0.40, 0.60);
         const geo = new THREE.PlaneGeometry(w, h);

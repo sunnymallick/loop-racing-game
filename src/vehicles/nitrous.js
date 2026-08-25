@@ -402,7 +402,7 @@ export const NITRO = {
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
-      bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.58, flick: 62, turb: 0.84,
+      bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 1.30, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -418,7 +418,7 @@ export const NITRO = {
       core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
       len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
-      bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.56, flick: 28, turb: 1.12,
+      bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
       gasGain: 1.12, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
       skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
@@ -435,7 +435,7 @@ export const NITRO = {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
       len: 3.70, rad: 0.600, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.02, profile: [0.86, 0.038, 0.94, 0.118],  // blunt bell — fat off the pipe, stubby
-      bands: 3.0, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.50, flick: 16, turb: 1.28,
+      bands: 3.4, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.36, bandFade: 0.42, flick: 16, turb: 1.28,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
@@ -457,7 +457,7 @@ export const NITRO = {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
       len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
-      bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.76,
+      bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
       gasGain: 1.02, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -939,7 +939,7 @@ const PLUME_FRAG = /* glsl */`
   uniform vec4 uProf;                 // neck, peakAt, spread, tip fraction — the class silhouette
   uniform float uLen, uR0, uRmax;
   uniform float uTime, uLevel, uPhase, uTurb, uFlick;
-  uniform float uBands, uBandSpeed, uBandAmt, uNeck, uKnot, uBandDrift, uXsh;
+  uniform float uBands, uBandSpeed, uBandAmt, uNeck, uKnot, uBandDrift, uXsh, uBandFade;
   uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD;
   uniform float uThick, uOcc, uReach, uFade, uPersp, uSoft, uWisp;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
@@ -1100,10 +1100,31 @@ const PLUME_FRAG = /* glsl */`
       // spacings 0.31 / 0.17 / 0.13 / 0.11 — a 3.2:1 crowd, over five cells rather than four.
       // The constant 0.16 is what pulls cell 1 back onto the throat; without it the first diamond
       // sits a fifth of the way down a column that is supposed to be burning at the pipe.
-      float bp  = (uBands * ts * ts + 0.16) * 6.2831853 + uPhase * 1.7 + uBandDrift;
+      float ph  = uBands * ts * ts;                     // the CELL INDEX, continuously
+      float bp  = (ph + 0.16) * 6.2831853 + uPhase * 1.7 + uBandDrift;
       float sw  = sin(bp);
       float ci  = floor(bp * 0.1591549 + 0.5);
-      float amp = smoothstep(0.006, 0.045, ts) * exp(-ts / 0.42) * uBandAmt
+      // ── (r20) THE TRAIN FADES BY CELL, NOT BY DISTANCE — AND ONLY DIAMOND 1 WAS EVER DRAWN ──
+      // Measured on the r19 LA muscle with tools/_n20_axis.mjs: the axial luminance runs 241 at
+      // the throat and 205-220 through the whole middle of the column, and the strongest local
+      // maximum anywhere past t = 0.25 has a PROMINENCE OF 5 on a base of 210 — 2%. Evaluating
+      // the shader's own on-axis expression for the muscle's uniforms says why, and it is not a
+      // shaping problem: at exp(-ts/0.42) the four nodes carry amp 0.69 / 0.27 / 0.16 / 0.11, so
+      // the filament authority behind them is hotA 4.70 / 0.74 / 0.31 / 0.17 and the temperature
+      // 3.58 / 1.38 / 1.01 / 0.86 against a white threshold of 1.35. Diamond 1 goes white and
+      // clips; diamonds 2, 3 and 4 are a 5-15% swell in the class colour, which is the measured
+      // 2%. Six rounds of shaping a train that was, arithmetically, one blob and three rumours.
+      //
+      // The decay is now per CELL rather than per unit length. A cell's index is exactly ph (the
+      // phase already in hand), so exp(-uBandFade*ph) gives a FIXED RATIO from one diamond to the
+      // next — 0.70x on the supercar, 0.66x on the SUV — no matter how the spacing crowds. Under
+      // the old exp(-ts/τ) the ratio collapsed towards 1.0 as the cells crowded together, which is
+      // the worst of both: the head of the train fell off a cliff and the tail was a row of
+      // equal-amplitude ripples. Now the muscle's four nodes run 0.97 / 0.69 / 0.49 / 0.35, and
+      // because the phase is ts^2 each of them is also SHORTER (cell lengths 0.39 / 0.21 / 0.16 in
+      // screen station) and sits inside a cone that has necked to 45% / 26% / 14% of the throat.
+      // Smaller, closer together and fainter, in a fixed ratio: that is a shock train.
+      float amp = smoothstep(0.006, 0.045, ts) * exp(-uBandFade * ph) * uBandAmt
                 * (0.60 + 0.72 * h21(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0)))
                 * (0.88 + 0.14 * sin(uTime * uFlick * 0.31 + ci * 1.7));
       amp = clamp(amp, 0.0, 1.0);
@@ -1237,7 +1258,19 @@ const PLUME_FRAG = /* glsl */`
           // knots did and the train had nothing to draw with. At 0.15 the thread between two
           // cells is class-coloured and BELOW the bloom threshold; a cell is a 4x swell that goes
           // over it. That is the difference between a white bar and a row of white knots.
-          float hotA = uHot * exp(-t / uBurn) * (0.15 + knot * 2.35);
+          // ── (r20) THE THREAD BURNS OUT; THE KNOTS DO NOT ────────────────────────────────
+          // One exponential drove both, so uBurn had to be short enough to kill the continuous
+          // white thread by a third of the way down — and it took every diamond after the first
+          // with it. Measured, muscle: hotA 4.70 at node 1 and 0.74 / 0.31 / 0.17 at nodes 2-4,
+          // i.e. the second diamond is drawn at a sixth of the authority of the first and the
+          // fourth at a twenty-fifth. The white in the frame was one bar at the pipe.
+          // The two now decay at different rates off the SAME exponential: the base thread runs
+          // on hb outright (dark by t ~ 0.4, so the gaps between diamonds keep their class
+          // chroma), while a knot keeps a third of its authority to the tip. Muscle: 5.13 / 2.33
+          // / 1.47 / 0.99 — a ladder rather than a cliff, and every rung above the ~0.7 the
+          // bloom threshold wants.
+          float hb   = exp(-t / uBurn);
+          float hotA = uHot * (0.11 * hb + knot * 1.55 * (0.34 + 0.66 * hb));
           // A diamond is a LENS, brightest on the centreline and gone before the skirt — not a
           // rung laid across the jet. A row of rungs is a barcode.
           // (r18) exp(-q2·1.05) was still 0.77 at half the half-width and 0.35 at the full one, so
@@ -1272,7 +1305,13 @@ const PLUME_FRAG = /* glsl */`
           // (r19) ...and it is the KNOT, not the broad lobe, that carries the heat: the density
           // bump may be as long as the cell (a compression is), but the incandescence inside it
           // is a pip. Driving T off the broad lobe is what put a continuous white bar down the throat.
-          float ndT = (knot * (0.10 + 1.15 * lens) + xsh * 0.80) * (0.40 + 0.60 * et);
+          // (r20) 1.15 -> 1.45 on the lens and the cooling term 0.40+0.60·et -> 0.55+0.45·et. A
+          // diamond does get cooler with distance — but at 0.40+0.60·et the third one was 60%
+          // cooled before its own amplitude was applied, so it never crossed the white threshold
+          // at all. The ladder now runs T = 4.8 / 2.9 / 2.0 / 1.5 down the muscle's four nodes
+          // against a white step at 1.35: incandescent, white, warm-white, warm. The gas between
+          // any two of them is at T ~ 0.8, which is uMid at full chroma.
+          float ndT = (knot * (0.10 + 1.45 * lens) + xsh * 0.80) * (0.55 + 0.45 * et);
 
           float dens = (g2 * uBodyD * (1.0 + nd * 1.20) * mix(1.0, flm, 0.36)
                      +  g3 * skirtA * 1.60 * flm * flm
@@ -1293,7 +1332,12 @@ const PLUME_FRAG = /* glsl */`
           // the column and only the knots leave it.
           vec3 warm = mix(uMid, uCore, 0.30);
           vec3 col = mix(uEdge, uMid, smoothstep(0.04, 0.40, T));
-          col = mix(col, warm, smoothstep(0.54, 1.32, T));
+          // (r20) 0.54/1.32 -> 0.70/1.45. The gas BETWEEN two diamonds sits at T ~ 0.8, and at the
+          // old thresholds that was already a third of the way to a colour which is itself 30%
+          // white — so the column had a permanent pale wash on it and a diamond had to climb out
+          // of that before it could read. The gaps are now uMid at full chroma and the whole of
+          // the warm ramp is spent on the knots.
+          col = mix(col, warm, smoothstep(0.70, 1.45, T));
           col = mix(col, uCore, smoothstep(1.35, 2.45, T));
           vec3 fil = mix(uMid, uCore, clamp(hotA * 0.60, 0.0, 1.0));
           // ── LIGHT AND GAS ARE NOT THE SAME CURVE ─────────────────────────────────────────
@@ -1409,6 +1453,10 @@ function plumeMaterial(fx, phase) {
       // (r19) how compact the incandescent pip inside a shock cell is: 0 = lobe^2 (the SUV's lazy
       // swell, half-max over ~36% of the cell), 1 = lobe^5 (the supercar's hard pip, ~23%).
       uKnot: { value: fx.knot ?? 0.5 },
+      // (r20) how fast the train fades from ONE DIAMOND TO THE NEXT — the phase is the cell index,
+      // so this is a fixed ratio per cell: 0.30 -> 0.74x (the supercar's long persistent train),
+      // 0.42 -> 0.66x (the SUV, three cells and done).
+      uBandFade: { value: fx.bandFade ?? 0.34 },
       // (r19) strength of the oblique shock sheet — the X between two nodes. High on the tight
       // classes, whose cells are short enough that the crossings read; low on the SUV, whose bell
       // is so wide that a sheet at 0.94 half-widths is most of the frame.

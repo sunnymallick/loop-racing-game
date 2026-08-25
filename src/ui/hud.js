@@ -528,10 +528,12 @@ export function resultsLayout(VW, VH) {
     M, BAR, CUT, RS, barY, yT, panelH, innerW,
     leftW, midX, midW, cardAH, cardBY: yT + cardAH + 20, cardBH: panelH - cardAH - 20,
     stageX, stageW,
-    // where the car is composed inside the stage: centre, and how wide it should measure
+    // Where the car is composed inside the stage: centre, and how wide it should measure. It sits
+    // in the UPPER half — the lower third of this bracket carries the machine block (`_resSpec`),
+    // which is what the critic's "empty road filling the rest" was asking for.
     carX: stageX + stageW * 0.465,
-    carY: yT + panelH * 0.585,
-    carW: stageW * 0.86,
+    carY: yT + panelH * 0.500,
+    carW: stageW * 0.90,
   };
 }
 
@@ -2384,7 +2386,8 @@ export class HUD {
     const sig = [
       VW, VH, r.pos, r.dnf ? 1 : 0, r.time, r.best, r.record, r.recordBeaten ? 1 : 0,
       r.recordBy || '', r.recordTime ?? '',
-      r.cityName, r.carName, r.lapCount, laps.map((x) => x.toFixed(2)).join(),
+      r.cityName, r.carName, r.carColor || '', r.carClass || '', r.lapCount,
+      laps.map((x) => x.toFixed(2)).join(),
       rows.map((x) => `${x.pos}${x.name}${x.carName}${x.finished ? 1 : 0}${x.dnf ? 1 : 0}`
         + `${x.gap == null ? '' : x.gap.toFixed(2)}${Math.round(x.gapM)}`).join('|'),
     ].join('~');
@@ -2488,9 +2491,9 @@ export class HUD {
     // and a round hole big enough to clear the roof clears half the skyline with it, which is
     // exactly how the neon got back in. The centre is not fully cleared (0.94) so the set still
     // lies faintly over the road under the car.
-    const HX = CW * 0.615, HY = CW * 0.255;
+    const HX = CW * 0.605, HY = CW * 0.215;
     ctx.save();
-    ctx.translate(L.carX, L.carY - CW * 0.012);
+    ctx.translate(L.carX, L.carY + CW * 0.010);
     ctx.scale(1, HY / HX);
     const hole = ctx.createRadialGradient(0, 0, HX * 0.30, 0, 0, HX);
     hole.addColorStop(0, 'rgba(0,0,0,0.94)');
@@ -2500,6 +2503,22 @@ export class HUD {
     ctx.globalCompositeOperation = 'destination-out';
     ctx.fillStyle = hole; ctx.fillRect(-HX, -HX, HX * 2, HX * 2);
     ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+
+    // …and the wall put back ABOVE the roofline. An ellipse tight enough on the roof to keep a
+    // shopfront out of the greenhouse is tight enough to veil the roof itself, so the hole is cut
+    // generously and the top of it is painted back as a second soft ellipse rather than clipped —
+    // no edge anywhere, and the bright horizontal band Miami's lit facade was throwing across the
+    // car's window line is gone. (Measured on miami-muscle-results.png: the band sat at the belt
+    // line and was the brightest thing in the third.)
+    ctx.save();
+    ctx.translate(L.carX, L.carY - CW * 0.360);
+    ctx.scale(1, 0.275);
+    const cap = ctx.createRadialGradient(0, 0, CW * 0.06, 0, 0, CW * 0.80);
+    cap.addColorStop(0, 'rgba(3,7,14,0.80)');
+    cap.addColorStop(0.55, 'rgba(3,7,14,0.46)');
+    cap.addColorStop(1, 'rgba(3,7,14,0)');
+    ctx.fillStyle = cap; ctx.fillRect(-CW, -CW, CW * 2, CW * 2);
     ctx.restore();
 
     // …and a warm floor pool under it, the garage's turntable light. Drawn ON the frame rather than
@@ -2705,6 +2724,82 @@ export class HUD {
     ctx.beginPath();
     ctx.moveTo(x + 2, y + h - 1); ctx.lineTo(x + w - CUTL - 90, y + h - 1);
     ctx.stroke();
+    this._resSpec(ctx, r, x, y, w, h, S);
+  }
+
+  /**
+   * THE MACHINE BLOCK, in the bottom of the stage.
+   *
+   * The critic on the round-1 stage: "the car in the top third of its bracket with blown-out empty
+   * road filling the rest". Half of that is the framing (main.js `_finishCamera`, fixed) and half
+   * of it is that the bracket is 524 px tall and a car photographed at three-quarter front is 115
+   * of them — so under a properly staged portrait there is still an empty half-panel.
+   *
+   * It gets the garage's own furniture, because that is what this screen is made of everywhere
+   * else: the paint chip the player chose, the class, and the three gradient stat bars §1.4
+   * describes (`SPEED` red-pink, `TRACTION` magenta-purple, `ACCELERATION` blue-cyan — the same
+   * three keys and the same two-stop ramps `ui/menu.js` draws them with). Nothing here is a number
+   * the race produced, so nothing here can contradict the race: it is the object, not the result.
+   */
+  _resSpec(ctx, r, x, y, w, h, S) {
+    const st = r.carStats;
+    if (!st) return;
+    const lx = (ry) => x + S * h * (1 - clamp((ry - y) / h, 0, 1));
+    const BARS = [
+      ['SPEED', st.speed, '#ff2f6d', '#ff9fc0'],
+      ['TRACTION', st.traction, '#c33cff', '#f0aaff'],
+      ['ACCELERATION', st.accel, '#2fa8ff', '#a6e6ff'],
+    ];
+    const pitch = 30, barH = 7;
+    const top = y + h - 26 - BARS.length * pitch;
+
+    // the head: a paint chip in the car's own colour, then the class, cut off the same chamfer as
+    // every other plate on the screen
+    const hy = top - 20;
+    const cx0 = lx(hy) + 26;
+    platePath(ctx, cx0, hy - 16, 22, 18, 0.16);
+    ctx.fillStyle = r.carColor || '#8fa3ba'; ctx.fill();
+    platePath(ctx, cx0, hy - 16, 22, 18, 0.16);
+    ctx.strokeStyle = 'rgba(236,246,255,0.7)'; ctx.lineWidth = 1.2; ctx.stroke();
+    rtext(ctx, String(r.carClass || 'MACHINE'), {
+      x: cx0 + 34, y: hy - 2, size: 13, weight: 0.16, tracking: 0.28,
+      color: 'rgba(196,216,234,0.95)', face: 'geo',
+    });
+    rtext(ctx, 'SPEC', {
+      x: lx(hy) + w - 26, y: hy - 2, size: 11, weight: 0.15, tracking: 0.30, align: 'right',
+      color: 'rgba(146,172,196,0.8)', face: 'geo',
+    });
+    ctx.beginPath();
+    ctx.moveTo(lx(hy + 6) + 20, hy + 6); ctx.lineTo(lx(hy + 6) + w - 20, hy + 6);
+    ctx.strokeStyle = 'rgba(150,190,220,0.22)'; ctx.lineWidth = 1.1; ctx.stroke();
+
+    for (let i = 0; i < BARS.length; i++) {
+      const [name, v, c0, c1] = BARS[i];
+      const by = top + i * pitch;
+      const bx = lx(by + barH) + 26;
+      const bw = w - 52;
+      rtext(ctx, name, {
+        x: bx, y: by - 5, size: 10.5, weight: 0.15, tracking: 0.28,
+        color: 'rgba(160,186,208,0.9)', face: 'geo',
+      });
+      rtext(ctx, String(Math.round(clamp(v ?? 0, 0, 1) * 100)), {
+        x: bx + bw, y: by - 5, size: 11.5, weight: 0.17, tracking: 0.10, align: 'right',
+        color: 'rgba(214,232,246,0.95)', face: 'geo',
+      });
+      // the trough…
+      platePath(ctx, bx, by, bw, barH, 0.5);
+      ctx.fillStyle = 'rgba(255,255,255,0.07)'; ctx.fill();
+      platePath(ctx, bx, by, bw, barH, 0.5);
+      ctx.strokeStyle = 'rgba(150,190,220,0.20)'; ctx.lineWidth = 1; ctx.stroke();
+      // …and the fill, on the same two-stop ramp the garage uses
+      const fw = Math.max(4, bw * clamp(v ?? 0, 0, 1));
+      platePath(ctx, bx, by, fw, barH, 0.5);
+      const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+      g.addColorStop(0, c0); g.addColorStop(1, c1);
+      ctx.fillStyle = g;
+      ctx.shadowBlur = 8; ctx.shadowColor = c0;
+      ctx.fill(); ctx.shadowBlur = 0;
+    }
   }
 
   /** The classification — eight rows, the order the race director froze at the flag. */
