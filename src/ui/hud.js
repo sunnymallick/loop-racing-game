@@ -602,17 +602,31 @@ export function resultsLayout(VW, VH) {
   };
 }
 
-/** What goes in a classification row's TIME column. */
+/**
+ * What goes in a classification row's TIME / GAP column, as a value plus the unit it is in.
+ *
+ * TWO UNITS, AND THE COLUMN SAYS SO. The critic, on the LA result: "'+164m' rows under a column
+ * labelled TIME (6 of 8 rows) should either read 'TIME / GAP' or show the metres in their own
+ * column". Six of eight is not an edge case — the flag falls a fixed window after the winner is
+ * home, so most of the field is still on the road and has no finishing time to print at all.
+ *
+ * Both halves of that instruction are taken. The header names both units, and the unit is returned
+ * with the value so `_resTable` can set a distance as a distance — the digits in the clock's own
+ * italic face, the `m` behind them in the small upright label face the rest of the panel uses for
+ * units — instead of stamping it in the same face as a lap time and hoping the reader notices.
+ */
 function resultTime(row) {
-  if (row.dnf) return 'DNF';
+  if (row.dnf) return { text: 'DNF', unit: '', kind: 'dnf' };
   if (row.finished && row.time != null) {
     // the LEADER's row carries the clock; everyone else carries an interval to it. Keyed on the
     // flag main.js sets rather than on `gap <= 0.005`, so a dead heat reads +00.00 instead of
     // putting a second absolute time in a column of intervals.
-    return (row.leader || row.gap == null) ? fmtTime(row.time) : `+${fmtSplit(row.gap)}`;
+    return (row.leader || row.gap == null)
+      ? { text: fmtTime(row.time), unit: '', kind: 'clock' }
+      : { text: `+${fmtSplit(row.gap)}`, unit: '', kind: 'gap' };
   }
-  if (row.gapM > 0.5) return `+${Math.round(row.gapM)}m`;
-  return '--';
+  if (row.gapM > 0.5) return { text: `+${Math.round(row.gapM)}`, unit: 'm', kind: 'metres' };
+  return { text: '--', unit: '', kind: 'none' };
 }
 
 /** M:SS.CS, dropping the minutes when there are none — a split, not a clock. */
@@ -1047,6 +1061,26 @@ export class HUD {
     const laps = (s.laps || []).filter((t) => t != null && t > 0);
     const mine = !!(s.recordBeaten && !dnf && me && me.leader && pos === 1);
     const holderIsMe = !!(me && s.recordBy && s.recordBy === me.name);
+    /**
+     * 4 — THE RECORD THAT STANDS WHEN THE FLAG FALLS, derived once, here, for every part of the
+     *     screen that mentions one.
+     *
+     * This is the half of the round-7 bug that survived. The badge was fixed to name its holder,
+     * but YOUR RACE went on measuring the player against the record that stood COMING IN — so
+     * miami read "8TH CLASSIFIED", "NEW COURSE RECORD  LETTY  02:01:68", and a green "UNDER IT BY
+     * 01.14" all at once. Every number was true and the screen still said two things: a green
+     * delta is an achievement claim, and it was being made under a badge that had just given the
+     * record to somebody else. A superseded target is not a target.
+     *
+     * So there is exactly one record on this screen, and it is the fastest of (what stood coming
+     * in, what the field did today) — which is what the badge announces when it changes hands. The
+     * card measures against THAT, and the only branch that may go green is the one where the
+     * player owns it, in which case the comparison is against the time they displaced.
+     */
+    const recPrev = s.recordSec ?? parseClock(s.record) ?? 0;
+    const recStanding = (lead && lead.time != null)
+      ? (recPrev > 0 ? Math.min(recPrev, lead.time) : lead.time)
+      : recPrev;
     return {
       ...s,
       rows,
@@ -1056,6 +1090,8 @@ export class HUD {
       time: dnf ? null : s.time,
       best: laps.length ? Math.min(...laps) : null,
       recordBeaten: mine,
+      recPrev,
+      recStanding,
       // …and if the record is not the player's, whoever holds it has to be NAMED. An unqualified
       // "NEW COURSE RECORD" over somebody else's time is the sentence the critic read as the
       // screen congratulating a player who finished eighth.
@@ -3027,7 +3063,10 @@ export class HUD {
       x: lx(hy) + cols.car, y: hy, size: 11, weight: 0.15, tracking: 0.30,
       color: 'rgba(146,172,196,0.85)', face: 'geo',
     });
-    rtext(ctx, 'TIME', {
+    // TIME / GAP — the column carries a clock for the winner, an interval for the cars that took
+    // the flag behind him, and a distance for the ones still on the road when it fell. Naming one
+    // unit over three was the fault the critic read off the LA table.
+    rtext(ctx, 'TIME / GAP', {
       x: lx(hy) + cols.time - 22, y: hy, size: 11, weight: 0.15,
       tracking: 0.30, align: 'right', color: 'rgba(146,172,196,0.85)', face: 'geo',
     });
@@ -3081,9 +3120,21 @@ export class HUD {
         color: you ? 'rgba(38,22,2,0.86)' : 'rgba(150,176,200,0.85)', face: 'geo',
       });
       const tval = resultTime(row);
-      drawText(ctx, tval, {
-        x: bl + cols.time - 22, y: base, size: 19, weight: 0.19, italic: 0.18, align: 'right',
-        color: row.dnf ? 'rgba(255,110,96,0.95)' : you ? '#180d01' : row.pos === 1 ? GOLD_HOT : '#cfdeec',
+      const tcol = row.dnf ? 'rgba(255,110,96,0.95)'
+        : you ? '#180d01' : row.pos === 1 ? GOLD_HOT : '#cfdeec';
+      let tx = bl + cols.time - 22;
+      // the unit rides behind the number in the label face — a distance is not a lap time and is
+      // not set as one (see `resultTime`)
+      if (tval.unit) {
+        rtext(ctx, tval.unit, {
+          x: tx, y: base, size: 11.5, weight: 0.15, tracking: 0.16, align: 'right', face: 'geo',
+          color: you ? 'rgba(24,13,1,0.78)' : 'rgba(158,184,208,0.9)',
+        });
+        tx -= rmeasure(tval.unit, { size: 11.5, tracking: 0.16, face: 'geo' }).width + 3;
+      }
+      drawText(ctx, tval.text, {
+        x: tx, y: base, size: 19, weight: 0.19, italic: 0.18, align: 'right',
+        color: tval.kind === 'metres' ? (you ? 'rgba(24,13,1,0.9)' : 'rgba(186,206,226,0.95)') : tcol,
       });
     }
   }
@@ -3118,36 +3169,37 @@ export class HUD {
     platePath(ctx, lx(wy + wh) + 18, wy, w - 44, wh, SKEW * 0.5);
     ctx.strokeStyle = 'rgba(150,190,220,0.20)'; ctx.lineWidth = 1; ctx.stroke();
 
-    // Two data rows: the target this race was run against, and where the race landed on it.
-    //
-    // The label is RECORD TO BEAT, not COURSE RECORD, and the difference is the whole point. The
-    // course record is decided at the flag by the whole field and is announced ONCE, on the badge
-    // in the header. This card is about the player's own race, so the number it compares against
-    // is the time that STOOD coming in — otherwise the screen carries two different clocks under
-    // one word, which is the same fault as the badge wearing a different hat.
-    const rec = r.recordSec ?? parseClock(r.record);
+    /**
+     * Two data rows: the record, and where this race landed on it.
+     *
+     * ONE RECORD ON THE SCREEN. The r2 card compared the player against the time that stood
+     * COMING IN and labelled it "PREVIOUS RECORD" — which is a true sentence and still let miami
+     * print a green "UNDER IT BY 01.14" under an eighth place and under a badge that had just
+     * given the record to LETTY. Wording cannot fix that, because the fault is not that the reader
+     * confuses the two records: it is that a GREEN DELTA IS A CLAIM, and the claim was being made
+     * against a target the same screen had already retired.
+     *
+     * `resultsView` derives the record that stands at the flag (the faster of what stood coming in
+     * and what the field did today) and this measures against it. Two branches, and only one of
+     * them can be read as an achievement:
+     *
+     *   · the record is the PLAYER'S — the badge is green and unqualified, the total clock is
+     *     green, and this compares against the time they displaced. "UNDER IT BY", in green.
+     *   · it is not — this compares against the record in force, which is the number the badge is
+     *     showing when it changed hands today. The delta is then non-negative by construction (the
+     *     standing record is at worst the leader's time and the player is not the leader), so the
+     *     card cannot print a credit. Steel, not red: being behind a course record is the normal
+     *     state of a race, and red on this screen means retired.
+     */
+    const mine = !!r.recordBeaten;
+    const prev = r.recPrev ?? (r.recordSec ?? parseClock(r.record)) ?? 0;
+    const rec = mine ? prev : (r.recStanding ?? prev);
     const delta = (rec > 0 && r.time != null && !r.dnf) ? r.time - rec : null;
-    // …AND IT SAYS WHICH RECORD, because by the time this is drawn there may be two.
-    //
-    // The whole-game critic on the r1 screen: "the banner announces 'NEW COURSE RECORD ROMAN
-    // 02:21:81' while the panel below simultaneously credits the player 'UNDER RECORD BY 28.54'
-    // against 02:52:40 … presented without distinguishing them, so the screen appears to
-    // congratulate the player for beating a record that the frame also says someone else just
-    // took." Both numbers were right and the WORDS were wrong: one said "the record" meaning the
-    // one that stood coming in, the other meaning the one that stands now.
-    //
-    // So the label is tensed off the same fact the badge is drawn from. If nobody took it today the
-    // record is still the one you raced, and it is "COURSE RECORD"; if it changed hands — to you or
-    // to anybody — the target this card measures against is the OLD one and says so. There is no
-    // wording left in which the two halves of the screen can be read as the same record.
-    const took = !!(r.recordBeaten || r.recordBy);
-    const targetLbl = took ? 'PREVIOUS RECORD' : 'COURSE RECORD';
-    // "IT", once the row above has named which record this is measured against — the long forms
+    const targetLbl = mine ? 'PREVIOUS RECORD' : 'COURSE RECORD';
+    // "IT", once the row above has named the record this is measured against — the long forms
     // ("UNDER PREVIOUS RECORD BY") do not fit the card and abbreviating them is worse than binding
     // the pronoun to the line above it, which is how a results card reads anyway.
-    const deltaLbl = delta == null ? 'AGAINST IT'
-      : delta <= 0 ? (took ? 'UNDER IT BY' : 'UNDER RECORD BY')
-        : (took ? 'OVER IT BY' : 'OVER RECORD BY');
+    const deltaLbl = delta == null ? 'AGAINST IT' : mine ? 'UNDER IT BY' : 'OVER IT BY';
     const rowY = [y + h - 54, y + h - 20];
     const put = (i, k, v, col) => {
       rtext(ctx, k, {
@@ -3163,7 +3215,8 @@ export class HUD {
     // string: "2:08:15" beside a "02:06:65" is two clock formats one line apart.
     put(0, targetLbl, rec > 0 ? fmtTime(rec) : '--:--:--', GOLD);
     put(1, deltaLbl,
-      delta == null ? '--' : fmtSplit(Math.abs(delta)), delta == null ? LABEL : delta <= 0 ? GREEN : '#ff8f7a');
+      delta == null ? '--' : fmtSplit(Math.abs(delta)),
+      delta == null ? LABEL : mine ? GREEN : '#cfdeec');
   }
 
   /** Card two: the lap book, with the best lap called out. */
