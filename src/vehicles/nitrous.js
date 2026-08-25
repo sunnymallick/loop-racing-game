@@ -1210,6 +1210,10 @@ const PLUME_FRAG = /* glsl */`
           // The gust that displaces the axis is the same gust that thickens the gas — one noise
           // lookup, and the correlation between the two is physical rather than a saving.
           float puff = 0.80 + 0.40 * wn;
+          // one axial decay shared by the cell's temperature and the column's own emission fall-off
+          // — they were exp(-1.90t) and exp(-1.70t), and two exponentials a sample for a 12%
+          // difference is a transcendental spent on nothing.
+          float et = exp(-t * 1.80);
           // Held out to the tip. A jet that fades to nothing by two thirds of its own length has
           // thrown away exactly the part where the taper is most legible, and the column then
           // reads as the fat parallel FRONT of a cone with nothing after it.
@@ -1256,8 +1260,10 @@ const PLUME_FRAG = /* glsl */`
           // SpeedShader's radial blur cannot average away, and it is smooth in every direction:
           // a gaussian in radius whose centre slides continuously from the skirt to the axis.
           float dsh = (q - 0.94 * cph) / 0.22;
-          float xsh = amp * exp(-dsh * dsh) * exp(-q2 * 0.42) * smoothstep(0.02, 0.11, ts) * uXsh;
-          float nd = node * (0.14 + 1.06 * exp(-q2 * 2.90)) + xsh * 0.70;
+          float xsh = amp * exp(-(dsh * dsh + q2 * 0.42)) * smoothstep(0.02, 0.11, ts) * uXsh;
+          // the on-axis lens both terms below share — one exponential, not two
+          float lens = exp(-q2 * 2.90);
+          float nd = node * (0.14 + 1.06 * lens) + xsh * 0.70;
           // ...and a diamond gets COOLER with distance as well as smaller and fainter. Without
           // this every cell in the train pushed T past the white threshold and the column read as
           // a row of identical white lozenges (the r17 LA tuner at 3x): the first cell is
@@ -1266,8 +1272,7 @@ const PLUME_FRAG = /* glsl */`
           // (r19) ...and it is the KNOT, not the broad lobe, that carries the heat: the density
           // bump may be as long as the cell (a compression is), but the incandescence inside it
           // is a pip. Driving T off the broad lobe is what put a continuous white bar down the throat.
-          float ndT = (knot * (0.10 + 1.15 * exp(-q2 * 2.90)) + xsh * 0.80)
-                    * (0.40 + 0.60 * exp(-t * 1.90));
+          float ndT = (knot * (0.10 + 1.15 * lens) + xsh * 0.80) * (0.40 + 0.60 * et);
 
           float dens = (g2 * uBodyD * (1.0 + nd * 1.20) * mix(1.0, flm, 0.36)
                      +  g3 * skirtA * 1.60 * flm * flm
@@ -1305,7 +1310,7 @@ const PLUME_FRAG = /* glsl */`
           // last third of the column was a navy shape occluding the road rather than gas burning
           // in front of it. The gradient throat-to-tail is still 3.6:1, which is what makes the
           // length read as depth; the tail is simply still alight.
-          float glow = 0.28 + 0.72 * exp(-t * 1.70);
+          float glow = 0.28 + 0.72 * et;
           vec3 e = (col * (dens * (0.20 + T * 1.05)) + fil * (g1 * hotA * cut)) * glow;
 
           // ── (r19) INTEGRATE THE STEP, DO NOT SAMPLE IT ──────────────────────────────────
