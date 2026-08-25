@@ -2206,9 +2206,14 @@ window.__GAME = {
         // PATH-BENDING acceleration (see handling.js), so v² = driftG·R really is the speed whose
         // drift arc matches the bend; capped at 52 m/s so no class arrives at 150 mph sideways.
         const vTarget = clamp(Math.sqrt(radius * (ph.driftG ?? 14)), 30, 52);
-        place(entryU - 330 / trk.length, -0.45 * dir);        // set up wide, on the outside
+        // Set up just OUTSIDE the centre line, not hard against the outer kerb. A racing line enters
+        // wide, but this capture is a photograph, not a lap: entering at -0.45 left the slide no
+        // road to run out into, so it either ended on the apron (bail late) or had to be cut before
+        // it developed an angle (bail early). From near-centre the slide sweeps ACROSS the lane and
+        // the frame shows a car sideways on asphalt with road on both sides of it.
+        place(entryU - 330 / trk.length, -0.16 * dir);
         // approach on the racing line, braking to an entry speed this class can hold sideways
-        autopilotTo(entryU, 460, vTarget, -0.5 * dir);
+        autopilotTo(entryU, 460, vTarget, -0.20 * dir);
         // the flick: handbrake with the wheel INTO the corner until the tail is genuinely out
         const commit = ph.slipMax * 0.45 * (Math.PI / 180);
         runWhile(() => Math.abs(game.body.slip) < commit, 36, { throttle: 0.30, steer: dir, handbrake: true });
@@ -2243,6 +2248,9 @@ window.__GAME = {
         // tuner and the supercar bail exactly where they did.
         const latBail = Math.max(0.94,
           Math.abs(trk.nearest(game.body.pos, game.race?.playerU ?? null).lateral) + 0.04);
+        // Half the car's length, as a fraction of road half-width — how far its outer corner
+        // swings off centre at full yaw.
+        const bodyReach = ((game.car?.userData?.dims?.length ?? 4.6) * 0.5) / trk.halfWidth;
         const hold = (n, throttle, lockSteer) => {
           for (let i = 0; i < n; i++) {
             const nc = trk.nearest(game.body.pos, game.race?.playerU ?? null);
@@ -2255,10 +2263,16 @@ window.__GAME = {
             if (i % 6 === 0) trace.push(this.telemetry());
             const slipNow = Math.abs(game.body.slip) * 57.2958;
             heldPeak = Math.max(heldPeak, slipNow);
-            // Stop just BEFORE the tarmac edge, not at it: bailing at 1.02 (where surface flips to
-            // dirt) captured the first frame already off the road, so five of six frames read
-            // surface:dirt. 0.94 leaves the car sideways on asphalt with the kerb in shot.
-            if (Math.abs(nc.lateral) > latBail) return true;
+            // Stop before the car's OUTER CORNER leaves the tarmac, not before its CENTRE does.
+            // Both previous versions of this test used centre-lateral alone, and both still
+            // produced frames whose wheels were over the apron: a car yawed 50 degrees reaches
+            // ~1.7 m sideways from its own centre, so the centre sits on asphalt while the
+            // outboard wheels are on dirt. The telemetry said surface:road and the picture said
+            // otherwise — which is exactly what a whole-game critic reported as "all 16 canonical
+            // drift frames put the hero off the carriageway... kicking pale dirt clods instead of
+            // white tire smoke".
+            const corner = Math.abs(nc.lateral) + Math.abs(Math.sin(game.body.slip)) * bodyReach;
+            if (corner > Math.min(latBail, 0.90)) return true;
             // ...and so does the angle washing out after a real slide has been established
             if (heldPeak > 18 && slipNow < heldPeak * 0.55 && slipNow < 16) return true;
           }
