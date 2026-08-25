@@ -455,8 +455,8 @@ export const NITRO = {
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
-      len: 4.60, rad: 0.520, merge: 0.085, standoff: 0.10, flameRise: 0.035,
-      screen: 1.25, profile: [0.46, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
+      len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
+      screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
       bands: 5.6, knot: 0.92, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.76,
       gasGain: 1.02, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97,
