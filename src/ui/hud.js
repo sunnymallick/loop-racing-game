@@ -531,8 +531,13 @@ function shout(ctx, text, o) {
  * the destination list and the stat block the player saw ninety seconds earlier.
  */
 function cutPath(ctx, x, y, w, h, skew = SKEW, cut = 0) {
-  const s = h * skew;
   ctx.beginPath();
+  cutTrace(ctx, x, y, w, h, skew, cut);
+}
+
+/** …and the same outline as a SUBPATH, so a plate can be filled with a window knocked out of it. */
+function cutTrace(ctx, x, y, w, h, skew = SKEW, cut = 0) {
+  const s = h * skew;
   if (cut > 0) {
     ctx.moveTo(x + s + cut, y);
     ctx.lineTo(x + w + s, y);
@@ -582,23 +587,48 @@ export function resultsLayout(VW, VH) {
   const panelH = barY - 34 - yT;
   const innerW = VW - M * 2;
   // the stage: the right ~30% of the panel band, left empty for the car
-  const stageW = Math.round(innerW * 0.300);
+  const stageW = Math.round(innerW * 0.315);
   const stageX = VW - M - stageW;
   const usable = innerW - stageW - 30;
   const leftW = Math.round(usable * 0.585);       // classification
   const midX = M + leftW + 26;
   const midW = usable - leftW - 26;               // YOUR RACE + LAP TIMES, stacked
   const cardAH = Math.round(panelH * 0.44);
+  /**
+   * THE STAGE IS TWO PLATES, like the column beside it, and the upper one has a WINDOW in it.
+   *
+   * The r2 stage was an L-shaped bracket rule with no fill, and the critic measured what that
+   * produces: "~200px of empty near-black between the header chevron and the car", "the one region
+   * that does not look designed", against neighbours "carrying full fills and accent rails". The
+   * instruction was to give it the same treatment as its two neighbours and to stage the car
+   * inside it rather than beside it.
+   *
+   * So: a PORTRAIT plate carrying a cut window with the hero standing in it, and a SPEC plate
+   * under it carrying the garage's block — the same rhythm as YOUR RACE over LAP TIMES in the
+   * middle column, which is what makes the three columns read as one page. The window is where the
+   * void was: it is not empty space beside the car, it is the frame around it.
+   */
+  const stageAH = Math.round(panelH * 0.585);
+  const winPadX = 14, winTop = 46, winBot = 16;
+  const winRect = {
+    x: stageX + winPadX, y: yT + winTop,
+    w: stageW - winPadX * 2, h: stageAH - winTop - winBot,
+  };
   return {
     M, BAR, CUT, RS, barY, yT, panelH, innerW,
     leftW, midX, midW, cardAH, cardBY: yT + cardAH + 20, cardBH: panelH - cardAH - 20,
     stageX, stageW,
-    // Where the car is composed inside the stage: centre, and how wide it should measure. It sits
-    // in the UPPER half — the lower third of this bracket carries the machine block (`_resSpec`),
-    // which is what the critic's "empty road filling the rest" was asking for.
-    carX: stageX + stageW * 0.465,
-    carY: yT + panelH * 0.500,
-    carW: stageW * 0.90,
+    stageAH, stageBY: yT + stageAH + 20, stageBH: panelH - stageAH - 20, winRect,
+    // Where the car is composed inside the WINDOW: centre, and how wide it should measure. Sat
+    // just above the window's middle, so the floor the panel paints has somewhere to be and the
+    // subject stands ON something instead of floating in the middle of a rectangle.
+    carX: winRect.x + winRect.w * 0.500 + stageAH * RS * 0.30,
+    carY: winRect.y + winRect.h * 0.470,
+    // …and 0.855 of the bracket, not 0.90: the window is inset from the plate, the plate leans,
+    // and a subject wider than the window it stands in is a subject with its nose behind the
+    // frame. The camera solve carries an 8–13 % residual of its own (main.js `_finishCamera`), so
+    // the margin is real room rather than arithmetic.
+    carW: stageW * 0.920,
   };
 }
 
@@ -2640,124 +2670,91 @@ export class HUD {
     ctx.fillStyle = bgg; ctx.fillRect(0, barY - 200, VW, VH - barY + 200);
 
     /**
-     * ---- THE STAGE, WHICH IS A SET AND NOT A HOLE.
+     * ---- THE STAGE: A PLATE WITH A WINDOW CUT IN IT, AND A FLOOR UNDER THE CAR.
      *
-     * Round 1 cut one soft round hole in the scrim over the right third and let the race show
-     * through it. The critic measured what that produces: "it is the live race camera pointed at
-     * wherever the car stopped … no key, no rim, NO BACKDROP, the car in the top third of its
-     * bracket with blown-out empty road filling the rest", and named the fix — "push the race scene
-     * behind it to a darkened, blurred backdrop instead of letting the chase camera and the ground
-     * bloom decide the composition".
+     * The r2 stage was a scrim with a soft ellipse erased out of it — a HOLE, which is why the
+     * critic could still read the world through it: "only an L-shaped bracket rule with no panel
+     * fill … the hero car inside it is not staged but is the race car sitting on the race road
+     * with the yellow double line running under it … thin 1-px horizontal speed-line streaks left
+     * floating in the empty backdrop". A soft hole has no edge to be designed and no floor to
+     * stand on; whatever the world puts inside it is the picture.
      *
-     * A 2D overlay cannot blur what is behind it and cannot paint behind the car. What it CAN do is
-     * build the room first and then cut the subject out of it: paint a back wall, a floor and the
-     * seam between them across the whole third, then erase a tight ellipse around the car. What is
-     * left around the subject is a set this file drew — §1.4's garage, dark, with one cool bloom on
-     * the wall behind the roofline — instead of Miami's neon skyline growing out of the roof. The
-     * hole is sized off `carW`, the same number `resultsStageNDC()` hands the camera solve, so it
-     * hugs the car at whatever scale the layout asked for.
+     * So the third column is now built the way the two beside it are: a plate, filled, chamfered,
+     * railed — with a portrait WINDOW knocked out of the fill by an even-odd path, so the fill can
+     * never touch the car. Behind the glass, main.js builds the room (`_stageBackdrop`: a lit wall
+     * card, and a floor laid in the car's own plane so the road's markings are under it); in front
+     * of the car, where a horizontal quad cannot reach without scything through a crowned road,
+     * this paints the near half of that floor in 2D. The seam between the two is exactly the car's
+     * contact line, which main.js projects for this every frame — so it lands under the tyres at
+     * any class, any lift and any camera.
      */
-    const CW = L.carW;
-    const setX = stageX - stageW * 0.36;
-    const seam = L.carY + CW * 0.150;                   // where the wall meets the floor
-    // The set is the same picture on every frame of the screen — it is built out of the layout and
-    // nothing else — so it is baked once and blitted, which is also what makes its LEFT edge
-    // affordable: feathering it needs a `destination-out` pass, and that can only run inside a
-    // layer of its own. Straight onto the frame it would eat the scrim underneath and leave the
-    // city brighter along the seam than it is anywhere else.
-    this._patch(ctx, 'resSet', setX, 0, VW - setX, VH, `${VW}|${VH}|${CW}|set`, (c) => {
-      // the wall — near-black overhead, lifting a little toward the seam so the plane is readable
-      const wall = c.createLinearGradient(0, 0, 0, seam);
-      wall.addColorStop(0, 'rgba(2,5,11,0.84)');
-      wall.addColorStop(0.62, 'rgba(5,12,21,0.68)');
-      wall.addColorStop(1, 'rgba(14,29,44,0.42)');
-      c.fillStyle = wall; c.fillRect(setX, 0, VW - setX, seam);
-      // the floor — darker again and warm rather than cool, so the two planes are not one wash
-      const flr = c.createLinearGradient(0, seam, 0, VH);
-      flr.addColorStop(0, 'rgba(16,12,12,0.48)');
-      flr.addColorStop(0.55, 'rgba(6,6,10,0.82)');
-      flr.addColorStop(1, 'rgba(1,2,6,0.96)');
-      c.fillStyle = flr; c.fillRect(setX, seam, VW - setX, VH - seam);
-      // the backdrop lamp: a wide cool bloom on the wall behind the roofline. This is the light
-      // that separates a car from a black rectangle, and §1.4 has it — "a cool rim from behind
-      // that separates it from the wall".
-      c.save();
-      c.translate(L.carX, L.carY - CW * 0.055);
-      c.scale(1, 0.46);
-      const back = c.createRadialGradient(0, 0, CW * 0.05, 0, 0, CW * 0.92);
-      back.addColorStop(0, 'rgba(104,176,220,0.26)');
-      back.addColorStop(0.46, 'rgba(74,132,182,0.11)');
-      back.addColorStop(1, 'rgba(58,106,156,0)');
-      c.fillStyle = back; c.fillRect(-CW, -CW, CW * 2, CW * 2);
-      c.restore();
-      // the seam itself, brightest behind the car and gone at both ends
-      const sg = c.createLinearGradient(setX, 0, VW, 0);
-      sg.addColorStop(0, 'rgba(126,190,226,0)');
-      sg.addColorStop(0.46, 'rgba(126,190,226,0.26)');
-      sg.addColorStop(1, 'rgba(126,190,226,0.03)');
-      c.fillStyle = sg; c.fillRect(setX, seam - 0.8, VW - setX, 1.6);
-      // …and the left edge feathered away into the frame's own scrim. Without this the set ends on
-      // a ruled vertical line down the middle of the screen — one plate edge that belongs to no
-      // plate, which at 1:1 reads as a rendering fault rather than as a room.
-      const fade = c.createLinearGradient(setX, 0, setX + stageW * 0.52, 0);
-      fade.addColorStop(0, 'rgba(0,0,0,1)');
-      fade.addColorStop(0.45, 'rgba(0,0,0,0.55)');
-      fade.addColorStop(1, 'rgba(0,0,0,0)');
-      c.globalCompositeOperation = 'destination-out';
-      c.fillStyle = fade; c.fillRect(setX, 0, stageW * 0.52, VH);
-      c.globalCompositeOperation = 'source-over';
-      // (no `alpha` option: the block's ambient `io` is already on the blit, and passing it again
-      //  would square it and make the set lag the rest of the entrance)
-    });
+    const WR = L.winRect;
+    const WIN_CUT = 14;
+    // where the tyres meet the ground, on the glass (main.js `_finishCamera`). The fallback is the
+    // layout's own estimate, used only on the frame before the beat's first camera solve.
+    const gy = snap.stageGroundNDC != null
+      ? (1 - snap.stageGroundNDC) * 0.5 * VH
+      : L.carY + L.carW * 0.155;
 
-    // …and the subject, erased out of it. `destination-out` is the only way to get a SOFT hole:
-    // clipping to a rectangle leaves a hard edge, and painting light back over the scrim only greys
-    // it. An ELLIPSE, not a circle — a car is three times as wide as it is tall at this azimuth,
-    // and a round hole big enough to clear the roof clears half the skyline with it, which is
-    // exactly how the neon got back in. The centre is not fully cleared (0.94) so the set still
-    // lies faintly over the road under the car.
-    const HX = CW * 0.605, HY = CW * 0.215;
     ctx.save();
-    ctx.translate(L.carX, L.carY + CW * 0.010);
-    ctx.scale(1, HY / HX);
-    const hole = ctx.createRadialGradient(0, 0, HX * 0.30, 0, 0, HX);
-    hole.addColorStop(0, 'rgba(0,0,0,0.94)');
-    hole.addColorStop(0.50, 'rgba(0,0,0,0.86)');
-    hole.addColorStop(0.80, 'rgba(0,0,0,0.36)');
-    hole.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = io;
+    ctx.save();
+    cutPath(ctx, WR.x, WR.y, WR.w, WR.h, RS, WIN_CUT);
+    ctx.clip();
+    // 1. the glass: the scrim is cut away over the whole window, hard, because a window has an
+    //    edge. The plate's fill is knocked out to the same path below, so the two agree exactly.
     ctx.globalCompositeOperation = 'destination-out';
-    ctx.fillStyle = hole; ctx.fillRect(-HX, -HX, HX * 2, HX * 2);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(WR.x - 6, WR.y - 6, WR.w + WR.h * RS + 12, WR.h + 12);
     ctx.globalCompositeOperation = 'source-over';
-    ctx.restore();
-
-    // …and the wall put back ABOVE the roofline. An ellipse tight enough on the roof to keep a
-    // shopfront out of the greenhouse is tight enough to veil the roof itself, so the hole is cut
-    // generously and the top of it is painted back as a second soft ellipse rather than clipped —
-    // no edge anywhere, and the bright horizontal band Miami's lit facade was throwing across the
-    // car's window line is gone. (Measured on miami-muscle-results.png: the band sat at the belt
-    // line and was the brightest thing in the third.)
-    ctx.save();
-    ctx.translate(L.carX, L.carY - CW * 0.360);
-    ctx.scale(1, 0.275);
-    const cap = ctx.createRadialGradient(0, 0, CW * 0.06, 0, 0, CW * 0.80);
-    cap.addColorStop(0, 'rgba(3,7,14,0.80)');
-    cap.addColorStop(0.55, 'rgba(3,7,14,0.46)');
-    cap.addColorStop(1, 'rgba(3,7,14,0)');
-    ctx.fillStyle = cap; ctx.fillRect(-CW, -CW, CW * 2, CW * 2);
-    ctx.restore();
-
-    // …and a warm floor pool under it, the garage's turntable light. Drawn ON the frame rather than
-    // into it, so it reads as light in the room rather than as a decal on the road. It sits on the
-    // seam, so the car stands where the two planes of the set meet instead of hovering over one.
-    const fy = seam + CW * 0.045;
-    ctx.save();
-    ctx.translate(L.carX, fy);
-    ctx.scale(1, 0.26);                                   // a pool on the ground, not a halo
-    const floor = ctx.createRadialGradient(0, 0, CW * 0.05, 0, 0, CW * 0.72);
-    floor.addColorStop(0, 'rgba(255,198,116,0.24)');
-    floor.addColorStop(0.40, 'rgba(255,172,84,0.10)');
-    floor.addColorStop(1, 'rgba(255,150,60,0)');
-    ctx.fillStyle = floor; ctx.fillRect(-CW, -CW, CW * 2, CW * 2);
+    // 2. the near floor, from a hand's width above the contact line down to the sill. The top of
+    //    it is a ramp rather than an edge: a few pixels of registration error then reads as the
+    //    shadow the tyres are standing in instead of as a line ruled across them.
+    const fBot = WR.y + WR.h;
+    const join = ctx.createLinearGradient(0, gy - 13, 0, gy + 7);
+    join.addColorStop(0, 'rgba(7,8,13,0)');
+    join.addColorStop(0.55, 'rgba(6,7,12,0.72)');
+    join.addColorStop(1, 'rgba(5,6,11,0.98)');
+    ctx.fillStyle = join;
+    ctx.fillRect(WR.x - 6, gy - 13, WR.w + WR.h * RS + 12, 20);
+    if (fBot > gy + 7) {
+      const flr = ctx.createLinearGradient(0, gy + 7, 0, fBot);
+      flr.addColorStop(0, 'rgba(5,6,11,0.98)');
+      flr.addColorStop(0.55, 'rgba(4,5,9,1)');
+      flr.addColorStop(1, 'rgba(2,3,6,1)');
+      ctx.fillStyle = flr;
+      ctx.fillRect(WR.x - 6, gy + 7, WR.w + WR.h * RS + 12, fBot - gy - 7 + 6);
+      // …the turntable's warm pool, spilling toward the viewer off the same lamp the 3D floor
+      // carries behind the car (main.js `_stageFloorMesh`), so the two halves are one surface
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(WR.x - 6, gy + 2, WR.w + WR.h * RS + 12, fBot - gy);
+      ctx.clip();
+      ctx.translate(L.carX, gy + 2);
+      ctx.scale(1, 0.30);
+      const pool = ctx.createRadialGradient(0, 0, L.carW * 0.04, 0, 0, L.carW * 0.66);
+      pool.addColorStop(0, 'rgba(255,196,116,0.20)');
+      pool.addColorStop(0.42, 'rgba(226,152,72,0.09)');
+      pool.addColorStop(1, 'rgba(180,110,50,0)');
+      ctx.fillStyle = pool;
+      ctx.fillRect(-L.carW, -L.carW, L.carW * 2, L.carW * 2);
+      ctx.restore();
+      // …and the near half of the contact shadow, which the 3D one cannot paint because it is
+      // BEHIND the car's own contact line. §7 caps a hovering car at 55 from either side of it.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(WR.x - 6, gy - 1, WR.w + WR.h * RS + 12, fBot - gy);
+      ctx.clip();
+      ctx.translate(L.carX, gy + 1);
+      ctx.scale(1, 0.115);
+      const con = ctx.createRadialGradient(0, 0, L.carW * 0.05, 0, 0, L.carW * 0.44);
+      con.addColorStop(0, 'rgba(0,0,0,0.62)');
+      con.addColorStop(0.58, 'rgba(0,0,0,0.34)');
+      con.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = con;
+      ctx.fillRect(-L.carW, -L.carW, L.carW * 2, L.carW * 2);
+      ctx.restore();
+    }
     ctx.restore();
     ctx.restore();
 
@@ -2772,9 +2769,17 @@ export class HUD {
       { tx: (1 - ease(0)) * -46, alpha: ease(0) });
 
     // ---- the stage's furniture: the rail that says this third belongs to the panel ------------
-    this._patch(ctx, 'resStage', stageX - P, yT - P, stageW + panelH * RS + P * 2, panelH + P * 2,
-      `${sig}|stg`, (c) => this._resStage(c, r, stageX, yT, stageW, panelH, RS, accent),
-      { tx: (1 - ease(0.16)) * 70, alpha: ease(0.16) });
+    // The portrait plate does NOT slide in. Its window has to stay registered with the hole cut in
+    // the scrim above, which is on the frame and cannot slide with it — and the subject inside the
+    // window is not sliding either, so a static fade is the honest move. The SPEC plate under it
+    // carries the entrance instead.
+    this._patch(ctx, 'resStage', stageX - P, yT - P, stageW + L.stageAH * RS + P * 2,
+      L.stageAH + P * 2, `${sig}|stg`,
+      (c) => this._resStage(c, r, L, accent), { alpha: ease(0.16) });
+    this._patch(ctx, 'resSpec', stageX - P, L.stageBY - P, stageW + L.stageBH * RS + P * 2,
+      L.stageBH + P * 2, `${sig}|spc`,
+      (c) => this._resSpec(c, r, stageX, L.stageBY, stageW, L.stageBH, RS, CUT),
+      { tx: (1 - ease(0.24)) * 60, alpha: ease(0.24) });
 
     // ---- classification --------------------------------------------------------------------
     this._patch(ctx, 'resTable', M - P, yT - P, leftW + panelH * RS + P * 2, panelH + P * 2, `${sig}|tbl`,
@@ -2913,54 +2918,82 @@ export class HUD {
   }
 
   /**
-   * The stage's furniture. Everything here is drawn AROUND the car, never over it: the leading rail
-   * that says this third is part of the panel, a caption, the driver's own colour swatch, and a
-   * pair of corner brackets cut off the same chamfer as every other plate on the screen. The car
-   * itself is the 3D one, driven into the hole cut in the scrim above.
+   * THE PORTRAIT PLATE — the same object as the two panels beside it, with a window in it.
+   *
+   * Everything here is drawn AROUND the car and none of it can reach the car, because the fill is
+   * laid down with an even-odd path that has the window as its second subpath: there is no state
+   * of this method in which the plate paints over the subject. The window then gets what a window
+   * gets — a sill, a bright top edge, and an inner shadow raked from the top-left, which is the
+   * side §1.4's key comes from.
    */
-  _resStage(ctx, r, x, y, w, h, S, accent) {
+  _resStage(ctx, r, L, accent) {
+    const { stageX: x, yT: y, stageW: w, stageAH: h, RS: S, CUT, winRect: WR } = L;
+    const WIN_CUT = 14;
     const lx = (ry) => x + S * h * (1 - clamp((ry - y) / h, 0, 1));
-    // the rail dies away before it reaches the car's height — a full-height bar down the leading
-    // edge reads as a line ruled ACROSS the car rather than as the edge of a plate
-    railOn(ctx, x, y, h, [[0, GOLD], [0.30, 'rgba(255,194,58,0.30)'], [0.62, 'rgba(255,194,58,0)']],
-      10, S, 4);
-    // caption, at the head of the rail
-    rtext(ctx, 'YOUR MACHINE', {
-      x: lx(y + 26) + 24, y: y + 26, size: 13, weight: 0.16, tracking: 0.30,
-      color: 'rgba(160,186,208,0.92)', face: 'geo',
+
+    // ---- the plate, with the window knocked out of its fill
+    ctx.beginPath();
+    cutTrace(ctx, x, y, w, h, S, CUT);
+    cutTrace(ctx, WR.x, WR.y, WR.w, WR.h, S, WIN_CUT);
+    ctx.fillStyle = 'rgba(4,8,13,0.93)';
+    ctx.fill('evenodd');
+    ctx.save();
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.shadowBlur = 22; ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.strokeStyle = 'rgba(140,172,200,0.42)'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.restore();
+    railOn(ctx, x, y, h, GOLD, 10, S, 4);
+
+    // ---- the caption, at the head of the rail — the same rank as FINAL STANDINGS and YOUR RACE
+    dtext(ctx, 'YOUR MACHINE', {
+      x: lx(y + 33) + 24, y: y + 33, size: 19, weight: 0.215, italic: 0.22, tracking: 0.12,
+      color: '#f2f7fc', glow: { color: 'rgba(255,194,58,0.45)', blur: 12 },
     });
-    chevrons(ctx, lx(y + 26) + 24, y + 34, 3, 7, 15, accent, 0.55);
-    // corner brackets — the chamfer of `cutPath`, drawn as two open corners instead of a box, so
-    // the stage is framed without a plate edge cutting across the car's roofline
-    const CUTL = 26;
-    ctx.strokeStyle = 'rgba(150,190,220,0.34)'; ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(x + S * h + 96, y); ctx.lineTo(x + w + S * h, y);
-    ctx.lineTo(x + w + S * h, y + 74);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(x, y + h - 74); ctx.lineTo(x, y + h);
-    ctx.lineTo(x + w - CUTL - 96, y + h);
-    ctx.stroke();
-    // the foot of the stage: a hairline the car stands on, fading out under it
-    const fg = ctx.createLinearGradient(x, 0, x + w, 0);
-    fg.addColorStop(0, 'rgba(255,194,58,0.55)');
-    fg.addColorStop(0.62, 'rgba(255,194,58,0.16)');
-    fg.addColorStop(1, 'rgba(255,194,58,0)');
+    chevrons(ctx, lx(y + 30) + w - 26 - 34, y + 20, 3, 7, 15, accent, 0.6);
+
+    // ---- the window's own frame. An inner shadow from the top-left, a lit sill along the
+    // bottom, and a hairline all the way round — the three cues that say "this is a hole in a
+    // thick plate" rather than "this is a rectangle of a different colour".
+    ctx.save();
+    cutPath(ctx, WR.x, WR.y, WR.w, WR.h, S, WIN_CUT);
+    ctx.clip();
+    const sh = 16;
+    const top = ctx.createLinearGradient(0, WR.y, 0, WR.y + sh);
+    top.addColorStop(0, 'rgba(0,0,0,0.45)'); top.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = top;
+    ctx.fillRect(WR.x - 6, WR.y, WR.w + WR.h * S + 12, sh);
+    const lft = ctx.createLinearGradient(WR.x, 0, WR.x + sh + WR.h * S, 0);
+    lft.addColorStop(0, 'rgba(0,0,0,0.30)'); lft.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = lft;
+    ctx.fillRect(WR.x, WR.y, sh + WR.h * S, WR.h);
+    // the sill: warm, because the floor beyond it is
+    const sill = ctx.createLinearGradient(0, WR.y + WR.h - 10, 0, WR.y + WR.h);
+    sill.addColorStop(0, 'rgba(255,186,96,0)');
+    sill.addColorStop(1, 'rgba(255,186,96,0.16)');
+    ctx.fillStyle = sill;
+    ctx.fillRect(WR.x - 6, WR.y + WR.h - 10, WR.w + WR.h * S + 12, 10);
+    ctx.restore();
+    cutPath(ctx, WR.x, WR.y, WR.w, WR.h, S, WIN_CUT);
+    ctx.strokeStyle = 'rgba(150,190,220,0.30)'; ctx.lineWidth = 1.2; ctx.stroke();
+    // …and a gold accent along the sill, so the window belongs to the plate that holds it
+    const fg = ctx.createLinearGradient(WR.x, 0, WR.x + WR.w, 0);
+    fg.addColorStop(0, 'rgba(255,194,58,0.10)');
+    fg.addColorStop(0.42, 'rgba(255,194,58,0.62)');
+    fg.addColorStop(1, 'rgba(255,194,58,0.10)');
     ctx.strokeStyle = fg; ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(x + 2, y + h - 1); ctx.lineTo(x + w - CUTL - 90, y + h - 1);
+    ctx.moveTo(WR.x + WIN_CUT * 0.5, WR.y + WR.h - 0.5);
+    ctx.lineTo(WR.x + WR.w - WIN_CUT, WR.y + WR.h - 0.5);
     ctx.stroke();
-    this._resSpec(ctx, r, x, y, w, h, S);
   }
 
   /**
-   * THE MACHINE BLOCK, in the bottom of the stage.
+   * THE MACHINE BLOCK — its own plate, under the portrait.
    *
-   * The critic on the round-1 stage: "the car in the top third of its bracket with blown-out empty
-   * road filling the rest". Half of that is the framing (main.js `_finishCamera`, fixed) and half
-   * of it is that the bracket is 524 px tall and a car photographed at three-quarter front is 115
-   * of them — so under a properly staged portrait there is still an empty half-panel.
+   * The r2 stage carried this loose inside the bracket with no fill behind it, which is half of
+   * what the critic meant by "the one region that does not look designed". It is now the second
+   * plate of a two-plate column, on the same rhythm as YOUR RACE over LAP TIMES beside it: same
+   * chamfer, same fill, same rail.
    *
    * It gets the garage's own furniture, because that is what this screen is made of everywhere
    * else: the paint chip the player chose, the class, and the three gradient stat bars §1.4
@@ -2968,22 +3001,32 @@ export class HUD {
    * three keys and the same two-stop ramps `ui/menu.js` draws them with). Nothing here is a number
    * the race produced, so nothing here can contradict the race: it is the object, not the result.
    */
-  _resSpec(ctx, r, x, y, w, h, S) {
+  _resSpec(ctx, r, x, y, w, h, S, CUT) {
     const st = r.carStats;
-    if (!st) return;
     const lx = (ry) => x + S * h * (1 - clamp((ry - y) / h, 0, 1));
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.fillStyle = 'rgba(4,8,13,0.93)'; ctx.fill();
+    ctx.save();
+    cutPath(ctx, x, y, w, h, S, CUT);
+    ctx.shadowBlur = 20; ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.strokeStyle = 'rgba(140,172,200,0.40)'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.restore();
+    railOn(ctx, x, y, h, GOLD, 10, S, 4);
+    if (!st) return;
     const BARS = [
       ['SPEED', st.speed, '#ff2f6d', '#ff9fc0'],
       ['TRACTION', st.traction, '#c33cff', '#f0aaff'],
       ['ACCELERATION', st.accel, '#2fa8ff', '#a6e6ff'],
     ];
-    const pitch = 34, barH = 8;
-    const top = y + h - 24 - BARS.length * pitch;
+    const barH = 10;
+    const hy = y + 34;
+    // the block is centred in the room the header leaves, so the plate does not end on 45 px of
+    // nothing — the fault this whole column was pulled up for
+    const pitch = 40;
+    const top = y + 62 + Math.max(0, (h - 78 - ((BARS.length - 1) * pitch + barH)) * 0.5);
 
     // the head: a paint chip in the car's own colour, then the class, cut off the same chamfer as
-    // every other plate on the screen. 34 px above the first bar, not 20: the rule under it was
-    // being ruled straight through the word SPEED.
-    const hy = top - 34;
+    // every other plate on the screen.
     const cx0 = lx(hy) + 26;
     platePath(ctx, cx0, hy - 16, 22, 18, 0.16);
     ctx.fillStyle = r.carColor || '#8fa3ba'; ctx.fill();

@@ -30,6 +30,7 @@ const _finDir = new THREE.Vector3();
 const _finUp = new THREE.Vector3();
 const _finTmp = new THREE.Vector3();
 const _finWant = new THREE.Vector3();
+const _finGround = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 
 /**
@@ -151,6 +152,10 @@ class Game {
     // outgoing jet's light alive past its own disposal — which the leak check would find.
     this._rimSave = null;
     if (this.jet) { this.jet.group.removeFromParent(); this.jet.dispose?.(); this.jet = null; }
+    // …and so does the stage floor, for the same reason: it is a child of the car and it owns a
+    // canvas texture that must outlive this car (see `_stageFloorMesh`)
+    if (this.stageFloor) this.stageFloor.removeFromParent();
+    this._contactShadow = null;
     // (fx piece) the crash system deforms and scuffs the REAL bodywork, so it holds references to
     // this car's geometry — drop them before the car is freed, and re-point it at the new one.
     this.effects.attachCar(null);
@@ -231,6 +236,82 @@ class Game {
     this.hero.group.removeFromParent();
     car.add(this.hero.group);
     this.hero.tint.set(this.carColor || '#ffffff');
+    car.add(this._stageFloorMesh());
+  }
+
+  /**
+   * THE FLOOR THE PORTRAIT IS SHOT ON — the other half of the backdrop card.
+   *
+   * `_stageBackdrop` hides everything BEYOND the hero. Nothing hid the ground in FRONT of it, and
+   * the critic read exactly that off the round-2 stage: "the hero car inside it is not staged but
+   * is the race car sitting on the race road with the yellow double line running under it". A 2D
+   * overlay cannot fix it — the road is under the subject, so anything painted over it is painted
+   * over the car too — and neither can the camera, because a road is what the car is standing on.
+   *
+   * So the set gets its second wall: a dark turntable laid on the ground under the car, with a warm
+   * pool at its centre and a faint edge ring, fading out before its rim can be read as a circle.
+   * §1.4's garage floor, in the one place it has to be to work.
+   *
+   * It is a CHILD OF THE CAR, not a world-space quad, for two reasons that both come off captures:
+   * the car's own frame is the road's frame, so the floor stays in the road plane on a crowned,
+   * cambered or climbing surface instead of scything through it; and it sits at local y = 0.010,
+   * under the contact shadow's lowest layer at 0.014 (kit.js `contactShadow`), so the shadow still
+   * draws on top of it and §7's hovering car stays impossible. One transparent quad, no light.
+   */
+  _stageFloorMesh() {
+    if (this.stageFloor) { this.stageFloor.removeFromParent(); return this.stageFloor; }
+    const c = document.createElement('canvas');
+    c.width = c.height = 256;
+    const g = c.getContext('2d');
+    // the floor itself: near-black, and gone before the rim so the disc has no edge
+    const base = g.createRadialGradient(128, 128, 8, 128, 128, 128);
+    base.addColorStop(0, 'rgba(11,11,16,1)');
+    base.addColorStop(0.62, 'rgba(9,9,14,1)');
+    base.addColorStop(0.84, 'rgba(6,6,11,0.62)');
+    base.addColorStop(1, 'rgba(4,4,8,0)');
+    g.fillStyle = base; g.fillRect(0, 0, 256, 256);
+    // the turntable's own lamp — warm, because the wall behind the car is cool (see `_heroLight`'s
+    // rim) and §1.4's garage separates its planes by temperature, not by value alone
+    // the turntable's own lamp — warm, because the wall behind the car is cool (see
+    // `_stageBackdrop`) and §1.4's garage separates its planes by temperature as well as by value.
+    // Kept LOW: the panel paints the near half of this floor in 2D (ui/hud.js `_drawResults`) and
+    // the two have to meet under the car's own tyres without a seam between them.
+    const pool = g.createRadialGradient(128, 128, 4, 128, 128, 104);
+    pool.addColorStop(0, 'rgba(88,60,34,0.30)');
+    pool.addColorStop(0.44, 'rgba(58,40,24,0.16)');
+    pool.addColorStop(1, 'rgba(26,20,15,0)');
+    g.fillStyle = pool; g.fillRect(0, 0, 256, 256);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const geo = new THREE.PlaneGeometry(1, 1);
+    geo.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, depthWrite: false, toneMapped: false, opacity: 0,
+    }));
+    m.name = 'stageFloor';
+    m.userData.noMerge = true;
+    m.userData.alwaysOn = true;
+    // 5 cm, not 1: the road MESH carries a crown the spline does not (the ground piece builds the
+    // camber into its vertices), and at 1 cm the far half of the carriageway came back through the
+    // floor. Measured by sweeping this height against the same 90x26 band of the portrait: mean
+    // 258 at 0.01, 181 at 0.04, 177 at 0.16 — so the crown is under four centimetres and this
+    // clears it. The tyres stand 5 cm into it, which is 4 px at the stage's scale and lies under
+    // the panel's own join gradient (ui/hud.js `_drawResults`).
+    m.position.y = 0.05;
+    // 44 m across, not 14: the disc is a finite circle and what the portrait sees of it is its
+    // RIM. At 7 m the rim to the car's right projected straight through the window and the road
+    // came back under it, which is not a size the picture asks for — it is the size the road is
+    // (track.halfWidth is 11 m here), plus its verge.
+    m.scale.set(44, 1, 44);
+    // ABOVE THE ROAD'S OWN MARKINGS. Lane paint, skid ribbons and contact pools are all
+    // depth-write-free transparent decals lying in the same centimetre as this one, so depth
+    // cannot order them and paint order is the only thing that does: measured on the scene, the
+    // road's decals run renderOrder 3-10, which is why the first cut of this floor was laid
+    // faithfully under the car and the yellow double line went on running straight over it.
+    m.renderOrder = 11;
+    m.visible = false;
+    this.stageFloor = m;
+    return m;
   }
 
   /**
@@ -444,6 +525,8 @@ class Game {
    */
   _resetFinish() {
     if (this.backdrop) this.backdrop.visible = false;
+    if (this.stageFloor) this.stageFloor.visible = false;
+    if (this._contactShadow) this._contactShadow.renderOrder = 2;
     this._stageLift = 0; this._stageLiftWant = 0; this._losN = 0;
     this._finishT = 0;
     this._finishPrompt = false;
@@ -1012,23 +1095,57 @@ class Game {
    * (opaque, and nearer) occludes it for free.
    */
   _stageBackdrop(camera, k) {
+    // the floor rides the same clock as the wall — the set arrives as one room
+    if (this.stageFloor) {
+      const on = k > 0.002;
+      this.stageFloor.visible = on;
+      this.stageFloor.material.opacity = k;
+      // …and the contact shadow has to outrank the floor in turn, or laying a set under the car
+      // takes the car's shadow with it and §7 caps a hovering car at 55. Restored with the beat.
+      const cs = this._contactShadow
+        || (this._contactShadow = this.car?.getObjectByName('contactShadow') || null);
+      if (cs) cs.renderOrder = on ? 12 : 2;
+    }
     if (k <= 0.002) { if (this.backdrop) this.backdrop.visible = false; return; }
     if (!this.backdrop) {
       const c = document.createElement('canvas');
-      c.width = c.height = 128;
+      c.width = c.height = 256;
       const g2 = c.getContext('2d');
-      const rg = g2.createRadialGradient(64, 64, 6, 64, 64, 64);
+      /**
+       * THE WALL IS LIT, AND IT IS OPAQUE WHERE THE PORTRAIT IS.
+       *
+       * Two things learned from the r2 captures. The card was 0.94 opaque with its alpha already
+       * falling at 0.52 of the radius, and the residual let LA's far skyline through as a set of
+       * thin horizontal lines across the backdrop behind the roofline — measured 800 m from the
+       * car and still 5 % visible, which is exactly the "speed-line streaks left floating in the
+       * empty backdrop" the critic read at 10x. So the core is solid out to 0.72 and the falloff
+       * is spent outside the panel's own window.
+       *
+       * And it carries a GRADIENT rather than one flat value: the map's RGB multiplies `color`, so
+       * a ramp from white at the centre to near-black at the rim turns a flat card into §1.4's
+       * cool wall with a pool of light on it behind the car's shoulder. That pool is what the
+       * roofline and the rear haunch read against.
+       */
+      const rgb = g2.createRadialGradient(128, 128, 8, 128, 128, 128);
+      rgb.addColorStop(0, '#ffffff');
+      rgb.addColorStop(0.30, '#b9c6d4');
+      rgb.addColorStop(0.58, '#4e5c6e');
+      rgb.addColorStop(1, '#0a0f18');
+      g2.fillStyle = rgb; g2.fillRect(0, 0, 256, 256);
+      const rg = g2.createRadialGradient(128, 128, 12, 128, 128, 128);
       rg.addColorStop(0, 'rgba(255,255,255,1)');
-      rg.addColorStop(0.52, 'rgba(255,255,255,0.96)');
-      rg.addColorStop(0.80, 'rgba(255,255,255,0.55)');
+      rg.addColorStop(0.72, 'rgba(255,255,255,1)');
+      rg.addColorStop(0.88, 'rgba(255,255,255,0.72)');
       rg.addColorStop(1, 'rgba(255,255,255,0)');
-      g2.fillStyle = rg; g2.fillRect(0, 0, 128, 128);
+      g2.globalCompositeOperation = 'destination-in';
+      g2.fillStyle = rg; g2.fillRect(0, 0, 256, 256);
+      g2.globalCompositeOperation = 'source-over';
       const tex = new THREE.CanvasTexture(c);
       tex.colorSpace = THREE.SRGBColorSpace;
       const m = new THREE.Mesh(
         new THREE.PlaneGeometry(1, 1),
         new THREE.MeshBasicMaterial({
-          color: 0x05080e, map: tex, transparent: true, depthWrite: false,
+          color: 0x24303f, map: tex, transparent: true, depthWrite: false,
           toneMapped: false, opacity: 0,
         }),
       );
@@ -1041,12 +1158,13 @@ class Game {
     }
     const bd = this.backdrop;
     bd.visible = true;
-    bd.material.opacity = 0.94 * k;
-    // 7.5 m, not the 11 the first cut used. The card only hides what is BEYOND it, and NYC parks a
-    // barrier and a lamp four or five metres behind the mark — far enough back to be scenery, near
-    // enough to sit inside an eleven-metre card. The car's own envelope reaches 2.7 m along this
-    // ray at the stage azimuth, so 7.5 keeps three clear metres in front of the wall.
-    const D = 7.5;
+    bd.material.opacity = k;
+    // 5.5 m, not the 11 the first cut used and not the 7.5 the second did. The card only hides
+    // what is BEYOND it, and the floor under the car only reaches so far — at 7.5 m the road
+    // between the floor's falloff and the wall came back as a warm band straight across the
+    // portrait, measured at 3x on la-muscle-results.png. The car's own envelope reaches 2.7 m
+    // along this ray at the stage azimuth, so 5.5 still keeps most of three metres of clearance.
+    const D = 5.5;
     _finTmp.copy(this.body.pos).setY(this.body.pos.y + 0.74).sub(camera.position);
     const d0 = Math.max(1, _finTmp.length());
     _finTmp.divideScalar(d0);
@@ -1230,6 +1348,20 @@ class Game {
     cam.rotateZ(shake.roll * 0.6);
     cam.fov = this.camFov;
     cam.updateProjectionMatrix();
+
+    /**
+     * WHERE THE TYRES MEET THE GROUND, in the frame the HUD is about to draw over.
+     *
+     * The results stage is a window cut in a plate, and the bottom of that window has to be a
+     * FLOOR rather than whatever road the car happened to stop on — which means the panel needs
+     * to know the one thing only the camera knows: the screen height of the car's contact plane.
+     * Estimating it from the layout (the car's silhouette width times a class-independent ratio)
+     * is wrong by the class's own proportions and by every metre of `_stageLift`; projecting the
+     * body origin — which `assemble.js` defines as the centre of the wheelbase ON THE GROUND — is
+     * exact for nothing.
+     */
+    _finGround.copy(b.pos).project(cam);
+    this._stageGroundNDC = _finGround.y;
 
     // …and the rig is not allowed to shoot through the scenery. See `_stageLineOfSight`.
     this._stageLineOfSight(w, dt);
@@ -1790,6 +1922,9 @@ class Game {
       // …and the beat's own clock, so the HUD can take its instrument clusters off the flag shot
       // before the panel arrives (ui/hud.js `draw`).
       finishT: this.state === 'finished' ? (this._finishT ?? 0) : 0,
+      // …and where the hero's tyres are on the glass, so the results stage can lay a floor under
+      // them instead of framing the road they stopped on (see `_finishCamera`).
+      stageGroundNDC: this.state === 'finished' ? (this._stageGroundNDC ?? null) : null,
     };
   }
 
