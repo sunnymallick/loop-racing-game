@@ -444,6 +444,7 @@ class Game {
    */
   _resetFinish() {
     if (this.backdrop) this.backdrop.visible = false;
+    this._stageLift = 0; this._stageLiftWant = 0; this._losN = 0;
     this._finishT = 0;
     this._finishPrompt = false;
     this._flagDone = false;
@@ -894,6 +895,75 @@ class Game {
   }
 
   /**
+   * KEEP THE SCENERY OUT OF THE LENS.
+   *
+   * The rig stands sixteen metres off the car on a mark the layout chose, and nothing checks what
+   * is standing on that line. Miami's results frame came back with a pale grey rail lying across
+   * the car at window height, in front of the hero, in front of the backdrop card, from one side of
+   * the stage to the other — and it survived every ablation (`__HERO = false`, bloom off, FX off)
+   * because it is none of those things. A raycast down the shot found it: an opaque
+   * MeshStandardMaterial in `city:miami` → `landmarks`, SEVEN METRES from the camera at y = 1.31,
+   * i.e. between the lens and the subject. The camera was standing behind a piece of the city.
+   *
+   * The fix is height, not a side flip. A side flip mid-beat is a cut (see `_flagCut`), and the
+   * obstruction is near the LENS, so dollying does not clear it — but lifting does, and it lifts
+   * continuously: the aim solve holds the car on its mark whatever the rig's height, so the shot
+   * does not move, only what is behind it. The needed lift is solved from the hit rather than
+   * ramped blindly — for a ray that leaves the car at 0.74 m and reaches the rig at H, the height
+   * over an obstacle sitting a fraction f of the way along is `0.74 + (H - 0.74) f`, so H falls
+   * straight out of the clearance being asked for.
+   *
+   * Cast every fourth frame, against the city only, and only once the panel is composing — one
+   * raycast on a screen that is otherwise a still.
+   */
+  _stageLineOfSight(w, dt) {
+    if (w < 0.35 || !this.city?.group) {
+      this._stageLift = lerp(this._stageLift ?? 0, 0, 1 - Math.exp(-3 * dt));
+      return;
+    }
+    this._losN = ((this._losN ?? 0) + 1) % 8;
+    if (this._losN === 0) {
+      const cam = this.engine.camera;
+      if (!this._los) this._los = new THREE.Raycaster();
+      let want = this._stageLiftWant ?? 0;
+      // A FAN, NOT A RAY. The first cut cast one ray at the car's centre of mass and found nothing;
+      // the second cast two, at the sill and at the roof, and still found nothing — because the
+      // Miami rail lies BETWEEN them. Worked through: the rail is 7 m from a lens 16 m off the car,
+      // so it sits at fraction 0.5625 along the shot, where the sill ray is at 0.95 m and the roof
+      // ray at 1.47 m and the rail itself at 1.21–1.41. Both rays miss it by centimetres and it
+      // lands across the greenhouse. Five rays close that gap: nothing thicker than ~35 cm can hide
+      // between two of them anywhere along the shot.
+      for (const a of [0.15, 0.50, 0.85, 1.20, 1.55]) {
+        _finAim.copy(this.body.pos); _finAim.y += a;
+        _finDir.copy(cam.position).sub(_finAim);
+        const dist = Math.max(1, _finDir.length());
+        _finDir.divideScalar(dist);
+        this._los.set(_finAim, _finDir);
+        this._los.near = 3.0;               // never trip over the car's own bodywork
+        this._los.far = dist - 0.5;
+        for (const x of this._los.intersectObject(this.city.group, true)) {
+          const m = Array.isArray(x.object.material) ? x.object.material[0] : x.object.material;
+          // a scrim, a decal or a puddle is not an obstruction — only something that writes depth is
+          if (!m || m.depthWrite === false || m.transparent) continue;
+          const f = clamp(x.distance / dist, 0.06, 0.98);
+          // where the rig has to stand for this ray to pass 25 cm OVER the thing in the way:
+          // height along the ray is a + (H - a)·f, so H falls straight out of it
+          const hy = x.point.y - this.body.pos.y + 0.25;
+          want = Math.max(want, a + (hy - a) / f - 1.52);
+          break;
+        }
+      }
+      // MONOTONIC for the length of the beat, and reset in `_resetFinish`. A lift that decays back
+      // toward the obstruction it just cleared re-blocks itself and the rig hunts: measured as a
+      // slow vertical bob that the aim solve then lags, which put the car 19 px off its mark. The
+      // car is parked, so the clearance it needs is a constant.
+      this._stageLiftWant = clamp(want, 0, 3.4);
+    }
+    this._stageLift = lerp(this._stageLift ?? 0, this._stageLiftWant ?? 0,
+      1 - Math.exp(-2.2 * dt));
+  }
+
+  /**
    * THE BACKDROP — a card between the hero and the city, so the portrait has a wall behind it.
    *
    * The critic's direction ended "push the race scene behind it to a darkened, blurred backdrop
@@ -1007,7 +1077,7 @@ class Game {
     const stg = this.hud.resultsStageNDC();
     const breath = Math.sin(t * 0.42);
     const sAz = 0.575 + breath * 0.050;
-    const sHigh = 1.52 + breath * 0.06;
+    const sHigh = 1.52 + breath * 0.06 + (this._stageLift ?? 0);
     const sFov = 50;
     /**
      * THE DISTANCE THAT MAKES THE CAR MEASURE WHAT THE PANEL RESERVED FOR IT.
@@ -1128,6 +1198,9 @@ class Game {
     cam.rotateZ(shake.roll * 0.6);
     cam.fov = this.camFov;
     cam.updateProjectionMatrix();
+
+    // …and the rig is not allowed to shoot through the scenery. See `_stageLineOfSight`.
+    this._stageLineOfSight(w, dt);
 
     // the hero rig goes over to the garage's key-plus-rim on the same clock as the camera
     this._heroLight(side, 0, smoothstep(0.15, 0.95, u * (1 - w) + w));
