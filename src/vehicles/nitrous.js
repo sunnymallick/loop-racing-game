@@ -1032,8 +1032,20 @@ const PLUME_FRAG = /* glsl */`
     // all draw a visible fine WEAVE through the bright half of the column. A regular residual is
     // easier for the eye to find than a noisy one of the same amplitude; every one of the three
     // was designed to be resolved by a TAA or a 3x3 blur this renderer does not have.
+    // ── (r20) A SMOOTH DITHER, NOT A PER-PIXEL ONE ───────────────────────────────────────────
+    // h21(gl_FragCoord) gives every pixel an INDEPENDENT step phase. That is exactly what makes
+    // the residual salt-and-pepper: the integrand is peaked (the filament is 0.15 half-widths
+    // wide and, since r20, four times brighter at a knot), so two neighbouring pixels whose
+    // samples straddle it collect visibly different amounts of light and the bright half of the
+    // column comes out GRAINY — visible at 2x on the r20a LA muscle, which means unmissable at
+    // the 6-8x a critic reads this piece at. One octave of value noise over the pixel grid costs
+    // three extra hash evaluations PER PIXEL (not per sample, so ~0.1% of the march) and gives
+    // neighbouring pixels near-equal phases: the residual becomes a soft ~3 px mottle that the
+    // bloom pass eats, instead of single-pixel confetti. It is still irregular, so it cannot draw
+    // the fine weave that r19 photographed from the ordered patterns, and still time-invariant,
+    // so it neither fizzes between frames nor between two runs of the capture harness.
     float du = (t1 - t0) / float(STEPS);
-    float jj = h21(gl_FragCoord.xy * 0.717);
+    float jj = vn(gl_FragCoord.xy * 0.37);
     float u  = t0 + du * (0.36 + 0.30 * jj);
 
     // Marched incrementally: station, offset-from-axis and height above the road all advance by a
@@ -1101,7 +1113,17 @@ const PLUME_FRAG = /* glsl */`
       // The constant 0.16 is what pulls cell 1 back onto the throat; without it the first diamond
       // sits a fifth of the way down a column that is supposed to be burning at the pipe.
       float ph  = uBands * ts * ts;                     // the CELL INDEX, continuously
-      float bp  = (ph + 0.16) * 6.2831853 + uPhase * 1.7 + uBandDrift;
+      // ── (r20) TWO COLUMNS FED BY ONE BOTTLE SHOCK AT THE SAME STATIONS ─────────────────────
+      // uPhase*1.7 put nozzle 1's train 0.65 of a cell out of step with nozzle 0's, so where the
+      // two columns overlap — which is most of the visible plume, since r14 toes them IN on
+      // purpose — one train's diamonds sat in the other's gaps and the pair integrated to a
+      // smooth ribbon. Measured on the r20a LA muscle along nozzle 0's own axis: nodes at t=0.62
+      // and t=0.69 with prominences of 4.6 and 2.6, against 15.8 for the one node that happens to
+      // land where both trains agree. Twin pipes off one bottle run at one pressure, so their
+      // cells stand at the same stations; a fifth of a cell of offset (plus the ±5.5% length
+      // difference already on the nozzles) is enough to stop the pair reading as one object
+      // mirrored, and small enough that the banding survives the overlap.
+      float bp  = (ph + 0.16) * 6.2831853 + uPhase * 0.50 + uBandDrift;
       float sw  = sin(bp);
       float ci  = floor(bp * 0.1591549 + 0.5);
       // ── (r20) THE TRAIN FADES BY CELL, NOT BY DISTANCE — AND ONLY DIAMOND 1 WAS EVER DRAWN ──
