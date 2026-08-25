@@ -1461,7 +1461,10 @@ export class HUD {
       const a = Math.abs(left);
       txt = a >= 60 ? fmtTime(a) : fmtCountdown(a);
       cap = over ? 'OVER BY' : 'TIME TO BEAT';
-      ref = `REC ${s.record}`;                 // name the datum so it can't read as a second record
+      // name the datum so it can't read as a second race clock — and set it with the HUD's own
+      // clock face rather than echoing the city file's raw string, so `REC 02:08:15` and the
+      // digits under it are one format
+      ref = `REC ${fmtTime(target)}`;
     } else { txt = fmtTime(Math.max(0, (s.raceTime || 0) - (this.lapStart || 0))); cap = 'LAP TIME'; }
 
     const w = 236, h = GR.BAND, head = 20;
@@ -2233,6 +2236,7 @@ export class HUD {
     const accent = r.dnf ? RED : win ? GOLD : podium ? AMBER : CYAN;
     const sig = [
       VW, VH, r.pos, r.dnf ? 1 : 0, r.time, r.best, r.record, r.recordBeaten ? 1 : 0,
+      r.recordBy || '', r.recordTime ?? '',
       r.cityName, r.carName, r.lapCount, laps.map((x) => x.toFixed(2)).join(),
       rows.map((x) => `${x.pos}${x.name}${x.carName}${x.finished ? 1 : 0}${x.dnf ? 1 : 0}`
         + `${x.gap == null ? '' : x.gap.toFixed(2)}${Math.round(x.gapM)}`).join('|'),
@@ -2405,14 +2409,27 @@ export class HUD {
     rtext(ctx, datum, {
       x: hx + 78, y: by - 8, size: 15, weight: 0.15, tracking: 0.24, color: LABEL, face: 'geo',
     });
-    if (r.recordBeaten) {
-      const rw = rmeasure('NEW COURSE RECORD', { size: 15, tracking: 0.24, face: 'geo' }).width + 34;
+    // ---- the record badge.
+    //
+    // ONE BADGE, ONE OWNER. Round 7 drew this off `recordBeaten` alone, which main.js took straight
+    // from the director's "your time beat the target" test — so miami-muscle-results.png carried
+    // "8TH CLASSIFIED / OF 8", a +04.25 gap to the leader, and NEW COURSE RECORD, all at once. The
+    // classification now decides who owns the course record (main.js `_classification`), and this
+    // draws whatever it says: green and unqualified when the record is the player's, steel and
+    // NAMED when somebody else took it today. There is no path through here that can claim a
+    // record for a player the table shows in eighth.
+    const mine = !!r.recordBeaten;
+    const badge = mine ? 'NEW COURSE RECORD'
+      : r.recordBy ? `NEW COURSE RECORD  ${String(r.recordBy).toUpperCase()}  ${fmtTime(r.recordTime)}`
+        : null;
+    if (badge) {
+      const rw = rmeasure(badge, { size: 15, tracking: 0.24, face: 'geo' }).width + 34;
       platePath(ctx, VW - 64 - rw, by - 44, rw, 30);
-      ctx.fillStyle = 'rgba(46,120,52,0.85)'; ctx.fill();
-      railOn(ctx, VW - 64 - rw, by - 44, 30, GREEN, 14);
-      rtext(ctx, 'NEW COURSE RECORD', {
+      ctx.fillStyle = mine ? 'rgba(46,120,52,0.85)' : 'rgba(16,30,44,0.90)'; ctx.fill();
+      railOn(ctx, VW - 64 - rw, by - 44, 30, mine ? GREEN : CYAN, 14);
+      rtext(ctx, badge, {
         x: VW - 64 - rw + 24, y: by - 23, size: 15, weight: 0.17, tracking: 0.24,
-        color: '#eaffe9', face: 'geo',
+        color: mine ? '#eaffe9' : '#d6e8f6', face: 'geo',
       });
     }
   }
@@ -2578,8 +2595,14 @@ export class HUD {
     platePath(ctx, lx(wy + wh) + 18, wy, w - 44, wh, SKEW * 0.5);
     ctx.strokeStyle = 'rgba(150,190,220,0.20)'; ctx.lineWidth = 1; ctx.stroke();
 
-    // two data rows: the record, and how this race sat against it
-    const rec = parseClock(r.record);
+    // Two data rows: the target this race was run against, and where the race landed on it.
+    //
+    // The label is RECORD TO BEAT, not COURSE RECORD, and the difference is the whole point. The
+    // course record is decided at the flag by the whole field and is announced ONCE, on the badge
+    // in the header. This card is about the player's own race, so the number it compares against
+    // is the time that STOOD coming in — otherwise the screen carries two different clocks under
+    // one word, which is the same fault as the badge wearing a different hat.
+    const rec = r.recordSec ?? parseClock(r.record);
     const delta = (rec > 0 && r.time != null && !r.dnf) ? r.time - rec : null;
     const rowY = [y + h - 54, y + h - 20];
     const put = (i, k, v, col) => {
@@ -2592,7 +2615,9 @@ export class HUD {
         color: col, glow: col === GREEN ? { color: GREEN, blur: 12 } : null,
       });
     };
-    put(0, 'COURSE RECORD', r.record ? String(r.record) : '--:--', GOLD);
+    // …and the record is set with the panel's own clock face, not echoed as the city file's raw
+    // string: "2:08:15" beside a "02:06:65" is two clock formats one line apart.
+    put(0, 'RECORD TO BEAT', rec > 0 ? fmtTime(rec) : '--:--:--', GOLD);
     put(1, delta == null ? 'AGAINST RECORD' : delta <= 0 ? 'UNDER RECORD BY' : 'OVER RECORD BY',
       delta == null ? '--' : fmtSplit(Math.abs(delta)), delta == null ? LABEL : delta <= 0 ? GREEN : '#ff8f7a');
   }
@@ -2623,7 +2648,10 @@ export class HUD {
     ctx.strokeStyle = 'rgba(150,190,220,0.24)'; ctx.lineWidth = 1.1; ctx.stroke();
 
     const laps = r.laps || [];
-    const n = Math.max(1, r.lapCount || laps.length || 1);
+    // …and never fewer rows than there are lap times. `lapCount` alone would hide a lap the player
+    // actually drove, and the header above claims a BEST — a best that highlights no row on the
+    // card is the same class of contradiction as the record badge.
+    const n = Math.max(1, r.lapCount || 0, laps.length);
     const pitch = clamp((h - 74) / n, 26, 54);
     for (let i = 0; i < n; i++) {
       const t = laps[i];

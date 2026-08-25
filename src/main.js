@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Engine, disposeObject } from './core/engine.js';
 import { Input } from './core/input.js';
 import { AudioEngine } from './core/audio.js';
-import { HUD } from './ui/hud.js';
+import { HUD, parseClock } from './ui/hud.js';
 import { Menu } from './ui/menu.js';
 import { Effects } from './fx/effects.js';
 import { buildVehicle, getVehicle, VEHICLE_IDS } from './vehicles/index.js';
@@ -630,7 +630,21 @@ class Game {
       // RACE piece: race announcements — final lap, lap counter, overtakes, the flag — go through
       // the HUD's one banner slot. The director queues them; this is the whole of the wiring.
       const ev = this.race.takeEvents?.();
-      if (ev) for (const e of ev) this.hud.message(e.text, e.hold, e.color);
+      // …with ONE filter on it, and it is the same fault as the results badge: the director shouts
+      // NEW RECORD off `finishTime < record` alone, so on a soft course it shouts it at a player
+      // who just finished eighth. The classification is what decides who owns the record (see
+      // `_classification`), and it is available on this very frame — the flag block below snapshots
+      // it from the same frozen `race.results`. If the record is not the player's, the shout is not
+      // made; nothing else on the flag beat is touched.
+      if (ev) {
+        for (const e of ev) {
+          if (e.text === 'NEW RECORD') {
+            if (!this.results) this.results = this._classification();
+            if (!this.results?.recordBeaten) continue;
+          }
+          this.hud.message(e.text, e.hold, e.color);
+        }
+      }
       if (this.race.state === 'finished' && this.state !== 'finished') this.state = 'finished';
     }
 
@@ -1388,6 +1402,24 @@ class Game {
    * eight rows with a display name for the machine, a gap to the winner, and the player's own lap
    * book. Nothing here re-derives a position; if the panel and the standings deck ever disagreed,
    * one of them would be lying to the player.
+   *
+   * WHAT COUNTS AS A RECORD (wave 8). A whole-game critic caught this screen asserting two
+   * incompatible things at once: "8TH CLASSIFIED / OF 8", a +04.25 gap to the leader, and a NEW
+   * COURSE RECORD badge. It was not a display bug — it was a bug in what counts as a record.
+   * `race.js` calls the record the moment `finishTime < record`, measured against the city's static
+   * target time and against NOTHING ELSE, so on a course whose target is soft (Miami's 2:08:15
+   * against a field that wins in 2:02:40) every one of the eight cars beats it and the player is
+   * told they set the record while seven cars stand in front of them holding faster times.
+   *
+   * A course record is the fastest time ON THE COURSE, so it is decided by the whole field, not by
+   * the player's row alone. This resolves it here, once, and hands the panel three facts that
+   * cannot disagree:
+   *
+   *   record        the time that STOOD coming into the race — what you were racing against
+   *   recordTime    the fastest time anyone set today, when that is quicker than `record`
+   *   recordBy      who set it — and `recordBeaten` is true only when that is the player.
+   *
+   * So "8th" and "you set the record" can no longer both be true: the badge now names Han.
    */
   _classification() {
     const r = this.race;
@@ -1409,15 +1441,30 @@ class Game {
         lap: x.lap ?? 0,
       };
     });
-    const winner = rows.find((x) => x.finished && x.time != null);
+    // The table is drawn in array order but prints `row.pos`, so an unsorted snapshot would print
+    // 1,3,2 down the classification. Order the DISPLAY by the director's own number — this sorts,
+    // it does not re-derive.
+    rows.sort((a, b) => (a.dnf === b.dnf ? a.pos - b.pos : (a.dnf ? 1 : -1)));
+    // the winner is the FASTEST classified time, not the first finisher the snapshot happens to
+    // list — every gap on the panel is measured off it
+    let winner = null;
+    for (const x of rows) {
+      if (x.finished && x.time != null && (!winner || x.time < winner.time)) winner = x;
+    }
     for (const row of rows) {
       // the number a results screen is actually read for: how far off the winner you were
       row.gap = (winner && row.finished && row.time != null) ? row.time - winner.time : null;
     }
     const laps = (r.lapTimes || []).filter((t) => t > 0);
     const me = rows.find((x) => x.you) || null;
+    // …and the record, decided by the whole field (see the note above).
+    const record = getCity(this.cityId)?.def.record ?? null;
+    const stood = parseClock(record);
+    const took = (stood > 0 && winner && winner.time < stood) ? winner : null;
     return {
-      pos: r.playerFinishPos ?? r.playerPos ?? 1,
+      // the headline reads the player's OWN row where there is one, so the ordinal over the table
+      // and the gold row inside it can never name two different positions
+      pos: me?.pos ?? r.playerFinishPos ?? r.playerPos ?? 1,
       total: rows.length,
       rows,
       laps,
@@ -1428,8 +1475,11 @@ class Game {
       lapCount: r.laps ?? 3,
       carName: getVehicle(this.carId).spec.full,
       cityName: this.city?.name || '',
-      record: getCity(this.cityId)?.def.record ?? null,
-      recordBeaten: !!r.recordBeaten,
+      record,                                     // the time that stood coming in
+      recordSec: stood,
+      recordBy: took ? took.name : null,          // who owns it now, if it changed hands today
+      recordTime: took ? took.time : null,
+      recordBeaten: !!(took && took.you && !took.dnf),
     };
   }
 
