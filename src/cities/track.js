@@ -1005,7 +1005,7 @@ export function runoffTexture(opts = {}) {
 
 function buildRunoffTexture({
   seed = 9, tint = '#6b6459', accent = null, gravelTint = '#a2957c', scrub = null,
-  S = 512, spanM = 15, tileM = 33, fadeFrom = 0.58,
+  S = 512, spanM = 15, tileM = 33, fadeFrom = 0.58, fadeIn = 0,
 } = {}) {
   const rng = new RNG(seed * 37 + 5);
   const { c, ctx } = canvas(S, S);
@@ -1108,7 +1108,18 @@ function buildRunoffTexture({
         const t = clamp((u - fadeFrom) / (1 - fadeFrom), 0, 1);
         // noise pulls the threshold about, so the band breaks into patches on its way out
         const a = clamp(1 - (t * 1.25 + (fade[i] - 0.5) * 0.85 * smoothstep(0, 0.35, t)), 0, 1);
-        im2.data[i * 4 + 3] = Math.round(clamp(a * a * (3 - 2 * a), 0, 1) * 255);
+        // ...and the same trick at the INNER edge, where the strip is laid OVER the last third of
+        // the verge rather than butted against it. Without this the two bands abut on a polygon
+        // boundary and print a line along it whenever the sun is low; with it the dirt grows out
+        // of the gravel in patches, which is the whole point of a modelled transition.
+        let ai = 1;
+        if (fadeIn > 0) {
+          const s0 = clamp(u / fadeIn, 0, 1);
+          ai = clamp(s0 * 1.3 - (fade[i] - 0.5) * 0.9 * (1 - smoothstep(0.55, 1, s0)), 0, 1);
+          ai = ai * ai * (3 - 2 * ai);
+        }
+        const av = clamp(a * a * (3 - 2 * a), 0, 1) * ai;
+        im2.data[i * 4 + 3] = Math.round(av * 255);
       }
     }
     ctx.putImageData(im2, 0, 0);
@@ -1565,6 +1576,16 @@ export class Track {
       vergeOut: st(lipOff + vergeWidth, -0.09, 0.86),
       runoffOut: st(lipOff + vergeWidth + runW, -0.24, 1),
     };
+    // The run-off does not start where the verge ends — it starts two thirds of the way ACROSS
+    // the verge, 2 cm proud of it, and its own alpha fades in over that overlap. The two bands
+    // interpenetrate instead of abutting, so there is no polygon boundary for a low sun to draw
+    // a line along.
+    const OVER = 0.32;
+    S.runoffIn = {
+      off: lipOff + vergeWidth * (1 - OVER),
+      y: lerp(S.apronLip.y, S.vergeOut.y, 1 - OVER) + 0.02,
+      flat: lerp(S.apronLip.flat, S.vergeOut.flat, 1 - OVER),
+    };
     S.apronOut = S.vergeOut;                                 // kept for callers that read the old name
     g.userData.section = S;
 
@@ -1670,7 +1691,8 @@ export class Track {
         seed: (surface.seed ?? 9) + 4,
         tint: dirtTint, accent: runoff.accent || null,
         gravelTint: runoff.gravel || '#a2957c', scrub: runoff.scrub || null,
-        spanM: runW,
+        spanM: runW + vergeWidth * OVER,
+        fadeIn: (vergeWidth * OVER) / (runW + vergeWidth * OVER),
       });
       const rm = new THREE.MeshStandardMaterial({
         map: rt.map, roughnessMap: rt.roughnessMap, normalMap: rt.normalMap,
@@ -1690,7 +1712,7 @@ export class Track {
       for (const side of [-1, 1]) {
         // receiveShadow stays ON: §7 caps a car with no contact shadow at 55, and the car spends
         // a good part of every drift capture standing on this band.
-        const m = strip(side, S.vergeOut, S.runoffOut, rm, {
+        const m = strip(side, S.runoffIn, S.runoffOut, rm, {
           vScale: 1 / rt.tileM, uA: 0, uB: 1, mask: runoff.mask || null,
         });
         m.renderOrder = -1;                                  // under every other transparent thing
@@ -2209,7 +2231,8 @@ class Branch {
       });
       const rt = runoffTexture({
         seed: 18, tint: dirt, accent: ro.accent || null,
-        gravelTint: ro.gravel || '#a2957c', scrub: ro.scrub || null, spanM: 11,
+        gravelTint: ro.gravel || '#a2957c', scrub: ro.scrub || null,
+        spanM: 11 + 2.4 * 0.32, fadeIn: (2.4 * 0.32) / (11 + 2.4 * 0.32),
       });
       const vm = new THREE.MeshStandardMaterial({
         map: vt.map, roughnessMap: vt.roughnessMap, normalMap: vt.normalMap,
@@ -2231,8 +2254,9 @@ class Branch {
         rm.emissive = new THREE.Color(ro.glowColor || '#ffffff');
         rm.emissiveIntensity = ro.glow ?? 0.24;
       }
+      const OVERB = 0.68;
       const shoulder = (side) => {
-        const A = [], B = [], C = [];
+        const A = [], B = [], C = [], D = [];
         for (let i = 0; i <= segs; i++) {
           const f = F[i];
           const e = i / segs;
@@ -2250,7 +2274,12 @@ class Branch {
           verge.y = lerp(kerb.y, gY + 0.30, taper);
           const run = f.p.clone().addScaledVector(f.right, side * (f.half + vOff + 11 * taper));
           run.y = lerp(verge.y, gY + 0.08, taper);
-          A.push(kerb); B.push(verge); C.push(run);
+          // ...and the run-off's inner edge sits two thirds of the way across the verge, 2 cm
+          // proud, so the two overlap and its alpha fades in over that overlap (see runoffIn on
+          // the main carriageway).
+          const mid = f.p.clone().addScaledVector(f.right, side * (f.half + 0.75 + 2.4 * OVERB * taper));
+          mid.y = lerp(kerb.y, verge.y, OVERB) + 0.02;
+          A.push(kerb); B.push(verge); C.push(run); D.push(mid);
         }
         const band = (P, Q, m, vs) => {
           const pos = [], uv = [], idx = [];
@@ -2272,7 +2301,7 @@ class Branch {
           g.add(mesh);
         };
         band(A, B, vm, 1 / vt.tileM);
-        band(B, C, rm, 1 / rt.tileM);
+        band(D, C, rm, 1 / rt.tileM);
       };
       shoulder(-1); shoulder(1);
     }
