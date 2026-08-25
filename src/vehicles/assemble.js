@@ -1160,16 +1160,35 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
         detail.add(plate);
       }
     } else if (w.type === 'swan') {
-      // Swan-neck: the blade hangs UNDERNEATH curved arms that rise off the deck outboard of it,
-      // and the end plates run the full chord. Low, wide and mounted at the quarters.
+      /**
+       * ---- ROUND-7: THE SWAN NECK HAD NO LEGS -------------------------------------------------
+       *
+       * "Swan-neck: the blade hangs UNDERNEATH curved arms that rise off the deck" is what the
+       * comment said and it is not what the geometry did. The arm's own bottom sat at `w.y - 0.02`
+       * — i.e. 20 mm under the BLADE, independent of `h` — and the hook was at the top of it, so
+       * the whole assembly rose from just below the wing and went UP. Measured against the engine
+       * deck at the arm's own station (`.vjprobe/deck.mjs supercar y,0.60,-1.922` → 0.9799) the
+       * lowest point of the wing's mounting was 76 mm clear of the bodywork: the biggest single
+       * object on the back of the car was floating over it with daylight underneath.
+       *
+       * `footY` is where the pylon meets the deck, authored from that measurement, and the pylon
+       * now runs from 28 mm INSIDE the deck up to the blade, with the neck hooking forward over
+       * the top of it. That is what a swan-neck mount is: the blade hangs from above, but the
+       * thing it hangs from is bolted to the car.
+       */
+      const postMat = w.postMat === 'chrome' ? chrome : trim;
+      const footY = w.footY ?? (w.y - 0.13);
+      const pyH = (w.y + 0.055) - footY;
       for (const sx of [-1, 1]) {
-        const arm = new THREE.Mesh(roundedBox(0.036, w.h, 0.10, 0.014), w.postMat === 'chrome' ? chrome : trim);
-        arm.position.set(sx * w.x, w.y + w.h * 0.5 - 0.02, w.z + w.chord * 0.30);
-        arm.rotation.x = -0.30;
+        const arm = new THREE.Mesh(roundedBox(0.036, pyH, 0.10, 0.014), postMat);
+        arm.position.set(sx * w.x, footY + pyH * 0.5, w.z + w.chord * 0.30);
+        arm.rotation.x = -0.14;
         detail.add(arm);
-        const hook = new THREE.Mesh(roundedBox(0.034, 0.030, 0.20, 0.012), w.postMat === 'chrome' ? chrome : trim);
-        hook.position.set(sx * w.x, w.y + w.h - 0.03, w.z + w.chord * 0.12);
-        hook.rotation.x = 0.36;
+        // the neck: forward off the top of the pylon and onto the blade's upper surface, so the
+        // blade is carried rather than butted against a post
+        const hook = new THREE.Mesh(roundedBox(0.034, 0.030, 0.22, 0.012), postMat);
+        hook.position.set(sx * w.x, w.y + 0.034, w.z + w.chord * 0.14);
+        hook.rotation.x = 0.20;
         detail.add(hook);
       }
       const blade = new THREE.Mesh(roundedBox(w.w, 0.038, w.chord, 0.018), bladeMat);

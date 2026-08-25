@@ -346,7 +346,10 @@ export const blueprint = {
   // it mirrored the sky as a solid pale-blue cube standing on each side of the wing: the round-1
   // verdict's "box stalks with literal blue box end-caps". Satin black arms are what a modern
   // swan-neck actually wears and they leave the blade as the only thing up there with an edge.
-  wing: { type: 'swan', w: 1.66, chord: 0.36, x: 0.60, y: 1.075, z: -2.03, h: 0.20, mat: 'carbon', postMat: 'dark', aoa: -0.16 },
+  // `footY` — where the two pylons meet the engine deck. Measured: the deck reads 0.9799 at x 0.60,
+  // z -1.922 (`.vjprobe/deck.mjs supercar y,0.60,-1.922`), so 0.950 buries each foot 30 mm inside
+  // the bodywork. Before this the wing's lowest mounting point was 76 mm ABOVE the deck.
+  wing: { type: 'swan', w: 1.66, chord: 0.36, x: 0.60, y: 1.075, z: -2.03, h: 0.20, footY: 0.950, mat: 'carbon', postMat: 'dark', aoa: -0.16 },
   // ROUND-2: 1.36 m wide with six strakes. §1.3's mid-engine rear is "a wide low diffuser"; at
   // 1.20 on a 2.28 m car it was a narrow box under the middle of the valance with daylight either
   // side of it. It still stops 65 mm inboard of the rear tyres' inner sidewalls, so nothing clips.
@@ -371,7 +374,7 @@ export const blueprint = {
    */
   shadows: [
     { x: 0.952, y: 0.80, z: -0.10, w: 0.24, d: 0.11, face: 'x' },      // door handle (flank 0.9412)
-    { x: 0.60, y: 0.981, z: -1.95, w: 0.16, d: 0.24 },                 // swan-neck arm feet (deck 0.9771)
+    { x: 0.60, y: 0.984, z: -1.92, w: 0.16, d: 0.26 },                 // swan-neck pylon feet (deck 0.9799)
     { x: 0.30, y: 0.683, z: 2.14, w: 0.40, d: 0.22 },                  // bonnet extractors (deck 0.6794)
     { x: 0.325, y: 0.672, z: -0.50, w: 0.13, d: 0.42 },                // roll-hoop feet (deck 0.6681)
   ],
