@@ -344,13 +344,21 @@ const RKERN = {
   PE: -0.018, TI: -0.020, TY: -0.030, LA: -0.024, LO: -0.020,
 };
 
+// The geo face has the same narrow I as the display face (`defG('I', 0.32, [box(0,0,gST,1)])`
+// against `defG('N', 0.88, …)`: a 0.175 em right side bearing where N's is 0.10), so it gets the
+// same rule — a table entry wins, otherwise any I followed by a letter closes up. Enumerating I?
+// pairs would be twenty-six rows of the same number.
+const IKERN_GEO = -0.055;
+function gkern(a, b) {
+  const k = RKERN[a + b];
+  if (k != null) return k;
+  return (a === 'I' && /[A-Z0-9]/.test(b)) ? IKERN_GEO : 0;
+}
+
 function rkern(text, size, face) {
   if (face !== 'geo') return 0;
   let d = 0;
-  for (let i = 1; i < text.length; i++) {
-    const k = RKERN[text[i - 1] + text[i]];
-    if (k) d += k * size;
-  }
+  for (let i = 1; i < text.length; i++) d += gkern(text[i - 1], text[i]) * size;
   return d;
 }
 
@@ -369,9 +377,66 @@ function rtext(ctx, text, o = {}) {
   let x = o.align === 'right' ? o.x - width : o.align === 'center' ? o.x - width / 2 : o.x;
   const sub = { ...o, align: 'left' };
   for (let i = 0; i < str.length; i++) {
-    if (i > 0) { const k = RKERN[str[i - 1] + str[i]]; if (k) x += k * size; }
+    if (i > 0) x += gkern(str[i - 1], str[i]) * size;
     if (str[i] !== ' ') drawText(ctx, str[i], { ...sub, x, y: o.y });
     x += measure(str[i], o).width + tracking * size;
+  }
+  return { width, height: size };
+}
+
+/**
+ * THE NARROW I, in the display face.
+ *
+ * The critic, at 8x on the city plate and again on the FINISH shout: "the kerning defect — 'MI AMI'
+ * — the narrow italic I advances a full slot with no kern pair against the following A. r_hero.png
+ * @5x shows the identical hole in 'FINI SH'."
+ *
+ * It is measurable in the master. `core/font.js` cuts `I` as `def('I', 0.35, [box(0, 0, ST, 1)])`
+ * with `ST = 0.165`, so its right side bearing is 0.185 em against about 0.06 for every other
+ * capital — a hole of 0.125 em after every I, before tracking, before the shear. The LEFT bearing
+ * is zero, so the pair the other way round is already tight and must not be touched.
+ *
+ * The proper home for this is a kern pair in font.js's own `KERN` table, which is not this piece's
+ * to edit this round (as with the bang below). So it is done here, and done in RUNS rather than
+ * glyph by glyph: the string is cut after every I that is followed by another letter, each run is
+ * drawn by `drawText` exactly as before — keeping the font's own AV/AT/LA pairs and its bevel,
+ * sheen and gradient intact within the run — and only the joins carry the correction.
+ */
+const IKERN = -0.100;
+
+function dsplit(str) {
+  const parts = [];
+  let cur = '';
+  for (let i = 0; i < str.length; i++) {
+    cur += str[i];
+    if (str[i] === 'I' && i < str.length - 1 && /[A-Z0-9]/.test(str[i + 1])) { parts.push(cur); cur = ''; }
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
+
+function dmeasure(text, o = {}) {
+  const str = String(text);
+  const parts = dsplit(str);
+  const size = o.size ?? 32;
+  const tracking = o.tracking ?? 0;
+  let w = 0;
+  for (const part of parts) w += measure(part, o).width;
+  return w + (parts.length - 1) * (tracking + IKERN) * size;
+}
+
+/** drawText() for the display face, with the narrow I closed up. Same options, same look. */
+function dtext(ctx, text, o = {}) {
+  const str = String(text);
+  const parts = dsplit(str);
+  if (parts.length < 2) return drawText(ctx, str, o);
+  const size = o.size ?? 32;
+  const tracking = o.tracking ?? 0;
+  const width = dmeasure(str, o);
+  let x = o.align === 'right' ? o.x - width : o.align === 'center' ? o.x - width / 2 : o.x;
+  for (const part of parts) {
+    drawText(ctx, part, { ...o, x, align: 'left' });
+    x += measure(part, o).width + (tracking + IKERN) * size;
   }
   return { width, height: size };
 }
@@ -437,7 +502,7 @@ function splitBang(text) {
 /** Width of a banner string as `shout()` sets it. */
 function shoutWidth(text, size, tracking) {
   const [head, bang] = splitBang(text);
-  const hw = head ? measure(head, { size, tracking }).width : 0;
+  const hw = head ? dmeasure(head, { size, tracking }) : 0;
   if (!bang) return hw;
   const bw = measure(bang, { size, tracking }).width;
   return head ? hw + (tracking + BANG_LEAD) * size + bw : bw;
@@ -449,8 +514,8 @@ function shout(ctx, text, o) {
   const size = o.size ?? 48, tracking = o.tracking ?? 0.10;
   let x = o.x;
   if (head) {
-    drawText(ctx, head, { ...o, x, align: 'left' });
-    x += measure(head, { size, tracking }).width + (tracking + BANG_LEAD) * size;
+    dtext(ctx, head, { ...o, x, align: 'left' });
+    x += dmeasure(head, { size, tracking }) + (tracking + BANG_LEAD) * size;
   }
   if (bang) {
     drawText(ctx, bang, {
@@ -1496,7 +1561,7 @@ export class HUD {
     const head = 20;
 
     // heading stays in the display italic — it is a heading; the rows below are the list face
-    drawText(ctx, 'STANDINGS', {
+    dtext(ctx, 'STANDINGS', {
       x: R.lx(y + 14) + RAIL + GR.PAD, y: y + 14, size: 10, weight: 0.205, italic: 0.20,
       color: 'rgba(150,206,228,0.9)', tracking: 0.30,
     });
@@ -1615,15 +1680,32 @@ export class HUD {
     if (!s.cityName) return;
     const size = 22;
     const name = String(s.cityName).toUpperCase();
-    const tw = measure(name, { size, tracking: 0.13 }).width;
-    const w = Math.max(226, tw + 60), h = GR.BAND;      // same 64 px band as the position deck
+    const tw = dmeasure(name, { size, tracking: 0.13 });
+    /**
+     * THE PLATE IS CUT TO WHAT IS ON IT, and 226 px was not that.
+     *
+     * The critic at 8x: "Miami uses the same fixed-width plate as Los Angeles, so MIAMI floats
+     * right-of-centre with ~40% of the plate empty, the » chevron stranded alone at the far left,
+     * and the word sitting high with an uneven gap below." A fixed minimum fits the LONGEST name
+     * and leaves every shorter one swimming. The floor is now the RECORD ROW — measured, because
+     * that row is what actually sets the minimum on a two-deck plate — and the name deck is a
+     * lockup (chevrons, then the word) centred in whatever that leaves, so the chevrons travel
+     * with the name instead of being pinned to an edge it no longer reaches.
+     */
+    const rec = s.record ? fmtTime(parseClock(s.record)) : null;
+    const recW = rec
+      ? RAIL + GR.PAD * 2 + 26
+        + rmeasure('RECORD', { size: 10.5, tracking: 0.28, face: 'geo' }).width
+        + measure(rec, { size: 13.5, tracking: 0.1 }).width
+      : 0;
+    const w = Math.max(178, recW, RAIL + 48 + tw + 26), h = GR.BAND;
     const x = xRight - w;                                // bottom-right corner on the margin
     const P = 34;
     this._patch(ctx, 'banner', x - P, y - P, w + h * SKEW + P * 2, h + P * 2,
-      `${name}|${s.record}|${x}|${y}|${w}`, (c) => this._paintCityBanner(c, s, x, y, w, h, name, size));
+      `${name}|${s.record}|${x}|${y}|${w}`, (c) => this._paintCityBanner(c, s, x, y, w, h, name, size, tw));
   }
 
-  _paintCityBanner(ctx, s, x, y, w, h, name, size) {
+  _paintCityBanner(ctx, s, x, y, w, h, name, size, tw) {
     const nameH = 38;
     const lx = (yy) => x + (h - (yy - y)) * SKEW;
 
@@ -1648,23 +1730,27 @@ export class HUD {
     ctx.fillRect(x - 10, y, w + 30, nameH * 0.32);
     ctx.restore();
 
-    chevrons(ctx, lx(y + nameH * 0.5) + RAIL + 8, y + 12, 2, 5, 14, 'rgba(60,26,0,0.8)', 0.9);
-    drawText(ctx, name, {
-      x: lx(y + nameH - 11) + w / 2 + 10, y: y + nameH - 11, size, weight: 0.215, italic: 0.22,
-      align: 'center', color: '#241403', tracking: 0.13,
+    // the lockup: two chevrons, a gap, the word — centred as one object in the name deck
+    const CHEV = 16, GAP = 12;
+    const base = y + nameH - 12;
+    const gx = lx(base) + RAIL + Math.max(8, (w - RAIL - (CHEV + GAP + tw)) / 2);
+    chevrons(ctx, gx, y + 12, 2, 5, 14, 'rgba(60,26,0,0.8)', 0.9);
+    dtext(ctx, name, {
+      x: gx + CHEV + GAP, y: base, size, weight: 0.215, italic: 0.22,
+      align: 'left', color: '#241403', tracking: 0.13,
     });
 
     // bottom deck: the record, label in the geometric face
-    const base = y + h - 8;
+    const rbase = y + h - 8;
     ctx.beginPath();
     ctx.moveTo(lx(y + nameH) + RAIL, y + nameH - 0.5);
     ctx.lineTo(lx(y + nameH) + w, y + nameH - 0.5);
     ctx.strokeStyle = 'rgba(255,190,110,0.45)'; ctx.lineWidth = 1; ctx.stroke();
     if (s.record) {
-      label(ctx, 'RECORD', lx(base) + RAIL + GR.PAD, base, 10.5, 'rgba(255,181,94,0.9)', { tracking: 0.28 });
+      label(ctx, 'RECORD', lx(rbase) + RAIL + GR.PAD, rbase, 10.5, 'rgba(255,181,94,0.9)', { tracking: 0.28 });
       // the HUD's own clock face, not the city file's raw string — one format for every time on
       // screen, so this deck and the mission clock's `REC` read as the same instrument
-      label(ctx, fmtTime(parseClock(s.record)), lx(base) + w - GR.PAD, base, 13.5, '#e2ecf6',
+      label(ctx, fmtTime(parseClock(s.record)), lx(rbase) + w - GR.PAD, rbase, 13.5, '#e2ecf6',
         { align: 'right', tracking: 0.1, weight: 0.17 });
     }
   }
@@ -1685,10 +1771,13 @@ export class HUD {
       const a = Math.abs(left);
       txt = a >= 60 ? fmtTime(a) : fmtCountdown(a);
       cap = over ? 'OVER BY' : 'TIME TO BEAT';
-      // name the datum so it can't read as a second race clock — and set it with the HUD's own
-      // clock face rather than echoing the city file's raw string, so `REC 02:08:15` and the
-      // digits under it are one format
-      ref = `REC ${fmtTime(target)}`;
+      // …and the record itself is NOT repeated here. The critic: "the course record is printed
+      // twice simultaneously on the race HUD — REC 02:52:40 in the top-centre plate and RECORD
+      // 02:52:40 in the top-right banner." §1.2 puts it in the banner ("an orange-and-black angled
+      // banner reading YELLOWSTONE with MISSION RECORD: 2:09:00 beneath it") and §1.1's centre
+      // plate is a bare seven-segment countdown, so the banner keeps it and this plate keeps the
+      // countdown. TIME TO BEAT already says what the number is counting against.
+      ref = null;
     } else { txt = fmtTime(Math.max(0, (s.raceTime || 0) - (this.lapStart || 0))); cap = 'LAP TIME'; }
 
     const w = 236, h = GR.BAND, head = 20;
@@ -1958,7 +2047,22 @@ export class HUD {
     // so the arc length each one gets fell from 36.7° to 27.5°. Size 0.098 → 0.088 and the row
     // pushed 0.018 R further out together restore the gap between "120" and "160" at the apex,
     // where the row is most crowded, without breaking NUM_R + halfDiagonal(numeral) < TICK_R.
-    const TICK_R = R * 0.700, NUM_R = R * 0.570, NUM_S = R * 0.088;
+    // ---- …AND THE NEEDLE DOES NOT CROSS THE NUMERALS. The critic, at 5x: "the needle is drawn
+    // over the numerals: c_speedo.png cuts through '160', n_speedo.png cuts through the 0 of '120'."
+    // It is a geometry problem, not a draw-order one: a pointer that runs from the hub to the tick
+    // band must cross any ring inside that band, so the only fixes are to move the ring outboard of
+    // the tip or to shorten the tip. The dial has no radial room outboard — ticks 0.700-0.795, arc
+    // 0.814-0.876, bezel from 0.90 — so the numerals stay inside and the POINTER is cut short of
+    // them, and cut wider and chisel-tipped so it reads as a designed pointer rather than a wand
+    // that ran out. The fine reading was never the needle's job anyway: the value arc at the rim
+    // resolves to a mile an hour and the readout in the middle prints the number.
+    //
+    //   hub 0.105 · pointer 0.470 · numerals 0.512-0.688 · ticks 0.700-0.795 · arc 0.814-0.876
+    //
+    // …which is also why the numeral row moves out 0.570 -> 0.600: with the pointer no longer
+    // running through it, the row can sit where the tick band wants it rather than where the
+    // needle allowed it.
+    const TICK_R = R * 0.700, NUM_R = R * 0.600, NUM_S = R * 0.082;
     this._patch(ctx, 'dialTicks', -R, -R, R * 2, R * 2, `${R}`, (c) => {
       for (let v = 0; v <= MAX; v += 10) {
         const a = angOf(v);
@@ -1993,29 +2097,35 @@ export class HUD {
     // CSS pixel of softening on an edge that is then box-filtered by 2.5x on composite anyway, and
     // it is a glowing red needle rather than type. Captured before and after at 1600x900: no
     // visible difference at 1:1 or at 3x on the needle tip.
-    const NB = R * 0.80;
+    const NB = R * 0.56;
+    // the blade: wider at the root, a chisel tip, and a bright leading facet along its upper edge
+    const blade = (c) => {
+      c.moveTo(-R * 0.175, -R * 0.036); c.lineTo(R * 0.418, -R * 0.020);
+      c.lineTo(R * 0.470, 0); c.lineTo(R * 0.418, R * 0.020); c.lineTo(-R * 0.175, R * 0.036);
+      c.closePath();
+    };
     // (0, 0) as the pivot, not (cx, cy): `ctx` is already translated to the dial's centre here.
     this._sprite(ctx, 'needle', -NB, -NB, NB * 2, NB * 2, `${R}`, nAng, 0, 0, (c) => {
       c.save();
       c.save();
       c.translate(R * 0.02, R * 0.03);
-      c.beginPath();
-      c.moveTo(-R * 0.20, -R * 0.030); c.lineTo(R * 0.72, -R * 0.012);
-      c.lineTo(R * 0.745, 0); c.lineTo(R * 0.72, R * 0.012); c.lineTo(-R * 0.20, R * 0.030);
-      c.closePath();
+      c.beginPath(); blade(c);
       c.fillStyle = 'rgba(0,0,0,0.45)'; c.fill();
       c.restore();
-      c.beginPath();
-      c.moveTo(-R * 0.20, -R * 0.030); c.lineTo(R * 0.72, -R * 0.012);
-      c.lineTo(R * 0.745, 0); c.lineTo(R * 0.72, R * 0.012); c.lineTo(-R * 0.20, R * 0.030);
-      c.closePath();
-      const ng = c.createLinearGradient(-R * 0.2, 0, R * 0.75, 0);
+      c.beginPath(); blade(c);
+      const ng = c.createLinearGradient(-R * 0.2, 0, R * 0.50, 0);
       ng.addColorStop(0, '#8a1010'); ng.addColorStop(0.25, '#ff4a2a'); ng.addColorStop(1, '#ff8a5a');
       c.fillStyle = ng;
       c.shadowBlur = 12; c.shadowColor = 'rgba(255,60,30,0.85)';
       c.fill(); c.shadowBlur = 0;
+      // the facet — a lit top edge, so the blade has a section instead of being a flat wedge
+      c.beginPath();
+      c.moveTo(-R * 0.16, -R * 0.030); c.lineTo(R * 0.412, -R * 0.016);
+      c.lineTo(R * 0.412, -R * 0.005); c.lineTo(-R * 0.16, -R * 0.012);
+      c.closePath();
+      c.fillStyle = 'rgba(255,200,170,0.55)'; c.fill();
       // counterweight
-      c.beginPath(); c.ellipse(-R * 0.155, 0, R * 0.055, R * 0.042, 0, 0, TAU);
+      c.beginPath(); c.ellipse(-R * 0.132, 0, R * 0.058, R * 0.045, 0, 0, TAU);
       c.fillStyle = '#c8332a'; c.fill();
       c.restore();
     });
@@ -2162,7 +2272,7 @@ export class HUD {
         });
 
         // heading (display italic) + discrete tanks
-        drawText(c, 'NITRO', {
+        dtext(c, 'NITRO', {
           x: tx, y: hb, size: 15, weight: 0.215, italic: 0.22,
           color: active ? '#ffe9b8' : '#cfe0ef', tracking: 0.10,
           glow: active ? { color: ORANGE, blur: 14 } : null,
@@ -2679,12 +2789,14 @@ export class HUD {
     drawText(ctx, 'P1', {
       x: M + 33, y: y + 30, size: 25, weight: 0.22, italic: 0.22, align: 'center', color: '#1b1204',
     });
-    drawText(ctx, 'NITRO', {
+    dtext(ctx, 'NITRO', {
       x: M + 78, y: y + 31, size: 30, weight: 0.21, italic: 0.24, tracking: 0.10,
       color: gradientFill([[0, '#ffffff'], [0.55, '#ffd9a2'], [1, ORANGE]]),
       bevel: true, glow: { color: ORANGE, blur: 16 },
     });
-    const nw = measure('NITRO', { size: 30, tracking: 0.10 }).width;
+    // (`gradientFill` builds a VERTICAL ramp off y and h only, so a run split leaves every run on
+    //  the same gradient — which is why `dtext` may carry it where `rtext` bails on a function.)
+    const nw = dmeasure('NITRO', { size: 30, tracking: 0.10 });
     rtext(ctx, 'CIRCUIT', {
       x: M + 84 + nw, y: y + 31, size: 22, weight: 0.14, tracking: 0.30, color: CYAN, face: 'geo',
     });
@@ -2721,7 +2833,7 @@ export class HUD {
     }
     chevrons(ctx, hx + 26, by - 96, 3, 8, 22, accent, 0.75);
     const status = r.dnf ? 'DID NOT FINISH' : win ? 'RACE WINNER' : podium ? 'PODIUM FINISH' : 'CLASSIFIED';
-    drawText(ctx, status, {
+    dtext(ctx, status, {
       x: hx + 74, y: by - 46, size: 40, weight: 0.215, italic: 0.23, tracking: 0.10,
       color: gradientFill([[0, '#ffffff'], [0.5, '#fff0d2'], [1, accent]]),
       bevel: true, glow: { color: accent, blur: 20 },
@@ -2897,7 +3009,7 @@ export class HUD {
     railOn(ctx, x, y, h, GOLD, 10, S, 4);
 
     const head = 62;
-    drawText(ctx, 'FINAL STANDINGS', {
+    dtext(ctx, 'FINAL STANDINGS', {
       x: lx(y + 33) + 24, y: y + 33, size: 21, weight: 0.215, italic: 0.22, tracking: 0.12,
       color: '#f2f7fc', glow: { color: 'rgba(255,194,58,0.5)', blur: 12 },
     });
@@ -3066,7 +3178,7 @@ export class HUD {
     ctx.restore();
     railOn(ctx, x, y, h, CYAN, 10, S, 4);
 
-    drawText(ctx, 'LAP TIMES', {
+    dtext(ctx, 'LAP TIMES', {
       x: lx(y + 34) + 24, y: y + 34, size: 19, weight: 0.215, italic: 0.22, tracking: 0.12,
       color: '#f2f7fc',
     });
@@ -3161,8 +3273,8 @@ export class HUD {
     const name = String(r.carName || '');
     const MAXW = VW - M - Math.max(640, hx + 40);
     let ns = 46;
-    while (ns > 22 && measure(name, { size: ns, tracking: 0.078 }).width > MAXW) ns -= 1;
-    const nw = measure(name, { size: ns, tracking: 0.078 }).width;
+    while (ns > 22 && dmeasure(name, { size: ns, tracking: 0.078 }) > MAXW) ns -= 1;
+    const nw = dmeasure(name, { size: ns, tracking: 0.078 });
     const nx = VW - M, ny = y + h - 26;
     const ug = ctx.createLinearGradient(nx - nw, 0, nx, 0);
     ug.addColorStop(0, 'rgba(255,201,66,0)'); ug.addColorStop(1, 'rgba(255,201,66,0.9)');
@@ -3171,7 +3283,7 @@ export class HUD {
       x: nx, y: ny - ns - 8, size: 12, weight: 0.14, tracking: 0.30, align: 'right',
       color: GOLD, face: 'geo',
     });
-    drawText(ctx, name, {
+    dtext(ctx, name, {
       x: nx, y: ny, size: ns, weight: 0.188, italic: 0.24, tracking: 0.078, align: 'right',
       color: gradientFill([
         [0, '#ffffff'], [0.30, '#e9f2fb'], [0.50, '#8fa3ba'], [0.56, '#c9d8e8'], [1, '#f4f8fc'],
