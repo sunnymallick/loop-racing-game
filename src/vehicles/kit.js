@@ -2139,6 +2139,7 @@ export function loftTub(sections, {
   openings = [], capU = [0.100, 0.442], zNear = 0.030, zMid = 0.070, zFar = 0.175, linerAt = 0.34,
   zTip = 0.055, zEnd = 0.62,
   flareAt = null, noseCap = {}, tailCap = {}, deckWells = [],
+  shutV = [], shutDepth = 0.0068,
 } = {}) {
   const src = [...sections].sort((a, b) => a.z - b.z).map((s) => {
     const sc = s.scale ?? 1;
@@ -2191,6 +2192,37 @@ export function loftTub(sections, {
     const step = Math.min(stepAt(a), stepAt(b), stepAt((a + b) * 0.5));
     const k = Math.max(1, Math.ceil((b - a) / step));
     for (let j = 1; j < k; j++) zset.add(+lerp(a, b, j / k).toFixed(5));
+  }
+  /**
+   * ---- 1c. THE DOOR GAP IS PRESSED INTO THE PANEL, NOT PRINTED ON IT ------
+   *
+   * ROUND-8 (junctions). The verdict on this piece is that the cars "read as a shell with props
+   * parked on it rather than an assembled vehicle", and the last instance of it is not a bolt-on at
+   * all — it is the body's own panel joints. At 9x on the muscle car's front wing
+   * (`shots/vj_r2a/la-muscle-menu.png` rect 800,300,180,140) the two door gaps are 2 px of dark
+   * paint drawn into the livery: no width, no wall, no highlight, and — decisively — they do not
+   * move when the camera does, because a stroke on an albedo map has no normal. That is the same
+   * "the junction is a texture, not geometry" shortcut the round-1 verdict named on the wing
+   * stanchions, one scale up, on the largest painted surface in every chase frame.
+   *
+   * A door gap is a groove, so it is cut the way every other opening on this car is: as a
+   * displacement of the loft's own vertices, on the same closed surface, with no ring bolted on and
+   * nothing that can float or z-fight. It costs FIVE rings per gap — the floor, two walls and two
+   * returns, at ±0, ±7.5 and ±20 mm — because a smooth valley wide enough to survive the natural
+   * 55-175 mm ring spacing would read as a crease, not as a joint. 15 mm wide and 5.5 mm deep is
+   * about 1.5 px at chase distance: a crisp dark line with a lit wall on the near side of it, which
+   * is exactly what a shut line looks like on a real car and what the painted stroke never was.
+   *
+   * `shutV` is in the loft's own v (normalised z), i.e. the same numbers the livery's `panels.doors`
+   * carries, so the pressed groove and the dark stroke land on the same millimetre of skin. Only
+   * the DOOR gaps are pressed: the bonnet and boot cross-gaps sit on the cowl step, where the deck
+   * already falls 200 mm in one station, and a groove there would be cutting a corner that is
+   * already an edge.
+   */
+  const SH_IN = 0.0075, SH_OUT = 0.020;
+  const shutZ = shutV.map((v) => zLo + v * (zHi - zLo)).filter((z) => z > zLo + SH_OUT && z < zHi - SH_OUT);
+  for (const sz of shutZ) {
+    for (const d of [-SH_OUT, -SH_IN, 0, SH_IN, SH_OUT]) zset.add(+(sz + d).toFixed(5));
   }
   const zs = [...zset].sort((a, b) => a - b);
   /**
@@ -2266,7 +2298,7 @@ export function loftTub(sections, {
   const dense = zs.map((z) => ({ z, pts: subdivideProfile(ptsAt(z), subs) }));
 
   // ---- 2. rings + the untouched skin parameterisation ---------------------
-  const { rings, L, us, vs } = buildRings(dense);
+  const { rings, norms, L, us, vs } = buildRings(dense);
   /**
    * The u of every AUTHORED profile point, read off the tub's own parameterisation. The livery
    * generator anchors the rocker shadow, the character line, the sky band and every shut line to
@@ -2277,6 +2309,28 @@ export function loftTub(sections, {
     anchors.push(us[k]);
     k += subs[i] || 0;
   }
+  /**
+   * …and the door gap's own span, taken off the SAME anchors the livery's `shut()` uses
+   * (`drawBodyPaint`: iRocker = 3, iShoulder = 7, with its 15/30 mm overshoot), so the groove ends
+   * exactly where the painted line ends. `SH_EDGE` rolls the depth off over 16 mm of skin at each
+   * end, which is what stops the gap finishing on a notch in the rocker.
+   */
+  const SH_EDGE = 0.016;
+  const shU0 = (anchors[3] ?? 0.14) - 0.015, shU1 = (anchors[7] ?? 0.35) + 0.03;
+  const shutAt = (u, z) => {
+    if (!shutZ.length) return 0;
+    const uu = u <= 0.5 ? u : 1 - u;
+    const e = smoothstep(shU0 - SH_EDGE, shU0 + SH_EDGE, uu) * (1 - smoothstep(shU1 - SH_EDGE, shU1 + SH_EDGE, uu));
+    if (e <= 0.001) return 0;
+    let best = 0;
+    for (const sz of shutZ) {
+      const dz = Math.abs(z - sz);
+      if (dz >= SH_OUT) continue;
+      const g = dz <= SH_IN ? 1 : 1 - smoothstep(SH_IN, SH_OUT, dz);
+      if (g > best) best = g;
+    }
+    return best * e;
+  };
 
   // ---- 3. where the body surface actually is on each opening circle -------
   for (const o of openings) {
@@ -2403,7 +2457,18 @@ export function loftTub(sections, {
       const r = deform(Math.abs(p[0]), p[1], z);
       const k = si * L + i;
       const dw = deckWells.length ? deckAt(i < nHalf ? i : 2 * nHalf - 2 - i, r.x * sgn, z) : null;
-      pos[k * 3] = r.x * sgn; pos[k * 3 + 1] = p[1] + (dw ? dw.dy : 0); pos[k * 3 + 2] = z;
+      let px = r.x * sgn, py = p[1] + (dw ? dw.dy : 0);
+      // …and the door gap, pressed in along the ring's own outward normal (§1c). Held off inside a
+      // wheel well, where `deform` is already moving this vertex 40-60 mm for the arch return.
+      if (shutZ.length) {
+        const sg = shutAt(us[i], z) * (1 - clamp(r.w, 0, 1));
+        if (sg > 0.001) {
+          const nn = norms[si][i];
+          px -= nn[0] * shutDepth * sg;
+          py -= nn[1] * shutDepth * sg;
+        }
+      }
+      pos[k * 3] = px; pos[k * 3 + 1] = py; pos[k * 3 + 2] = z;
       uvA[k * 2] = us[i]; uvA[k * 2 + 1] = vs[si];
       uvB[k * 2] = clamp(r.w, 0, 1); uvB[k * 2 + 1] = clamp(r.ang ?? 1, 0, 1);
       wgt[k] = r.w;

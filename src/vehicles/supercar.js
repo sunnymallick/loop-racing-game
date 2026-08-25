@@ -377,7 +377,15 @@ export const blueprint = {
     { x: 0.60, y: 0.984, z: -1.92, w: 0.16, d: 0.26 },                 // swan-neck pylon feet (deck 0.9799)
     { x: 0.30, y: 0.683, z: 2.14, w: 0.40, d: 0.22 },                  // bonnet extractors (deck 0.6794)
     { x: 0.325, y: 0.672, z: -0.50, w: 0.13, d: 0.42 },                // roll-hoop feet (deck 0.6681)
+    // ROUND-8: the side sill. 1.9 m of carbon channel down the middle of the flank, the largest
+    // bolt-on on the car after the wing, with no darkening at all where it lands. On the MEASURED
+    // flank above the sill's painted cap (0.8973 at z -0.10, y 0.36).
+    { x: 0.8988, y: 0.378, z: -0.10, w: 1.56, d: 0.10, face: 'x' },    // side sill (flank 0.8973)
   ],
+  // …and the sill's fasteners, on its own outer face (x 0.912 + w/2). Five heads, wider-pitched
+  // than the tuner's: a carbon channel on a supercar is bonded and bolted at its ends and centre,
+  // not riveted down its whole length like a tuner's plastic skirt.
+  fasteners: [{ x: 0.962, y: 0.300, z: -0.10, n: 5, span: 1.52, axis: 'z', r: 0.013, h: 0.010 }],
   extras: [
     // Round 2 stood a 280 mm PAINTED blade on each side of the engine deck: from any side view it
     // read as a red dorsal fin the height of the roof and the rear of the car became a heap of

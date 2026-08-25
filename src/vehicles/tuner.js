@@ -470,7 +470,19 @@ export const blueprint = {
     { x: 0.852, y: 0.875, z: -0.18, w: 0.26, d: 0.12, face: 'x' },     // door handle (flank 0.8466)
     { x: 0.52, y: 0.962, z: -1.94, w: 0.20, d: 0.30 },                 // wing pedestals (deck 0.9579)
     { x: 0.40, y: 0.915, z: 1.62, w: 0.38, d: 0.24 },                  // bonnet extractors (deck 0.9104)
+    // ROUND-8: the side skirt. 2 m of carbon along the bottom of both doors with nothing under it —
+    // the same "moulding glued to a shell" read the muscle car's spear had. On the MEASURED flank
+    // just above the skirt's top edge (0.7940 at z -0.06, y 0.44), and kept to 1.60 m because the
+    // flank swells to 0.812 by z -0.95 and a longer decal would sink behind the quarter.
+    { x: 0.7955, y: 0.437, z: -0.06, w: 1.60, d: 0.10, face: 'x' },    // side skirt (flank 0.7940)
   ],
+  /**
+   * …and its fasteners. The round-1 verdict paid this car for exactly this vocabulary on the arch
+   * flares ("visible bolt heads along the flare"); a bolt-on skirt wears the same hardware and had
+   * none of it. Six heads on the skirt's own outer face (x 0.800 + w/2), sized to match the rivets
+   * `archBolts` already puts round the arches so the two rows read as one kit.
+   */
+  fasteners: [{ x: 0.850, y: 0.392, z: -0.06, n: 6, span: 1.68, axis: 'z', r: 0.0145, h: 0.012 }],
   extras: [{ type: 'scoop', w: 0.44, h: 0.10, d: 0.40, y: 0.948, z: 1.42, painted: true }],
 };
 

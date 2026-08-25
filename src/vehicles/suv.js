@@ -374,7 +374,15 @@ export const blueprint = {
     { x: 1.034, y: 1.40, z: 0.30, w: 0.26, d: 0.13, face: 'x' },       // door handles (flank 1.0249)
     { x: 1.034, y: 1.40, z: -0.86, w: 0.26, d: 0.13, face: 'x' },      // (flank 1.0256)
     { y: 1.525, z: 1.72, w: 0.70, d: 0.30, mirror: false },            // scuttle louvre (deck 1.5205)
+    // ROUND-8: the rock slider. 2.7 m of black bar bolted under both doors — the longest bolt-on in
+    // the game — with the door skin above it reading the same value as the door skin above the
+    // wheel. On the MEASURED flank just above the slider's tread edge (0.9997 at z 0, y 0.98).
+    { x: 1.0012, y: 0.972, z: 0, w: 1.72, d: 0.13, face: 'x' },        // rock slider (flank 0.9997)
   ],
+  // …and the slider's mounting bolts, on its own outer face (x 1.045 + w/2). The same hardware the
+  // arch flares already wear (`archBolts: 7`), which is what makes the two read as one fitted kit
+  // rather than as two mouldings that happen to be on the same truck.
+  fasteners: [{ x: 1.115, y: 0.855, z: 0, n: 7, span: 2.24, axis: 'z', r: 0.017, h: 0.014 }],
   exhaust: [{ x: 0.78, y: 0.74, z: -2.46, r: 0.075, len: 0.24 }],
   extras: [
     // z 2.53 → 2.465: at 2.53 the bar's own 1.05 m skid plate hung 180 mm clear of the nose with

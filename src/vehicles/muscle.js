@@ -495,7 +495,25 @@ export const blueprint = {
     { x: 0.918, y: 0.94, z: -0.20, w: 0.30, d: 0.13, face: 'x' },     // door handle (flank 0.9067)
     { y: 1.014, z: -2.26, w: 1.56, d: 0.34, mirror: false },          // ducktail feet (deck 1.0096)
     { x: 0.48, y: 1.025, z: 1.02, w: 0.40, d: 0.26 },                 // bonnet extractors (deck 1.0211)
+    /**
+     * ROUND-8: the body-side spear. It is the longest bolt-on on the car — 1.8 m of chrome across
+     * the middle of the flank, i.e. the first thing a garage crop lands on — and there was nothing
+     * under it: at 9x (`shots/vj_r2a/la-muscle-menu.png` rect 800,300,180,140) the paint above the
+     * bar and the paint below it read the same value, so the moulding sat on the door the way a
+     * decal does. Placed on the MEASURED flank (0.9156 at z -0.06 y 0.665) and kept to 1.30 m,
+     * because the flank swells to 0.933 by z -0.90 and a decal wider than that would sink behind
+     * the quarter and vanish on the depth test.
+     */
+    { x: 0.9175, y: 0.665, z: -0.06, w: 1.30, d: 0.115, face: 'x' },  // side spear (flank 0.9156)
   ],
+  /**
+   * DZUS FASTENERS round the hood cut. The aperture, its rolled lip and its polished bead are all
+   * there (see `deck.wells`), but a Pro-Street bonnet with a blower through it is a panel that gets
+   * UNBOLTED, and the row of quarter-turn fasteners down each side of the opening is the detail
+   * that says so. They ride on the bonnet's own measured surface (1.0226 at x 0.40, z 1.58) just
+   * outside the lip, inboard of the header ports at x 0.515.
+   */
+  fasteners: [{ x: 0.40, y: 1.021, z: 1.58, n: 4, span: 0.56, axis: 'z', r: 0.017, h: 0.013, face: 'y' }],
   extras: [
     { type: 'blower', y: 1.06, z: 1.58 },
     /**
