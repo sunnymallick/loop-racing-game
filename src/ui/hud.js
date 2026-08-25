@@ -1056,8 +1056,13 @@ export class HUD {
     // position change → flash + a gained/lost chevron
     const pos = s.position || 1;
     if (pos !== this.lastPos) {
-      this.posDelta = Math.sign(this.lastPos - pos);
-      this.posFlash = 1;
+      // …but not while the lights are still up. The grid re-forms and the director re-orders it
+      // through the countdown, so the deck was firing its red LOST chevron at a player who has not
+      // yet moved — a state indicator that lies before the race has even started.
+      if (s.state !== 'countdown') {
+        this.posDelta = Math.sign(this.lastPos - pos);
+        this.posFlash = 1;
+      }
       this.lastPos = pos;
     }
     this.posFlash = Math.max(0, this.posFlash - d * 1.1);
@@ -1147,7 +1152,7 @@ export class HUD {
     const lapLive = this.lapFlash > 0.02;
     const P = 40;
     const rowSig = (s.standings || []).slice(0, 8).map((r) => `${r.name}${r.you ? '*' : ''}`).join(',');
-    const sig = `${x}|${y}|${w}|${h}|${s.position}|${s.totalRacers}|${s.lap}|${s.laps}|${rowSig}`;
+    const sig = `${x}|${y}|${w}|${h}|${s.position}|${s.totalRacers}|${s.lap}|${s.laps}|${s.state}|${rowSig}`;
     // Separate ids for the live and cached forms: a flash must not evict the settled bake, or the
     // deck repaints once more the moment the flash ends.
     const via = (id, live, bx, by, bw, bh, paint) => (live
@@ -1175,9 +1180,11 @@ export class HUD {
     });
     this._deckClockDigits(ctx, s, R, y1, decks[1]);
 
+    const finalLap = HUD.finalLap(s);
     via('chassisB', lapLive, x - P, y2 - P, w + h * SKEW + P * 2, decks[2] + P * 2, (c) => {
-      this._tint(c, R, y2, decks[2], 'rgba(24,28,38,0.45)', 'rgba(10,13,19,0.25)');
-      this._rule(c, R, y2, this.lapFlash > 0.02 ? AMBER : CYAN);
+      this._tint(c, R, y2, decks[2], finalLap ? 'rgba(46,32,20,0.55)' : 'rgba(24,28,38,0.45)',
+        'rgba(10,13,19,0.25)');
+      this._rule(c, R, y2, this.lapFlash > 0.02 || finalLap ? AMBER : CYAN);
       this._deckLap(c, s, R, y2, decks[2]);
     });
     this._lapPips(ctx, s, R, y2, decks[2]);
@@ -1287,18 +1294,56 @@ export class HUD {
     });
   }
 
+  /**
+   * The lap deck — and THE FINAL LAP IS A STATE.
+   *
+   * The director shouts FINAL LAP once, for 2.4 s, and then the deck went back to looking exactly
+   * like lap one: `LAP 3/3` in the same paper white as `LAP 1/3`, with the pips already amber from
+   * the lap before. §6.7 scores "state animation" on whether the HUD *holds* its states, not on
+   * whether an event fired, and the last lap is the one state an arcade racer always carries on the
+   * counter. So on the final lap the whole deck changes value — rule, caption, numeral and a tag in
+   * the dead span between the counter and the pips, which is exactly what that gap was for.
+   *
+   * All of it is fixed art keyed on the lap, so it costs a repaint when the lap changes and nothing
+   * on any other frame; the motion in this deck is still the lap flash and the breathing pip.
+   */
+  /** Is the player on the last lap? One answer, so the deck's wash, rule and type cannot split. */
+  static finalLap(s) {
+    const laps = s.laps || 3;
+    return laps > 1 && clamp(s.lap || 1, 1, laps) >= laps && s.state !== 'countdown';
+  }
+
   _deckLap(ctx, s, R, y, h) {
     const laps = s.laps || 3;
     const lap = clamp(s.lap || 1, 1, laps);
     const f = this.lapFlash;
+    const fin = HUD.finalLap(s);
     const base = y + h - 9;
     const L = R.lx(base) + RAIL;
-    label(ctx, 'LAP', L + GR.PAD, base, 11, f > 0.02 ? '#ffe6ac' : LABEL, { tracking: 0.26 });
+    label(ctx, 'LAP', L + GR.PAD, base, 11,
+      f > 0.02 ? '#ffe6ac' : fin ? 'rgba(255,206,128,0.95)' : LABEL, { tracking: 0.26 });
     drawText(ctx, `${lap}`, {
       x: L + GR.PAD + 40, y: base + 1, size: 17, weight: 0.22, italic: 0.22,
-      color: f > 0.02 ? '#fff6df' : PAPER, glow: f > 0.02 ? { color: AMBER, blur: 18 * f } : null,
+      color: f > 0.02 ? '#fff6df' : fin ? GOLD_HOT : PAPER,
+      glow: f > 0.02 ? { color: AMBER, blur: 18 * f } : fin ? { color: ORANGE, blur: 10 } : null,
     });
-    label(ctx, `/${laps}`, L + GR.PAD + 56, base, 11, 'rgba(150,172,196,0.8)', { tracking: 0.06 });
+    label(ctx, `/${laps}`, L + GR.PAD + 56, base, 11,
+      fin ? 'rgba(255,190,120,0.85)' : 'rgba(150,172,196,0.8)', { tracking: 0.06 });
+
+    if (!fin) return;
+    // the tag, right-aligned against the pips. Two lengths, because a five-lap race puts five pips
+    // in the same row and the long form would run under them.
+    const pipL = this._pipRect(s, R, y, h, 0).px;
+    const room = pipL - (L + GR.PAD + 84);
+    const size = 9.5, tracking = 0.26;
+    const long = rmeasure('FINAL LAP', { size, tracking, face: 'geo' }).width;
+    const txt = room >= long + 20 ? 'FINAL LAP' : 'FINAL';
+    const tw = rmeasure(txt, { size, tracking, face: 'geo' }).width;
+    if (room < tw + 10) return;
+    const tx = pipL - 10 - tw;
+    label(ctx, txt, tx, base - 1, size, '#ffdca0',
+      { tracking, glow: { color: ORANGE, blur: 12 } });
+    chevrons(ctx, tx - 22, base - 10, 2, 5, 11, ORANGE, 0.85);
   }
 
   /** Geometry of pip `i` — shared by the lit fill and the frame drawn over it. */
