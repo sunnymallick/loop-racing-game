@@ -295,7 +295,14 @@ export const blueprint = {
      */
     { x: 1.020, y: 1.38, z: 0.95, w: 0.26, h: 0.13, fins: 3, angle: 0.4, ry: 1.5708 },
   ],
-  mirrors: { x: 1.06, y: 1.60, z: 0.96, painted: false },
+  /**
+   * ROUND-8: x 1.06 -> 1.005, y 1.60 -> 1.55. Measured against the cabin's own section at z 0.96
+   * (hw 0.997 at the belt, rw 0.957 at the roof), the arm's inner end sat at x 1.0145 with the
+   * glasshouse surface at 0.957 — 57 mm of clear air between the mirror and the truck, on the
+   * biggest mirror in the game. It now enters the door 20 mm below the roof rail, where the sail
+   * plate (assemble.js) has something to sit on.
+   */
+  mirrors: { x: 1.005, y: 1.55, z: 0.96, painted: false },
   // see muscle.js — the flank measures 1.0249 / 1.0256 at these two stations, so at 1.055 the
   // handle's inner face stood 13 mm clear of the door
   handles: [{ x: 1.030, y: 1.40, z: 0.30 }, { x: 1.030, y: 1.40, z: -0.86 }],

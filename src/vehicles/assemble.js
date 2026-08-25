@@ -959,7 +959,30 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     const podMat = mi.mat === 'chrome' ? chrome : mi.painted ? paintSolid : trim;
     const armMat = mi.mat === 'chrome' ? chrome : trim;
     const ms = mi.scale ?? 1;
+    /**
+     * ---- THE SAIL PLATE, ROUND-8 -------------------------------------------------------------
+     *
+     * Round-1, verbatim: "mirrors have effectively no stalk — at 20x the muscle's pod meets the
+     * beltline through a ~2 px stub, so the pod reads glued to the pillar." Measured against the
+     * cabin's own section at the mirror's station, that is exactly what it is: the muscle's arm
+     * ends at x 0.8218 and the glasshouse surface there is 0.8229, so the stalk stops 1 mm short of
+     * the panel and there is nothing at the join at all. The truck is worse — its arm's inner end
+     * is 57 mm OUTBOARD of the glasshouse, i.e. the whole mirror hangs in clear air.
+     *
+     * What a mirror actually wears where it crosses the panel is a moulded sail base, wider than
+     * the stalk, sitting on the sheetmetal — the same flange-at-the-crossing this round has put on
+     * the blower's headers and the snorkel. `sailX` is the cabin's OWN surface at (mi.y, mi.z),
+     * interpolated between the belt half-width and the roof half-width, so the plate lands on the
+     * glasshouse whatever the roofline does and can never be re-broken by a change to it.
+     */
+    const cs = bp.cabin?.stations ? sampleStation(bp.cabin.stations, mi.z) : null;
+    const sailX = cs ? lerp(cs.hw, cs.rw, clamp((mi.y - cs.yBelt) / ((cs.yRoof - cs.yBelt) || 1), 0, 1)) : null;
     for (const sx of [-1, 1]) {
+      if (sailX !== null) {
+        const sail = new THREE.Mesh(roundedBox(0.024 * ms, 0.118 * ms, 0.150 * ms, 0.022 * ms), armMat);
+        sail.position.set(sx * (sailX - 0.010 * ms), mi.y - 0.014 * ms, mi.z - 0.004);
+        detail.add(sail);
+      }
       const arm = new THREE.Mesh(roundedBox(0.115 * ms, 0.038 * ms, 0.052 * ms, 0.018 * ms), armMat);
       arm.position.set(sx * (mi.x + 0.012 * ms), mi.y, mi.z);
       arm.rotation.z = sx * -0.38;

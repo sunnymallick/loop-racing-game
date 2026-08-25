@@ -272,7 +272,10 @@ export const blueprint = {
     { x: 0.86, y: 0.74, z: 1.02, w: 0.26, h: 0.18, fins: 3, angle: 0.4, ry: 1.5708 },     // fender gill
   ],
   // chrome bullet mirror, at 84% of the kit's default pod — see the note in assemble.js
-  mirrors: { x: 0.86, y: 1.06, z: 0.60, mat: 'chrome', scale: 0.84 },
+  // ROUND-8: x 0.86 -> 0.842. The arm's inner end was at 0.8218 against a glasshouse surface of
+  // 0.8229 — it stopped 1 mm short of the pillar, which is the round-1 "~2 px stub" verbatim. It
+  // now runs 20 mm into the panel, behind the sail plate.
+  mirrors: { x: 0.842, y: 1.06, z: 0.60, mat: 'chrome', scale: 0.84 },
   // x 0.955 -> 0.912: the handle is 35 mm thick and the flank measures 0.9067 at its own station,
   // so its INNER face stood 31 mm clear of the paint — a chrome bar floating beside the door.
   handles: [{ x: 0.912, y: 0.94, z: -0.20 }],
