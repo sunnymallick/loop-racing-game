@@ -539,7 +539,10 @@ export function resultsLayout(VW, VH) {
 function resultTime(row) {
   if (row.dnf) return 'DNF';
   if (row.finished && row.time != null) {
-    return (row.gap == null || row.gap <= 0.005) ? fmtTime(row.time) : `+${fmtSplit(row.gap)}`;
+    // the LEADER's row carries the clock; everyone else carries an interval to it. Keyed on the
+    // flag main.js sets rather than on `gap <= 0.005`, so a dead heat reads +00.00 instead of
+    // putting a second absolute time in a column of intervals.
+    return (row.leader || row.gap == null) ? fmtTime(row.time) : `+${fmtSplit(row.gap)}`;
   }
   if (row.gapM > 0.5) return `+${Math.round(row.gapM)}m`;
   return '--';
@@ -2801,6 +2804,9 @@ export class HUD {
     ctx.strokeStyle = 'rgba(150,190,220,0.24)'; ctx.lineWidth = 1.1; ctx.stroke();
 
     const laps = r.laps || [];
+    // ONE best lap. `|t - best| < 1e-6` highlights every lap that ties it, and two rows tagged BEST
+    // under a header that says BEST is the same contradiction in miniature.
+    const bestIdx = best == null ? -1 : laps.findIndex((t) => t != null && Math.abs(t - best) < 1e-6);
     // …and never fewer rows than there are lap times. `lapCount` alone would hide a lap the player
     // actually drove, and the header above claims a BEST — a best that highlights no row on the
     // card is the same class of contradiction as the record badge.
@@ -2811,7 +2817,7 @@ export class HUD {
       const ry = y + 58 + i * pitch;
       const rh = pitch - 4;
       const rl = lx(ry + rh);
-      const isBest = t != null && best != null && Math.abs(t - best) < 1e-6;
+      const isBest = i === bestIdx;
       if (isBest) {
         platePath(ctx, rl + 18, ry, w - 40, rh, SKEW);
         const g = ctx.createLinearGradient(rl, 0, rl + w, 0);

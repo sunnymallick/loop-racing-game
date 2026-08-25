@@ -1454,6 +1454,9 @@ class Game {
     for (const row of rows) {
       // the number a results screen is actually read for: how far off the winner you were
       row.gap = (winner && row.finished && row.time != null) ? row.time - winner.time : null;
+      // …and exactly one row is the leader, so a dead heat shows +00.00 against them rather than
+      // two rows printing an absolute clock in a column of intervals
+      row.leader = row === winner;
     }
     const laps = (r.lapTimes || []).filter((t) => t > 0);
     const me = rows.find((x) => x.you) || null;
