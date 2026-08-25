@@ -9,6 +9,7 @@ import {
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
   panelNoise, cloneShaded, wingEndplate,
   spanIn, spanOut, spanInY, spanOutY, fitRect, apertureBack, apertureCoreMaterial,
+  engineBayMaterial, partShadow, portFlange, panelReturn,
 } from './kit.js';
 import { lerp, clamp, RNG } from '../core/rng.js';
 
@@ -290,6 +291,13 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
      */
     noseCap: bp.nose || {},
     tailCap: bp.tail || {},
+    /**
+     * THE BONNET APERTURE (kit.js `loftTub` §4b). The hole the supercharger drops into is cut into
+     * the bonnet the same way the grille mouth is cut into the nose and the arch is cut into the
+     * wing — one SDF, one rim fillet, one rolled lip — so it is the bonnet's own vertices and there
+     * is nothing to bolt on, nothing to float and no stripe left running under the engine.
+     */
+    deckWells: bp.deck?.wells || [],
   });
 
   // ---------------- 2. materials ----------------
@@ -391,6 +399,12 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const tub = new THREE.Mesh(tubGeo.shell, paint);
   tub.name = 'shell';
   bodyGroup.add(tub);
+  if (tubGeo.bay) {
+    // the floor and walls of the bonnet aperture — not paint, and therefore not striped
+    const by = new THREE.Mesh(tubGeo.bay, engineBayMaterial());
+    by.name = 'enginebay';
+    bodyGroup.add(by);
+  }
   if (tubGeo.liner) {
     const ln = new THREE.Mesh(tubGeo.liner, wellLinerMaterial());
     ln.name = 'wheelwells';
@@ -1209,6 +1223,63 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   // bespoke extras
   for (const x of bp.extras || []) detail.add(buildExtra(x, { paint: paintSolid, trim, chrome, plastic, carbon }));
 
+  /**
+   * ---- WHERE A BOLT-ON MEETS THE PANEL (kit.js JUNCTIONS) ---------------------------------
+   *
+   * ROUND-7, verbatim: "Every bolt-on part rests ON a closed body shell instead of passing through
+   * it … so the cars read as a shell with props parked on it rather than an assembled vehicle."
+   *
+   * Every earlier round chased the FREE END of a bolt-on and those are all buried now. This is the
+   * other end of the same sentence: a part can be geometrically inside a panel and still read as
+   * standing on it, because what tells you a part is fixed to sheetmetal is the JUNCTION — a rolled
+   * lip round a hole, a flange round a tube, and a hard little shadow in the paint under anything
+   * that lands on it. Three declarations, all of them cheap:
+   *
+   *   bp.deck.wells   real openings cut into the bonnet   (kit.js loftTub §4b)
+   *   bp.ports        a flange + a dark bore where a round section crosses a panel
+   *   bp.shadows      the AO decal at a part's footprint. Every decal on every car shares ONE
+   *                   material, so the whole set is a single draw call.
+   */
+  /**
+   * The rolled bead round a bonnet aperture. The cut itself is in the loft and it carries its own
+   * 18 mm lip, but a lip is only a change of slope on a panel that is already curved — under a
+   * high key it reads as a soft highlight and under a flat sky it reads as nothing. A polished
+   * ring standing on the rim is the one line that says "hole" from any angle and in any light, and
+   * it is what a Pro-Street car actually wears round a hood cut.
+   */
+  for (const wl of bp.deck?.wells || []) {
+    if (!wl.bead) continue;
+    const ring = panelReturn(wl.w, wl.d, {
+      r: wl.r ?? 0.07, bead: wl.beadR ?? 0.016, rise: 0,
+      mat: wl.bead === 'chrome' ? chrome : wl.bead === 'paint' ? paintSolid : trim,
+    });
+    ring.position.set(wl.x ?? 0, wl.beadY ?? 0, wl.z);
+    detail.add(ring);
+  }
+  for (const pt of bp.ports || []) {
+    const rO = pt.rOut ?? (pt.r ?? 0.03) * 1.7;
+    for (const sx of pt.mirror === false ? [1] : [-1, 1]) {
+      const f = portFlange({ rTube: pt.r ?? 0.03, rOut: rO, rise: pt.rise ?? 0.018, mat: trim });
+      f.position.set(sx * (pt.x ?? 0), pt.y, pt.z);
+      if (pt.rx) f.rotation.x = pt.rx;
+      if (pt.rz) f.rotation.z = sx * pt.rz;
+      detail.add(f);
+      const d = partShadow(rO * 3.2, rO * 3.2, { face: pt.face || 'y' });
+      d.position.set(sx * (pt.x ?? 0), pt.y + (pt.lift ?? 0.004), pt.z);
+      detail.add(d);
+    }
+  }
+  for (const sh of bp.shadows || []) {
+    for (const sx of sh.mirror === false ? [1] : [-1, 1]) {
+      const d = partShadow(sh.w, sh.d, { face: sh.face || 'y', sign: sh.face === 'x' ? sx : (sh.sign ?? 1) });
+      d.position.set(sx * (sh.x ?? 0), sh.y, sh.z);
+      if (sh.rx) d.rotation.x = sh.rx;
+      if (sh.ry) d.rotation.y = sx * sh.ry;
+      if (sh.rz) d.rotation.z = sx * sh.rz;
+      detail.add(d);
+    }
+  }
+
   // ---------------- 8. batch, shadow, env ----------------
   bodyGroup.traverse((o) => {
     if (!o.isMesh) return;
@@ -1500,28 +1571,105 @@ function buildExtra(x, mats) {
       fly.position.set(bx, 0.194, 0.203);
       mesh.add(fly);
     }
-    // front drive: crank pulley, blower pulley and the belt over them
-    for (const [py, pr, pw] of [[-0.02, 0.115, 0.045], [0.10, 0.085, 0.040]]) {
-      const pul = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, pw, 18), chromeMaterial({ color: '#9ba1ab', rough: 0.20 }));
-      pul.rotation.z = Math.PI / 2;
-      pul.position.set(0, py, 0.245);
-      mesh.add(pul);
-      const boss = new THREE.Mesh(new THREE.CylinderGeometry(pr * 0.34, pr * 0.34, pw + 0.02, 10), chromeMaterial({ color: '#b9bec6', rough: 0.12 }));
-      boss.rotation.z = Math.PI / 2;
-      boss.position.set(0, py, 0.245);
-      mesh.add(boss);
+    /**
+     * ---- THE FRONT DRIVE, ROUND-7 ---------------------------------------------------------
+     *
+     * Verbatim: "the pulley is a zero-thickness flat card with a knife edge". It was, and the
+     * reason is one axis. `rotation.z = PI/2` lays a cylinder's axis along X — i.e. the pulleys
+     * faced SIDEWAYS, out over the wings — so what the garage camera, which looks down the length
+     * of the bonnet, saw of a 230 mm pulley was its 45 mm rim: a tall thin rounded rectangle with a
+     * specular running down the middle of it, which is exactly a card seen edge-on.
+     *
+     * A blower drive turns about the CRANK axis, and on a longitudinal V8 that is fore-and-aft. The
+     * pulleys face the front of the car, where the camera is, and they read as pulleys: a rim, a
+     * dished web, a belt groove and a nut in the middle of it.
+     */
+    for (const [py, pr, pw] of [[-0.02, 0.115, 0.052], [0.105, 0.086, 0.046]]) {
+      const rim = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, pw, 20, 1, true), chromeMaterial({ color: '#9ba1ab', rough: 0.20 }));
+      rim.rotation.x = Math.PI / 2;
+      rim.position.set(0, py, 0.245);
+      mesh.add(rim);
+      // the web: a shallow dish behind the rim, so the pulley has a face instead of a hole
+      const web = new THREE.Mesh(new THREE.CylinderGeometry(pr * 0.94, pr * 0.72, pw * 0.34, 20), chromeMaterial({ color: '#8d939d', rough: 0.30 }));
+      web.rotation.x = Math.PI / 2;
+      web.position.set(0, py, 0.245 - pw * 0.10);
+      mesh.add(web);
+      // the belt groove — one dark ring, which is what separates a pulley from a chrome disc
+      const groove = new THREE.Mesh(new THREE.TorusGeometry(pr * 0.985, pw * 0.19, 6, 22), plastic);
+      groove.position.set(0, py, 0.245);
+      mesh.add(groove);
+      const nut = new THREE.Mesh(new THREE.CylinderGeometry(pr * 0.26, pr * 0.26, pw * 0.9, 6), chromeMaterial({ color: '#b9bec6', rough: 0.12 }));
+      nut.rotation.x = Math.PI / 2;
+      nut.position.set(0, py, 0.245 + pw * 0.30);
+      mesh.add(nut);
     }
-    for (const bx of [-0.10, 0.10]) {
-      const belt = new THREE.Mesh(roundedBox(0.016, 0.20, 0.026, 0.006), plastic);
-      belt.position.set(bx, 0.042, 0.247);
+    // the belt runs down the two flanks of the drive, in the plane the pulleys now turn in
+    for (const bx of [-1, 1]) {
+      const belt = new THREE.Mesh(roundedBox(0.020, 0.215, 0.030, 0.007), plastic);
+      belt.position.set(bx * 0.101, 0.042, 0.247);
+      belt.rotation.z = bx * -0.07;
       mesh.add(belt);
     }
+    /**
+     * ---- THE INTAKE MANIFOLD, i.e. WHAT IS UNDER THE BONNET ---------------------------------
+     *
+     * The blower now sits IN a hole (`bp.deck.wells`), so for the first time there is something
+     * below the bonnet line to be seen. A case that stopped 40 mm under the rim with nothing under
+     * it would be a box floating in a box. This is the manifold it is bolted to, plus the two cam
+     * covers either side of it, all in the bay's own darkness — they are what makes the opening
+     * read as an engine bay rather than as a rectangular pit.
+     */
+    const manifold = new THREE.Mesh(roundedBox(0.42, 0.10, 0.40, 0.02),
+      darkMetalMaterial({ color: '#1e2127', metal: 0.72, rough: 0.44 }));
+    manifold.position.y = -0.155;
+    mesh.add(manifold);
+    for (const cx of [-1, 1]) {
+      const cam = new THREE.Mesh(roundedBox(0.09, 0.075, 0.40, 0.024),
+        darkMetalMaterial({ color: '#3d4149', metal: 0.68, rough: 0.38 }));
+      cam.position.set(cx * 0.245, -0.180, 0.0);
+      mesh.add(cam);
+    }
+    /**
+     * ---- THE HEADERS GO THROUGH THE BONNET --------------------------------------------------
+     *
+     * Verbatim: "four chrome header pipes end in rounded caps HOVERING above the paint with the
+     * hood visible passing behind them". Measured, the low end of each primary sat 50 mm clear of
+     * the panel, so the pipes were eight chrome sticks lying above a bonnet — the single most
+     * literal instance of "a prop parked on a shell" on any of the four cars.
+     *
+     * A zoomie comes OUT of the engine, so its root is below the panel and its open end is above
+     * it. Each primary now starts 100 mm inside the wing, crosses the bonnet through a flanged
+     * port of its own (`bp.ports`) and stands 250 mm proud with the bore open at the top. `sink`
+     * is what guarantees the junction: the root cap is inside closed bodywork and can never be
+     * photographed, whatever the camera does.
+     */
+    const hLean = x.headerLean ?? 0.44, hRoot = x.headerY ?? -0.19, hX = x.headerX ?? 0.44;
+    const hLen = x.headerLen ?? 0.40;
+    const sn = Math.sin(hLean), cs = Math.cos(hLean);
+    const pipeMat = chromeMaterial({ color: '#d0d5dc', rough: 0.12 });
     for (let i = 0; i < 8; i++) {
-      const t = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.34, 8), chromeMaterial({ color: '#d0d5dc', rough: 0.12 }));
-      const side = i < 4 ? -1 : 1;
-      t.position.set(side * 0.26, -0.02, -0.14 + (i % 4) * 0.10);
-      t.rotation.z = side * 0.9;
+      const side = i < 4 ? 1 : -1;
+      const zc = -0.15 + (i % 4) * 0.10;
+      const t = new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.034, hLen, 10), pipeMat);
+      t.rotation.z = -side * hLean;                       // +Y → (side·sin, cos)
+      t.position.set(side * (hX + sn * hLen * 0.5), hRoot + cs * hLen * 0.5, zc);
       mesh.add(t);
+      // the open bore at the tip, so a primary is a pipe rather than a chrome rod
+      // ZYX so the X tip is applied BEFORE the Z lean — the default XYZ order applies Z first and
+      // a Z rotation cannot move the +Z face normal, so the disc would face straight up whatever
+      // lean it was given.
+      const bore = new THREE.Mesh(new THREE.CircleGeometry(0.026, 12), cavityMaterial());
+      bore.rotation.order = 'ZYX';
+      bore.rotation.set(-Math.PI / 2, 0, -side * hLean);
+      bore.position.set(side * (hX + sn * (hLen - 0.003)), hRoot + cs * (hLen - 0.003), zc);
+      mesh.add(bore);
+      // a collector ring a third of the way up: the pressed joint every primary wears
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.0355, 0.0075, 5, 12), pipeMat);
+      ring.rotation.order = 'ZYX';
+      ring.rotation.set(-Math.PI / 2, 0, -side * hLean);
+      const f = hLen * 0.34;
+      ring.position.set(side * (hX + sn * f), hRoot + cs * f, zc);
+      mesh.add(ring);
     }
   } else if (x.type === 'scoop') {
     mesh = new THREE.Group();

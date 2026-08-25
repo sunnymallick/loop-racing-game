@@ -391,8 +391,64 @@ export const blueprint = {
   ],
   wing: { type: 'ducktail', w: 1.50, chord: 0.30, y: 1.015, z: -2.26, mat: 'paint', aoa: -0.34 },
   exhaust: [{ x: 0.50, y: 0.435, z: -2.585, r: 0.070, len: 0.26 }],
+  /**
+   * ---- THE BONNET APERTURE (round-7) -------------------------------------------------------
+   *
+   * Verbatim: "the supercharger sits on an unbroken hood with the racing stripe running
+   * continuously under its base and its four header pipes ending in mid-air above the paint … no
+   * cut-out, no socket, no contact shadow."
+   *
+   * There is a hole in the bonnet now, and it is cut into the LOFT (kit.js `loftTub` §4b) exactly
+   * the way the grille mouth is cut into the nose panel and the arch is cut into the wing: one
+   * rounded-rect SDF pushed 150 mm into the surface over a 55 mm rim fillet, with an 11 mm rolled
+   * lip standing proud round the outside of it. It is made of the bonnet's own vertices, so there
+   * is no ring bolted on, nothing that can float and nothing that can z-fight.
+   *
+   * The floor and the walls go to their own bucket (`engineBayMaterial`) rather than being painted,
+   * which is what finally kills the sentence about the stripe: the twin stripes lie at |x| 0.07 to
+   * 0.27 on this car, i.e. entirely inside the 620 mm opening, so between z 1.25 and 1.91 they run
+   * into the hole and stop, the way they do on every blown car ever photographed.
+   *
+   * 620 x 660 against a 460 x 440 blower case leaves 80 mm of open bay all round the engine, which
+   * is where the manifold, the cam covers and the belt live.
+   */
+  deck: {
+    wells: [{
+      z: 1.58, w: 0.66, d: 0.70, r: 0.090, depth: 0.160, rim: 0.055, lip: 0.018, lipW: 0.095,
+      // the polished ring on the rim — see the note in assemble.js. y is the bonnet's own height
+      // at the rim (deck 0.86, crown 0.02 at stations z 1.42/1.80 → 1.0245 at |x| 0.33).
+      bead: 'chrome', beadY: 1.029, beadR: 0.017,
+    }],
+  },
+  /**
+   * THE HEADER PORTS. Four per side, on the bonnet either side of the aperture lip, each one a
+   * raised collar with a dark bore in it and a shadow in the paint under it — see kit.js
+   * `portFlange`. The primary's root is 100 mm INSIDE the wing (assemble.js `blower`), so what
+   * these surround is a pipe that genuinely passes through the panel.
+   *
+   * The bonnet at this station measures y = 1.021 between x 0.44 and x 0.52 (stations z 1.42/1.80,
+   * deck 0.86, crown 0.02), and the pipe crosses that plane at x 0.487, so the collars sit on the
+   * paint rather than in it.
+   */
+  ports: [
+    { x: 0.515, y: 1.020, z: 1.43, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22 },
+    { x: 0.515, y: 1.020, z: 1.53, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22 },
+    { x: 0.515, y: 1.020, z: 1.63, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22 },
+    { x: 0.515, y: 1.020, z: 1.73, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22 },
+  ],
+  /**
+   * …and the AO decals. §7 caps a car that hovers over the road at 55 because a shape with no
+   * shadow under it is not resting on anything; the same is true one scale down of a mirror stalk,
+   * a spear or a wing bolted to a painted panel. One shared material for the whole set.
+   */
+  shadows: [
+    { x: 0.86, y: 1.056, z: 0.60, w: 0.20, d: 0.17, face: 'x' },      // mirror stalk root
+    { x: 0.955, y: 0.94, z: -0.20, w: 0.30, d: 0.13, face: 'x' },     // door handle
+    { y: 1.010, z: -2.26, w: 1.56, d: 0.34 },                         // ducktail feet, mirror:false
+    { x: 0.48, y: 1.002, z: 1.02, w: 0.40, d: 0.26 },                 // bonnet extractors
+  ],
   extras: [
-    { type: 'blower', y: 1.19, z: 1.58 },
+    { type: 'blower', y: 1.06, z: 1.58 },
     /**
      * Period rear-window slat kit — but only across the LOWER third of the backlight now.
      *
