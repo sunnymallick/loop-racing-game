@@ -869,7 +869,7 @@ export function vergeTexture(opts = {}) {
 
 function buildVergeTexture({
   seed = 3, paveTint = '#2d3037', dirtTint = '#6b6459', gravelTint = '#a2957c',
-  W = 256, H = 768, spanM = 1.9, tileM = 26,
+  W = 256, H = 768, spanM = 1.9, tileM = 38,
 } = {}) {
   const rng = new RNG(seed * 29 + 11);
   const { c, ctx } = canvas(W, H);
@@ -977,7 +977,7 @@ export function runoffTexture(opts = {}) {
 
 function buildRunoffTexture({
   seed = 9, tint = '#6b6459', accent = null, gravelTint = '#a2957c', scrub = null,
-  S = 512, spanM = 15, tileM = 26, fadeFrom = 0.58,
+  S = 512, spanM = 15, tileM = 33, fadeFrom = 0.58,
 } = {}) {
   const rng = new RNG(seed * 37 + 5);
   const { c, ctx } = canvas(S, S);
@@ -1023,9 +1023,15 @@ function buildRunoffTexture({
     ctx.globalAlpha = rng.range(0.10, 0.26);
     ctx.fillStyle = `rgb(${(base.r * 150) | 0},${(base.g * 148) | 0},${(base.b * 146) | 0})`;
     ctx.beginPath();
+    // two harmonics, both whole periods across the tile, so the rut wanders without the 33 m
+    // repeat having one readable shape in it
+    const a1 = rng.range(0.16, 0.38) * pxU, a2 = rng.range(0.06, 0.18) * pxU;
+    const ph = rng.range(0, 6.3);
+    const wob = (y) => Math.sin(y / S * Math.PI * 2 + ph) * a1 + Math.sin(y / S * Math.PI * 6 + ph * 1.7) * a2;
     ctx.moveTo(x0, 0);
-    for (let y = 0; y <= S; y += 32) ctx.lineTo(x0 + Math.sin(y / S * Math.PI * 2 + k) * 0.35 * pxU, y);
-    for (let y = S; y >= 0; y -= 32) ctx.lineTo(x0 + Math.sin(y / S * Math.PI * 2 + k) * 0.35 * pxU + rng.range(0.18, 0.34) * pxU, y);
+    for (let y = 0; y <= S; y += 24) ctx.lineTo(x0 + wob(y), y);
+    const wdt = rng.range(0.18, 0.34) * pxU;
+    for (let y = S; y >= 0; y -= 24) ctx.lineTo(x0 + wob(y) + wdt, y);
     ctx.closePath(); ctx.fill();
     ctx.restore();
   }

@@ -2110,6 +2110,10 @@ export const def = {
     runoff: {
       width: 16, tint: '#86735a', accent: '#a08b6c',
       gravel: '#c0ae8e', scrub: '#8a8046', rock: '#9b9081',
+      // ...but NOT down the flood-channel side. The channel floor is poured from 23.4 m out at
+      // y -0.06, and the verge would cross it within a centimetre — a §7 z-fight (cap 60) down
+      // 700 m of the lap. The concrete is the ground there; it does not want a dirt edge.
+      mask: (u, side) => (side > 0 && u > 0.440 && u < 0.798 ? 0 : 1),
     },
     // 610 m of dead-straight boulevard (the frame the hillside letters close), a long right-hand
     // sweeper that keeps tightening, a 150 m-radius double-apex at the far end, a fast kink, the
