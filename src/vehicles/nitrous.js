@@ -1019,9 +1019,22 @@ const PLUME_FRAG = /* glsl */`
     // Per-pixel, time-INVARIANT dither on the step phase: it turns the march's quantisation into
     // grain the bloom pass eats rather than into rings, and being static it does not fizz between
     // frames or between two runs of the capture harness.
+    // (r19) A HASH DITHER IS SPECKLE; AN ORDERED ONE IS NOT. h21(gl_FragCoord) gives every pixel
+    // an independent step phase, so with a rough integrand (flutes, wisps) neighbouring pixels
+    // integrate visibly different amounts of gas and the column comes out GRAINY — measured at 5x
+    // on the r19c LA supercar, a salt-and-pepper crawl through the violet either side of every
+    // knot, which is the one artefact that reads as "procedural" however good the shape is. A
+    // (r19) The amplitude is 30% of a step rather than 40%, because the step is now INTEGRATED
+    // analytically rather than sampled (see the accumulation below) and the phase therefore only
+    // decides where the sample is taken, not how much of the step it is credited with. Three
+    // spatially-even patterns were photographed at 7x with the speed pass ablated before settling
+    // back on the hash — a four-phase rotated grid, the R2 sequence and interleaved gradient noise
+    // all draw a visible fine WEAVE through the bright half of the column. A regular residual is
+    // easier for the eye to find than a noisy one of the same amplitude; every one of the three
+    // was designed to be resolved by a TAA or a 3x3 blur this renderer does not have.
     float du = (t1 - t0) / float(STEPS);
     float jj = h21(gl_FragCoord.xy * 0.717);
-    float u  = t0 + du * (0.30 + 0.40 * jj);
+    float u  = t0 + du * (0.36 + 0.30 * jj);
 
     // Marched incrementally: station, offset-from-axis and height above the road all advance by a
     // constant per step, so a sample costs three multiply-adds rather than three dot products.
@@ -1279,8 +1292,19 @@ const PLUME_FRAG = /* glsl */`
           float glow = 0.28 + 0.72 * exp(-t * 1.70);
           vec3 e = (col * (dens * (0.20 + T * 1.05)) + fil * (g1 * hotA * cut)) * glow;
 
-          acc   += trans * e * dl;
-          trans *= exp(-dens * dl * uThick);
+          // ── (r19) INTEGRATE THE STEP, DO NOT SAMPLE IT ──────────────────────────────────
+          // The rectangle rule (acc += trans*e*dl; trans *= exp(-sigma*dl)) puts all of a step's
+          // emission at the step's near face and all of its absorption at the far one, so how much
+          // light a pixel collects depends on WHERE inside the step its sample landed — which is
+          // exactly what turned the per-pixel phase dither into visible grain at 7x through the
+          // bright half of the column. For piecewise-constant sigma and e the step has a closed
+          // form, integral(0..dl) e*exp(-sigma x) dx = e*(1 - exp(-sigma*dl))/sigma, and it costs
+          // one divide on top of an exponential we were computing anyway. The phase then only
+          // moves where the sample is TAKEN, not how much of the step it is credited with.
+          float sig = dens * uThick;
+          float ex  = exp(-sig * dl);
+          acc   += trans * e * (sig > 1e-4 ? (1.0 - ex) / sig : dl);
+          trans *= ex;
         }
       }
       }   // end of the cheap-reject block
