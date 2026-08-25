@@ -397,14 +397,14 @@ export const NITRO = {
     ramp: 0.13, curve: 0.52, surge: 0.88, surgeTime: 0.22, color: '#3ce0ff',
     fx: {
       core: '#f4ffff', mid: '#1ecfff', edge: '#0a30f5', spark: '#cdf4ff',
-      len: 3.60, rad: 0.530, merge: 0.0, standoff: 0.10, flameRise: 0.045,
+      len: 3.60, rad: 0.505, merge: 0.0, standoff: 0.10, flameRise: 0.045,
       // profile = [throat fraction, station of the widest point, decay exponent, TAIL fraction].
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
-      screen: 1.00, profile: [0.58, 0.09, 1.42, 0.080],   // slim needle: closes fastest of the four
-      bands: 5.0, knot: 0.80, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.58, flick: 62, turb: 0.92,
-      gasGain: 1.30, hotI: 5.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.68,
-      skirtW: 0.90, skirtI: 0.80, bodyD: 1.78, thick: 1.15, occ: 0.97,
+      screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
+      bands: 5.0, knot: 0.80, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.58, flick: 62, turb: 0.84,
+      gasGain: 1.30, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
+      skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 7.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
@@ -416,11 +416,11 @@ export const NITRO = {
     ramp: 0.52, curve: 1.20, surge: 0.62, surgeTime: 0.44, color: '#ff7a1e',
     fx: {
       core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
-      len: 4.00, rad: 0.530, merge: 0.062, standoff: 0.12, flameRise: 0.15,
-      screen: 1.10, profile: [0.70, 0.055, 1.20, 0.090],  // fat barrel, widest right off the bumper
-      bands: 3.6, knot: 0.42, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.56, flick: 28, turb: 1.06,
-      gasGain: 1.12, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.84,
-      skirtW: 0.98, skirtI: 0.92, bodyD: 1.78, thick: 1.25, occ: 0.97,
+      len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
+      screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
+      bands: 3.6, knot: 0.42, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.56, flick: 28, turb: 1.12,
+      gasGain: 1.12, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
+      skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 6.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
@@ -433,16 +433,16 @@ export const NITRO = {
     ramp: 0.78, curve: 1.55, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
-      len: 3.70, rad: 0.560, merge: 0.050, standoff: 0.13, flameRise: 0.26,
-      screen: 1.02, profile: [0.76, 0.045, 1.05, 0.105],  // blunt bell — fat off the pipe, stubby
-      bands: 3.0, knot: 0.18, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.50, flick: 16, turb: 1.18,
+      len: 3.70, rad: 0.600, merge: 0.050, standoff: 0.13, flameRise: 0.26,
+      screen: 1.02, profile: [0.86, 0.038, 0.94, 0.118],  // blunt bell — fat off the pipe, stubby
+      bands: 3.0, knot: 0.14, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.50, flick: 16, turb: 1.28,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 1.08, hotI: 4.50, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.90,
-      skirtW: 1.06, skirtI: 0.90, bodyD: 1.62, thick: 1.25, occ: 0.97,
+      gasGain: 1.08, hotI: 4.50, burn: 0.44, filW: 0.152, bodyW: 0.54, wisp: 1.05,
+      skirtW: 1.10, skirtI: 1.04, bodyD: 1.62, thick: 1.25, occ: 0.97,
       sparkRate: 82, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 5.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
@@ -455,11 +455,11 @@ export const NITRO = {
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
-      len: 4.60, rad: 0.560, merge: 0.085, standoff: 0.10, flameRise: 0.035,
-      screen: 1.25, profile: [0.55, 0.10, 1.38, 0.078],   // long spindle — the slenderest of the four
-      bands: 5.6, knot: 0.92, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.86,
-      gasGain: 1.02, hotI: 4.90, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.62,
-      skirtW: 0.86, skirtI: 0.74, bodyD: 1.78, thick: 1.12, occ: 0.97,
+      len: 4.60, rad: 0.520, merge: 0.085, standoff: 0.10, flameRise: 0.035,
+      screen: 1.25, profile: [0.46, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
+      bands: 5.6, knot: 0.92, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.76,
+      gasGain: 1.02, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
+      skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 8.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
@@ -1270,7 +1270,13 @@ const PLUME_FRAG = /* glsl */`
           // to the tip; EMISSION falls hard, so the jet is incandescent at the throat and merely
           // glowing at the tail, which is both what a jet does and the thing that makes its length
           // legible as depth rather than as a stripe.
-          float glow = 0.23 + 0.77 * exp(-t * 1.85);
+          // (r19) 0.23 + 0.77*exp(-1.85t) -> 0.28 + 0.72*exp(-1.70t). The body's DENSITY is held
+          // out to the tip on purpose (that is what keeps the taper legible), and a dense layer
+          // that emits almost nothing is a SILHOUETTE: measured at 3x on the r19b LA tuner the
+          // last third of the column was a navy shape occluding the road rather than gas burning
+          // in front of it. The gradient throat-to-tail is still 3.6:1, which is what makes the
+          // length read as depth; the tail is simply still alight.
+          float glow = 0.28 + 0.72 * exp(-t * 1.70);
           vec3 e = (col * (dens * (0.20 + T * 1.05)) + fil * (g1 * hotA * cut)) * glow;
 
           acc   += trans * e * dl;
