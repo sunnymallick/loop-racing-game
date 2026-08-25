@@ -1145,7 +1145,7 @@ class Game {
       const m = new THREE.Mesh(
         new THREE.PlaneGeometry(1, 1),
         new THREE.MeshBasicMaterial({
-          color: 0x24303f, map: tex, transparent: true, depthWrite: false,
+          color: 0x3c4f66, map: tex, transparent: true, depthWrite: false,
           toneMapped: false, opacity: 0,
         }),
       );

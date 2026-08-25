@@ -2674,6 +2674,23 @@ export class HUD {
     const tg = ctx.createLinearGradient(0, 0, 0, 300);
     tg.addColorStop(0, 'rgba(2,5,10,0.92)'); tg.addColorStop(1, 'rgba(2,5,10,0)');
     ctx.fillStyle = tg; ctx.fillRect(0, 0, VW, 300);
+    /**
+     * …and a second scrim under the PAGE, because the plates are 93 % fills and the gutters
+     * between them are not fills at all. NYC parks the hero under a gantry whose banner is a white
+     * board filling the backdrop, and after the vignette went to 0.80 the words NISH LINE were
+     * still legible in the 20 px gap between YOUR RACE and LAP TIMES: 20,27,47 against a plate at
+     * 8,10,15. This takes that gap to 9 % transmission.
+     *
+     * Its top edge is a 56 px ramp straddling the header's own hairline rule, and its bottom edge
+     * is under the bottom bar, so it has no edge anywhere — the world stays visible along the top
+     * of the frame and the page sits on a darker ground, which is the right way round.
+     */
+    const bandTop = ctx.createLinearGradient(0, 62, 0, 118);
+    bandTop.addColorStop(0, 'rgba(2,4,9,0)');
+    bandTop.addColorStop(1, 'rgba(2,4,9,0.55)');
+    ctx.fillStyle = bandTop; ctx.fillRect(0, 62, VW, 56);
+    ctx.fillStyle = 'rgba(2,4,9,0.55)'; ctx.fillRect(0, 118, VW, barY - 118);
+
     const bgg = ctx.createLinearGradient(0, barY - 200, 0, VH);
     bgg.addColorStop(0, 'rgba(2,4,9,0)'); bgg.addColorStop(0.62, 'rgba(2,4,9,0.72)');
     bgg.addColorStop(1, 'rgba(1,2,6,0.98)');
