@@ -374,7 +374,8 @@ function tagTint(r) {
   // still read as the same piece, which is the tell §7 caps at 65. The values are LINEAR (the
   // Merger consumes vertex colour in the renderer's working space), so this is a real repaint.
   const c = base.lerp(new THREE.Color(1, 1, 1), r.range(0.05, 0.62));
-  return c.multiplyScalar(r.range(0.72, 1.18));            // and some are sun-bleached, some fresh
+  // never above 1: bloom threshold is ~0.6-0.75 and spray paint does not glow
+  return c.multiplyScalar(r.range(0.58, 1.0));              // some sun-bleached, some fresh
 }
 
 /** Soft irregular blot — water staining on the channel floor and batter. */
@@ -2571,7 +2572,7 @@ export const def = {
       // order along the wall now and dealt from a shuffled deck of all 24 cells, which makes any
       // 24 spatially-consecutive tags distinct by construction — a screen holds about 35, so a
       // repeat can only ever be at opposite ends of the frame, wearing a different tint.
-      const N = 132;
+      const N = 112;
       const us = [];
       for (let i = 0; i < N; i++) us.push(lerp(CH0 + 0.008, CH1 - 0.008, R.next()));
       us.sort((p, q) => p - q);

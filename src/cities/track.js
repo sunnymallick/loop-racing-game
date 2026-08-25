@@ -999,10 +999,13 @@ function buildRunoffTexture({
       const i = y * S + x;
       const stone = (g.blur[i] - 0.5) * 0.70 + (g.raw[i] - 0.5) * 0.34;
       const col = base.clone().lerp(alt, clamp((blot[i] - 0.44) * 2.6, 0, 1));
-      col.lerp(grav, clamp((mid[i] - 0.68) * 2.2, 0, 0.55));       // gravel drifts
-      let l = 0.94 + stone * 0.60 + (blot[i] - 0.5) * 0.42 + (mid[i] - 0.5) * 0.22;
-      if (g.raw[i] > 0.958) l += 0.42;
-      l = clamp(l, 0.35, 1.8);
+      col.lerp(grav, clamp((mid[i] - 0.70) * 2.0, 0, 0.34));       // gravel drifts
+      // 0.80 is not a taste value: it is `groundTexture`'s own base multiplier in kit.js. The two
+      // surfaces have to sit at the SAME mean or the dissolve stops being a dissolve and becomes
+      // a bright band with an edge — which is the seam again, fifteen metres out.
+      let l = 0.80 + stone * 0.52 + (blot[i] - 0.5) * 0.46 + (mid[i] - 0.5) * 0.24;
+      if (g.raw[i] > 0.962) l += 0.34;
+      l = clamp(l, 0.34, 1.6);
       d[i * 4] = clamp(col.r * 255 * l, 0, 255);
       d[i * 4 + 1] = clamp(col.g * 255 * l, 0, 255);
       d[i * 4 + 2] = clamp(col.b * 255 * l, 0, 255);
@@ -1026,11 +1029,13 @@ function buildRunoffTexture({
     ctx.closePath(); ctx.fill();
     ctx.restore();
   }
-  // stones, from chippings to fist-sized
-  for (let k = 0; k < 900; k++) {
-    const r = Math.pow(rng.next(), 2.2) * 0.20 * pxU + 0.012 * pxU;
-    const lit = rng.range(0.7, 1.55);
-    ctx.fillStyle = `rgba(${(grav.r * 255 * lit) | 0},${(grav.g * 255 * lit) | 0},${(grav.b * 255 * lit) | 0},${rng.range(0.3, 0.85)})`;
+  // stones, from chippings to fist-sized. Mostly DARKER than the dirt they sit in — a field of
+  // uniformly pale pebbles reads as popcorn, and the eye wants a few catching the light out of
+  // many that do not.
+  for (let k = 0; k < 620; k++) {
+    const r = Math.pow(rng.next(), 2.4) * 0.13 * pxU + 0.010 * pxU;
+    const lit = rng.range(0.42, 1.22);
+    ctx.fillStyle = `rgba(${(grav.r * 255 * lit) | 0},${(grav.g * 255 * lit) | 0},${(grav.b * 255 * lit) | 0},${rng.range(0.20, 0.66)})`;
     ctx.beginPath();
     ctx.ellipse(rng.range(0, S), rng.range(0, S), r, r * rng.range(0.55, 1.05), rng.range(0, 3), 0, 7);
     ctx.fill();
@@ -1643,8 +1648,10 @@ export class Track {
         rm.emissiveIntensity = runoff.glow ?? 0.24;
       }
       for (const side of [-1, 1]) {
+        // receiveShadow stays ON: §7 caps a car with no contact shadow at 55, and the car spends
+        // a good part of every drift capture standing on this band.
         const m = strip(side, S.vergeOut, S.runoffOut, rm, {
-          vScale: 1 / rt.tileM, uA: 0, uB: 1, mask: runoff.mask || null, shadows: false,
+          vScale: 1 / rt.tileM, uA: 0, uB: 1, mask: runoff.mask || null,
         });
         m.renderOrder = -1;                                  // under every other transparent thing
       }
@@ -2215,7 +2222,7 @@ class Branch {
           geo.setIndex(idx);
           geo.computeVertexNormals();
           const mesh = new THREE.Mesh(geo, m);
-          mesh.receiveShadow = m === vm;
+          mesh.receiveShadow = true;
           mesh.userData.noMerge = true;
           if (m === rm) mesh.renderOrder = -1;
           g.add(mesh);
