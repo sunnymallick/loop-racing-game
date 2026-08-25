@@ -2777,6 +2777,12 @@ const TRACK = {
   surface: { tint: '#191720', lanes: 4, centerLine: 'double-yellow', worn: 0.42 },
   bank: 0.05,
   sidewalkWidth: 5.4,
+  // Off the Strip it is Mojave: pale caliche gravel and creosote, read through the same
+  // lavender-in-sodium the ground plane is lit by, so the two are one surface across the dissolve.
+  runoff: {
+    width: 15, tint: '#5e5476', accent: '#786a92',
+    gravel: '#8f84a8', scrub: '#6f6a58', rock: '#6d6484',
+  },
   sidewalkTint: '#4a4054',
   crossings: 6,
   main: MAIN,

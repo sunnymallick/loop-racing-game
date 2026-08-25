@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RNG, clamp, lerp, smoothstep } from '../core/rng.js';
 import { concrete, brick, skyTexture, sprite, canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas } from '../core/textures.js';
 import { roundedBox } from '../vehicles/kit.js';
-import { Track, boostStripTexture, curbStripeTexture, sColor, preGamma } from './track.js';
+import { Track, boostStripTexture, curbStripeTexture, sColor, preGamma, applyGroundDetail } from './track.js';
 import { drawText, measure, textCanvas } from '../core/font.js';
 
 /**
@@ -4136,6 +4136,15 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
       groundMat.emissive = new THREE.Color(L.groundGlowColor || L.fog.color);
       groundMat.emissiveIntensity = L.groundGlow ?? 0.85;
     }
+    // The 176 m tile is 17 cm per texel, which is why the off-road ground measured hfH 1.20
+    // against the carriageway's 7.46 at the same depth: there is nothing in that map smaller than
+    // half a metre. This adds the missing octaves in world space at 2.7 m and 9.1 m. See
+    // applyGroundDetail() in track.js.
+    applyGroundDetail(groundMat, {
+      seed: def.seed ?? 1,
+      strength: L.ground?.detail ?? 0.42,
+      normalStrength: L.ground?.detailNormal ?? 0.55,
+    });
   }
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), groundMat);
   ground.rotation.x = -Math.PI / 2;
@@ -4186,7 +4195,15 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   const branchGroups = [];
   const anims = [];
   for (const b of track.branches) {
-    const bg = b.buildRoad({ surface: { ...(tdef.surface || {}), wet: L.wet ?? 0, night } });
+    const bg = b.buildRoad({
+      surface: { ...(tdef.surface || {}), wet: L.wet ?? 0, night },
+      runoff: {
+        tint: rdef.tint || L.ground?.color || '#6b6459',
+        accent: rdef.accent ?? L.ground?.accent ?? null,
+        gravel: rdef.gravel || null, scrub: rdef.scrub || null,
+        glow: L.groundGlow ?? 0.85, glowColor: L.groundGlowColor || L.fog.color,
+      },
+    });
     group.add(bg);
     branchGroups.push(bg);
     // Dress the mouth so the shortcut reads as an invitation. The branch curve starts at the

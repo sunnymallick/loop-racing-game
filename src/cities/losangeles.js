@@ -291,22 +291,42 @@ function steelMaterial(tint, seed = 77) {
   });
 }
 
-/** 3x3 atlas of graffiti pieces — one texture, one material, so a wall of tags is one draw call. */
+/**
+ * Atlas of graffiti pieces — one texture, one material, so a wall of tags is one draw call.
+ *
+ * §7 VISIBLE TEXTURE TILING REPEAT (cap 65) fired here: nine pieces spread over 700 m of channel
+ * wall put "the identical green-outline/red-fill glyph three times across one screen width". Three
+ * things had to change together, because none of them is enough alone:
+ *   - 24 cells instead of 9, so the draw pool is nearly three times deeper;
+ *   - every cell is a different WORD, and its two paint colours are drawn independently, so no two
+ *     cells share a colour pair;
+ *   - and each piece placed on the wall carries a per-instance tint baked into vertex colour
+ *     (see the tagMat remap below), which is free — the Merger already supports it — and makes a
+ *     repeated cell read as a different can of paint rather than a copy.
+ * The atlas is 6 x 4, mapped through `cols`/`rows` rather than a hard-coded 3.
+ */
+const TAG_COLS = 8, TAG_ROWS = 4;
 function graffitiAtlas(seed) {
   const cell = 256, half = 128;
-  const { c, ctx } = canvas(cell * 3, half * 3);
+  const N = TAG_COLS * TAG_ROWS;
+  const { c, ctx } = canvas(cell * TAG_COLS, half * TAG_ROWS);
   const rng = new RNG(seed);
-  const hues = ['#ff2f6d', '#2fd8e0', '#ffd23a', '#8f5fff', '#ff7a1e', '#f2f0e8', '#38e08a'];
-  const words = ['NITRO', 'ESTE', 'DTLA', 'CIRCUIT', '213', 'SUNSET', 'CREW', 'RIOS', 'VATO'];
-  for (let i = 0; i < 9; i++) {
-    const ox = (i % 3) * cell, oy = Math.floor(i / 3) * half;
+  const hues = ['#ff2f6d', '#2fd8e0', '#ffd23a', '#8f5fff', '#ff7a1e', '#f2f0e8', '#38e08a',
+    '#ff4d2e', '#66e0ff', '#c8ff3a', '#ff8fd0'];
+  const words = ['NITRO', 'ESTE', 'DTLA', 'CIRCUIT', '213', 'SUNSET', 'CREW', 'RIOS', 'VATO',
+    'ECHO', 'BOYLE', 'LOKE', 'SUR', 'FIGGY', 'ARTE', 'CHAVEZ', 'WHITTIER', 'MALO',
+    'PICO', 'SOTO', 'CUDA', 'BRAVO', 'ONDA', 'SEXTO', 'LOS', 'NORTE', 'RAMPART', 'ELAY',
+    'SIX', 'ZOOT', 'ADIOS', 'FLACO'];
+  for (let i = 0; i < N; i++) {
+    const ox = (i % TAG_COLS) * cell, oy = Math.floor(i / TAG_COLS) * half;
     ctx.save();
     ctx.beginPath(); ctx.rect(ox, oy, cell, half); ctx.clip();
     ctx.translate(ox + cell / 2, oy + half / 2);
     ctx.rotate(rng.range(-0.13, 0.13));
     const a = hues[rng.int(0, hues.length - 1)];
-    const b = hues[rng.int(0, hues.length - 1)];
-    const size = rng.range(50, 64);
+    let b = hues[rng.int(0, hues.length - 1)];
+    if (b === a) b = hues[(hues.indexOf(a) + 3) % hues.length];   // never a monochrome piece
+    const size = rng.range(50, 64) * clamp(7 / words[i].length, 0.62, 1.16);
     drawText(ctx, words[i], { x: 5, y: 24, size, weight: 0.30, italic: 0.34, align: 'center', color: '#1a1114', tracking: 0.02 });
     drawText(ctx, words[i], { x: 0, y: 20, size, weight: 0.28, italic: 0.34, align: 'center', color: a, tracking: 0.02 });
     drawText(ctx, words[i], { x: -3, y: 16, size: size * 0.74, weight: 0.12, italic: 0.34, align: 'center', color: b, tracking: 0.02 });
@@ -343,6 +363,18 @@ function graffitiAtlas(seed) {
     ctx.restore();
   }
   return toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+}
+
+/** The tint pool a placed tag is multiplied by. LA's own accents, pulled toward white so the
+ *  atlas colour still leads — this is a different can of paint, not a different palette. */
+function tagTint(r) {
+  const base = new THREE.Color(r.pick(['#ff2f6d', '#2fd8e0', '#ffd23a', '#8f5fff', '#ff7a1e',
+    '#38e08a', '#ff4d2e', '#c8ff3a', '#ffffff', '#c9d4e0', '#ffd9b0']));
+  // Pulled only part-way to white: at 0.85 the multiply was invisible and two copies of one cell
+  // still read as the same piece, which is the tell §7 caps at 65. The values are LINEAR (the
+  // Merger consumes vertex colour in the renderer's working space), so this is a real repaint.
+  const c = base.lerp(new THREE.Color(1, 1, 1), r.range(0.05, 0.62));
+  return c.multiplyScalar(r.range(0.72, 1.18));            // and some are sun-bleached, some fresh
 }
 
 /** Soft irregular blot — water staining on the channel floor and batter. */
@@ -2072,6 +2104,12 @@ export const def = {
     bank: 0.05,
     crossings: 8,
     sidewalkWidth: 5.2,
+    // THE DIRT LOT. LA's off-road ground is decomposed granite and dry weeds over the same warm
+    // brown the ground plane is generated from, so the run-off dissolves into it without a line.
+    runoff: {
+      width: 16, tint: '#86735a', accent: '#a08b6c',
+      gravel: '#c0ae8e', scrub: '#8a8046', rock: '#9b9081',
+    },
     // 610 m of dead-straight boulevard (the frame the hillside letters close), a long right-hand
     // sweeper that keeps tightening, a 150 m-radius double-apex at the far end, a fast kink, the
     // flood-channel run with a river bend in the middle of it, a constant-radius sweeper, then a
@@ -2203,6 +2241,8 @@ export const def = {
     const tagMat = new THREE.MeshStandardMaterial({
       map: tagTex, transparent: true, alphaTest: 0.04, roughness: 0.95,
       depthWrite: false, side: THREE.DoubleSide,
+      // per-piece tint, baked into vertex colour by the Merger's remap — still one draw call
+      vertexColors: true,
     });
     const stainMat = new THREE.MeshBasicMaterial({
       map: stainTexture(83), transparent: true, color: 0x5f584a, opacity: 0.34, depthWrite: false,
@@ -2524,19 +2564,49 @@ export const def = {
       mesh.rotation.set(0, Math.atan2(s.tan.x, s.tan.z) + Math.PI / 2, 0);
       mesh.rotateX(-Math.atan2(slopeDir[1], slopeDir[0]));
     };
-    for (let i = 0; i < 128; i++) {
-      const u = lerp(CH0 + 0.008, CH1 - 0.008, R.next());
-      const w = R.range(10, 30), h = w * 0.5;
-      const geo = new THREE.PlaneGeometry(w, h);
-      const cx = R.int(0, 2), cy = R.int(0, 2);
-      const uvA = geo.attributes.uv;
-      for (let q = 0; q < uvA.count; q++) uvA.setXY(q, (uvA.getX(q) + cx) / 3, (uvA.getY(q) + cy) / 3);
-      uvA.needsUpdate = true;
-      const m = new THREE.Mesh(geo, tagMat);
-      // biased low on the batter — that is both where a can of paint reaches and the band of
-      // wall the driver actually sees over the parapet
-      onSlope(m, u, R.range(0.02, 0.62), 0.08);
-      M.take(m);
+    {
+      // §7 cap 65 was "the identical glyph three times across one screen width", and the cause was
+      // as much the DRAW ORDER as the pool size: cells were picked at random and placed at random
+      // u, so two copies of one piece landing side by side was routine. The pieces are laid out in
+      // order along the wall now and dealt from a shuffled deck of all 24 cells, which makes any
+      // 24 spatially-consecutive tags distinct by construction — a screen holds about 35, so a
+      // repeat can only ever be at opposite ends of the frame, wearing a different tint.
+      const N = 132;
+      const us = [];
+      for (let i = 0; i < N; i++) us.push(lerp(CH0 + 0.008, CH1 - 0.008, R.next()));
+      us.sort((p, q) => p - q);
+      const deck = [];
+      const reshuffle = () => {
+        const d = [];
+        for (let i = 0; i < TAG_COLS * TAG_ROWS; i++) d.push(i);
+        for (let i = d.length - 1; i > 0; i--) { const j = R.int(0, i); const t = d[i]; d[i] = d[j]; d[j] = t; }
+        deck.push(...d);
+      };
+      for (const u of us) {
+        if (!deck.length) reshuffle();
+        const cellIdx = deck.shift();
+        const cx = cellIdx % TAG_COLS, cy = Math.floor(cellIdx / TAG_COLS);
+        const w = R.range(9, 31), h = w * R.range(0.40, 0.60);
+        const geo = new THREE.PlaneGeometry(w, h);
+        const uvA = geo.attributes.uv;
+        // a random bite out of the cell: real pieces are painted over each other, and it means two
+        // draws of one cell are not the same rectangle of paint
+        const ix = R.range(0, 0.14), iy = R.range(0, 0.12);
+        const jx = R.range(0, 0.14), jy = R.range(0, 0.12);
+        for (let q = 0; q < uvA.count; q++) {
+          const gx = lerp(ix, 1 - jx, uvA.getX(q));
+          const gy = lerp(iy, 1 - jy, uvA.getY(q));
+          uvA.setXY(q, (gx + cx) / TAG_COLS, (gy + cy) / TAG_ROWS);
+        }
+        uvA.needsUpdate = true;
+        const m = new THREE.Mesh(geo, tagMat);
+        // biased low on the batter — that is both where a can of paint reaches and the band of
+        // wall the driver actually sees over the parapet
+        onSlope(m, u, R.range(0.02, 0.62), 0.08);
+        m.rotateZ(R.range(-0.16, 0.16));
+        const tint = tagTint(R);
+        M.take(m, { remap: () => ({ material: tagMat, color: tint }) });
+      }
     }
     // grime band along the toe, where the water sits
     for (let i = 0; i < 46; i++) {

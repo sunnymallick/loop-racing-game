@@ -3233,6 +3233,14 @@ export const def = {
     bank: 0.055,
     sidewalkWidth: 5.0,
     sidewalkTint: '#b2a48c',
+    // Sand blown off the beach, over the same tan the ground plane carries. Masked away on the
+    // SEAWARD kerb, where the eleven metres past the kerb are Lummus Park's terrazzo promenade
+    // and then the dune — laying a dirt verge over that would be the seam moved, not fixed.
+    runoff: {
+      width: 15, tint: '#cdae82', accent: '#dcc09a',
+      gravel: '#e2d0aa', scrub: '#9a9256', rock: '#b0a38a',
+      mask: (u, side) => (side === OUT ? 0 : 1),
+    },
     crossings: 6,
     main: MAIN,
     branches: [

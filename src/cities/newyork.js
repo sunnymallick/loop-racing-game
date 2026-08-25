@@ -3058,6 +3058,13 @@ export const def = {
     },
     bank: 0.02,
     sidewalkWidth: 5.0,
+    // New York has no dirt at its kerbs: the ground off the carriageway is broken asphalt, ballast
+    // and rubble in cleared lots, so the band takes the ground plane's own slate and gets stones
+    // but no scrub.
+    runoff: {
+      width: 13, tint: '#3d424c', accent: '#4c525e',
+      gravel: '#6b7078', scrub: null, rock: '#5a5f68',
+    },
     // (round 3) '#8f8b84' is a 56%-value warm grey, and under a sodium rig at this exposure it
     // arrives on screen as a pale sand band that is the single largest flat area in the drift
     // capture. Manhattan sidewalk is dirty grey concrete a good deal darker than the buildings

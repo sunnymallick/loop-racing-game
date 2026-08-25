@@ -757,6 +757,99 @@ function tuftTexture(blade = '#9c8a5e', dirt = '#6b6459') {
   return t;
 }
 
+const _detailTex = new Map();
+/**
+ * WORLD-SPACE GROUND DETAIL — the answer to "hfH 1.20 / hfV 1.28 for the run-off against
+ * 7.46 / 9.28 for asphalt at the same depth in the same frame".
+ *
+ * The ground plane is 6 km square on one 176 m tile: 17 cm per texel, so at the distance a
+ * drifting car actually sits from it there is nothing in the map above about half a metre. No
+ * amount of work on that map fixes it — the texels are simply too big. So the near ground gets a
+ * SECOND, small-scale layer applied in the shader from world XZ, at 2.7 m and 9.1 m. Two
+ * incommensurate scales multiplied together have no visible period, and because the UV is derived
+ * per-fragment from an interpolated world position, mip selection and anisotropy still work.
+ *
+ * The texture packs three channels so one fetch buys both albedo grain and relief:
+ *   R  blurred-white-noise aggregate (the carriageway's own stone construction)
+ *   GB the xy of the normal derived from that same field
+ *
+ * Faded out past `fadeFar` so the far plain stays smooth instead of boiling.
+ */
+export function groundDetailTexture(seed = 3) {
+  const key = String(seed);
+  if (_detailTex.has(key)) return _detailTex.get(key);
+  const S = 256;
+  const g = grainField(S, S, seed * 17 + 5);
+  const mid = periodicFbm(S, S, { seed: seed + 7, octaves: 3, freq: 8 });
+  const hgt = new Float32Array(S * S);
+  for (let i = 0; i < S * S; i++) hgt[i] = g.blur[i] * 0.72 + mid[i] * 0.28;
+  const { c, ctx } = canvas(S, S);
+  const img = ctx.createImageData(S, S);
+  const at = (x, y) => hgt[((y + S) % S) * S + ((x + S) % S)];
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = y * S + x;
+      const lum = clamp(0.5 + (g.blur[i] - 0.5) * 1.35 + (g.raw[i] - 0.5) * 0.55
+        + (g.raw[i] > 0.965 ? 0.30 : 0), 0, 1);
+      const dx = clamp(0.5 - (at(x + 1, y) - at(x - 1, y)) * 1.6, 0, 1);
+      const dy = clamp(0.5 - (at(x, y + 1) - at(x, y - 1)) * 1.6, 0, 1);
+      img.data[i * 4] = lum * 255;
+      img.data[i * 4 + 1] = dx * 255;
+      img.data[i * 4 + 2] = dy * 255;
+      img.data[i * 4 + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = toTexture(c, { srgb: false, wrap: THREE.RepeatWrapping });
+  _detailTex.set(key, t);
+  return t;
+}
+
+/**
+ * Bolt the detail layer onto any ground-ish MeshStandardMaterial. Costs two texture fetches on
+ * surfaces that are mostly in the lower third of the frame; the ground plane is two triangles, so
+ * there is no vertex cost at all.
+ */
+export function applyGroundDetail(material, {
+  seed = 3, a = 2.7, b = 9.1, strength = 0.42, normalStrength = 0.55,
+  fadeNear = 45, fadeFar = 190,
+} = {}) {
+  const tex = groundDetailTexture(seed);
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uGDetail = { value: tex };
+    shader.uniforms.uGScale = { value: new THREE.Vector2(1 / a, 1 / b) };
+    shader.uniforms.uGAmp = { value: new THREE.Vector2(strength, normalStrength) };
+    shader.uniforms.uGFade = { value: new THREE.Vector2(fadeNear, fadeFar) };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vGDetailW;')
+      .replace('#include <begin_vertex>',
+        '#include <begin_vertex>\nvGDetailW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+varying vec3 vGDetailW;
+uniform sampler2D uGDetail;
+uniform vec2 uGScale;
+uniform vec2 uGAmp;
+uniform vec2 uGFade;
+vec3 gDetail() {
+  vec3 t1 = texture2D(uGDetail, vGDetailW.xz * uGScale.x).rgb;
+  vec3 t2 = texture2D(uGDetail, vGDetailW.zx * uGScale.y + 0.317).rgb;
+  float f = 1.0 - smoothstep(uGFade.x, uGFade.y, distance(vGDetailW, cameraPosition));
+  return vec3((t1.r - 0.5) * 0.72 + (t2.r - 0.5) * 0.55,
+              (t1.g - 0.5) + (t2.g - 0.5) * 0.6,
+              (t1.b - 0.5) + (t2.b - 0.5) * 0.6) * f;
+}`)
+      .replace('#include <map_fragment>', `#include <map_fragment>
+  vec3 gD = gDetail();
+  diffuseColor.rgb *= 1.0 + gD.x * uGAmp.x;`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+  normal = normalize(normal + (viewMatrix * vec4(gD.y * uGAmp.y, 0.0, gD.z * uGAmp.y, 0.0)).xyz);`);
+  };
+  material.customProgramCacheKey = () => `gdetail:${a}:${b}:${strength}:${normalStrength}`;
+  material.needsUpdate = true;
+  return material;
+}
+
 const _vergeCache = new Map();
 /**
  * THE MODELLED BAND. U runs across it: 0 = the paved edge it grows out of, 1 = open ground.
@@ -1540,6 +1633,10 @@ export class Track {
         transparent: true, depthWrite: false, alphaTest: 0.02,
       });
       rm.normalScale.set(0.8, 0.8);
+      // The same world-space octaves the ground plane gets, at a third of the strength: the
+      // run-off's own texels are already 3.5 cm, so this is here to make the two surfaces share
+      // one grain across the dissolve rather than to add detail the band was missing.
+      applyGroundDetail(rm, { seed: (surface.seed ?? 3) + 2, strength: 0.16, normalStrength: 0.30 });
       if (surface.night) {
         rm.emissiveMap = rt.map;
         rm.emissive = new THREE.Color(runoff.glowColor || '#ffffff');
@@ -1611,8 +1708,10 @@ export class Track {
       rockGeos.push(geo);
     }
 
-    const tuftMat = scrub || tint ? new THREE.MeshStandardMaterial({
-      map: tuftTexture(scrub || '#9c8a5e', tint),
+    // Tufts are opt-in: a city that has dry scrub at its road edges names the colour, a city
+    // that is wall-to-wall paving (New York) leaves it null and gets stones only.
+    const tuftMat = scrub ? new THREE.MeshStandardMaterial({
+      map: tuftTexture(scrub, tint),
       transparent: false, alphaTest: 0.45, side: THREE.DoubleSide,
       roughness: 1, metalness: 0, envMapIntensity: 0.7,
     }) : null;
@@ -1928,6 +2027,7 @@ class Branch {
     this.length = this.curve.getLength();
     this.halfWidth = def.width ?? track.halfWidth * 0.62;
     this.mainHalfWidth = track.halfWidth;
+    this.groundY = track.groundY ?? -0.35;
     this.enterU = def.enterU; this.exitU = def.exitU;
 
     // The branch curve starts at the CENTRE of the main road, so its first and last few metres
@@ -2043,6 +2143,88 @@ class Branch {
     });
     strip({ off: -1, abs: 0.03, y: 0 }, { off: -1, abs: -0.75, y: 0.15 }, km, 0, 1, 0.62);
     strip({ off: 1, abs: -0.03, y: 0 }, { off: 1, abs: 0.75, y: 0.15 }, km, 0, 1, 0.62);
+
+    // --- shoulder: a shortcut cannot stop on the ground plane either ---
+    //
+    // The branch kerb used to end in mid-air 0.53 m above the world ground plane, which is the
+    // same §7 tell as the main carriageway's — the frame the critic cropped at rect 820,430 is a
+    // Miami shortcut mouth, orange-and-white kerb with the tan plane starting immediately beyond
+    // it. So the branch gets the same two bands, tapered out at both mouths (so no dirt is laid
+    // across the main carriageway) and as the deck lifts (so a flying ramp has no verge hanging
+    // off it).
+    if (opts.runoff !== false) {
+      const ro = opts.runoff || {};
+      const gY = this.groundY;
+      const dirt = ro.tint || opts.surface?.apronTint || '#6b6459';
+      const vt = vergeTexture({
+        seed: 12, paveTint: opts.surface?.apronTint || '#5a544b', dirtTint: dirt,
+        gravelTint: ro.gravel || '#a2957c', spanM: 1.7,
+      });
+      const rt = runoffTexture({
+        seed: 18, tint: dirt, accent: ro.accent || null,
+        gravelTint: ro.gravel || '#a2957c', scrub: ro.scrub || null, spanM: 11,
+      });
+      const vm = new THREE.MeshStandardMaterial({
+        map: vt.map, roughnessMap: vt.roughnessMap, normalMap: vt.normalMap,
+        roughness: 1, envMapIntensity: 0.9,
+      });
+      vm.normalScale.set(0.85, 0.85);
+      const rm = new THREE.MeshStandardMaterial({
+        map: rt.map, roughnessMap: rt.roughnessMap, normalMap: rt.normalMap,
+        roughness: 1, envMapIntensity: 0.85,
+        transparent: true, depthWrite: false, alphaTest: 0.02,
+      });
+      rm.normalScale.set(0.8, 0.8);
+      if (opts.surface?.night) {
+        for (const [m, k] of [[vm, 0.24], [rm, ro.glow ?? 0.24]]) {
+          m.emissiveMap = m.map;
+          m.emissive = new THREE.Color(k === 0.24 ? '#ffffff' : (ro.glowColor || '#ffffff'));
+          m.emissiveIntensity = k;
+        }
+        rm.emissive = new THREE.Color(ro.glowColor || '#ffffff');
+        rm.emissiveIntensity = ro.glow ?? 0.24;
+      }
+      const shoulder = (side) => {
+        const A = [], B = [], C = [];
+        for (let i = 0; i <= segs; i++) {
+          const f = F[i];
+          const e = i / segs;
+          const taper = (1 - smoothstep(0.25, 1.4, f.rise))
+            * smoothstep(0, 0.11, e) * smoothstep(0, 0.11, 1 - e);
+          const base = f.p.y + 0.03;
+          const kerb = f.p.clone().addScaledVector(f.right, side * (f.half + 0.75));
+          kerb.y = base + 0.15;
+          const vOff = 0.75 + 1.7 * taper;
+          const verge = f.p.clone().addScaledVector(f.right, side * (f.half + vOff));
+          verge.y = lerp(kerb.y, gY + 0.20, taper);
+          const run = f.p.clone().addScaledVector(f.right, side * (f.half + vOff + 11 * taper));
+          run.y = lerp(verge.y, gY + 0.08, taper);
+          A.push(kerb); B.push(verge); C.push(run);
+        }
+        const band = (P, Q, m, vs) => {
+          const pos = [], uv = [], idx = [];
+          for (let i = 0; i <= segs; i++) {
+            const v = (i / segs) * this.length * vs;
+            pos.push(P[i].x, P[i].y, P[i].z, Q[i].x, Q[i].y, Q[i].z);
+            uv.push(0, v, 1, v);
+            if (i < segs) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
+          }
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+          geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+          geo.setIndex(idx);
+          geo.computeVertexNormals();
+          const mesh = new THREE.Mesh(geo, m);
+          mesh.receiveShadow = m === vm;
+          mesh.userData.noMerge = true;
+          if (m === rm) mesh.renderOrder = -1;
+          g.add(mesh);
+        };
+        band(A, B, vm, 1 / vt.tileM);
+        band(B, C, rm, 1 / rt.tileM);
+      };
+      shoulder(-1); shoulder(1);
+    }
 
     // --- elevated structure: an ascending deck has to be held up by something ---
     if (this.riseHeight > 1) {
