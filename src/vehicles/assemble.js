@@ -1259,12 +1259,15 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   for (const pt of bp.ports || []) {
     const rO = pt.rOut ?? (pt.r ?? 0.03) * 1.7;
     for (const sx of pt.mirror === false ? [1] : [-1, 1]) {
-      const f = portFlange({ rTube: pt.r ?? 0.03, rOut: rO, rise: pt.rise ?? 0.018, mat: trim });
+      const f = portFlange({
+        rTube: pt.r ?? 0.03, rOut: rO, rise: pt.rise ?? 0.018,
+        mat: pt.mat === 'chrome' ? chrome : pt.mat === 'paint' ? paintSolid : trim,
+      });
       f.position.set(sx * (pt.x ?? 0), pt.y, pt.z);
       if (pt.rx) f.rotation.x = pt.rx;
       if (pt.rz) f.rotation.z = sx * pt.rz;
       detail.add(f);
-      const d = partShadow(rO * 3.2, rO * 3.2, { face: pt.face || 'y' });
+      const d = partShadow(rO * 2.6, rO * 2.6, { face: pt.face || 'y' });
       d.position.set(sx * (pt.x ?? 0), pt.y + (pt.lift ?? 0.004), pt.z);
       detail.add(d);
     }
@@ -1724,21 +1727,61 @@ function buildExtra(x, mats) {
       mesh.add(spare);
     }
   } else if (x.type === 'snorkel') {
+    /**
+     * ---- THE SNORKEL GOES THROUGH THE GUARD, ROUND-7 -----------------------------------------
+     *
+     * Verbatim: "the SUV snorkel's bottom is flat-cut against the fender." It was. The tube stood
+     * vertically at x 1.07 with a radius of 0.078, i.e. spanning x 0.992-1.148, and the flank it
+     * was supposed to be buried in measures 1.064 at that height — so the OUTBOARD half of its
+     * bottom disc was outside the bodywork, in the open, facing down. And it could not be fixed by
+     * making the tube longer, because at that x the tube never enters the body at all at any
+     * height: it runs alongside it.
+     *
+     * A safari snorkel does not stand beside the guard, it goes THROUGH the top of it, which on
+     * this truck is the near-horizontal bonnet shoulder. The group's origin is now that entry
+     * point: the tube sinks `sink` below it (inside closed bodywork, where its lower cap can never
+     * be seen), the entry itself carries a grommet — a raised collar with a dark bore round the
+     * tube, kit.js `portFlange` — and the assembly leans `lean` outboard on its way up to the
+     * head, the way one clears an A-pillar.
+     */
     mesh = new THREE.Group();
-    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.078, x.h ?? 1.0, 12), trim);
+    const H = x.h ?? 0.80;                       // tube length ABOVE the panel
+    const sink = x.sink ?? 0.26;                 // …and below it, inside the wing
+    const lean = x.lean ?? 0.14, out = x.out ?? 1;
+    const R = x.r ?? 0.075;
+    const sn2 = Math.sin(lean) * out, cs2 = Math.cos(lean);
+    const at = (t) => [sn2 * t, cs2 * t];
+    const len = H + sink;
+    const tube = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.95, R, len, 14), trim);
+    tube.rotation.z = -lean * out;
+    const [mxp, myp] = at((H - sink) * 0.5);
+    tube.position.set(mxp, myp, 0);
     mesh.add(tube);
+    const [hx2, hy2] = at(H);
     const head = new THREE.Mesh(roundedBox(0.17, 0.24, 0.17, 0.04), trim);
-    head.position.y = (x.h ?? 1.0) * 0.58;
+    head.position.set(hx2, hy2 - 0.02, 0);
+    head.rotation.z = -lean * out;
     mesh.add(head);
     const mouth = new THREE.Mesh(new THREE.CircleGeometry(0.065, 12), plastic);
-    mouth.position.set(0, (x.h ?? 1.0) * 0.58, 0.088);
+    mouth.position.set(hx2, hy2 - 0.02, 0.088);
     mesh.add(mouth);
-    for (let i = 0; i < 2; i++) {
-      const clamp2 = new THREE.Mesh(new THREE.TorusGeometry(0.082, 0.014, 6, 14), chrome);
+    for (const f of [0.24, 0.62]) {
+      const [cx2, cy2] = at(H * f);
+      const clamp2 = new THREE.Mesh(new THREE.TorusGeometry(R * 1.09, 0.014, 6, 14), chrome);
       clamp2.rotation.x = Math.PI / 2;
-      clamp2.position.y = -0.2 + i * 0.34;
+      clamp2.rotation.y = 0;
+      clamp2.position.set(cx2, cy2, 0);
       mesh.add(clamp2);
     }
+    // the grommet in the panel — the whole point of the rebuild
+    const gr = portFlange({ rTube: R * 1.02, rOut: R * 1.42, rise: 0.022, mat: trim });
+    gr.rotation.z = -lean * out * 0.5;
+    mesh.add(gr);
+    // …and the mounting bracket back to the A-pillar, so the head is not cantilevered off a hole
+    const stay = new THREE.Mesh(roundedBox(0.05, 0.038, 0.30, 0.014), trim);
+    const [bx2, by2] = at(H * 0.80);
+    stay.position.set(bx2 - out * 0.02, by2, -0.16);
+    mesh.add(stay);
   } else if (x.type === 'buttress') {
     // flying buttress: a thin blade sweeping from the roof down to the rear haunch
     mesh = new THREE.Group();

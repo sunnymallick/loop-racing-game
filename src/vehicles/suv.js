@@ -246,7 +246,11 @@ export const blueprint = {
       // lamps so it joins their bank, and a bright red line above the tailgate in every chase frame
       { x: 0, y: 1.507, z: -2.505, w: 0.46, h: 0.05, color: '#ff2a14', intensity: 1.35, glow: 0.35, segs: 4, mirror: false, bezel: false },
     ],
-    reverse: [{ x: 0.86, y: 0.86, z: -2.475, w: 0.18, h: 0.12, color: '#fff2d8', intensity: 1.5, glow: 0.3 }],
+    // ROUND-7: z -2.475 -> -2.578. The bumper spans z -2.56 to -2.28, so at -2.475 the whole unit
+    // — lens, bezel, cover — was 85 mm inside the plastic and the only part of it that reached the
+    // camera was its additive halo, leaking out UNDER the bar as a detached crescent. It sits on
+    // the bumper's rear face now, with its housing inside the bar behind it.
+    reverse: [{ x: 0.86, y: 0.86, z: -2.578, w: 0.18, h: 0.12, color: '#fff2d8', intensity: 1.5, glow: 0.3 }],
     // (the high-mount stop lamp is declared in `tail` above so it shares that bank's lens and halo
     //  materials and costs no extra draw call)
   },
@@ -266,24 +270,59 @@ export const blueprint = {
   badges: [{ x: 0, y: 1.120, z: 2.430, w: 0.112, h: 0.090, d: 0.022 }],
   vents: [
     { x: 0.0, y: 1.505, z: 1.72, w: 0.62, h: 0.22, fins: 4, angle: 0.5, rx: -1.5708, mirror: false },
-    { x: 1.06, y: 1.12, z: 1.18, w: 0.30, h: 0.20, fins: 3, angle: 0.4, ry: 1.5708 },
+    /**
+     * ROUND-7: THE FENDER GILL, AND WHY A FLAT PART ON A CURVED PANEL ALWAYS STAIR-STEPS.
+     *
+     * Verbatim: "a uniform-black fender-vent slab whose lower edge stair-steps across the
+     * fender/bumper join." A stair-step is what you get when a flat rectangular assembly is CUT by
+     * the panel it lies on: the panel crosses the part's outline at a grazing angle and the
+     * intersection is resolved by whatever facet happens to be there. It is not a texture problem
+     * and it is not fixed by pushing the part further in — pushing it in makes the cut worse.
+     *
+     * There are only two positions that cannot stair-step: entirely inside the panel, or entirely
+     * outside it. This one is now entirely outside — the vent's own back plate is 24-40 mm inside
+     * the paint and every visible surface of it stands 16-30 mm proud, uniformly, so the panel
+     * never crosses its outline. That took measuring the flank rather than guessing: at z 0.95,
+     * y 1.38 the shell reads 1.026 and it holds 1.026-1.031 across the whole 260 x 130 mm footprint
+     * (`.vjprobe/w.mjs suv 0.95,1.36 / 0.88,1.36 / 1.02,1.36 / 0.95,1.44`), whereas the old station
+     * at z 1.18 varied 1.026-1.095 over its footprint because the front arch's flare reaches it.
+     * An AO decal under it (`shadows`) is what makes a proud part read as bolted on.
+     */
+    { x: 1.020, y: 1.38, z: 0.95, w: 0.26, h: 0.13, fins: 3, angle: 0.4, ry: 1.5708 },
   ],
   mirrors: { x: 1.06, y: 1.60, z: 0.96, painted: false },
   handles: [{ x: 1.055, y: 1.40, z: 0.30 }, { x: 1.055, y: 1.40, z: -0.86 }],
 
   trim: [
     // (the front bumper box is gone — the tub carries it now, see the z 2.34/2.46 stations)
-    { w: 2.02, h: 0.24, d: 0.28, y: 0.86, z: -2.42, mat: 'dark', r: 0.05 },    // rear bumper
+    /**
+     * ---- THE REAR BUMPER, ROUND-7 -------------------------------------------------------------
+     *
+     * Verbatim: "the SUV rear tube bumper has a free left end with a detached blown-out cyan
+     * crescent hanging under it." Both halves measured out. At w 2.02 the bar's tips stood at
+     * x 1.01 against a flank of 0.994 at its own station (`.vjprobe/w.mjs suv -2.42,0.86`) — 16 mm
+     * of bumper outboard of the bodywork, with a 50 mm rounded cap on the end of it. And the
+     * "crescent" was the REVERSE LAMP: at z -2.475 it sat 85 mm INSIDE a bumper that spans
+     * z -2.56 to -2.28, so the lens was buried in the plastic and only its additive halo escaped,
+     * under the bar, detached from anything.
+     *
+     * Swept forward (negative, because this bar is at the back of the car) the tips fall to
+     * z -2.22, where the flank measures 1.011: 21 mm inside, and the whole cap with them. The
+     * reverse lamps move out to the bumper's own rear face below.
+     */
+    { w: 1.98, h: 0.24, d: 0.28, y: 0.86, z: -2.42, mat: 'dark', r: 0.05, sweep: -0.20, sweepPow: 3.6, taper: 0.38 },    // rear bumper
     // Body-colour caps along the top of both bumpers. A 2 m black bar under a gold truck welded the
     // bumper, the flares and the tyres into one silhouette in every chase frame; a painted upper
     // half splits that bar in two and carries the car's colour all the way down the tailgate.
     // (the front bumper's painted cap goes with it: the face between the two apertures IS paint now)
-    { w: 1.96, h: 0.070, d: 0.28, y: 0.995, z: -2.422, mat: 'paint', r: 0.026 },
+    // its painted cap follows the same path, so the two die together instead of one ending on the
+    // other (flank 1.023 at z -2.22 / y 0.995)
+    { w: 1.94, h: 0.070, d: 0.28, y: 0.995, z: -2.422, mat: 'paint', r: 0.026, sweep: -0.19, sweepPow: 3.6, taper: 0.40 },
     // and a satin blade along the bottom of each, so the bumper has a lit lower edge
     // the front blade drops to the bottom edge of the clip, 100 mm inboard of the bodywork so its
     // ends are tucked under the bumper corners rather than terminating in open air
-    { w: 1.66, h: 0.038, d: 0.10, y: 0.662, z: 2.436, mat: 'chrome', r: 0.013 },
-    { w: 1.74, h: 0.032, d: 0.25, y: 0.740, z: -2.426, mat: 'chrome', r: 0.011 },
+    { w: 1.62, h: 0.038, d: 0.10, y: 0.662, z: 2.436, mat: 'chrome', r: 0.013, sweep: 0.13, sweepPow: 3.0, taper: 0.40, drop: -0.016 },
+    { w: 1.70, h: 0.032, d: 0.25, y: 0.740, z: -2.426, mat: 'chrome', r: 0.011, sweep: -0.16, sweepPow: 3.2, taper: 0.42, drop: -0.020 },
     // ROCK SLIDER. At x 1.16 its inner face was 109 mm outboard of the rocker it is meant to be
     // welded to, so the truck had a black bar hovering under each door with the garage floor
     // visible behind it. Pulled in to overlap the body; the tread edge rides its top outer corner.
@@ -304,6 +343,19 @@ export const blueprint = {
     // a specular, so it is what stops the tailgate reading as one black quad in Vegas and NYC
     { w: 1.44, h: 0.075, d: 0.06, y: 1.245, z: -2.535, mat: 'chrome', r: 0.026 },
     { w: 1.60, h: 0.045, d: 0.05, y: 0.905, z: -2.520, mat: 'chrome', r: 0.018 },
+  ],
+  /**
+   * AO DECALS — see the note on the tuner. The truck carries more bolt-ons than anything else in
+   * the game, and every one of them used to sit on the paint with nothing under it.
+   */
+  shadows: [
+    { x: 0.89, y: 2.098, z: -0.62, w: 0.14, d: 2.20 },                 // roof-rack rails
+    { x: 0.66, y: 2.108, z: 0.42, w: 0.14, d: 0.20 },                  // light-bar legs
+    { x: 1.022, y: 1.38, z: 0.95, w: 0.38, d: 0.22, face: 'x' },       // fender gill
+    { x: 1.06, y: 1.585, z: 0.96, w: 0.22, d: 0.19, face: 'x' },       // mirror stalk root
+    { x: 1.055, y: 1.40, z: 0.30, w: 0.26, d: 0.13, face: 'x' },       // door handles
+    { x: 1.055, y: 1.40, z: -0.86, w: 0.26, d: 0.13, face: 'x' },
+    { x: 0.0, y: 1.497, z: 1.72, w: 0.70, d: 0.30, mirror: false },    // scuttle louvre
   ],
   exhaust: [{ x: 0.78, y: 0.74, z: -2.46, r: 0.075, len: 0.24 }],
   extras: [
@@ -331,7 +383,10 @@ export const blueprint = {
     { type: 'bullbar', w: 1.66, h: 0.55, y: 1.17, z: 2.585, r: 0.052 },
     { type: 'rack', w: 1.78, d: 2.10, y: 2.11, z: -0.62, jerry: true },
     { type: 'lightbar', w: 1.56, count: 7, y: 2.24, z: 0.42 },
-    { type: 'snorkel', x: 1.07, y: 1.66, z: 1.34, h: 1.05 },
+    // ROUND-7: through the bonnet shoulder, not alongside the guard. See assemble.js `snorkel`.
+    // The entry point is the group's origin: the bonnet measures y 1.507 at x 0.92 on this station
+    // (deck 0.93, crown 0.010) and the tube sinks 260 mm below it into closed bodywork.
+    { type: 'snorkel', x: 0.950, y: 1.506, z: 1.10, h: 0.78, sink: 0.26, lean: 0.19 },
     // the tailgate: shut gap, two swage seams, a pull handle, a lit plate recess and a badge bar
     { type: 'tailgate', w: 1.62, h: 0.62, d: 0.07, y: 1.085, z: -2.478, plateX: -0.30, ry: 3.14159 },
     // …and the spare on the back of it. See assemble.js `sparewheel` for why this one detail is

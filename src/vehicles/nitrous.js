@@ -406,7 +406,7 @@ export const NITRO = {
       gasGain: 1.30, hotI: 5.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.68,
       skirtW: 0.90, skirtI: 0.80, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
-      wake: 0.16, cone: 0.22, smearRate: 1.4, smearWidth: 0.030,
+      wake: 0.16, cone: 0.22, smearRate: 7.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
     },
   },
@@ -422,7 +422,7 @@ export const NITRO = {
       gasGain: 1.12, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.84,
       skirtW: 0.98, skirtI: 0.92, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
-      wake: 0.21, cone: 0.28, smearRate: 1.4, smearWidth: 0.032,
+      wake: 0.21, cone: 0.28, smearRate: 6.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
     },
   },
@@ -444,7 +444,7 @@ export const NITRO = {
       gasGain: 1.08, hotI: 4.50, burn: 0.42, filW: 0.150, bodyW: 0.52, wisp: 0.90,
       skirtW: 1.06, skirtI: 0.90, bodyD: 1.62, thick: 1.25, occ: 0.97,
       sparkRate: 82, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
-      wake: 0.25, cone: 0.32, smearRate: 1.4, smearWidth: 0.050,
+      wake: 0.25, cone: 0.32, smearRate: 5.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
     },
   },
@@ -461,7 +461,7 @@ export const NITRO = {
       gasGain: 1.02, hotI: 4.90, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.62,
       skirtW: 0.86, skirtI: 0.74, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
-      wake: 0.14, cone: 0.20, smearRate: 1.4, smearWidth: 0.042,
+      wake: 0.14, cone: 0.20, smearRate: 8.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
     },
   },
@@ -674,6 +674,15 @@ function poolTexture() {
     for (let i = 0; i < 6; i++) {
       lumps.push([rng.range(0.05, 0.80), rng.range(-0.20, 0.20), rng.range(0.10, 0.26), rng.range(0.4, 1.0)]);
     }
+    // ── (r19) A SPILL ON A ROAD IS RIBBED, NOT AIRBRUSHED ────────────────────────────────────
+    // §1.3 is explicit about what light on a road looks like in this game's reference — "every
+    // light source draws a long reflection down the stone" — and up to r18 this tile was a smooth
+    // gaussian cone, i.e. a painted patch. Seven soft ribs that run the WHOLE length of the pool
+    // turn it into a set of reflections stretched down the road by the grazing view, which is both
+    // what a road does with a light and the thing that stops the pool reading as a decal. They are
+    // strongest at the near end and wash out down-road, because that is where the specular lobe is.
+    const ribs = [];
+    for (let i = 0; i < 7; i++) ribs.push([rng.range(-0.30, 0.30), rng.range(0.010, 0.040), rng.range(0.25, 1.0)]);
     const img = ctx.createImageData(S, S);
     const d = img.data;
     for (let y = 0; y < S; y++) {
@@ -694,6 +703,15 @@ function poolTexture() {
           lum += la * 0.5 * Math.exp(-(dv * dv + du * du));
         }
         a *= 0.55 + 0.45 * Math.min(lum, 2.2);
+        let rib = 0;
+        for (const [ru, rw, ra] of ribs) {
+          const dr = (u - ru) / rw;
+          rib += ra * Math.exp(-dr * dr) * (0.30 + 0.70 * Math.pow(1 - v, 2.2));
+        }
+        a *= 0.80 + 0.55 * Math.min(rib, 1.7);
+        // the root: the spill is hottest where it leaves the pipe, and that is what welds the
+        // pool to the car instead of letting it float behind as a separate patch of colour
+        a += 0.44 * Math.exp(-(u * u) / (0.052 * 0.052)) * Math.exp(-(v * v) / (0.115 * 0.115));
         a *= (1 - smoothstep(0.58, 0.98, v)) * (1 - smoothstep(0.46, 0.92, Math.abs(u) * 2));
         d[o] = 255; d[o + 1] = 255; d[o + 2] = 255;
         d[o + 3] = clamp(a, 0, 1) * 255;
@@ -1192,7 +1210,14 @@ const PLUME_FRAG = /* glsl */`
           // photographed as two white rods with a violet fringe. At 0.34 the thread is hot but on
           // the tonemap's slope, and a node is a 4x swell that clips: the white in the jet is a
           // row of knots that get smaller and closer together, which is the read §2.5 asks for.
-          float hotA = uHot * exp(-t / uBurn) * (0.30 + knot * 1.62);
+          // (r19) 0.34 + node*1.24 -> 0.15 + knot*2.35. Measured at 6x on the r19a LA muscle with
+          // the speed pass ablated: a DEAD STRAIGHT white bar running the whole visible length of
+          // the near column, because at a base authority of 0.34 the thread sits at ~1.1 between
+          // knots and the bloom threshold is ~0.7 — so the gaps bloomed exactly as hard as the
+          // knots did and the train had nothing to draw with. At 0.15 the thread between two
+          // cells is class-coloured and BELOW the bloom threshold; a cell is a 4x swell that goes
+          // over it. That is the difference between a white bar and a row of white knots.
+          float hotA = uHot * exp(-t / uBurn) * (0.15 + knot * 2.35);
           // A diamond is a LENS, brightest on the centreline and gone before the skirt — not a
           // rung laid across the jet. A row of rungs is a barcode.
           // (r18) exp(-q2·1.05) was still 0.77 at half the half-width and 0.35 at the full one, so
@@ -1227,9 +1252,14 @@ const PLUME_FRAG = /* glsl */`
           // anywhere in the first third — so "white core" meant "the entire throat". It opens at
           // 1.35 now and only the narrow lens above can push T there, so the white is a thread
           // with knots on it and everything around it is uMid at full chroma.
-          vec3 warm = mix(uMid, uCore, 0.42);
+          // (r19) 0.42 -> 0.30 and the step 0.42/1.15 -> 0.54/1.32. The body alone reaches T ~ 0.9
+          // on the axis anywhere in the first third, which took the gas 70% of the way to a colour
+          // that is already 42% white — so the throat of every class photographed as pale steam and
+          // the four palettes only really separated out in the fringe. The class chroma now owns
+          // the column and only the knots leave it.
+          vec3 warm = mix(uMid, uCore, 0.30);
           vec3 col = mix(uEdge, uMid, smoothstep(0.04, 0.40, T));
-          col = mix(col, warm, smoothstep(0.42, 1.15, T));
+          col = mix(col, warm, smoothstep(0.54, 1.32, T));
           col = mix(col, uCore, smoothstep(1.35, 2.45, T));
           vec3 fil = mix(uMid, uCore, clamp(hotA * 0.60, 0.0, 1.0));
           // ── LIGHT AND GAS ARE NOT THE SAME CURVE ─────────────────────────────────────────
@@ -2326,14 +2356,20 @@ export class NitrousJet {
       //     the shower hugs the throat, which is where a real one comes from anyway.
       //   · LENGTH. uMaxLen was 1.45 x sqrt(gL) ≈ 2.3 m of additive gaussian per streak. Now 0.85.
       //   · LIFE. x2.0 of the class life let a spark cross a third of the frame. Now x1.35.
-      const a = r.range(0, Math.PI * 2), rad = baseRad * gR * r.range(1.0, 2.0);
+      // (r19) 1.0-2.0 -> 1.05-2.45 core radii, and born over the first HALF of the column rather
+      // than its first 38%. Counted at 4x on the r18 LA supercar: three or four hairlines, all of
+      // them within a car's length of the bumper, because an ember born at 1.2 radii inside the
+      // first third of the jet spends its whole life inside the plume's own bloom halo. Spreading
+      // the birth zone along the column and pushing the annulus outside the skirt is what puts the
+      // shower ON the dark road, which is the only place §1.2's spark streaks can be seen.
+      const a = r.range(0, Math.PI * 2), rad = baseRad * gR * r.range(1.05, 2.45);
       const back = r.range(fx.sparkSpeed[0], fx.sparkSpeed[1]) * gS;
       // rearward cone: lateral velocity is bounded by tan(cone) * axial speed
       const th = Math.sqrt(r.range(0, 1)) * cone;
       const lat = Math.tan(th) * back;
       const cu = r.range(0, 1);
       this.streaks.emit(
-        n.base.x + Math.cos(a) * rad, n.base.y + Math.sin(a) * rad, n.base.z - r.range(0, baseLen * 0.38),
+        n.base.x + Math.cos(a) * rad, n.base.y + Math.sin(a) * rad, n.base.z - r.range(0, baseLen * 0.52),
         Math.cos(a) * (lat * 1.25 + 1.5), Math.sin(a) * (lat * 1.25 + 1.2) + r.range(0.1, 1.5), -back,
         r.range(fx.sparkLife[0], fx.sparkLife[1]) * 1.50,
         fx.sparkWidth * gR * r.range(0.45, 1.45),
@@ -2353,7 +2389,10 @@ export class NitrousJet {
         // jet rather than as the only structure in the frame. They are still born in an annulus
         // outside the gas, still live inside the column's own length, and are still three
         // temperatures rather than one.
-        r.range(0.40, 0.76) * (0.45 + 0.55 * s),
+        // (r19) 0.40-0.76 -> 0.54-0.98. Same note, third round running: the count in frame is
+        // four to six. They are safe brighter now because the column they sit beside has a
+        // shock train with a waist and a belly in it, so a hairline no longer out-structures it.
+        r.range(0.54, 0.98) * (0.45 + 0.55 * s),
         3.2,
       );
     }
@@ -2362,14 +2401,20 @@ export class NitrousJet {
     while (this._sacc >= 1) {
       this._sacc -= 1;
       const n = this.nozzles[r.int(0, this.nozzles.length - 1)];
-      const a = r.range(0, Math.PI * 2), rad = r.range(0, 1) * baseRad * gR * 0.8;
+      const a = r.range(0, Math.PI * 2), rad = r.range(0, 1) * baseRad * gR * 1.05;
       const back = r.range(fx.sparkSpeed[0] * 0.5, fx.sparkSpeed[1] * 0.7) * gS;
       this.streaks.emit(
-        n.base.x + Math.cos(a) * rad, n.base.y + Math.sin(a) * rad, n.base.z - baseLen * 0.35,
+        n.base.x + Math.cos(a) * rad, n.base.y + Math.sin(a) * rad,
+        n.base.z - baseLen * r.range(0.14, 0.56),
         Math.cos(a) * 0.6, Math.sin(a) * 0.5 + 0.4, -back,
-        r.range(0.22, 0.38), (fx.smearWidth ?? 0.35) * gR * r.range(0.7, 1.3),
+        r.range(0.22, 0.40), (fx.smearWidth ?? 0.35) * gR * r.range(0.7, 1.4),
         r.bool(0.5) ? fx.mid : fx.spark,
-        r.range(0.010, 0.026) * s, 0.6,
+        // (r19) 0.010-0.026 -> 0.030-0.062, and fx.smearRate 1.4/s -> 5-8/s. At one and a half
+        // births a second with a third of a second of life this layer had HALF a streak alive at
+        // any moment: §1.2's "light-streak trails that smear with motion" were, measurably, not
+        // in the frame. They stay wide, dim and short — the wake around the jet, never a rod
+        // beside it — but there are now six or seven of them.
+        r.range(0.030, 0.062) * s, 0.6,
       );
     }
     const su = this.streaks.material.uniforms;
@@ -2422,7 +2467,13 @@ export class NitrousJet {
     // verdict measured the SPILL out-sizing the jet ("a ~180px stub whose own ground pool out-sizes
     // it"), which inverts the whole read: a spill is evidence of the thing casting it and must be
     // broader, shorter and dimmer than the column, never the largest bright shape in the frame.
-    pm.opacity = clamp((s * 0.082 * flick + igBloom * 0.10) * (fx.poolI ?? 1), 0, 0.24);
+    // (r19) 0.082 -> 0.108 and the cap 0.24 -> 0.30. r17 cut this hard because the spill was
+    // OUT-SIZING the jet; the fix for that was the pool's reach and width, which stayed cut. What
+    // it cost was the layer itself: at 5x on the r18 LA muscle the road under a 240 mph boost was
+    // stained about as much as a street lamp stains it, and §6.3 scores ground light spill inside
+    // the 20-point supporting-FX dimension. It is still shorter and broader than the column and
+    // still the dimmest bright thing in frame; it is now visible.
+    pm.opacity = clamp((s * 0.108 * flick + igBloom * 0.12) * (fx.poolI ?? 1), 0, 0.30);
     this.pool.scale.set(
       fx.poolWidth * this.scale * (0.95 + 0.30 * gR) * (0.80 + 0.20 * s) * (1 + surge * 0.30),
       1,

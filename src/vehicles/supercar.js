@@ -279,8 +279,24 @@ export const blueprint = {
      * from a high camera, and swept so both tips fall 130 mm back into the bumper corners. The
      * blade is a third of the section it was and follows the same curve.
      */
-    { w: 1.54, h: 0.050, d: 0.26, y: 0.150, z: 2.300, mat: 'carbon', rx: 0.13, r: 0.020, sweep: 0.13, sweepPow: 2.6, taper: 0.46 },
-    { w: 1.18, h: 0.018, d: 0.036, y: 0.176, z: 2.404, mat: 'chrome', r: 0.008, sweep: 0.09, sweepPow: 2.4, taper: 0.50 },   // its polished blade
+    /**
+     * ---- ROUND-7: THE SPLITTER GETS A RETURN --------------------------------------------------
+     *
+     * See the same note on the tuner. A splitter hangs BELOW the undertray, so its tips are in
+     * clear air however far back they sweep: at w 1.54 they sat at x 0.77 with the flank measured
+     * at 0.807 (`.vjprobe/w.mjs supercar 2.20,0.175`), i.e. 37 mm inside — and still read as two
+     * ends lying on the road, because the half of the section below the floorpan was outside the
+     * bodywork all the way to the cap.
+     *
+     * Negative `drop` lifts the tips 38 mm as they sweep back, so each end climbs into the bumper
+     * corner. At the tip's new station the flank measures 0.866 against x 0.79: 76 mm inside, and
+     * the whole of the section is inside, not just its upper half.
+     */
+    { w: 1.58, h: 0.050, d: 0.26, y: 0.150, z: 2.300, mat: 'carbon', rx: 0.13, r: 0.020, sweep: 0.14, sweepPow: 2.6, taper: 0.42, drop: -0.038 },
+    { w: 1.22, h: 0.018, d: 0.036, y: 0.176, z: 2.404, mat: 'chrome', r: 0.008, sweep: 0.11, sweepPow: 2.4, taper: 0.48, drop: -0.030 },   // its polished blade
+    // the splitter's end return — up off the tip into the bumper corner (flank 0.879 at z 2.17,
+    // y 0.235; 0.885 at z 2.14, y 0.28)
+    { x: 0.780, w: 0.040, h: 0.145, d: 0.19, y: 0.245, z: 2.180, mat: 'carbon', rz: 0.24, mirror: true, r: 0.015 },
     // dive planes, rooted 130 mm inside the flank and 30 mm thick so the outboard tip is a rolled
     // edge rather than a knife (they were 20 mm plates with an 8 mm radius)
     { x: 0.800, w: 0.30, h: 0.030, d: 0.22, y: 0.288, z: 2.03, mat: 'carbon', rz: 0.16, mirror: true, r: 0.014 },
@@ -315,6 +331,16 @@ export const blueprint = {
   // side of it. It still stops 65 mm inboard of the rear tyres' inner sidewalls, so nothing clips.
   diffuser: { w: 1.36, h: 0.26, d: 0.36, y: 0.352, z: -2.240, strakes: 6, rx: 0.34, mat: 'carbon' },
   exhaust: [{ x: 0.235, y: 0.545, z: -2.36, r: 0.072, len: 0.22 }],
+  /**
+   * AO DECALS — see the note on the tuner. One shared material for every decal on every car.
+   */
+  shadows: [
+    { x: 0.90, y: 0.885, z: 0.62, w: 0.16, d: 0.15, face: 'x' },       // mirror stalk root
+    { x: 0.965, y: 0.80, z: -0.10, w: 0.24, d: 0.11, face: 'x' },      // door handle
+    { x: 0.60, y: 0.960, z: -1.95, w: 0.16, d: 0.24 },                 // swan-neck arm feet
+    { x: 0.30, y: 0.622, z: 2.14, w: 0.40, d: 0.22 },                  // bonnet extractors
+    { x: 0.325, y: 0.648, z: -0.50, w: 0.13, d: 0.42 },                // roll-hoop feet
+  ],
   extras: [
     // Round 2 stood a 280 mm PAINTED blade on each side of the engine deck: from any side view it
     // read as a red dorsal fin the height of the roof and the rear of the car became a heap of

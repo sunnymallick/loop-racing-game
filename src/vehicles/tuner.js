@@ -374,8 +374,35 @@ export const blueprint = {
      * photograph. It is pulled back so it clears the nose by 90 mm rather than 142, and the blade
      * is a third the section it was and follows the same sweep.
      */
-    { w: 1.34, h: 0.052, d: 0.26, y: 0.230, z: 2.120, mat: 'carbon', rx: 0.05, r: 0.024, sweep: 0.11, taper: 0.52 },  // front lip
-    { w: 1.06, h: 0.020, d: 0.038, y: 0.252, z: 2.232, mat: 'chrome', r: 0.009, sweep: 0.075, taper: 0.5 },           // its polished blade
+    /**
+     * ---- ROUND-7: THE SPLITTER GETS A RETURN --------------------------------------------------
+     *
+     * Verbatim: "both splitters end in mid-air short of the bumper corners, with a dark sliver
+     * between blade and valance." Measured on the 6x crop of the garage hero, both halves are
+     * true, and the reason is that `sweep` alone cannot fix this one.
+     *
+     * A splitter is BELOW the undertray by construction — that is what a splitter is — and the
+     * tub's undertray at this station sits at y 0.230. The lip is 52 mm deep centred on that, so
+     * its lower 26 mm is in clear air along its whole length, tips included: sweeping the tips
+     * back moves them to a station where the body is NARROWER, and the part of the tip that is
+     * below the floorpan is still outside the bodywork wherever it ends up. At w 1.34 the tips sat
+     * at x 0.67 against a measured flank of 0.762 (`.vjprobe/w.mjs tuner 2.01,0.265`) and still
+     * photographed as two rounded ends lying on the road.
+     *
+     * `drop` is the missing axis. Negative, it lifts the tips 35 mm as they sweep, so each end of
+     * the splitter RISES into the bumper corner instead of running level under it — which is what
+     * a real splitter's outboard end does, because it is bolted to the underside of the bumper
+     * skin. Wider with it (1.42), so the tips are 52 mm inside the flank when they get there.
+     *
+     * The two fences below are the visible half of the same junction: a splitter end that
+     * disappears cleanly is still a splitter that stops, and every road car with a lip like this
+     * carries a small vertical return at the corner tying the blade up into the valance.
+     */
+    { w: 1.42, h: 0.052, d: 0.26, y: 0.230, z: 2.120, mat: 'carbon', rx: 0.05, r: 0.024, sweep: 0.12, sweepPow: 2.6, taper: 0.42, drop: -0.035 },  // front lip
+    { w: 1.16, h: 0.020, d: 0.038, y: 0.252, z: 2.232, mat: 'chrome', r: 0.009, sweep: 0.10, taper: 0.45, drop: -0.030 },           // its polished blade
+    // the splitter's end return: up off the tip into the bumper corner, its top 90 mm inside the
+    // flank (measured 0.833 at z 2.03 / y 0.30, 0.847 at y 0.38)
+    { x: 0.700, w: 0.042, h: 0.150, d: 0.19, y: 0.300, z: 2.030, mat: 'carbon', rz: 0.26, mirror: true, r: 0.016 },
     // CANARDS. Kept — they are the widebody signature — but rooted 180 mm inside the flank instead
     // of sitting on top of a plank, and 30 mm thick with a 14 mm radius so the outboard tip is a
     // rolled edge rather than a knife.
@@ -405,6 +432,19 @@ export const blueprint = {
   // narrow and lifted: the rear tyres are the widest thing back here, not the bodykit
   diffuser: { w: 1.06, h: 0.22, d: 0.30, y: 0.330, z: -1.995, strakes: 4, rx: 0.30, mat: 'carbon' },
   exhaust: [{ x: 0.0, y: 0.345, z: -2.10, r: 0.098, len: 0.24, mirror: false }],
+  /**
+   * AO DECALS — the paint darkens where a part lands on it (kit.js `partShadow`). §7 caps a car
+   * that hovers over the road at 55; a wing, a mirror or a bonnet scoop sitting on paint with no
+   * shadow under it is the same defect at one tenth the scale, and it is most of what "props
+   * parked on a shell" looks like at 8x. One shared material for the whole set.
+   */
+  shadows: [
+    { y: 0.940, z: 1.42, w: 0.56, d: 0.52, mirror: false },            // bonnet scoop
+    { x: 0.82, y: 0.980, z: 0.72, w: 0.17, d: 0.15, face: 'x' },       // mirror stalk root
+    { x: 0.90, y: 0.875, z: -0.18, w: 0.26, d: 0.12, face: 'x' },      // door handle
+    { x: 0.52, y: 0.945, z: -1.94, w: 0.20, d: 0.30 },                 // wing pedestals
+    { x: 0.40, y: 0.910, z: 1.62, w: 0.38, d: 0.24 },                  // bonnet extractors
+  ],
   extras: [{ type: 'scoop', w: 0.44, h: 0.10, d: 0.40, y: 0.948, z: 1.42, painted: true }],
 };
 

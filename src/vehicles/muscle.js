@@ -345,8 +345,22 @@ export const blueprint = {
      * car's identity is lost, two boxes leave the triangle budget, and the bumper reads as one
      * continuous loop across the whole front instead of being chopped into three by two blocks.
      */
-    { w: 1.20, h: 0.135, d: 0.22, y: 0.66, z: -2.585, mat: 'chrome', r: 0.055 },
-    { x: 0.635, w: 0.42, h: 0.135, d: 0.20, y: 0.66, z: -2.505, mat: 'chrome', ry: -0.42, mirror: true, r: 0.05 },
+    /**
+     * ---- THE REAR BUMPER, ROUND-7 -------------------------------------------------------------
+     *
+     * Verbatim: "the rear bumper end is a rounded cap floating over the quarter." It was three
+     * separate parts — a 1.20 m centre bar and two 0.42 m end pieces yawed 24 degrees — and the end
+     * pieces were exactly the construction the FRONT bumper stopped being in round 5: a box whose
+     * outboard face is a rounded cap, mounted where the quarter is already turning away, so the cap
+     * stands on the skyline of the panel with paint visible behind it.
+     *
+     * It is one swept loop now, on the same rule the front bumper uses. `sweep` is NEGATIVE because
+     * this bar is at the back of the car and its tips have to fall FORWARD into the quarter: at
+     * w 1.70 the tips sit at x 0.85 and land at z -2.385, where the flank measures 0.873
+     * (`.vjprobe/w.mjs muscle -2.425,0.66 / -2.30,0.66`), so each end is 23 mm inside the wing and
+     * there is no cap anywhere for a camera to find.
+     */
+    { w: 1.70, h: 0.135, d: 0.22, y: 0.66, z: -2.585, mat: 'chrome', r: 0.052, sweep: -0.20, sweepPow: 3.6, taper: 0.40 },
     { w: 1.44, h: 0.30, d: 0.05, y: 0.865, z: -2.578, mat: 'dark', r: 0.03 },   // tail panel blackout
     // Ribbed chrome slats across the blackout panel. A '70 tail panel is a RIBBED surface between
     // the lamps; ours was one flat dark rectangle 1.44 m wide sitting dead centre of every chase
@@ -371,7 +385,22 @@ export const blueprint = {
     // between two samples renders as a dashed row of white specks along the sill, which is what
     // the 8x crop shows. 0.042 x 0.036 covers 3-4 px and the line is continuous.
     { x: 0.882, w: 0.042, h: 0.036, d: 2.20, y: 0.398, z: -0.10, mat: 'chrome', mirror: true, r: 0.012 },
-    { x: 0.950, w: 0.045, h: 0.035, d: 2.10, y: 0.665, z: -0.10, mat: 'chrome', mirror: true, r: 0.014 }, // side spear
+    /**
+     * ---- THE BODY-SIDE SPEAR, ROUND-7 ---------------------------------------------------------
+     *
+     * Verbatim: "the chrome body-side spear stops mid-panel on a flat end face." Two measurements
+     * behind that. It was a straight `roundedBox` at a constant x 0.950 with 2.10 m of length —
+     * and the flank it is supposed to lie on is not at a constant x: measured off the finished
+     * shell it runs 0.938 at the cowl, 0.924 at mid-door and 1.122 over the rear haunch, because
+     * the haunch flare reaches z -0.86. So the bar stood 26 mm clear of the paint at mid-door,
+     * dived 200 mm INTO the quarter at the back, and its front cap sat in open air on the wing.
+     *
+     * It is now a door moulding, which is what this car actually wears: 1.80 m from z -0.96 to
+     * 0.84, over the span where the flank is 0.924-0.940 and effectively parallel, and built as a
+     * SWEPT bar turned 90 degrees (`ry`), so `sweep` bends it in the flank's normal and both tips
+     * dive 50 mm inboard — 60 mm inside the paint — instead of ending on a face.
+     */
+    { x: 0.932, w: 1.80, h: 0.032, d: 0.032, y: 0.665, z: -0.06, mat: 'chrome', mirror: true, r: 0.012, ry: 1.5708, sweep: 0.050, sweepPow: 3.4, taper: 0.30 }, // side spear
     // (the front valance slab is gone — the bodywork reaches the road here now and the intake is
     //  cut into it; what is left is the chin spoiler along the very bottom edge of the panel)
     /**
@@ -387,7 +416,9 @@ export const blueprint = {
     // Rear valance: deliberately 1.16 m across a 2.19 m car and lifted clear of the road, so the
     // rear tyres stand outboard of it and the road shows underneath (§6.1 round-2 gap).
     { w: 1.16, h: 0.17, d: 0.26, y: 0.415, z: -2.505, mat: 'dark', rx: -0.12, r: 0.045 },
-    { w: 1.24, h: 0.045, d: 0.22, y: 0.336, z: -2.500, mat: 'chrome', r: 0.016 },
+    // …and its polished under-blade, swept and lifted at the tips so both ends climb into the
+    // valance above rather than finishing in the open under the rear wing
+    { w: 1.14, h: 0.045, d: 0.22, y: 0.336, z: -2.500, mat: 'chrome', r: 0.016, sweep: -0.07, sweepPow: 2.6, taper: 0.42, drop: -0.026 },
   ],
   wing: { type: 'ducktail', w: 1.50, chord: 0.30, y: 1.015, z: -2.26, mat: 'paint', aoa: -0.34 },
   exhaust: [{ x: 0.50, y: 0.435, z: -2.585, r: 0.070, len: 0.26 }],
@@ -431,10 +462,10 @@ export const blueprint = {
    * paint rather than in it.
    */
   ports: [
-    { x: 0.515, y: 1.020, z: 1.43, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22 },
-    { x: 0.515, y: 1.020, z: 1.53, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22 },
-    { x: 0.515, y: 1.020, z: 1.63, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22 },
-    { x: 0.515, y: 1.020, z: 1.73, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22 },
+    { x: 0.515, y: 1.020, z: 1.43, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22, mat: 'chrome' },
+    { x: 0.515, y: 1.020, z: 1.53, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22, mat: 'chrome' },
+    { x: 0.515, y: 1.020, z: 1.63, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22, mat: 'chrome' },
+    { x: 0.515, y: 1.020, z: 1.73, r: 0.034, rOut: 0.064, rise: 0.018, rz: -0.22, mat: 'chrome' },
   ],
   /**
    * …and the AO decals. §7 caps a car that hovers over the road at 55 because a shape with no
