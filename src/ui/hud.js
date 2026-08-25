@@ -623,12 +623,16 @@ export function resultsLayout(VW, VH) {
     // just above the window's middle, so the floor the panel paints has somewhere to be and the
     // subject stands ON something instead of floating in the middle of a rectangle.
     carX: winRect.x + winRect.w * 0.500 + stageAH * RS * 0.30,
-    carY: winRect.y + winRect.h * 0.470,
+    // 0.495, measured against the tallest class: the composition target is the aim point 0.74 m
+    // off the ground, and an SUV reaches a great deal further above it than a muscle car does. At
+    // 0.470 the truck's roof rack cleared the window's top edge by two pixels (la-suv-results.png
+    // at 5x), which is not clearance, it is luck.
+    carY: winRect.y + winRect.h * 0.495,
     // …and 0.855 of the bracket, not 0.90: the window is inset from the plate, the plate leans,
     // and a subject wider than the window it stands in is a subject with its nose behind the
     // frame. The camera solve carries an 8–13 % residual of its own (main.js `_finishCamera`), so
     // the margin is real room rather than arithmetic.
-    carW: stageW * 0.920,
+    carW: stageW * 0.900,
   };
 }
 
@@ -2657,9 +2661,15 @@ export class HUD {
     ctx.save();
     ctx.globalAlpha = io;
     const vg = ctx.createRadialGradient(VW * 0.42, VH * 0.46, VH * 0.24, VW * 0.42, VH * 0.5, VH * 1.15);
-    vg.addColorStop(0, 'rgba(3,6,12,0.62)');
-    vg.addColorStop(0.55, 'rgba(3,6,12,0.84)');
-    vg.addColorStop(1, 'rgba(1,3,7,0.97)');
+    // 0.80 in the middle, not 0.62. NYC parks the hero under a finish gantry whose banner is a
+    // two-metre white board filling the backdrop, and at 0.62 the words NISH LINE were legible
+    // through the gutter between YOUR RACE and LAP TIMES and faintly through the LAP TIMES plate
+    // itself (measured at 3x on nyc-muscle-results.png). §2.1 wants the race still faintly there,
+    // and a fifth of it still is — but a results screen has to be readable over the brightest
+    // thing any of the four cities can park behind it.
+    vg.addColorStop(0, 'rgba(3,6,12,0.80)');
+    vg.addColorStop(0.55, 'rgba(3,6,12,0.91)');
+    vg.addColorStop(1, 'rgba(1,3,7,0.985)');
     ctx.fillStyle = vg; ctx.fillRect(0, 0, VW, VH);
     const tg = ctx.createLinearGradient(0, 0, 0, 300);
     tg.addColorStop(0, 'rgba(2,5,10,0.92)'); tg.addColorStop(1, 'rgba(2,5,10,0)');
