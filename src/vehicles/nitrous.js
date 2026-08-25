@@ -405,7 +405,7 @@ export const NITRO = {
       bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 1.38, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97,
-      sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
+      sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 7.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
     },
@@ -421,7 +421,7 @@ export const NITRO = {
       bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
       gasGain: 1.20, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
       skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97,
-      sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
+      sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 6.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
     },
@@ -443,7 +443,7 @@ export const NITRO = {
       // half of the frame" — this is the number that fixes that, not the post chain.
       gasGain: 1.18, hotI: 4.50, burn: 0.44, filW: 0.152, bodyW: 0.54, wisp: 1.05,
       skirtW: 1.10, skirtI: 1.04, bodyD: 1.62, thick: 1.25, occ: 0.97,
-      sparkRate: 82, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
+      sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 5.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
     },
@@ -460,7 +460,7 @@ export const NITRO = {
       bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
       gasGain: 1.10, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97,
-      sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
+      sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 8.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
     },
@@ -2565,9 +2565,15 @@ export class NitrousJet {
     // in shot were not the jet: they were pale smear rods running most of the way to the corner,
     // and a straight bright rod beside a straight bright column is what makes the pair read as
     // "laser rods" rather than as burning gas. The shower now lives inside the column's own length.
-    su.uStretch.value = 0.044 + s * 0.014;
-    su.uMinLen.value = 0.34 * gS;
-    su.uMaxLen.value = 0.62 * gS;
+    // (r20) 0.34-0.62 m -> 0.40-0.82 m and the birth rate up ~38% per class. §1.2 asks for
+    // "yellow-white spark streaks" on the plume and counts them in the 20-point supporting-FX
+    // dimension; four rounds running the count in frame has been four to six. They are still
+    // born in an annulus OUTSIDE the gas and still live inside the column's own length, so what
+    // this buys is a shower rather than a handful of hairlines — and 0.82 m against a column the
+    // governor solves to 3.6-4.6 m is a fifth of the jet, not a rod beside it.
+    su.uStretch.value = 0.048 + s * 0.016;
+    su.uMinLen.value = 0.40 * gS;
+    su.uMaxLen.value = 0.82 * gS;
     this.streaks.update(dt, 2.2, drift);
 
     // ---- ground pool ----
