@@ -689,21 +689,45 @@ function periodicFbm(w, h, { seed = 1, octaves = 5, freq = 4, gain = 0.5, lac = 
  * carriageway uses for its chippings (see buildRoadSurfaceTexture) and it is what the run-off was
  * missing — raw per-texel noise is TV static, a blurred field is stones.
  */
-function grainField(w, h, seed) {
+function grainField(w, h, seed, cw = w, ch = h) {
+  // The stone is generated on a lattice of `cw x ch` and resampled up, so its PHYSICAL size is a
+  // property of the ground rather than of the texture's resolution. The verge is 0.74 cm/texel
+  // across and the run-off 2.9 cm; generated at their own resolutions their aggregate came out
+  // four times finer on one than the other, and the junction between them read as a change of
+  // surface even with both at the same mean. Both now ask for ~3 cm stone.
+  cw = Math.max(4, Math.min(w, Math.round(cw)));
+  ch = Math.max(4, Math.min(h, Math.round(ch)));
   const r = new RNG(seed);
-  const n = new Float32Array(w * h);
-  for (let i = 0; i < n.length; i++) n[i] = r.next();
-  const out = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
+  const n0 = new Float32Array(cw * ch);
+  for (let i = 0; i < n0.length; i++) n0[i] = r.next();
+  const b0 = new Float32Array(cw * ch);
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
       let acc = 0;
       for (let ky = -1; ky <= 1; ky++) {
-        for (let kx = -1; kx <= 1; kx++) acc += n[((y + ky + h) % h) * w + ((x + kx + w) % w)];
+        for (let kx = -1; kx <= 1; kx++) acc += n0[((y + ky + ch) % ch) * cw + ((x + kx + cw) % cw)];
       }
-      out[y * w + x] = acc / 9;
+      b0[y * cw + x] = acc / 9;
     }
   }
-  return { raw: n, blur: out };
+  if (cw === w && ch === h) return { raw: n0, blur: b0 };
+  const raw = new Float32Array(w * h), blur = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const fy = (y / h) * ch, iy = Math.floor(fy), ty = fy - iy;
+    const y0 = ((iy % ch) + ch) % ch, y1 = (y0 + 1) % ch;
+    for (let x = 0; x < w; x++) {
+      const fx = (x / w) * cw, ix = Math.floor(fx), tx = fx - ix;
+      const x0 = ((ix % cw) + cw) % cw, x1 = (x0 + 1) % cw;
+      const bl = (f) => {
+        const a = f[y0 * cw + x0], b = f[y0 * cw + x1], c = f[y1 * cw + x0], d = f[y1 * cw + x1];
+        return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * ty;
+      };
+      // the raw field stays HARD (nearest) so individual chips keep an edge; the blur is smooth
+      raw[y * w + x] = n0[y0 * cw + x0];
+      blur[y * w + x] = bl(b0);
+    }
+  }
+  return { raw, blur };
 }
 
 /** Concatenate a few small non-indexed geometries into one. (Avoids pulling in an addon.) */
@@ -883,7 +907,8 @@ function buildVergeTexture({
 
   const blot = periodicFbm(W, H, { seed: seed + 13, octaves: 5, freq: 3 });
   const dust = periodicFbm(W, H, { seed: seed + 41, octaves: 4, freq: 7 });
-  const g = grainField(W, H, seed * 7 + 3);
+  // ~3 cm stone, the same physical grain the run-off and the carriageway carry
+  const g = grainField(W, H, seed * 7 + 3, spanM / 0.030, tileM / 0.062);
   const img = ctx.createImageData(W, H);
   const d = img.data;
   const hgt = new Float32Array(W * H);
@@ -992,7 +1017,7 @@ function buildRunoffTexture({
 
   const blot = periodicFbm(S, S, { seed, octaves: 6, freq: 3 });
   const mid = periodicFbm(S, S, { seed: seed + 23, octaves: 4, freq: 11 });
-  const g = grainField(S, S, seed * 11 + 7);
+  const g = grainField(S, S, seed * 11 + 7, spanM / 0.030, tileM / 0.062);
   const img = ctx.createImageData(S, S);
   const d = img.data;
   const hgt = new Float32Array(S * S);
@@ -1533,8 +1558,12 @@ export class Track {
       kerbTop: st(wallOff + 0.18, kerbTop, 0.32),
       walkOut: st(walkEnd, kerbTop - 0.04, 0.52),
       apronLip: st(lipOff, -0.05, 0.70),
-      vergeOut: st(lipOff + vergeWidth, -0.12, 0.86),
-      runoffOut: st(lipOff + vergeWidth + runW, -0.26, 1),
+      // The two bands' CROSS-SLOPES are kept close together on purpose. A verge falling at 2.2°
+      // handing off to a run-off falling at 0.6° prints a tonal step along the join under a low
+      // sun — not a seam in the §7 sense, but the eye still reads it as a boundary, and this band
+      // exists precisely so there is no boundary to read.
+      vergeOut: st(lipOff + vergeWidth, -0.09, 0.86),
+      runoffOut: st(lipOff + vergeWidth + runW, -0.24, 1),
     };
     S.apronOut = S.vergeOut;                                 // kept for callers that read the old name
     g.userData.section = S;
@@ -2176,7 +2205,7 @@ class Branch {
       const dirt = ro.tint || opts.surface?.apronTint || '#6b6459';
       const vt = vergeTexture({
         seed: 12, paveTint: opts.surface?.apronTint || '#6b6459', dirtTint: dirt,
-        gravelTint: ro.gravel || '#a2957c', spanM: 1.7,
+        gravelTint: ro.gravel || '#a2957c', spanM: 2.4,
       });
       const rt = runoffTexture({
         seed: 18, tint: dirt, accent: ro.accent || null,
@@ -2212,9 +2241,13 @@ class Branch {
           const base = f.p.y + 0.03;
           const kerb = f.p.clone().addScaledVector(f.right, side * (f.half + 0.75));
           kerb.y = base + 0.15;
-          const vOff = 0.75 + 1.7 * taper;
+          // 2.4 m, not 1.7: the branch kerb top stands 0.53 m above the ground plane, and over
+          // 1.7 m that is an 11° batter handing off to a 0.6° run-off. The tonal step along that
+          // join was the brightest line in the Miami drift capture — wider verge, higher outer
+          // edge, and the fall moves into the run-off where it is spread over eleven metres.
+          const vOff = 0.75 + 2.4 * taper;
           const verge = f.p.clone().addScaledVector(f.right, side * (f.half + vOff));
-          verge.y = lerp(kerb.y, gY + 0.20, taper);
+          verge.y = lerp(kerb.y, gY + 0.30, taper);
           const run = f.p.clone().addScaledVector(f.right, side * (f.half + vOff + 11 * taper));
           run.y = lerp(verge.y, gY + 0.08, taper);
           A.push(kerb); B.push(verge); C.push(run);
