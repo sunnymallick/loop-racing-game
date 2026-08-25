@@ -277,7 +277,7 @@ class Game {
     const pm = this.car?.userData?.paintMaterial;
     if (pm && pm.emissive) {
       pm.emissive.copy(h.tint);
-      pm.emissiveIntensity = 0.06 + stage * 0.03;
+      pm.emissiveIntensity = 0.06;
     }
     // ---- TWO RULES GOVERN WHERE IT GOES, AND BOTH WERE LEARNED FROM CAPTURES -----------------
     //
@@ -327,7 +327,12 @@ class Game {
     if (stage > 0.001) {
       if (rim) {
         rim.position.set(-side * 3.10, 2.15, -3.40);
-        rim.distance = 20;
+        // 10 m, not 20. The rim stands 5.1 m off the car, so ten metres of throw is all of it —
+        // and the other ten were landing on the road BEHIND the subject, where the results stage
+        // has nothing but a scrim. Captured at 2.4x on the r2 stage: that spill came back as a
+        // broad horizontal wash across the backdrop at the car's belt line, brighter than the car
+        // in Miami, which is the one thing a rim light must never be.
+        rim.distance = 10;
         rim.intensity = lv * 7.2 * stage;
         // a cool rim against a warm key is the separation; tinted a sixth of the way to the paint
         // so it is still recognisably this car's edge and not a white outline
@@ -336,7 +341,12 @@ class Game {
       h.key.position.set(
         side * lerp(2.90, 3.05, stage), lerp(2.95, 2.55, stage), lerp(1.30, 3.30, stage),
       );
-      h.key.intensity = lv * (6.2 + stage * 3.0);
+      // …and the same on the key: pulled in from 15 m to 10.5 and its stage lift cut from +3.0 to
+      // +1.6. A car on a dark set does not need MORE light than the same car on a lit street, it
+      // needs the same light and a background that is not competing with it — and past the bloom
+      // threshold the extra only came back as a halo round the greenhouse.
+      h.key.distance = lerp(15, 10.5, stage);
+      h.key.intensity = lv * (6.2 + stage * 1.6);
       h.key.color.setRGB(1.0, 0.95, 0.86).lerp(h.tint, 0.34);
       return;
     }
@@ -433,6 +443,7 @@ class Game {
    * with the rim lamp still lit and the grade still parked at the results screen's aberration.
    */
   _resetFinish() {
+    if (this.backdrop) this.backdrop.visible = false;
     this._finishT = 0;
     this._finishPrompt = false;
     this._flagDone = false;
@@ -882,6 +893,67 @@ class Game {
     this.effects.boostPad(_finTmp, '#ffc23a');
   }
 
+  /**
+   * THE BACKDROP — a card between the hero and the city, so the portrait has a wall behind it.
+   *
+   * The critic's direction ended "push the race scene behind it to a darkened, blurred backdrop
+   * instead of letting the chase camera and the ground bloom decide the composition". The HUD does
+   * most of that (ui/hud.js `_drawResults` builds a set and cuts the subject out of it), but a 2D
+   * overlay cannot paint BEHIND the car, and the hole it cuts has to be wide enough to clear the
+   * roof — so whatever the world has parked at the car's own screen height still comes through it.
+   * Measured at 3x on miami-muscle-results.png: a barrier rail on the far side of the road runs
+   * dead through the greenhouse and out both sides. It survives an `__HERO = false` ablation and it
+   * survives bloom off, so it is geometry, and no amount of scrim over the top will move it.
+   *
+   * One card, eleven metres beyond the car, on the ray the camera already looks down — so it is
+   * centred on exactly the composition the stage solved for — with a soft elliptical alpha so it
+   * has no edge anywhere. It is dark rather than black: at the falloff the city is still faintly
+   * there, which is what stops the stage reading as a hole punched in the frame.
+   *
+   * Costs one transparent quad and no light. It is depth-tested and depth-write-free, so the car
+   * (opaque, and nearer) occludes it for free.
+   */
+  _stageBackdrop(camera, k) {
+    if (k <= 0.002) { if (this.backdrop) this.backdrop.visible = false; return; }
+    if (!this.backdrop) {
+      const c = document.createElement('canvas');
+      c.width = c.height = 128;
+      const g2 = c.getContext('2d');
+      const rg = g2.createRadialGradient(64, 64, 6, 64, 64, 64);
+      rg.addColorStop(0, 'rgba(255,255,255,1)');
+      rg.addColorStop(0.52, 'rgba(255,255,255,0.96)');
+      rg.addColorStop(0.80, 'rgba(255,255,255,0.55)');
+      rg.addColorStop(1, 'rgba(255,255,255,0)');
+      g2.fillStyle = rg; g2.fillRect(0, 0, 128, 128);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({
+          color: 0x05080e, map: tex, transparent: true, depthWrite: false,
+          toneMapped: false, opacity: 0,
+        }),
+      );
+      m.name = 'resultsBackdrop';
+      m.userData.noMerge = true;
+      m.frustumCulled = false;
+      m.renderOrder = 2;
+      this.backdrop = m;
+      this.engine.scene.add(m);
+    }
+    const bd = this.backdrop;
+    bd.visible = true;
+    bd.material.opacity = 0.94 * k;
+    const D = 11;
+    _finTmp.copy(this.body.pos).setY(this.body.pos.y + 0.74).sub(camera.position);
+    const d0 = Math.max(1, _finTmp.length());
+    _finTmp.divideScalar(d0);
+    bd.position.copy(camera.position).addScaledVector(_finTmp, d0 + D);
+    bd.quaternion.copy(camera.quaternion);
+    const halfY = (d0 + D) * Math.tan(camera.fov * 0.5 * Math.PI / 180);
+    bd.scale.set(halfY * (camera.aspect || 16 / 9) * 1.55, halfY * 1.75, 1);
+  }
+
   /** Put the grade's aberration back the way the city left it. */
   _restoreGrade() {
     const ab = this.engine.grade?.uniforms?.uAberration;
@@ -1059,6 +1131,8 @@ class Game {
 
     // the hero rig goes over to the garage's key-plus-rim on the same clock as the camera
     this._heroLight(side, 0, smoothstep(0.15, 0.95, u * (1 - w) + w));
+    // …and the wall it is lit against comes in on the same clock, so the flyby is still the city
+    this._stageBackdrop(cam, smoothstep(0.35, 1, w));
 
     // ---- the grade. Everything the race was driving is wound off: no boost push, no speed lines,
     // no heat haze, and the radial aberration parked low so the car — which the panel puts out at

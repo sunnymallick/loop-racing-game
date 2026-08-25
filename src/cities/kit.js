@@ -4181,7 +4181,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
       groundMat.emissiveIntensity = L.groundGlow ?? 0.85;
     } else {
       groundMat.emissive = new THREE.Color(L.ground?.shadeColor || L.ground?.color || '#3a3d43');
-      groundMat.emissiveIntensity = L.ground?.shade ?? 0.72;
+      groundMat.emissiveIntensity = L.ground?.shade ?? 1.7;
     }
     // The 176 m tile is 17 cm per texel, which is why the off-road ground measured hfH 1.20
     // against the carriageway's 7.46 at the same depth: there is nothing in that map smaller than
@@ -4408,6 +4408,77 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     }
   }
   group.add(blocks);
+
+  // ---- THE OPEN GROUND, past the modelled shoulder ----
+  //
+  // The run-off ends about forty metres from the centreline, and every drift capture in the set
+  // spends part of its frame beyond that: the `la-suv-drift` camera looks straight across the
+  // INSIDE of a corner, where a hundred metres of bare 6 km ground plane fills the left half of
+  // the picture with nothing standing on it at all. A texture cannot fix that — what the eye reads
+  // as ground at that range is silhouettes.
+  //
+  // So the same scatter runs a second time on the plane itself, at a quarter the density, out to
+  // `groundBand` metres past the run-off — rejected wherever a building already stands, which is
+  // why it has to happen HERE and not inside buildRoad: the footprints do not exist until now.
+  const rgdef = (def.track && def.track.runoff) || {};
+  const gBand = rgdef.groundBand ?? 42;
+  if (gBand > 0 && road.userData.section) {
+    const S = road.userData.section;
+    const boxes = [];
+    const tmp = new THREE.Box3();
+    for (const b of blocks.children) {
+      b.updateMatrixWorld(true);
+      tmp.setFromObject(b);
+      if (tmp.isEmpty()) continue;
+      boxes.push([tmp.min.x - 2.5, tmp.min.z - 2.5, tmp.max.x + 2.5, tmp.max.z + 2.5]);
+    }
+    // a coarse 60 m hash so the rejection test is a handful of comparisons, not ninety
+    const CELL = 60, grid = new Map();
+    for (const bx of boxes) {
+      for (let gx = Math.floor(bx[0] / CELL); gx <= Math.floor(bx[2] / CELL); gx++) {
+        for (let gz = Math.floor(bx[1] / CELL); gz <= Math.floor(bx[3] / CELL); gz++) {
+          const k = `${gx},${gz}`;
+          let a = grid.get(k); if (!a) { a = []; grid.set(k, a); }
+          a.push(bx);
+        }
+      }
+    }
+    const reject = (p) => {
+      const a = grid.get(`${Math.floor(p.x / CELL)},${Math.floor(p.z / CELL)}`);
+      if (!a) return false;
+      for (const bx of a) if (p.x > bx[0] && p.x < bx[2] && p.z > bx[1] && p.z < bx[3]) return true;
+      return false;
+    };
+    const inner = { off: S.runoffOut.off - 1.5, y: S.runoffOut.y, flat: 1, wob: S.runoffOut.wob };
+    const outer = { off: S.runoffOut.off + gBand, y: S.runoffOut.y, flat: 1 };
+    group.add(track.runoffScatter({
+      from: inner, to: outer,
+      seed: (def.seed ?? 5) + 71,
+      tint: rdef.tint || L.ground?.color || '#6b6459',
+      rock: rdef.rock || '#8d8375', scrub: rdef.scrub || null,
+      night, mask: rdef.mask || null,
+      // Sparser than the verge and BIGGER: at 60-150 m a 25 cm pebble is under a pixel, so the
+      // open ground is populated with the things you could still see from there — boulders and
+      // waist-high scrub — rather than with more gravel.
+      density: 1, chunk: 620, weeds: false,
+      rockGap: 9, tuftGap: 7.5,
+      sizeBias: 2.2,
+      outerT: 0.04, outerY: GROUND_Y + 0.012, reject,
+    }));
+    // …and the broad tonal incident: worn patches, damp ground, spills, at three times verge
+    // size. This is the half that actually reads at distance — a hundred metres of plane needs
+    // shapes on it, and a 12 m repair is a shape where a 25 cm stone is not.
+    group.add(track.runoffIncident({
+      from: inner, to: outer,
+      seed: (def.seed ?? 5) + 83,
+      tint: rdef.tint || L.ground?.color || '#6b6459',
+      gravel: rdef.gravel || '#a2957c',
+      night, mask: rdef.mask || null, wet: L.wet ?? 0,
+      parts: { scars: false, fans: false, litter: false, drags: false, blots: true },
+      blotScale: 2.9, density: 0.9,
+      outerT: 0.04, outerY: GROUND_Y + 0.012, reject,
+    }));
+  }
 
   // ---- near band: lamps, furniture, trees, signage ----
   const props = new THREE.Group();

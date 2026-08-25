@@ -2071,7 +2071,7 @@ export class Track {
         rm.emissiveIntensity = runoff.glow ?? 0.24;
       } else {
         rm.emissive = new THREE.Color(dirtTint);
-        rm.emissiveIntensity = runoff.shade ?? 0.72;
+        rm.emissiveIntensity = runoff.shade ?? 1.7;
       }
       for (const side of [-1, 1]) {
         // receiveShadow stays ON: §7 caps a car with no contact shadow at 55, and the car spends
@@ -2124,12 +2124,18 @@ export class Track {
    * is a handful of draw calls for the whole lap.
    */
   runoffScatter({
-    F, segs, from, to, seed = 5, tint = '#6b6459', rock = '#8d8375', scrub = null,
+    F = null, segs = null, from, to, seed = 5, tint = '#6b6459', rock = '#8d8375', scrub = null,
     night = false, mask = null, chunk = 420, rockGap = 3.4, tuftGap = 2.9, density = 1,
+    outerT = 1, outerY = null, reject = null, weeds = true, contact = true, sizeBias = 1,
   } = {}) {
     const g = new THREE.Group();
     g.name = 'runoffScatter';
     const rng = new RNG(seed * 13 + 7);
+    if (!F) {
+      segs = segs || Math.min(this.N, 400);
+      F = [];
+      for (let i = 0; i <= segs; i++) F.push(this.frame(i / segs));
+    }
     const frameAt = (u) => F[clamp(Math.round(((u % 1) + 1) % 1 * segs), 0, segs)];
 
     // ---- prototypes ----
@@ -2202,10 +2208,10 @@ export class Track {
     // shadow only exists where the sun reaches; what grounds an object in shade and at night is
     // the pool of occluded ambient right underneath it, and that is what this is. Unlit on
     // purpose, so it survives every lighting condition the four cities have.
-    const contact = new Map();
+    const contactPools = new Map();
     const pushContact = (cell, p, r) => {
-      let a = contact.get(cell);
-      if (!a) { a = []; contact.set(cell, a); }
+      let a = contactPools.get(cell);
+      if (!a) { a = []; contactPools.set(cell, a); }
       a.push(p.x, p.y, p.z, r);
     };
     const place = (kind, gap, sizeLo, sizeHi, latLo, latHi) => {
@@ -2223,6 +2229,10 @@ export class Track {
           // has run wide over it
           const t = clamp(Math.pow(rng.next(), 0.7) * (latHi - latLo) + latLo, 0, 0.97) * w;
           const p = pA.clone().lerp(pB, t);
+          // Past the modelled band the object is standing on the world ground plane, which holds
+          // ONE height everywhere — so its y comes from the plane, not from the road's frame.
+          if (outerY !== null && t > outerT) p.y = outerY;
+          if (reject && reject(p)) continue;
           const sc = rng.range(sizeLo, sizeHi);
           E.set(kind === 'rock' ? rng.range(-0.25, 0.25) : rng.range(-0.06, 0.06),
             rng.range(0, Math.PI * 2), rng.range(-0.18, 0.18));
@@ -2245,29 +2255,30 @@ export class Track {
     // stones over a 17 m band is one object per 110 m2, which is a lawn, not a verge. The gaps are
     // now 3-4 m, and the cost of that is instances, not draw calls: every one of them lands in a
     // bucket that already existed.
-    place('rock', rockGap / density, 0.16, 0.90, 0.05, 0.94);
+    const SB = sizeBias;
+    place('rock', rockGap / density, 0.16 * SB, 0.90 * SB, 0.05, 0.94);
     // ...and the big ones, sparse, so the field has a size range in it rather than one pebble
     // repeated: a stone you could not drive over is what gives the small ones their scale.
-    place('rock', 24 / density, 0.85, 1.9, 0.22, 0.92);
+    place('rock', 24 / density, 0.85 * SB, 1.9 * SB, 0.22, 0.92);
     // broken slabs — kerb, paving, a piece of a lot — lying flat where they were dumped
-    place('slab', 30 / density, 0.45, 1.15, 0.10, 0.85);
+    place('slab', 30 / density, 0.45 * SB, 1.15 * SB, 0.10, 0.85);
     if (tuftMat) {
-      place('tuft', tuftGap / density, 0.26, 0.80, 0.12, 0.95);
+      place('tuft', tuftGap / density, 0.26 * SB, 0.80 * SB, 0.12, 0.95);
       // kerb weeds: the strip of green that grows in the joint between paving and dirt, and the
       // single cheapest thing that stops the road edge reading as a cut line
-      place('tuft', 2.4 / density, 0.16, 0.42, 0.004, 0.085);
+      if (weeds) place('tuft', 2.4 / density, 0.16, 0.42, 0.004, 0.085);
       // the odd bigger bush, so the scrub is not one size either
-      place('tuft', 26 / density, 0.9, 1.8, 0.24, 0.9);
+      place('tuft', 26 / density, 0.9 * SB, 1.8 * SB, 0.24, 0.9);
     }
 
-    {
+    if (contact) {
       const cm = new THREE.MeshBasicMaterial({
         map: contactTexture(), transparent: true, depthWrite: false, fog: true,
         color: new THREE.Color(tint).multiplyScalar(0.30),
         opacity: 0.62, blending: THREE.NormalBlending,
         polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8,
       });
-      for (const [cell, arr] of contact) {
+      for (const [cell, arr] of contactPools) {
         const n = arr.length / 4;
         const pos = new Float32Array(n * 12), uv = new Float32Array(n * 8), nor = new Float32Array(n * 12);
         const idx = new Uint32Array(n * 6);
@@ -2325,21 +2336,28 @@ export class Track {
    * sidewalk, 1 = the far edge of the run-off where it dissolves into the ground plane.
    */
   runoffIncident({
-    F, segs, from, to, seed = 5, tint = '#6b6459', gravel = '#a2957c',
+    F = null, segs = null, from, to, seed = 5, tint = '#6b6459', gravel = '#a2957c',
     night = false, mask = null, wet = 0, density = 1,
+    parts = null, blotScale = 1, outerT = 1, outerY = null, reject = null,
   } = {}) {
+    const want = { scars: true, fans: true, blots: true, litter: true, drags: true, ...(parts || {}) };
     const g = new THREE.Group();
     g.name = 'runoffIncident';
     const sheet = new DecalSheet();
     const rng = new RNG(seed * 23 + 9);
     const UP = new THREE.Vector3(0, 1, 0);
     const spanM = Math.max(2, to.off - from.off);
+    if (!F) {
+      segs = segs || Math.min(this.N, 400);
+      F = [];
+      for (let i = 0; i <= segs; i++) F.push(this.frame(i / segs));
+    }
     const frameAt = (u) => F[clamp(Math.round(((u % 1) + 1) % 1 * segs), 0, segs)];
     const at = (u, side, t, lift = 0.02) => {
       const f = frameAt(u);
       const a = this.station(f, side, from), b = this.station(f, side, to);
       const p = a.lerp(b, t);
-      p.y += lift;
+      p.y = (outerY !== null && t > outerT ? outerY : p.y) + lift;
       return p;
     };
     const ok = (u, side) => (mask ? clamp(mask(((u % 1) + 1) % 1, side), 0, 1) : 1);
@@ -2421,7 +2439,7 @@ export class Track {
         prevA = a; prevB = b;
       }
     };
-    for (const c of corners) {
+    if (want.scars) for (const c of corners) {
       const out = this.outward(c.u);
       const side = out.dot(this.at(c.u).right) > 0 ? 1 : -1;
       if (ok(c.u, side) < 0.5) continue;
@@ -2434,11 +2452,11 @@ export class Track {
         // ...and the gravel it threw, at the point where it left the paving
         const fu = u0 + (lenM * rng.range(0.2, 0.45)) / this.length;
         const fw = rng.range(4, 9);
-        blot(fanMat, fu, side, rng.range(0.10, 0.20), fw, fw * rng.range(0.9, 1.35), rng.range(-0.5, 0.5));
+        if (want.fans) blot(fanMat, fu, side, rng.range(0.10, 0.20), fw, fw * rng.range(0.9, 1.35), rng.range(-0.5, 0.5));
       }
     }
     // a few more on the straights — not every mark on a verge was made by a racing car
-    {
+    if (want.scars) {
       const extra = Math.round(this.length / 620 * density);
       for (let i = 0; i < extra; i++) {
         const side = rng.sign();
@@ -2453,7 +2471,7 @@ export class Track {
     //
     // Placed on their own axes rather than the road's, at gaps drawn from a range, so no two of
     // them line up and none of them agrees with the band boundaries underneath.
-    {
+    if (want.blots) {
       const gap = 26 / density;
       for (const side of [-1, 1]) {
         let travelled = rng.range(0, gap);
@@ -2463,15 +2481,17 @@ export class Track {
           if (ok(u, side) < 0.5) continue;
           const roll = rng.next();
           const kind = roll < 0.30 ? 'puddle' : roll < 0.72 ? 'repair' : 'stain';
-          const sz = kind === 'repair' ? rng.range(2.6, 7.5) : rng.range(1.6, 4.6);
-          blot(patchMats[kind], u, side, rng.range(0.06, 0.86),
+          const sz = (kind === 'repair' ? rng.range(2.6, 7.5) : rng.range(1.6, 4.6)) * blotScale;
+          const t = rng.range(0.06, 0.86);
+          if (reject && reject(at(u, side, t, 0))) continue;
+          blot(patchMats[kind], u, side, t,
             sz * rng.range(0.7, 1.5), sz * rng.range(0.7, 1.5), rng.range(0, Math.PI));
         }
       }
     }
 
     // ---- 3. litter ----
-    {
+    if (want.litter) {
       const litMat = decalMat(litterTexture(), { rough: 0.7, lit: 0.30 });
       const gap = 19 / density;
       for (const side of [-1, 1]) {
@@ -2505,7 +2525,7 @@ export class Track {
     // runs the whole length of the frame parallel to the road; a dozen streaks crossing that line
     // at 30-70 degrees is what stops the eye finding it, and it is also just true — a verge with
     // traffic on it has material tracked off it.
-    {
+    if (want.drags) {
       const gap = 34 / density;
       for (const side of [-1, 1]) {
         let travelled = rng.range(0, gap);
@@ -2925,6 +2945,17 @@ class Branch {
         transparent: true, depthWrite: false, alphaTest: 0.02,
       });
       rm.normalScale.set(0.8, 0.8);
+      // the same world-space octaves the main carriageway's run-off and the ground plane carry,
+      // or a shortcut's shoulder is visibly a lower-grade surface than the one 30 m away
+      applyGroundDetail(rm, { seed: 6, strength: 0.46, normalStrength: 0.62, broad: 0.26 });
+      if (!opts.surface?.night) {
+        rm.emissiveMap = rt.map;
+        rm.emissive = new THREE.Color(dirt);
+        rm.emissiveIntensity = 0.72;
+        vm.emissiveMap = vt.map;
+        vm.emissive = new THREE.Color(0xffffff);
+        vm.emissiveIntensity = 0.08;
+      }
       if (opts.surface?.night) {
         for (const [m, k] of [[vm, 0.24], [rm, ro.glow ?? 0.24]]) {
           m.emissiveMap = m.map;

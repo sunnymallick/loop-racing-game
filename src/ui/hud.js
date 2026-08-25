@@ -2750,12 +2750,13 @@ export class HUD {
       ['TRACTION', st.traction, '#c33cff', '#f0aaff'],
       ['ACCELERATION', st.accel, '#2fa8ff', '#a6e6ff'],
     ];
-    const pitch = 30, barH = 7;
-    const top = y + h - 26 - BARS.length * pitch;
+    const pitch = 34, barH = 8;
+    const top = y + h - 24 - BARS.length * pitch;
 
     // the head: a paint chip in the car's own colour, then the class, cut off the same chamfer as
-    // every other plate on the screen
-    const hy = top - 20;
+    // every other plate on the screen. 34 px above the first bar, not 20: the rule under it was
+    // being ruled straight through the word SPEED.
+    const hy = top - 34;
     const cx0 = lx(hy) + 26;
     platePath(ctx, cx0, hy - 16, 22, 18, 0.16);
     ctx.fillStyle = r.carColor || '#8fa3ba'; ctx.fill();
@@ -2770,7 +2771,7 @@ export class HUD {
       color: 'rgba(146,172,196,0.8)', face: 'geo',
     });
     ctx.beginPath();
-    ctx.moveTo(lx(hy + 6) + 20, hy + 6); ctx.lineTo(lx(hy + 6) + w - 20, hy + 6);
+    ctx.moveTo(lx(hy + 10) + 20, hy + 10); ctx.lineTo(lx(hy + 10) + w - 20, hy + 10);
     ctx.strokeStyle = 'rgba(150,190,220,0.22)'; ctx.lineWidth = 1.1; ctx.stroke();
 
     for (let i = 0; i < BARS.length; i++) {
@@ -2778,12 +2779,14 @@ export class HUD {
       const by = top + i * pitch;
       const bx = lx(by + barH) + 26;
       const bw = w - 52;
+      // …with the label clear of its own bar. At `by - 5` a 10.5 px face and an 11.5 px numeral
+      // both sat ON the trough, and the numeral's descenderless box crossed the fill.
       rtext(ctx, name, {
-        x: bx, y: by - 5, size: 10.5, weight: 0.15, tracking: 0.28,
+        x: bx, y: by - 9, size: 10.5, weight: 0.15, tracking: 0.28,
         color: 'rgba(160,186,208,0.9)', face: 'geo',
       });
       rtext(ctx, String(Math.round(clamp(v ?? 0, 0, 1) * 100)), {
-        x: bx + bw, y: by - 5, size: 11.5, weight: 0.17, tracking: 0.10, align: 'right',
+        x: bx + bw, y: by - 9, size: 12, weight: 0.17, tracking: 0.10, align: 'right',
         color: 'rgba(214,232,246,0.95)', face: 'geo',
       });
       // the trough…
