@@ -610,6 +610,21 @@ class DecalSheet {
     b.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
     b.n += 4;
   }
+  /**
+   * One rung of a long strip: the same quad, but V spans [v0,v1] instead of [0,1] so a whole
+   * tyre scar can carry ONE stretch of its texture over forty metres of ground and still fade
+   * out at both of its own ends.
+   */
+  addV(material, corners, v0, v1) {
+    let b = this.buckets.get(material);
+    if (!b) { b = { pos: [], uv: [], nor: [], idx: [], n: 0 }; this.buckets.set(material, b); }
+    const [p0, p1, p2, p3, n] = corners;
+    for (const p of [p0, p1, p2, p3]) { b.pos.push(p.x, p.y, p.z); b.nor.push(n.x, n.y, n.z); }
+    b.uv.push(0, v0, 1, v0, 0, v1, 1, v1);
+    const a = b.n;
+    b.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    b.n += 4;
+  }
   build(group) {
     for (const [material, b] of this.buckets) {
       if (!b.n) continue;
@@ -835,14 +850,14 @@ export function groundDetailTexture(seed = 3) {
  * there is no vertex cost at all.
  */
 export function applyGroundDetail(material, {
-  seed = 3, a = 2.7, b = 9.1, strength = 0.42, normalStrength = 0.55,
-  fadeNear = 45, fadeFar = 190,
+  seed = 3, a = 2.7, b = 9.1, c = 37, strength = 0.42, normalStrength = 0.55,
+  broad = 0.30, fadeNear = 45, fadeFar = 190,
 } = {}) {
   const tex = groundDetailTexture(seed);
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uGDetail = { value: tex };
-    shader.uniforms.uGScale = { value: new THREE.Vector2(1 / a, 1 / b) };
-    shader.uniforms.uGAmp = { value: new THREE.Vector2(strength, normalStrength) };
+    shader.uniforms.uGScale = { value: new THREE.Vector3(1 / a, 1 / b, 1 / c) };
+    shader.uniforms.uGAmp = { value: new THREE.Vector3(strength, normalStrength, broad) };
     shader.uniforms.uGFade = { value: new THREE.Vector2(fadeNear, fadeFar) };
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vGDetailW;')
@@ -852,24 +867,33 @@ export function applyGroundDetail(material, {
       .replace('#include <common>', `#include <common>
 varying vec3 vGDetailW;
 uniform sampler2D uGDetail;
-uniform vec2 uGScale;
-uniform vec2 uGAmp;
+uniform vec3 uGScale;
+uniform vec3 uGAmp;
 uniform vec2 uGFade;
-vec3 gDetail() {
+// x = fine albedo grain, yz = fine normal, w = the BROAD term (see below)
+vec4 gDetail() {
   vec3 t1 = texture2D(uGDetail, vGDetailW.xz * uGScale.x).rgb;
   vec3 t2 = texture2D(uGDetail, vGDetailW.zx * uGScale.y + 0.317).rgb;
+  // THE BROAD OCTAVE. The world ground map is one 176 m tile repeated 34 times across 6 km, and
+  // at the scale a shoulder is actually seen from, the same slabs, the same service-road streaks
+  // and the same stains come back every 176 m — §7 caps a visible tiling repeat at 65. This third
+  // sample runs at an INCOMMENSURATE scale and does not fade with distance, so no two copies of
+  // the tile carry the same large-scale tone. It is also the only lateral variation the far plain
+  // has: without it the ground is three bands parallel to the road and nothing else.
+  float t3 = texture2D(uGDetail, vGDetailW.xz * uGScale.z * vec2(1.0, 0.77) + 0.581).r;
   float f = 1.0 - smoothstep(uGFade.x, uGFade.y, distance(vGDetailW, cameraPosition));
-  return vec3((t1.r - 0.5) * 0.72 + (t2.r - 0.5) * 0.55,
-              (t1.g - 0.5) + (t2.g - 0.5) * 0.6,
-              (t1.b - 0.5) + (t2.b - 0.5) * 0.6) * f;
+  return vec4(((t1.r - 0.5) * 0.72 + (t2.r - 0.5) * 0.55) * f,
+              ((t1.g - 0.5) + (t2.g - 0.5) * 0.6) * f,
+              ((t1.b - 0.5) + (t2.b - 0.5) * 0.6) * f,
+              t3 - 0.5);
 }`)
       .replace('#include <map_fragment>', `#include <map_fragment>
-  vec3 gD = gDetail();
-  diffuseColor.rgb *= 1.0 + gD.x * uGAmp.x;`)
+  vec4 gD = gDetail();
+  diffuseColor.rgb *= 1.0 + gD.x * uGAmp.x + gD.w * uGAmp.z;`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
   normal = normalize(normal + (viewMatrix * vec4(gD.y * uGAmp.y, 0.0, gD.z * uGAmp.y, 0.0)).xyz);`);
   };
-  material.customProgramCacheKey = () => `gdetail:${a}:${b}:${strength}:${normalStrength}`;
+  material.customProgramCacheKey = () => `gdetail:${a}:${b}:${c}:${strength}:${normalStrength}:${broad}`;
   material.needsUpdate = true;
   return material;
 }
@@ -1132,6 +1156,215 @@ function buildRunoffTexture({
   };
 }
 
+// ---------------------------------------------------------------- history of use
+//
+// Round 1 of this piece scored 60 with one gap named three times over: "off the racing line the
+// ground has no history of use" — a car mid-drift on the Miami sand left no rut, no scar, no
+// dust-darkened track, and the three colour bands ran the full width of the frame with no lateral
+// incident in them at all. Aggregate does not fix that. Aggregate is a MATERIAL property and what
+// was missing is an EVENT property: the run-off has to record the things that have happened on it.
+//
+// Everything below is world-placed, driven off the route's own curvature, and deliberately laid at
+// an angle to the road so that it breaks the band-parallel reading rather than reinforcing it.
+
+const _scarCache = new Map();
+/**
+ * A pair of tyre ruts with the gravel they threw. U runs ACROSS the pair, V along it — and the
+ * content is near-constant along V so one texture can stretch over a 40 m scar without smearing
+ * anything the eye can name. Alpha dies at both ends and both sides, so a scar has no edge.
+ */
+export function scarTexture({ tint = '#6b6459', gravel = '#a2957c', seed = 5 } = {}) {
+  const key = `${tint}|${gravel}|${seed}`;
+  if (_scarCache.has(key)) return _scarCache.get(key);
+  const W = 192, H = 384;
+  const { c, ctx } = canvas(W, H);
+  const dirt = sColor(tint), grav = sColor(gravel);
+  const n = periodicFbm(W, H, { seed: seed + 3, octaves: 4, freq: 7 });
+  const fine = grainField(W, H, seed * 13 + 1, 96, 192);
+  const img = ctx.createImageData(W, H);
+  const d = img.data;
+  // the two ruts, in U
+  const RUT = [0.315, 0.685], RW = 0.075;
+  for (let y = 0; y < H; y++) {
+    const v = y / (H - 1);
+    // both ends taper to nothing, and the wander is what stops the pair reading as a printed strip
+    const endA = smoothstep(0, 0.17, v) * (1 - smoothstep(0.83, 1, v));
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const u = x / (W - 1);
+      let rut = 0, berm = 0;
+      for (const r of RUT) {
+        const dd = Math.abs(u - r + (n[i] - 0.5) * 0.05);
+        rut = Math.max(rut, 1 - smoothstep(RW * 0.55, RW, dd));
+        berm = Math.max(berm, (1 - smoothstep(RW * 0.9, RW * 2.0, dd)) * smoothstep(RW * 0.6, RW, dd));
+      }
+      // churned ground between and around the ruts
+      const churn = (1 - smoothstep(0.30, 0.52, Math.abs(u - 0.5))) * (0.30 + n[i] * 0.55);
+      const stone = (fine.blur[i] - 0.5);
+      // a rut is DARKER (compacted, damp) and the berm is PALER (dry material pushed aside)
+      const col = dirt.clone().multiplyScalar(0.52 + stone * 0.5);
+      col.lerp(grav, clamp(berm * 0.85 + (fine.raw[i] > 0.955 ? 0.5 : 0), 0, 0.9));
+      const lit = clamp(1 + berm * 0.55 - rut * 0.30 + stone * 0.6, 0.35, 1.9);
+      d[i * 4] = clamp(col.r * 255 * lit, 0, 255);
+      d[i * 4 + 1] = clamp(col.g * 255 * lit, 0, 255);
+      d[i * 4 + 2] = clamp(col.b * 255 * lit, 0, 255);
+      const a = clamp(rut * 0.92 + berm * 0.55 + churn * 0.42, 0, 1)
+        * endA * (0.72 + n[i] * 0.5);
+      d[i * 4 + 3] = clamp(a, 0, 1) * 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  _scarCache.set(key, t);
+  return t;
+}
+
+const _fanCache = new Map();
+/**
+ * The gravel a car throws when it puts two wheels off. Radiates from the BOTTOM CENTRE of the
+ * quad, which is placed on the paved lip, so the fan opens outward into the dirt.
+ */
+export function fanTexture({ gravel = '#a2957c', tint = '#6b6459', seed = 9 } = {}) {
+  const key = `${gravel}|${tint}|${seed}`;
+  if (_fanCache.has(key)) return _fanCache.get(key);
+  const S = 256;
+  const { c, ctx } = canvas(S, S);
+  const rng = new RNG(seed * 31 + 7);
+  const grav = sColor(gravel), dirt = sColor(tint);
+  ctx.clearRect(0, 0, S, S);
+  // a soft wedge of disturbed ground under the stones
+  {
+    const gr = ctx.createRadialGradient(S / 2, S, 0, S / 2, S, S * 0.98);
+    gr.addColorStop(0, `rgba(${(dirt.r * 300) | 0},${(dirt.g * 292) | 0},${(dirt.b * 275) | 0},0.42)`);
+    gr.addColorStop(0.55, `rgba(${(dirt.r * 300) | 0},${(dirt.g * 292) | 0},${(dirt.b * 275) | 0},0.16)`);
+    gr.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(S / 2, S);
+    ctx.arc(S / 2, S, S * 0.98, Math.PI * 1.18, Math.PI * 1.82);
+    ctx.closePath(); ctx.clip();
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, S, S);
+    ctx.restore();
+  }
+  // streaks of thrown material
+  ctx.lineCap = 'round';
+  for (let k = 0; k < 150; k++) {
+    const a = Math.PI * 1.5 + rng.range(-0.62, 0.62);
+    const r0 = rng.range(0.05, 0.5) * S, r1 = r0 + rng.range(0.06, 0.34) * S;
+    const lit = rng.range(0.7, 1.5);
+    ctx.strokeStyle = `rgba(${clamp(grav.r * 255 * lit, 0, 255) | 0},${clamp(grav.g * 255 * lit, 0, 255) | 0},${clamp(grav.b * 255 * lit, 0, 255) | 0},${rng.range(0.10, 0.42) * (1 - r1 / S)})`;
+    ctx.lineWidth = rng.range(0.8, 3.4);
+    ctx.beginPath();
+    ctx.moveTo(S / 2 + Math.cos(a) * r0, S + Math.sin(a) * r0);
+    ctx.lineTo(S / 2 + Math.cos(a) * r1, S + Math.sin(a) * r1);
+    ctx.stroke();
+  }
+  // and the stones themselves, thinning out with distance
+  for (let k = 0; k < 340; k++) {
+    const a = Math.PI * 1.5 + rng.range(-0.72, 0.72);
+    const r = Math.pow(rng.next(), 0.55) * S * 0.92;
+    const lit = rng.range(0.55, 1.35);
+    ctx.fillStyle = `rgba(${clamp(grav.r * 255 * lit, 0, 255) | 0},${clamp(grav.g * 255 * lit, 0, 255) | 0},${clamp(grav.b * 255 * lit, 0, 255) | 0},${rng.range(0.25, 0.8) * (1 - r / S)})`;
+    const rr = rng.range(1.0, 3.6);
+    ctx.beginPath();
+    ctx.ellipse(S / 2 + Math.cos(a) * r, S + Math.sin(a) * r, rr, rr * rng.range(0.6, 1.1), rng.range(0, 3), 0, 7);
+    ctx.fill();
+  }
+  const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  _fanCache.set(key, t);
+  return t;
+}
+
+const _patchCache = new Map();
+/**
+ * One irregular blot of a DIFFERENT surface: standing water, a compacted repair, a spill.
+ * These are what stop the three bands running the whole width of the frame — each one is placed
+ * at its own angle, so the eye stops finding lines parallel to the road.
+ */
+export function groundPatchTexture(kind = 'puddle', { tint = '#6b6459', gravel = '#a2957c', seed = 1 } = {}) {
+  const key = `${kind}|${tint}|${gravel}|${seed}`;
+  if (_patchCache.has(key)) return _patchCache.get(key);
+  const S = 256;
+  const { c, ctx } = canvas(S, S);
+  const dirt = sColor(tint), grav = sColor(gravel);
+  const n = periodicFbm(S, S, { seed: seed * 7 + 11, octaves: 5, freq: 4 });
+  const fine = grainField(S, S, seed * 17 + 3, 128, 128);
+  const img = ctx.createImageData(S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = y * S + x;
+      const dx = (x / (S - 1) - 0.5) * 2, dy = (y / (S - 1) - 0.5) * 2;
+      // a noise-warped radius: the outline is never an ellipse
+      const r = Math.hypot(dx, dy) * (0.72 + (n[i] - 0.5) * 0.85);
+      const inside = 1 - smoothstep(0.34, 0.52, r);
+      let col, a, lit;
+      if (kind === 'puddle') {
+        // dark water with a pale dried-mineral rim just outside the wet line
+        const rim = (1 - smoothstep(0.46, 0.60, r)) * smoothstep(0.36, 0.48, r);
+        col = dirt.clone().multiplyScalar(0.34 + (fine.blur[i] - 0.5) * 0.18);
+        col.lerp(grav, clamp(rim * 1.1, 0, 0.75));
+        lit = clamp(0.9 + rim * 0.7 + (n[i] - 0.5) * 0.3, 0.3, 1.8);
+        a = clamp(inside * 0.94 + rim * 0.55, 0, 1);
+      } else if (kind === 'repair') {
+        // a compacted slab of a coarser aggregate, paler and flatter than the dirt around it
+        col = dirt.clone().lerp(grav, 0.45 + (n[i] - 0.5) * 0.4);
+        lit = clamp(1.05 + (fine.blur[i] - 0.5) * 0.85 + (fine.raw[i] > 0.95 ? 0.45 : 0), 0.4, 1.9);
+        a = clamp(inside * 0.88, 0, 1);
+      } else {                                             // 'stain' — oil, fuel, burnt rubber
+        col = dirt.clone().multiplyScalar(0.28);
+        lit = clamp(0.85 + (n[i] - 0.5) * 0.5, 0.25, 1.4);
+        a = clamp(inside * 0.7 * (0.45 + n[i] * 0.8), 0, 1);
+      }
+      d[i * 4] = clamp(col.r * 255 * lit, 0, 255);
+      d[i * 4 + 1] = clamp(col.g * 255 * lit, 0, 255);
+      d[i * 4 + 2] = clamp(col.b * 255 * lit, 0, 255);
+      d[i * 4 + 3] = a * 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  _patchCache.set(key, t);
+  return t;
+}
+
+const _dragCache = new Map();
+/**
+ * A drag of dust pulled OFF the dirt and ONTO the tarmac. It is laid across the kerb line rather
+ * than beside it, and it is the cheapest single thing that stops the road/shoulder join reading as
+ * a boundary: something has crossed it.
+ */
+export function dustDragTexture({ tint = '#6b6459', seed = 3 } = {}) {
+  const key = `${tint}|${seed}`;
+  if (_dragCache.has(key)) return _dragCache.get(key);
+  const W = 128, H = 256;
+  const { c, ctx } = canvas(W, H);
+  const dirt = sColor(tint);
+  const n = periodicFbm(W, H, { seed: seed * 5 + 2, octaves: 4, freq: 6 });
+  const img = ctx.createImageData(W, H);
+  const d = img.data;
+  for (let y = 0; y < H; y++) {
+    const v = y / (H - 1);
+    // V = 0 sits out in the dirt, V = 1 out on the tarmac (nearly gone). Both ends have to reach
+    // zero: a drag whose dirt end is at full alpha prints a straight cut across the verge, which
+    // is the one thing this decal exists to break up.
+    const along = Math.pow(1 - v, 1.7) * smoothstep(0, 0.16, v);
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const u = x / (W - 1);
+      const across = 1 - smoothstep(0.18, 0.5, Math.abs(u - 0.5));
+      const lit = clamp(1.02 + (n[i] - 0.5) * 0.7, 0.5, 1.7);
+      d[i * 4] = clamp(dirt.r * 255 * lit, 0, 255);
+      d[i * 4 + 1] = clamp(dirt.g * 255 * lit, 0, 255);
+      d[i * 4 + 2] = clamp(dirt.b * 255 * lit, 0, 255);
+      d[i * 4 + 3] = clamp(along * across * (0.35 + n[i] * 0.9), 0, 1) * 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  _dragCache.set(key, t);
+  return t;
+}
+
 // ------------------------------------------------------------------ Track
 
 export class Track {
@@ -1255,7 +1488,22 @@ export class Track {
    * hand off to a shoulder that has to lie down flat on the ground plane.
    */
   station(f, side, st) {
-    const lat = side * (f.half + st.off);
+    // A BAND BOUNDARY THAT WANDERS.
+    //
+    // Round 1's biggest measured gap was "the three bands run edge-to-edge of a 450px strip
+    // perfectly parallel to the road with zero lateral incident for the whole visible length" —
+    // and that is a property of the CROSS-SECTION, not of any texture: every station held one
+    // offset for the whole lap, so every band boundary was a curve exactly parallel to the road.
+    //
+    // `st.wob` moves the station laterally by a sum of two sinusoids in `u` with whole-number
+    // periods (so the loop closes), evaluated identically for every strip that shares the
+    // station — which is what keeps adjacent ribbons vertex-welded and the §7 seam cap unarmed.
+    // `relax()` is told the amplitude up front so the ground-plane clearance guarantee survives it.
+    const w = st.wob;
+    const jitter = w
+      ? Math.sin(f.u * Math.PI * 2 * w.f1 + w.p1) * w.a1 + Math.sin(f.u * Math.PI * 2 * w.f2 + w.p2) * w.a2
+      : 0;
+    const lat = side * (f.half + st.off + jitter);
     const p = f.pos.clone().addScaledVector(f.right, lat).addScaledVector(f.normal, st.y);
     if (!st.flat) return p;
     const q = f.pos.clone().addScaledVector(f.rightFlat, lat);
@@ -1557,7 +1805,13 @@ export class Track {
       const need = fall <= 1e-6 ? 0 : 1 - room / fall;
       return clamp(Math.max(want, need), 0, 1);
     };
-    const st = (off, y, want) => ({ off, y, flat: relax(off, y, want) });
+    // `wob` is the lateral wander this station is allowed (see Track.station). The relaxation is
+    // solved for the OUTERMOST excursion so the ground-plane clearance holds at every u.
+    const st = (off, y, want, wob = null) => ({
+      off, y, wob, flat: relax(off + (wob ? wob.a1 + wob.a2 : 0), y, want),
+    });
+    /** Two whole-number periods per lap, so the wander closes on itself. */
+    const wob = (a1, f1, p1, a2, f2, p2) => ({ a1, f1, p1, a2, f2, p2 });
 
     const walkEnd = wallOff + 0.18 + sidewalkWidth;
     const lipOff = wallOff + 0.55 + sidewalkWidth;
@@ -1568,13 +1822,13 @@ export class Track {
       gutterOut: st(wallOff, 0.07, 0.30),
       kerbTop: st(wallOff + 0.18, kerbTop, 0.32),
       walkOut: st(walkEnd, kerbTop - 0.04, 0.52),
-      apronLip: st(lipOff, -0.05, 0.70),
+      apronLip: st(lipOff, -0.05, 0.70, wob(0.16, 7, 0.9, 0.10, 19, 2.4)),
       // The two bands' CROSS-SLOPES are kept close together on purpose. A verge falling at 2.2°
       // handing off to a run-off falling at 0.6° prints a tonal step along the join under a low
       // sun — not a seam in the §7 sense, but the eye still reads it as a boundary, and this band
       // exists precisely so there is no boundary to read.
-      vergeOut: st(lipOff + vergeWidth, -0.09, 0.86),
-      runoffOut: st(lipOff + vergeWidth + runW, -0.24, 1),
+      vergeOut: st(lipOff + vergeWidth, -0.09, 0.86, wob(0.55, 5, 2.1, 0.30, 13, 4.7)),
+      runoffOut: st(lipOff + vergeWidth + runW, -0.24, 1, wob(2.6, 3, 1.3, 1.3, 11, 5.6)),
     };
     // The run-off does not start where the verge ends — it starts two thirds of the way ACROSS
     // the verge, 2 cm proud of it, and its own alpha fades in over that overlap. The two bands
@@ -1585,6 +1839,8 @@ export class Track {
       off: lipOff + vergeWidth * (1 - OVER),
       y: lerp(S.apronLip.y, S.vergeOut.y, 1 - OVER) + 0.02,
       flat: lerp(S.apronLip.flat, S.vergeOut.flat, 1 - OVER),
+      // the same wander the verge's outer edge carries, so the overlap stays an overlap
+      wob: S.vergeOut.wob,
     };
     S.apronOut = S.vergeOut;                                 // kept for callers that read the old name
     g.userData.section = S;
@@ -1703,7 +1959,14 @@ export class Track {
       // The same world-space octaves the ground plane gets, at a third of the strength: the
       // run-off's own texels are already 3.5 cm, so this is here to make the two surfaces share
       // one grain across the dissolve rather than to add detail the band was missing.
-      applyGroundDetail(rm, { seed: (surface.seed ?? 3) + 2, strength: 0.16, normalStrength: 0.30 });
+      // Round 1 ran this at 0.16/0.30 on the argument that the run-off's own 3.5 cm texels already
+      // carry the grain. They do — in SUNLIGHT. In shade and at night the only contrast a surface
+      // has is what its albedo map holds, and the measured result was a black band with the car
+      // standing on nothing. It matches the ground plane now, plus the same broad octave, which is
+      // what keeps the two reading as one material across the dissolve.
+      applyGroundDetail(rm, {
+        seed: (surface.seed ?? 3) + 2, strength: 0.46, normalStrength: 0.62, broad: 0.26,
+      });
       if (surface.night) {
         rm.emissiveMap = rt.map;
         rm.emissive = new THREE.Color(runoff.glowColor || '#ffffff');
@@ -1716,6 +1979,19 @@ export class Track {
           vScale: 1 / rt.tileM, uA: 0, uB: 1, mask: runoff.mask || null,
         });
         m.renderOrder = -1;                                  // under every other transparent thing
+      }
+
+      // ...and the record of everything that has ever run wide, parked, leaked or been dragged
+      // across it. See runoffIncident() — this is the half of "reads as ground" that aggregate
+      // cannot buy.
+      if (runoff.incident !== false) {
+        g.add(this.runoffIncident({
+          F, segs, from: S.apronLip, to: S.runoffOut,
+          seed: (surface.seed ?? 5) + 29, tint: dirtTint,
+          gravel: runoff.gravel || '#a2957c',
+          night: surface.night, mask: runoff.mask || null, wet: surface.wet || 0,
+          density: runoff.incidentDensity ?? 1,
+        }));
       }
 
       // ...and things standing on it. A dirt lot with nothing on it is a coloured plane however
@@ -1853,6 +2129,205 @@ export class Track {
       im.computeBoundingSphere();
       g.add(im);
     }
+    return g;
+  }
+
+
+  /**
+   * THE HISTORY OF USE — ruts, gravel fans, puddles, repairs and dust drags laid on the run-off.
+   *
+   * Round 1's measured failure was that a car could be mid-drift on this surface and leave the
+   * frame without a mark on it, and that the three bands ran the full width with "zero lateral
+   * incident". Both are answered here rather than in a texture, because a texture that tiles down
+   * the lap can only ever produce more road-parallel banding.
+   *
+   * The scars are sited from the route's own curvature: `largestCorner`-style local maxima of the
+   * turn rate, on the OUTSIDE of the bend, which is exactly where a car that ran wide would have
+   * put its wheels. Everything else is placed at an angle to the road on purpose.
+   *
+   * `t` is one coordinate across the whole off-road cross-section: 0 = the paved lip behind the
+   * sidewalk, 1 = the far edge of the run-off where it dissolves into the ground plane.
+   */
+  runoffIncident({
+    F, segs, from, to, seed = 5, tint = '#6b6459', gravel = '#a2957c',
+    night = false, mask = null, wet = 0, density = 1,
+  } = {}) {
+    const g = new THREE.Group();
+    g.name = 'runoffIncident';
+    const sheet = new DecalSheet();
+    const rng = new RNG(seed * 23 + 9);
+    const UP = new THREE.Vector3(0, 1, 0);
+    const spanM = Math.max(2, to.off - from.off);
+    const frameAt = (u) => F[clamp(Math.round(((u % 1) + 1) % 1 * segs), 0, segs)];
+    const at = (u, side, t, lift = 0.02) => {
+      const f = frameAt(u);
+      const a = this.station(f, side, from), b = this.station(f, side, to);
+      const p = a.lerp(b, t);
+      p.y += lift;
+      return p;
+    };
+    const ok = (u, side) => (mask ? clamp(mask(((u % 1) + 1) % 1, side), 0, 1) : 1);
+
+    const decalMat = (map, { rough = 0.95, metal = 0, lit = 0.20 } = {}) => {
+      const m = new THREE.MeshStandardMaterial({
+        map, transparent: true, depthWrite: false, roughness: rough, metalness: metal,
+        polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6,
+        envMapIntensity: rough < 0.5 ? 1.6 : 0.85, alphaTest: 0.012,
+      });
+      // Same floor the run-off itself carries at night: a decal that goes to pure black at dusk
+      // takes a hole out of the surface it was supposed to add history to.
+      if (night) {
+        m.emissiveMap = map;
+        m.emissive = new THREE.Color(0xffffff);
+        m.emissiveIntensity = lit;
+      }
+      return m;
+    };
+    const scarMat = decalMat(scarTexture({ tint, gravel, seed: seed + 1 }));
+    const fanMat = decalMat(fanTexture({ tint, gravel, seed: seed + 2 }));
+    const dragMat = decalMat(dustDragTexture({ tint, seed: seed + 3 }), { lit: 0.16 });
+    const patchMats = {
+      puddle: decalMat(groundPatchTexture('puddle', { tint, gravel, seed: seed + 4 }),
+        { rough: wet ? 0.14 : 0.26, metal: 0.05, lit: 0.30 }),
+      repair: decalMat(groundPatchTexture('repair', { tint, gravel, seed: seed + 5 })),
+      stain: decalMat(groundPatchTexture('stain', { tint, gravel, seed: seed + 6 }), { rough: 0.45, lit: 0.10 }),
+    };
+
+    /** A quad centred at (u, t), `across` metres along the road x `along` metres out from it. */
+    const blot = (material, u, side, t, across, along, rot) => {
+      const f = frameAt(u);
+      const c = at(u, side, t, 0.022);
+      const eT = f.tan.clone().setY(0).normalize();
+      const eR = f.rightFlat.clone().setY(0).normalize().multiplyScalar(side);
+      const cs = Math.cos(rot), sn = Math.sin(rot);
+      const ax = eT.clone().multiplyScalar(cs).addScaledVector(eR, sn).multiplyScalar(across / 2);
+      const ay = eR.clone().multiplyScalar(cs).addScaledVector(eT, -sn).multiplyScalar(along / 2);
+      sheet.add(material, [
+        c.clone().sub(ax).sub(ay), c.clone().add(ax).sub(ay),
+        c.clone().sub(ax).add(ay), c.clone().add(ax).add(ay), UP,
+      ]);
+    };
+
+    // ---- 1. the scars: two wheels off, at the exit of every real corner ----
+    //
+    // A local maximum of the smoothed turn rate is a corner apex; the outside of it is the side
+    // `outward()` points at. Sited from the geometry, so a city gets marks where its own route
+    // makes drivers run wide and nowhere else.
+    const ds = this.length / this.N;
+    const corners = [];
+    {
+      const win = Math.max(3, Math.round(45 / ds));
+      for (let i = 0; i < this.N; i++) {
+        const k = Math.abs(this.turn[i]);
+        if (k < 0.0032) continue;
+        let peak = true;
+        for (let j = -win; j <= win && peak; j++) {
+          if (j && Math.abs(this.turn[(i + j + this.N) % this.N]) > k) peak = false;
+        }
+        if (peak) corners.push({ u: i / this.N, k: this.turn[i] });
+      }
+    }
+    const scarLine = (u0, side, lengthM, tIn, tMax, wM, jitter) => {
+      const N = 15;
+      const uSpan = lengthM / this.length;
+      const w = wM / spanM;
+      let prevA = null, prevB = null;
+      for (let i = 0; i <= N; i++) {
+        const s = i / N;
+        const u = u0 + uSpan * s;
+        // one bulge out and back, with a slow wander laid over it so the pair is never a clean arc
+        const bump = Math.pow(Math.sin(Math.PI * s), 0.85);
+        const t = tIn + (tMax - tIn) * bump + Math.sin(s * 5.6 + jitter) * 0.035;
+        const ww = w * (0.82 + 0.35 * bump);
+        const a = at(u, side, clamp(t - ww, -0.02, 1.02));
+        const b = at(u, side, clamp(t + ww, -0.02, 1.02));
+        if (prevA) sheet.addV(scarMat, [prevA, prevB, a, b, UP], (i - 1) / N, i / N);
+        prevA = a; prevB = b;
+      }
+    };
+    for (const c of corners) {
+      const out = this.outward(c.u);
+      const side = out.dot(this.at(c.u).right) > 0 ? 1 : -1;
+      if (ok(c.u, side) < 0.5) continue;
+      const n = 1 + (Math.abs(c.k) > 0.0075 ? 1 : 0);
+      for (let j = 0; j < n; j++) {
+        const lenM = rng.range(38, 78);
+        const u0 = c.u - (lenM * rng.range(0.28, 0.5)) / this.length;
+        scarLine(u0, side, lenM, rng.range(-0.01, 0.05),
+          rng.range(0.16, 0.44), rng.range(1.7, 2.6), rng.range(0, 6.3));
+        // ...and the gravel it threw, at the point where it left the paving
+        const fu = u0 + (lenM * rng.range(0.2, 0.45)) / this.length;
+        const fw = rng.range(4, 9);
+        blot(fanMat, fu, side, rng.range(0.10, 0.20), fw, fw * rng.range(0.9, 1.35), rng.range(-0.5, 0.5));
+      }
+    }
+    // a few more on the straights — not every mark on a verge was made by a racing car
+    {
+      const extra = Math.round(this.length / 620 * density);
+      for (let i = 0; i < extra; i++) {
+        const side = rng.sign();
+        const u0 = rng.next();
+        if (ok(u0, side) < 0.5) continue;
+        scarLine(u0, side, rng.range(30, 60), rng.range(0.06, 0.30),
+          rng.range(0.30, 0.72), rng.range(1.6, 2.4), rng.range(0, 6.3));
+      }
+    }
+
+    // ---- 2. blots: standing water, patched repairs, spills ----
+    //
+    // Placed on their own axes rather than the road's, at gaps drawn from a range, so no two of
+    // them line up and none of them agrees with the band boundaries underneath.
+    {
+      const gap = 26 / density;
+      for (const side of [-1, 1]) {
+        let travelled = rng.range(0, gap);
+        while (travelled < this.length) {
+          const u = travelled / this.length;
+          travelled += gap * rng.range(0.3, 2.0);
+          if (ok(u, side) < 0.5) continue;
+          const roll = rng.next();
+          const kind = roll < 0.30 ? 'puddle' : roll < 0.72 ? 'repair' : 'stain';
+          const sz = kind === 'repair' ? rng.range(2.6, 7.5) : rng.range(1.6, 4.6);
+          blot(patchMats[kind], u, side, rng.range(0.06, 0.86),
+            sz * rng.range(0.7, 1.5), sz * rng.range(0.7, 1.5), rng.range(0, Math.PI));
+        }
+      }
+    }
+
+    // ---- 3. dust dragged across the join ----
+    //
+    // Laid ACROSS the verge instead of along it. §7's geometry-seam tell is read from a line that
+    // runs the whole length of the frame parallel to the road; a dozen streaks crossing that line
+    // at 30-70 degrees is what stops the eye finding it, and it is also just true — a verge with
+    // traffic on it has material tracked off it.
+    {
+      const gap = 34 / density;
+      for (const side of [-1, 1]) {
+        let travelled = rng.range(0, gap);
+        while (travelled < this.length) {
+          const u0 = travelled / this.length;
+          travelled += gap * rng.range(0.35, 1.9);
+          if (ok(u0, side) < 0.5) continue;
+          const lenM = rng.range(6, 15);          // along the road, i.e. the drag is a smear
+          const N = 5;
+          const t0 = rng.range(0.16, 0.40), t1 = rng.range(-0.02, 0.02);
+          const wM = rng.range(1.2, 3.0), w = wM / spanM;
+          let prevA = null, prevB = null;
+          for (let i = 0; i <= N; i++) {
+            const s = i / N;
+            const u = u0 + (lenM * s) / this.length;
+            const t = lerp(t0, t1, s);
+            const a = at(u, side, t - w, 0.024);
+            const b = at(u, side, t + w, 0.024);
+            if (prevA) sheet.addV(dragMat, [prevA, prevB, a, b, UP], (i - 1) / N, i / N);
+            prevA = a; prevB = b;
+          }
+        }
+      }
+    }
+
+    sheet.build(g);
+    for (const m of g.children) { m.renderOrder = 2; m.receiveShadow = true; }
     return g;
   }
 

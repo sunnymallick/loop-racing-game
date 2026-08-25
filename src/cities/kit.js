@@ -863,7 +863,7 @@ function shopWindowMaterial(cache, color, night, seed = 1) {
  */
 const GROUND_Y = -0.35;
 
-function groundTexture({ seed = 1, tint = '#3a3d43', accent = null, size = 1024, tileM = 176 } = {}) {
+function groundTexture({ seed = 1, tint = '#3a3d43', accent = null, size = 1024, tileM = 264 } = {}) {
   const rng = new RNG(seed * 17 + 3);
   const { c, ctx } = canvas(size, size);
   const base = sColor(tint);
@@ -883,34 +883,70 @@ function groundTexture({ seed = 1, tint = '#3a3d43', accent = null, size = 1024,
   }
   ctx.putImageData(img, 0, 0);
   const px = size / tileM;                                  // texels per metre
-  // service yards and parking aprons: darker slabs with a painted edge and a kerb shadow
-  for (let k = 0; k < 22; k++) {
-    const w = rng.range(14, 60) * px, h = rng.range(14, 55) * px;
-    const x = rng.range(0, size - w), y = rng.range(0, size - h);
+  //
+  // SERVICE YARDS AND PARKING APRONS. Round 1 of the world-ground pass drew these as opaque
+  // axis-aligned rectangles with a bright painted outline and parking ticks inside, and measured
+  // at 3x from a chase camera 150 m out (`mia_ob2.png`) the far ground read as a QUILT: hard-edged
+  // coloured panels with pale borders, the same panels back every tile. Three things fixed it and
+  // all three are needed —
+  //   1. each slab is turned to its own heading, so nothing agrees with the world axes;
+  //   2. the fill is a quarter of the old strength and the outline is broken and dim, so a slab is
+  //      a change of surface rather than a drawn shape;
+  //   3. the corners are chamfered off at random, so no slab is a rectangle at all.
+  for (let k = 0; k < 26; k++) {
+    const w = rng.range(16, 62) * px, h = rng.range(14, 55) * px;
+    const cx = rng.range(0, size), cy = rng.range(0, size);
+    const rot = rng.range(0, Math.PI);
+    const poly = () => {
+      const chx = rng.range(0.05, 0.30) * w, chy = rng.range(0.05, 0.30) * h;
+      ctx.beginPath();
+      ctx.moveTo(-w / 2 + chx, -h / 2);
+      ctx.lineTo(w / 2, -h / 2);
+      ctx.lineTo(w / 2, h / 2 - chy);
+      ctx.lineTo(w / 2 - chy, h / 2);
+      ctx.lineTo(-w / 2, h / 2);
+      ctx.closePath();
+    };
     ctx.save();
-    ctx.globalAlpha = rng.range(0.30, 0.72);
-    ctx.fillStyle = `rgb(${(base.r * 255 * rng.range(0.55, 0.85)) | 0},${(base.g * 255 * rng.range(0.55, 0.85)) | 0},${(base.b * 255 * rng.range(0.6, 0.9)) | 0})`;
-    ctx.fillRect(x, y, w, h);
-    ctx.restore();
-    ctx.strokeStyle = `rgba(${(base.r * 300) | 0},${(base.g * 295) | 0},${(base.b * 290) | 0},0.35)`;
-    ctx.lineWidth = 0.4 * px;
-    ctx.strokeRect(x, y, w, h);
-    // parking bay ticks on about a third of them
-    if (rng.bool(0.34)) {
-      ctx.strokeStyle = 'rgba(220,214,196,0.20)'; ctx.lineWidth = 0.16 * px;
+    ctx.translate(cx, cy); ctx.rotate(rot);
+    ctx.globalAlpha = rng.range(0.10, 0.26);
+    ctx.fillStyle = `rgb(${(base.r * 255 * rng.range(0.55, 0.92)) | 0},${(base.g * 255 * rng.range(0.55, 0.92)) | 0},${(base.b * 255 * rng.range(0.6, 0.95)) | 0})`;
+    poly(); ctx.fill();
+    // a dashed, half-erased kerb line rather than a painted border
+    ctx.globalAlpha = rng.range(0.06, 0.15);
+    ctx.strokeStyle = `rgb(${(base.r * 300) | 0},${(base.g * 295) | 0},${(base.b * 290) | 0})`;
+    ctx.lineWidth = 0.32 * px;
+    ctx.setLineDash([rng.range(2, 7) * px, rng.range(1, 5) * px]);
+    poly(); ctx.stroke();
+    ctx.setLineDash([]);
+    if (rng.bool(0.30)) {
+      ctx.globalAlpha = 0.10;
+      ctx.strokeStyle = 'rgb(220,214,196)'; ctx.lineWidth = 0.14 * px;
       for (let b = 1; b * 2.6 * px < w; b++) {
-        ctx.beginPath(); ctx.moveTo(x + b * 2.6 * px, y); ctx.lineTo(x + b * 2.6 * px, y + Math.min(h, 5 * px)); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-w / 2 + b * 2.6 * px, -h / 2);
+        ctx.lineTo(-w / 2 + b * 2.6 * px, -h / 2 + Math.min(h, 5 * px));
+        ctx.stroke();
       }
     }
+    ctx.restore();
   }
-  // service roads: long thin strips of darker surface
-  for (let k = 0; k < 10; k++) {
+  // service roads: long thin strips of darker surface, with the ends feathered off so they read
+  // as a track worn across the lot rather than a ruled line laid over it
+  for (let k = 0; k < 12; k++) {
     ctx.save();
     ctx.translate(rng.range(0, size), rng.range(0, size));
     ctx.rotate(rng.range(0, 3.14));
-    ctx.globalAlpha = rng.range(0.25, 0.55);
-    ctx.fillStyle = `rgb(${(base.r * 170) | 0},${(base.g * 168) | 0},${(base.b * 175) | 0})`;
-    ctx.fillRect(-size, -rng.range(3, 6) * px * 0.5, size * 2, rng.range(3, 6) * px);
+    const wdt = rng.range(3, 6) * px;
+    const gr = ctx.createLinearGradient(-size, 0, size, 0);
+    const col = `${(base.r * 170) | 0},${(base.g * 168) | 0},${(base.b * 175) | 0}`;
+    const a = rng.range(0.14, 0.34);
+    gr.addColorStop(0, `rgba(${col},0)`);
+    gr.addColorStop(rng.range(0.18, 0.34), `rgba(${col},${a})`);
+    gr.addColorStop(rng.range(0.62, 0.82), `rgba(${col},${a})`);
+    gr.addColorStop(1, `rgba(${col},0)`);
+    ctx.fillStyle = gr;
+    ctx.fillRect(-size, -wdt * 0.5, size * 2, wdt);
     ctx.restore();
   }
   // dirt / gravel scars and dark stains
@@ -4140,10 +4176,18 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     // against the carriageway's 7.46 at the same depth: there is nothing in that map smaller than
     // half a metre. This adds the missing octaves in world space at 2.7 m and 9.1 m. See
     // applyGroundDetail() in track.js.
+    // Round 1 measured the off-line ground as dying completely once it left direct sun —
+    // miami-tuner-drift rect 820,300,300,140 was uniform black at 5x gain, la-suv-drift was one
+    // hue with ten code values of wisp in it. That is not a lighting bug: an AMBIENT-ONLY surface
+    // shows exactly the contrast its own albedo map carries, and 0.42 of a +-0.5 term is +-21%.
+    // 0.66 puts real structure in the shade, and `broad` adds the large-scale tonal drift the
+    // plane needed anyway to stop its 264 m tile reading as a repeat.
     applyGroundDetail(groundMat, {
       seed: def.seed ?? 1,
-      strength: L.ground?.detail ?? 0.42,
-      normalStrength: L.ground?.detailNormal ?? 0.55,
+      strength: L.ground?.detail ?? 0.66,
+      normalStrength: L.ground?.detailNormal ?? 0.80,
+      broad: L.ground?.detailBroad ?? 0.34,
+      fadeFar: 260,
     });
   }
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), groundMat);
