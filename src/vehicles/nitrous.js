@@ -336,7 +336,15 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //   fx.profile    the class cone [neck, peakAt, spread, filament] — see coneW(). `spread` above ~1.1
 //                 and `filament` under ~0.12 are what make the column actually neck down over the
 //                 length you can see, which is what stops the shock train reading as a repeat.
-//   fx.bands      shock cells over the whole column. (r18) The phase runs on the station the LENS
+//   fx.knot       how compact the incandescent pip inside a shock cell is. 0 = lobe^2, the SUV's
+//                 lazy swell (half-max over ~36% of the cell); 1 = lobe^5, the supercar's hard pip
+//                 (~23%). This is the per-class knob that stops all four jets sharing one interior:
+//                 a torch with three soft swells in it is a different OBJECT from a needle with
+//                 five hard pips down it, at the same colour, length and taper.
+//   fx.bands      shock cells over the whole column. (r19) The phase is uBands*ts^2, so node n sits
+//                 at ts = sqrt((n + 0.09)/uBands) and the spacing crowds as the cone necks — the
+//                 supercar's five cells land at 0.13 / 0.44 / 0.61 / 0.74 / 0.86, spacings 0.31 /
+//                 0.17 / 0.13 / 0.11, a 3.2:1 crowd against r18's 1.6:1. (r18) The phase runs on the station the LENS
 //                 sees — ts = t/(1 + uPersp·t), normalised — not on the world station, because the
 //                 jet fires at the chase camera and the tail is magnified by up to 3x: a train
 //                 pitched in world t comes out at a DEAD CONSTANT screen period, which is the
@@ -394,7 +402,7 @@ export const NITRO = {
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.58, 0.09, 1.42, 0.080],   // slim needle: closes fastest of the four
-      bands: 4.6, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.58, flick: 62, turb: 0.92,
+      bands: 5.0, knot: 0.80, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.58, flick: 62, turb: 0.92,
       gasGain: 1.30, hotI: 5.60, burn: 0.32, filW: 0.150, bodyW: 0.46, wisp: 0.68,
       skirtW: 0.90, skirtI: 0.80, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 96, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -410,7 +418,7 @@ export const NITRO = {
       core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
       len: 4.00, rad: 0.530, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.70, 0.055, 1.20, 0.090],  // fat barrel, widest right off the bumper
-      bands: 3.6, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.60, flick: 28, turb: 1.06,
+      bands: 3.6, knot: 0.42, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.56, flick: 28, turb: 1.06,
       gasGain: 1.12, hotI: 4.30, burn: 0.36, filW: 0.155, bodyW: 0.48, wisp: 0.84,
       skirtW: 0.98, skirtI: 0.92, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 88, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
@@ -427,7 +435,7 @@ export const NITRO = {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
       len: 3.70, rad: 0.560, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.02, profile: [0.76, 0.045, 1.05, 0.105],  // blunt bell — fat off the pipe, stubby
-      bands: 3.2, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.54, flick: 16, turb: 1.18,
+      bands: 3.0, knot: 0.18, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.50, flick: 16, turb: 1.18,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
@@ -449,7 +457,7 @@ export const NITRO = {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
       len: 4.60, rad: 0.560, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.55, 0.10, 1.38, 0.078],   // long spindle — the slenderest of the four
-      bands: 4.8, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.86,
+      bands: 5.6, knot: 0.92, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.62, flick: 74, turb: 0.86,
       gasGain: 1.02, hotI: 4.90, burn: 0.30, filW: 0.145, bodyW: 0.44, wisp: 0.62,
       skirtW: 0.86, skirtI: 0.74, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 96, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -913,7 +921,7 @@ const PLUME_FRAG = /* glsl */`
   uniform vec4 uProf;                 // neck, peakAt, spread, tip fraction — the class silhouette
   uniform float uLen, uR0, uRmax;
   uniform float uTime, uLevel, uPhase, uTurb, uFlick;
-  uniform float uBands, uBandSpeed, uBandAmt, uNeck;
+  uniform float uBands, uBandSpeed, uBandAmt, uNeck, uKnot, uBandDrift;
   uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD;
   uniform float uThick, uOcc, uReach, uFade, uPersp, uSoft, uWisp;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
@@ -1049,15 +1057,38 @@ const PLUME_FRAG = /* glsl */`
       // period in it, because there isn't one.
       float pk2 = uPersp * 0.5;
       float ts  = t * (1.0 + pk2) / max(1.0 + pk2 * t, 0.15);
-      float bp  = uBands * pow(ts + 0.004, 1.45) * 6.2831853 + uPhase * 1.7
-                + 0.16 * sin(uTime * uBandSpeed * 0.055);
+      // ── (r19) THE CELLS CROWD, BECAUSE A CELL IS AS LONG AS THE COLUMN IS WIDE ──────────────
+      // r18 pitched the train at ts^1.45, which lands four nodes at screen spacings 0.28 / 0.21 /
+      // 0.18 / 0.17 — a 1.6:1 crowd over the whole column. Measured at 5x on the r18 LA muscle
+      // that is not enough to read AS a sequence: the eye needs a ratio, not a trend, and 1.6:1
+      // inside a column whose own width falls 8:1 reads as "evenly spaced blobs on a cone".
+      // A real shock cell is ~1.1 diameters long, so its length tracks the LOCAL width and the
+      // train has to crowd at the same rate the cone necks. ts^2 is the cheapest phase that does
+      // it (and it is a multiply, not a pow — the pow it replaces pays for the knot below):
+      // nodes at sqrt((n + 0.09)/uBands), i.e. for the supercar 0.13 / 0.44 / 0.61 / 0.74 / 0.86,
+      // spacings 0.31 / 0.17 / 0.13 / 0.11 — a 3.2:1 crowd, over five cells rather than four.
+      // The constant 0.16 is what pulls cell 1 back onto the throat; without it the first diamond
+      // sits a fifth of the way down a column that is supposed to be burning at the pipe.
+      float bp  = (uBands * ts * ts + 0.16) * 6.2831853 + uPhase * 1.7 + uBandDrift;
       float sw  = sin(bp);
       float ci  = floor(bp * 0.1591549 + 0.5);
-      float amp = smoothstep(0.006, 0.045, ts) * exp(-ts / 0.38) * uBandAmt
+      float amp = smoothstep(0.006, 0.045, ts) * exp(-ts / 0.42) * uBandAmt
                 * (0.60 + 0.72 * h21(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0)))
                 * (0.88 + 0.14 * sin(uTime * uFlick * 0.31 + ci * 1.7));
       amp = clamp(amp, 0.0, 1.0);
-      float node = amp * pow(0.5 + 0.5 * sw, 0.80);     // one-sided: a knot, never a trough
+      // ── AND A CELL IS TWO DIFFERENT SHAPES AT ONCE ─────────────────────────────────────────
+      // r18 drove the silhouette AND the incandescence off one term, pow(lobe, 0.80), which is
+      // above half its peak for 55% of the cell — so the white was on for more of the column than
+      // it was off, and what photographed was the airbrushed white BAR five verdicts have named.
+      // The two want opposite shapes: the silhouette wants a smooth raised cosine (a waist at the
+      // node, a belly between two, no edge anywhere), and the incandescence wants a compact pip
+      // sitting inside the waist. 'node' is the first, 'knot' the second — lobe^2 to lobe^5 by
+      // class, i.e. half-max over 36% down to 23% of the cell, so the white in the jet is a row
+      // of separate knots and the gas between them keeps its class chroma.
+      float lobe = 0.5 + 0.5 * sw;                      // one-sided: a knot, never a trough
+      float l2   = lobe * lobe;
+      float node = amp * lobe;
+      float knot = amp * mix(l2, l2 * l2 * lobe, uKnot);
 
       // ── 2. THE LOCAL HALF-WIDTH ───────────────────────────────────────────────────────────
       // halfW() carries the class cone AND the perspective correction: the jet fires backwards,
@@ -1099,10 +1130,26 @@ const PLUME_FRAG = /* glsl */`
         // radial blur cannot touch, because it runs across the column and the blur runs along it.
         float fl = vn(vec2(c.x * 3.05 + t * 5.4 - uTime * 3.1, c.y * 3.05 + 11.0)) * 0.58
                  + vn(vec2(q * 1.55 + t * 6.2 - uTime * 2.2, c.x * 3.40 + uPhase * 13.0 + 3.0)) * 0.42;
+        // ── (r19) FIVE FLUTES THAT SPIRAL DOWNSTREAM, AND THEY COST NO HASH ─────────────────
+        // The two lookups above run at an azimuthal frequency of 3, which is as fine as a hash on
+        // a unit circle can go before the march's own chord averages it back out. But the chord is
+        // SHORT at the silhouette, so nothing is averaged there — and three lobes around a whole
+        // column is an analytic curve with a wobble on it, which is what makes gas read as a solid
+        // object with a drawn edge. A real shear layer is ribbed: longitudinal flutes that twist
+        // downstream as the column rotates. Chebyshev gives cos(5a) and sin(5a) straight from the
+        // direction vector — six multiplies, no transcendental, and no seam at the wrap — and one
+        // sin/cos pair turns them into a rib that spirals. It MULTIPLIES the noise rather than
+        // adding to it as a second field, so the ribs vary in depth from station to station and
+        // never resolve into a periodic pattern.
+        float twP = t * 4.6 - uTime * 2.4 + uPhase * 3.0;
+        float cx2 = c.x * c.x, cy2 = c.y * c.y;
+        float rib = (c.x * (16.0 * cx2 * cx2 - 20.0 * cx2 + 5.0)) * cos(twP)
+                  - (c.y * (16.0 * cy2 * cy2 - 20.0 * cy2 + 5.0)) * sin(twP);
+        fl = clamp(fl + rib * (0.09 + 0.20 * fl) * uTurb, 0.0, 1.0);
         float shear = smoothstep(0.10, 0.82, q);
         float flm = mix(1.0, 0.10 + 1.90 * fl, uTurb * shear);
 
-        float kc = uFilW * (1.0 + node * 1.25);
+        float kc = uFilW * (1.0 + knot * 1.45);
         float g1 = exp(-q2 / (kc * kc));                        // incandescent filament
         float g2 = exp(-q2 * q / (uBodyW * uBodyW * uBodyW));   // super-gaussian body: flat middle
         float g3 = exp(-q2 / (uSkirtW * uSkirtW));              // the cool shear layer
@@ -1145,7 +1192,7 @@ const PLUME_FRAG = /* glsl */`
           // photographed as two white rods with a violet fringe. At 0.34 the thread is hot but on
           // the tonemap's slope, and a node is a 4x swell that clips: the white in the jet is a
           // row of knots that get smaller and closer together, which is the read §2.5 asks for.
-          float hotA = uHot * exp(-t / uBurn) * (0.34 + node * 1.24);
+          float hotA = uHot * exp(-t / uBurn) * (0.30 + knot * 1.62);
           // A diamond is a LENS, brightest on the centreline and gone before the skirt — not a
           // rung laid across the jet. A row of rungs is a barcode.
           // (r18) exp(-q2·1.05) was still 0.77 at half the half-width and 0.35 at the full one, so
@@ -1163,7 +1210,10 @@ const PLUME_FRAG = /* glsl */`
           // a row of identical white lozenges (the r17 LA tuner at 3x): the first cell is
           // incandescent, the second warm, the third is a swell in the class colour. The white in
           // the jet is therefore near the pipe, which is also where a real one is.
-          float ndT = nd * (0.40 + 0.60 * exp(-t * 1.90));
+          // (r19) ...and it is the KNOT, not the broad lobe, that carries the heat: the density
+          // bump may be as long as the cell (a compression is), but the incandescence inside it
+          // is a pip. Driving T off the broad lobe is what put a continuous white bar down the throat.
+          float ndT = knot * (0.10 + 1.15 * exp(-q2 * 2.90)) * (0.40 + 0.60 * exp(-t * 1.90));
 
           float dens = (g2 * uBodyD * (1.0 + nd * 1.20) * mix(1.0, flm, 0.36)
                      +  g3 * skirtA * 1.60 * flm * flm
@@ -1272,6 +1322,12 @@ function plumeMaterial(fx, phase) {
       uBands: { value: fx.bands },
       uBandSpeed: { value: fx.bandSpeed },
       uBandAmt: { value: fx.bandAmt ?? 1 },
+      // (r19) the train's slow breathe, hoisted out of the march: it is a function of uTime alone,
+      // so evaluating it 22 times per pixel bought nothing but a transcendental per sample.
+      uBandDrift: { value: 0 },
+      // (r19) how compact the incandescent pip inside a shock cell is: 0 = lobe^2 (the SUV's lazy
+      // swell, half-max over ~36% of the cell), 1 = lobe^5 (the supercar's hard pip, ~23%).
+      uKnot: { value: fx.knot ?? 0.5 },
       // how deeply a shock node necks the column. THE knob the speed pass cannot flatten: the
       // blur runs ALONG the plume, so a waist and a belly survive where a brightness pulse does not.
       uNeck: { value: fx.neckAmt ?? 0.30 },
@@ -2163,8 +2219,10 @@ export class NitrousJet {
     }
     this._persp = this._persp === undefined ? persp : this._persp + (persp - this._persp) * gk;
 
+    const bandDrift = 0.16 * Math.sin(this.t * (fx.bandSpeed ?? 12) * 0.055);
     for (const m of this.coreMats) {
       m.uniforms.uTime.value = this.t;
+      m.uniforms.uBandDrift.value = bandDrift;
       m.uniforms.uLevel.value = jetLevel;
       m.uniforms.uFade.value = coreFade;
       m.uniforms.uGroundY.value = _v.y;
