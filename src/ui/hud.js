@@ -403,6 +403,30 @@ const BANG_W = 0.20;      // pen for the bang: leaves ~0.085 cap heights of whit
 const BANG_OUT = 0.40;    // …and this fraction of the run's outline, so the black cannot flood it
 const BANG_LEAD = 0.07;   // optical space ahead of it, in cap heights, on top of the run's tracking
 
+/**
+ * WHERE A RAISED ORDINAL SUFFIX STARTS, measured from the end of the numeral's advance.
+ *
+ * `6th` in the position deck and `8TH` on the results headline are both a numeral plus a smaller
+ * suffix set on a raised baseline, and both were colliding: the `t` sat on the 6's shoulder, and
+ * the `T` touched the 8's bevel. The old code used a flat +4 / +8 px, which loses to three terms
+ * nobody had accounted for:
+ *
+ *   · THE RAISE COSTS HORIZONTAL ROOM. Everything is sheared `italic` per unit of height about its
+ *     OWN baseline, so lifting the suffix by R slides its ink R·italic to the LEFT of the numeral
+ *     it is running away from. At the deck's 18 px raise that is 4.3 px — more than the whole gap.
+ *   · THE PEN GROWS BOTH RUNS OUTWARD. The numeral is cut at 0.215 against a 0.165 master, so its
+ *     ink is (0.215−0.165)·N wider on the right than the outline says.
+ *   · THE BEVEL PAINTS AN OFFSET COPY, +0.032·N further right again (see drawText).
+ *
+ * Figures are tabular (advance 0.80, ink 0.72–0.76), so the side bearings are the only credit:
+ * 0.04 of a size at each end. This returns the gap that leaves `clear` cap-heights of daylight
+ * after all of it — which is a formula rather than a fudge, so it stays true if a size changes.
+ */
+function ordinalGap(N, S, R, I = 0.24, wNum = 0.215, wSuf = 0.21, clear = 0.06) {
+  const BASE = 0.165, SB = 0.04, BEVEL = 0.032;
+  return clear * N + R * I + (wSuf - BASE) * S + (wNum - BASE + BEVEL) * N - SB * N - SB * S;
+}
+
 /** Split a trailing run of `!` off a banner string. */
 function splitBang(text) {
   const s = String(text);
@@ -1217,8 +1241,9 @@ export class HUD {
       glow: f > 0.02 ? { color: ORANGE, blur: 26 * f } : null,
     });
     const nw = measure(num, { size: numSize }).width;
+    const SUF = 23, RAISE = 18;
     drawText(ctx, suf, {
-      x: nw + 4, y: -18, size: 23, weight: 0.21, italic: 0.24,
+      x: nw + ordinalGap(numSize, SUF, RAISE), y: -RAISE, size: SUF, weight: 0.21, italic: 0.24,
       color: ORANGE, glow: { color: 'rgba(255,146,20,0.55)', blur: 8 },
     });
     ctx.restore();
@@ -2465,11 +2490,12 @@ export class HUD {
     });
     let hx = bx + measure(num, { size: NS }).width;
     if (suf) {
+      const SUF = 44, RAISE = 44, gap = ordinalGap(NS, SUF, RAISE);
       drawText(ctx, suf, {
-        x: hx + 8, y: by - 44, size: 44, weight: 0.21, italic: 0.24, color: accent,
+        x: hx + gap, y: by - RAISE, size: SUF, weight: 0.21, italic: 0.24, color: accent,
         glow: { color: accent, blur: 14 },
       });
-      hx += 8 + measure(suf, { size: 44 }).width;
+      hx += gap + measure(suf, { size: SUF }).width;
     }
     chevrons(ctx, hx + 26, by - 96, 3, 8, 22, accent, 0.75);
     const status = r.dnf ? 'DID NOT FINISH' : win ? 'RACE WINNER' : podium ? 'PODIUM FINISH' : 'CLASSIFIED';
