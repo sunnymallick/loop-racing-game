@@ -62,6 +62,18 @@ export function preGamma(hex) {
   return `#${[b(s.r), b(s.g), b(s.b)].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
 }
 
+/**
+ * Blend two sRGB hex tints and give the hex back. Used to derive a band's colour FROM the two
+ * surfaces it has to sit between, rather than naming a third one that matches neither: the
+ * shortcut shoulder is literally the city's own tarmac walked part-way toward the city's own
+ * dirt, so no join in the cross-section is ever a colour step.
+ */
+export function mixHex(a, b, t) {
+  const A = sColor(a), B = sColor(b);
+  const h = (v) => Math.max(0, Math.min(255, Math.round(v * 255))).toString(16).padStart(2, '0');
+  return `#${h(lerp(A.r, B.r, t))}${h(lerp(A.g, B.g, t))}${h(lerp(A.b, B.b, t))}`;
+}
+
 // ------------------------------------------------------------------ road surface texture
 
 /**
@@ -2913,33 +2925,85 @@ class Branch {
     surf.name = 'branchSurface';
     g.userData.road = surf;
 
+    /**
+     * THE SHORTCUT CROSS-SECTION — and the §7 GEOMETRY-SEAM cap this file was sent back for.
+     *
+     * The whole-game critic cropped `miami-muscle-drift.png` at rect 1130,290 and measured "the
+     * tan run-off terminates against the blue asphalt as a raw sawtooth ... individually countable
+     * right-triangle wedges". That frame is a SHORTCUT, not the carriageway: the main road's
+     * cross-section had already been rebuilt (rumble kerb → gutter → kerb face → sidewalk → apron
+     * → verge → run-off, seven bands over eleven metres) but a branch had exactly three — road,
+     * a 0.75 m painted rumble strip, dirt — with both of the strip's boundaries dead straight and
+     * parallel to the road, and the strip itself repeating a hard gold/white diagonal every 1.6 m.
+     * At a grazing angle that is a row of countable wedges with a razor edge on either side, and
+     * it is the surface the drift capture in three of the four cities actually lands on.
+     *
+     * So the branch now carries the same idea as the carriageway, at shortcut scale:
+     *
+     *   road │ rumble kerb 0.62 m │ kerb face │ ASPHALT APRON 1.3 m │ verge 2.2 m │ run-off 11 m
+     *
+     * with three properties that are what actually kill the seam:
+     *   1. the apron is REAL TARMAC — generated from the branch's own road tint walked a third of
+     *      the way to the city's dirt — so the last asphalt in the cross-section is 1.3 m OUTSIDE
+     *      the stripe, and the stripe never touches ground;
+     *   2. every boundary outside the kerb WANDERS (two sinusoids, amplitude scaled by the same
+     *      taper the bands are, so the mouths stay clean), so no join is a line parallel to the
+     *      road for the eye to lock onto;
+     *   3. the stripe tiles at 2.9 m instead of 1.6 m — the same rate, and for the same aliasing
+     *      reason, the carriageway's rumble kerb was moved to in round 2.
+     */
+    const ro0 = opts.runoff || {};
+    const dirtTint = ro0.tint || opts.surface?.apronTint || '#6b6459';
+    // The apron is the city's own tarmac a third of the way to the city's own dirt: on Miami that
+    // is #2d3037 → a warm slate, on NYC #1e2026 → a dark grey-brown. Naming a constant here is
+    // what produced the old colour step, because '#6b6459' matched neither end.
+    const apronTint = mixHex(opts.surface?.gutterTint || opts.surface?.tint || '#4b4d54', dirtTint, 0.34);
+
     // kerbs down both sides — a shortcut has to read as a real piece of street
     const km = new THREE.MeshStandardMaterial({
       map: curbStripeTexture({ a: '#d0902a', b: '#f2f0ea' }), roughness: 0.7,
     });
-    strip({ off: -1, abs: 0.03, y: 0 }, { off: -1, abs: -0.75, y: 0.15 }, km, 0, 1, 0.62);
-    strip({ off: 1, abs: -0.03, y: 0 }, { off: 1, abs: 0.75, y: 0.15 }, km, 0, 1, 0.62);
+    // 0.34, not 0.62: at 0.62 the gold/white diagonal repeated every 1.61 m, which from a chase
+    // camera is a couple of pixels per band a hundred metres out — under the Nyquist limit, so it
+    // aliased into the countable wedges §7 caps at 62. 2.94 m is still a rumble strip.
+    strip({ off: -1, abs: 0.03, y: 0 }, { off: -1, abs: -0.62, y: 0.13 }, km, 0, 1, 0.34);
+    strip({ off: 1, abs: -0.03, y: 0 }, { off: 1, abs: 0.62, y: 0.13 }, km, 0, 1, 0.34);
 
     // --- shoulder: a shortcut cannot stop on the ground plane either ---
     //
     // The branch kerb used to end in mid-air 0.53 m above the world ground plane, which is the
     // same §7 tell as the main carriageway's — the frame the critic cropped at rect 820,430 is a
     // Miami shortcut mouth, orange-and-white kerb with the tan plane starting immediately beyond
-    // it. So the branch gets the same two bands, tapered out at both mouths (so no dirt is laid
+    // it. So the branch gets the same bands, tapered out at both mouths (so no dirt is laid
     // across the main carriageway) and as the deck lifts (so a flying ramp has no verge hanging
     // off it).
     if (opts.runoff !== false) {
-      const ro = opts.runoff || {};
+      const ro = ro0;
       const gY = this.groundY;
-      const dirt = ro.tint || opts.surface?.apronTint || '#6b6459';
+      const dirt = dirtTint;
       const vt = vergeTexture({
-        seed: 12, paveTint: opts.surface?.apronTint || '#6b6459', dirtTint: dirt,
-        gravelTint: ro.gravel || '#a2957c', spanM: 2.4,
+        seed: 12, paveTint: apronTint, dirtTint: dirt,
+        gravelTint: ro.gravel || '#a2957c', spanM: 2.2,
       });
       const rt = runoffTexture({
         seed: 18, tint: dirt, accent: ro.accent || null,
         gravelTint: ro.gravel || '#a2957c', scrub: ro.scrub || null,
-        spanM: 11 + 2.4 * 0.32, fadeIn: (2.4 * 0.32) / (11 + 2.4 * 0.32),
+        spanM: 11 + 2.2 * 0.34, fadeIn: (2.2 * 0.34) / (11 + 2.2 * 0.34),
+      });
+      // THE APRON. Worn tarmac, generated by the same aggregate generator the carriageway uses,
+      // at the same physical grain — this is the band the §7 note asked for by name ("extend the
+      // asphalt ribbon by a 1-2 m apron strip whose vertices carry the asphalt-to-dirt blend").
+      const asp = asphalt({ seed: 47, tint: preGamma(apronTint) });
+      const am = new THREE.MeshStandardMaterial({
+        map: asp.map, roughnessMap: asp.roughnessMap, normalMap: asp.normalMap,
+        roughness: 1, envMapIntensity: 0.9,
+      });
+      am.normalScale.set(0.7, 0.7);
+      // the kerb's outer face: the same tarmac one stop down, so the kerb is a raised object with
+      // a lit top and a shaded side rather than a painted stripe lying flat on the road
+      const fm = new THREE.MeshStandardMaterial({
+        map: asp.map, roughnessMap: asp.roughnessMap, normalMap: asp.normalMap,
+        roughness: 1, envMapIntensity: 0.75, color: new THREE.Color(0xb0aca6),
       });
       const vm = new THREE.MeshStandardMaterial({
         map: vt.map, roughnessMap: vt.roughnessMap, normalMap: vt.normalMap,
@@ -2955,6 +3019,7 @@ class Branch {
       // the same world-space octaves the main carriageway's run-off and the ground plane carry,
       // or a shortcut's shoulder is visibly a lower-grade surface than the one 30 m away
       applyGroundDetail(rm, { seed: 6, strength: 0.46, normalStrength: 0.62, broad: 0.26 });
+      applyGroundDetail(am, { seed: 6, strength: 0.24, normalStrength: 0.34, broad: 0.14 });
       if (!opts.surface?.night) {
         rm.emissiveMap = rt.map;
         rm.emissive = new THREE.Color(dirt);
@@ -2962,49 +3027,61 @@ class Branch {
         vm.emissiveMap = vt.map;
         vm.emissive = new THREE.Color(0xffffff);
         vm.emissiveIntensity = 0.08;
+        am.emissiveMap = asp.map;
+        am.emissive = new THREE.Color(0xffffff);
+        am.emissiveIntensity = 0.10;
+        fm.emissiveMap = asp.map;
+        fm.emissive = new THREE.Color(0xffffff);
+        fm.emissiveIntensity = 0.12;
       }
       if (opts.surface?.night) {
-        for (const [m, k] of [[vm, 0.24], [rm, ro.glow ?? 0.24]]) {
+        for (const [m, k] of [[vm, 0.24], [am, 0.22], [fm, 0.26]]) {
           m.emissiveMap = m.map;
-          m.emissive = new THREE.Color(k === 0.24 ? '#ffffff' : (ro.glowColor || '#ffffff'));
+          m.emissive = new THREE.Color(0xffffff);
           m.emissiveIntensity = k;
         }
+        rm.emissiveMap = rt.map;
         rm.emissive = new THREE.Color(ro.glowColor || '#ffffff');
         rm.emissiveIntensity = ro.glow ?? 0.24;
       }
-      const OVERB = 0.68;
+      const OVERB = 0.66;
+      // Two sinusoids per boundary, phases chosen so no two boundaries crest together — a verge
+      // and a run-off that bulge at the same station are still one shape with two outlines.
+      const wob = (e, a1, l1, p1, a2, l2, p2) => {
+        const x = e * this.length;
+        return a1 * Math.sin(x * (Math.PI * 2 / l1) + p1) + a2 * Math.sin(x * (Math.PI * 2 / l2) + p2);
+      };
       const shoulder = (side) => {
-        const A = [], B = [], C = [], D = [];
+        const K = [], Ap = [], V = [], R = [], Mi = [];
         for (let i = 0; i <= segs; i++) {
           const f = F[i];
           const e = i / segs;
           const taper = (1 - smoothstep(0.25, 1.4, f.rise))
             * smoothstep(0, 0.11, e) * smoothstep(0, 0.11, 1 - e);
           const base = f.p.y + 0.03;
-          const kerb = f.p.clone().addScaledVector(f.right, side * (f.half + 0.75));
-          kerb.y = base + 0.15;
-          // 2.4 m, not 1.7: the branch kerb top stands 0.53 m above the ground plane, and over
-          // 1.7 m that is an 11° batter handing off to a 0.6° run-off. The tonal step along that
-          // join was the brightest line in the Miami drift capture — wider verge, higher outer
-          // edge, and the fall moves into the run-off where it is spread over eleven metres.
-          const vOff = 0.75 + 2.4 * taper;
-          const verge = f.p.clone().addScaledVector(f.right, side * (f.half + vOff));
-          verge.y = lerp(kerb.y, gY + 0.30, taper);
-          const run = f.p.clone().addScaledVector(f.right, side * (f.half + vOff + 11 * taper));
-          run.y = lerp(verge.y, gY + 0.08, taper);
+          const at = (off, y) => f.p.clone().addScaledVector(f.right, side * (f.half + off)).setY(y);
+          // the foot of the kerb face
+          const kerb = at(0.62, base + 0.13 - 0.09 * taper);
+          // 1.3 m of real tarmac outside the stripe
+          const apOff = 0.62 + (1.30 + wob(e, 0.11, 27, 0.7, 0.06, 11, 2.9)) * taper;
+          const apron = at(apOff, lerp(base + 0.13, base + 0.015, taper));
+          const vOff = apOff + (2.2 + wob(e, 0.34, 41, 2.2, 0.17, 17, 5.1)) * taper;
+          const verge = at(vOff, lerp(apron.y, gY + 0.26, taper));
+          const rOff = vOff + (11 + wob(e, 1.7, 63, 4.4, 0.9, 23, 1.3)) * taper;
+          const run = at(rOff, lerp(verge.y, gY + 0.08, taper));
           // ...and the run-off's inner edge sits two thirds of the way across the verge, 2 cm
           // proud, so the two overlap and its alpha fades in over that overlap (see runoffIn on
           // the main carriageway).
-          const mid = f.p.clone().addScaledVector(f.right, side * (f.half + 0.75 + 2.4 * OVERB * taper));
-          mid.y = lerp(kerb.y, verge.y, OVERB) + 0.02;
-          A.push(kerb); B.push(verge); C.push(run); D.push(mid);
+          const mid = apron.clone().lerp(verge, OVERB);
+          mid.y += 0.02;
+          K.push(kerb); Ap.push(apron); V.push(verge); R.push(run); Mi.push(mid);
         }
-        const band = (P, Q, m, vs) => {
+        const band = (Pp, Qq, m, vs, uB = 1) => {
           const pos = [], uv = [], idx = [];
           for (let i = 0; i <= segs; i++) {
             const v = (i / segs) * this.length * vs;
-            pos.push(P[i].x, P[i].y, P[i].z, Q[i].x, Q[i].y, Q[i].z);
-            uv.push(0, v, 1, v);
+            pos.push(Pp[i].x, Pp[i].y, Pp[i].z, Qq[i].x, Qq[i].y, Qq[i].z);
+            uv.push(0, v, uB, v);
             if (i < segs) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
           }
           const geo = new THREE.BufferGeometry();
@@ -3018,8 +3095,22 @@ class Branch {
           if (m === rm) mesh.renderOrder = -1;
           g.add(mesh);
         };
-        band(A, B, vm, 1 / vt.tileM);
-        band(D, C, rm, 1 / rt.tileM);
+        // kerb outer face (0.62 → the foot), then apron, verge, run-off
+        const KT = [], KF = [];
+        for (let i = 0; i <= segs; i++) {
+          const f = F[i];
+          KT.push(f.p.clone().addScaledVector(f.right, side * (f.half + 0.62)).setY(f.p.y + 0.03 + 0.13));
+          KF.push(K[i]);
+        }
+        band(KT, KF, fm, 0.34, 0.09);
+        // 0.23 / 0.30, not 0.05 / 0.55: the apron is 1.3 m wide, so a V rate of one tile per 20 m
+        // stretches its texels 15:1 along the road and the band comes back as the horizontal
+        // smear round 2 measured on the Miami sand bank ("a stretched UV on the slope"). One tile
+        // per 4.3 m across a 0.30 slice of U makes the texel square, and the aggregate reads as
+        // aggregate from any angle.
+        band(KF, Ap, am, 0.23, 0.30);
+        band(Ap, V, vm, 1 / vt.tileM);
+        band(Mi, R, rm, 1 / rt.tileM);
       };
       shoulder(-1); shoulder(1);
     }
