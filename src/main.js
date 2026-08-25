@@ -944,6 +944,11 @@ class Game {
     if (this._losN === 0) {
       const cam = this.engine.camera;
       if (!this._los) this._los = new THREE.Raycaster();
+      // `Raycaster.camera` is REQUIRED the moment the tree contains a Sprite — `Sprite.raycast`
+      // reads `raycaster.camera.matrixWorld` and throws a TypeError without it, which is a crash in
+      // the middle of the flag beat, not a wrong number. Las Vegas has sprites in its city group and
+      // that is exactly how it was found.
+      this._los.camera = cam;
       let want = this._stageLiftWant ?? 0;
       // A FAN, NOT A RAY. The first cut cast one ray at the car's centre of mass and found nothing;
       // the second cast two, at the sill and at the roof, and still found nothing — because the
@@ -962,8 +967,12 @@ class Game {
         this._los.far = dist - 0.5;
         for (const x of this._los.intersectObject(this.city.group, true)) {
           const m = Array.isArray(x.object.material) ? x.object.material[0] : x.object.material;
-          // a scrim, a decal or a puddle is not an obstruction — only something that writes depth is
-          if (!m || m.depthWrite === false || m.transparent) continue;
+          // …and only a MESH can be one. A sprite is a billboard — a lens flare, a lamp glow, a
+          // haze card — and lifting the rig to clear a light bloom would be absurd.
+          if (!x.object.isMesh || !m) continue;
+          // a scrim, a decal or a puddle is not an obstruction either — only something that writes
+          // depth is
+          if (m.depthWrite === false || m.transparent) continue;
           const f = clamp(x.distance / dist, 0.06, 0.98);
           // where the rig has to stand for this ray to pass 25 cm OVER the thing in the way:
           // height along the ray is a + (H - a)·f, so H falls straight out of it
@@ -1033,7 +1042,11 @@ class Game {
     const bd = this.backdrop;
     bd.visible = true;
     bd.material.opacity = 0.94 * k;
-    const D = 11;
+    // 7.5 m, not the 11 the first cut used. The card only hides what is BEYOND it, and NYC parks a
+    // barrier and a lamp four or five metres behind the mark — far enough back to be scenery, near
+    // enough to sit inside an eleven-metre card. The car's own envelope reaches 2.7 m along this
+    // ray at the stage azimuth, so 7.5 keeps three clear metres in front of the wall.
+    const D = 7.5;
     _finTmp.copy(this.body.pos).setY(this.body.pos.y + 0.74).sub(camera.position);
     const d0 = Math.max(1, _finTmp.length());
     _finTmp.divideScalar(d0);
