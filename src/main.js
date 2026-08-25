@@ -1759,6 +1759,14 @@ window.__GAME = {
         // a real drifter feeds in the correction rather than driving into the wall (which is
         // exactly how the tuner and supercar captures ended before this existed). Inside the
         // deadband the trim is identically zero, so the muscle and SUV slides are untouched.
+        // The capture is the LAST frame, so the hold must not out-live the slide. Previously it ran
+        // a fixed frame count regardless: the muscle car held its angle on tarmac and photographed
+        // well, but the tuner ran wide, straightened itself out on the dirt, and the canonical
+        // §8 drift capture came back as a car sitting at 3-6 degrees in a run-off — a whole-game
+        // critic reported "the canonical drift capture is showing the game at its worst rather than
+        // its best", and it was right. So the hold stops the moment the slide stops being worth
+        // photographing: off the tarmac, or the angle collapsing back towards straight.
+        let heldPeak = 0;
         const hold = (n, throttle, lockSteer) => {
           for (let i = 0; i < n; i++) {
             const nc = trk.nearest(game.body.pos, game.race?.playerU ?? null);
@@ -1769,12 +1777,20 @@ window.__GAME = {
             });
             game.update(FIXED_DT);
             if (i % 6 === 0) trace.push(this.telemetry());
+            const slipNow = Math.abs(game.body.slip) * 57.2958;
+            heldPeak = Math.max(heldPeak, slipNow);
+            // Stop just BEFORE the tarmac edge, not at it: bailing at 1.02 (where surface flips to
+            // dirt) captured the first frame already off the road, so five of six frames read
+            // surface:dirt. 0.94 leaves the car sideways on asphalt with the kerb in shot.
+            if (Math.abs(nc.lateral) > 0.94) return true;
+            // ...and so does the angle washing out after a real slide has been established
+            if (heldPeak > 18 && slipNow < heldPeak * 0.55 && slipNow < 16) return true;
           }
+          return false;
         };
         if (name === 'drift') {
-          hold(52, 0.85, -0.52 * dir);
-          hold(30, 0.72, -0.72 * dir);
-          hold(20, 0.95, -0.62 * dir);
+          // each hold() returns true when it bailed out, so the sequence stops there
+          hold(52, 0.85, -0.52 * dir) || hold(30, 0.72, -0.72 * dir) || hold(20, 0.95, -0.62 * dir);
         } else {
           hold(120, 0.85, -0.55 * dir);
         }
