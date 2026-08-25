@@ -213,6 +213,9 @@ export const blueprint = {
     // staggered rear: 380 mm section on a 405 mm carcass is what fills those haunches.
     style: 'fivespoke', rimColor: '#aeb5bf', caliperColor: '#b81c1c', lipColor: '#c3c9d3', tire: 'muscle',
     capColor: '#b81c1c',
+    // ROUND-7 (chassis footprint) — see the note in tuner.js. Held where it was: 730/810 mm on a
+    // deep 320-series raised white-letter carcass is the one of the four that must not shrink,
+    // because the haunch is drawn round it.
     front: { radius: 0.365, width: 0.30, spokes: 5, tireProfile: 0.320 },
     rear: { radius: 0.405, width: 0.38, spokes: 5, tireProfile: 0.325 },
   },
@@ -270,7 +273,9 @@ export const blueprint = {
   ],
   // chrome bullet mirror, at 84% of the kit's default pod — see the note in assemble.js
   mirrors: { x: 0.86, y: 1.06, z: 0.60, mat: 'chrome', scale: 0.84 },
-  handles: [{ x: 0.955, y: 0.94, z: -0.20 }],
+  // x 0.955 -> 0.912: the handle is 35 mm thick and the flank measures 0.9067 at its own station,
+  // so its INNER face stood 31 mm clear of the paint — a chrome bar floating beside the door.
+  handles: [{ x: 0.912, y: 0.94, z: -0.20 }],
 
   trim: [
     /**
@@ -472,11 +477,24 @@ export const blueprint = {
    * shadow under it is not resting on anything; the same is true one scale down of a mirror stalk,
    * a spear or a wing bolted to a painted panel. One shared material for the whole set.
    */
+  /**
+   * ---- AO DECALS, AND WHERE THEY ARE ALLOWED TO GO -----------------------------------------
+   *
+   * §7 caps a car that hovers over the road at 55 because a shape with no shadow under it is not
+   * resting on anything, and the same is true one scale down of a wing, a scoop or a handle bolted
+   * to a painted panel — it is most of what "props parked on a shell" looks like at 8x. One shared
+   * material for every decal on every car (kit.js `partShadow`), so the whole set is one call.
+   *
+   * Every y and x below is the MEASURED surface at that station (`.vjprobe/deck.mjs`), not the
+   * part's own authored height: a decal placed by eye either sinks behind the panel and vanishes on
+   * the depth test or floats in front of it, and the second is worse than having no decal at all.
+   * Anything mounted on the glasshouse rather than on the tub — the mirrors — has no decal, because
+   * the tub cannot tell us where that surface is.
+   */
   shadows: [
-    { x: 0.86, y: 1.056, z: 0.60, w: 0.20, d: 0.17, face: 'x' },      // mirror stalk root
-    { x: 0.955, y: 0.94, z: -0.20, w: 0.30, d: 0.13, face: 'x' },     // door handle
-    { y: 1.010, z: -2.26, w: 1.56, d: 0.34 },                         // ducktail feet, mirror:false
-    { x: 0.48, y: 1.002, z: 1.02, w: 0.40, d: 0.26 },                 // bonnet extractors
+    { x: 0.918, y: 0.94, z: -0.20, w: 0.30, d: 0.13, face: 'x' },     // door handle (flank 0.9067)
+    { y: 1.014, z: -2.26, w: 1.56, d: 0.34, mirror: false },          // ducktail feet (deck 1.0096)
+    { x: 0.48, y: 1.025, z: 1.02, w: 0.40, d: 0.26 },                 // bonnet extractors (deck 1.0211)
   ],
   extras: [
     { type: 'blower', y: 1.06, z: 1.58 },

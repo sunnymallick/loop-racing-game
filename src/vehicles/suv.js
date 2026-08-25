@@ -38,7 +38,7 @@ export const blueprint = {
    * 100 mm so its corner is under the tyre rather than a hand's width inboard of it, and the flare
    * itself is now a mid-dark satin with a lit crown (kit.js `flareBand`, and `archBlackBand` below).
    */
-  dims: { length: 4.92, width: 2.30, height: 2.08, wheelbase: 3.05, track: 1.855, trackRear: 1.855, rideHeight: 0.34 },
+  dims: { length: 4.92, width: 2.30, height: 2.08, wheelbase: 3.05, track: 1.855, trackRear: 1.855, rideHeight: 0.36 },
   // the truck stays the least glossy thing in the game — satin utility paint, not a show car —
   // but it still needs enough of the probe in it to read as metal rather than as matt vinyl
   paint: { metalness: 0.20, roughness: 0.52, clearcoat: 0.72, clearcoatRoughness: 0.50, flake: 0.30, envIntensity: 0.86 },
@@ -202,8 +202,11 @@ export const blueprint = {
     // single most readable wheel detail at distance, on the only knobby carcass in the game
     style: 'offroad', rimColor: '#666d78', caliperColor: '#33383f', capColor: '#c4a24a', tire: 'knobby',
     beadlock: true,
-    front: { radius: 0.500, width: 0.40, spokes: 6, tireProfile: 0.335 },
-    rear: { radius: 0.500, width: 0.40, spokes: 6, tireProfile: 0.335 },
+    // ROUND-7 (chassis footprint) — see the note in tuner.js. 520 mm on a 37-inch-equivalent
+    // knobby: 57 % larger than the tuner's front wheel, and the only unstaggered axle pair in the
+    // game, which is what a solid-axle truck runs.
+    front: { radius: 0.520, width: 0.40, spokes: 6, tireProfile: 0.345 },
+    rear: { radius: 0.520, width: 0.40, spokes: 6, tireProfile: 0.345 },
   },
   // Square bolt-on flares, riveted round the opening. Cut into the tub (kit.js `loftTub`) rather
   // than bolted onto it: the truck has the flattest slab sides in the game, so a ring standing off
@@ -269,7 +272,9 @@ export const blueprint = {
   // front face stood proud of the nose, which is the one thing a badge must never do
   badges: [{ x: 0, y: 1.120, z: 2.430, w: 0.112, h: 0.090, d: 0.022 }],
   vents: [
-    { x: 0.0, y: 1.505, z: 1.72, w: 0.62, h: 0.22, fins: 4, angle: 0.5, rx: -1.5708, mirror: false },
+    // y 1.505 -> 1.520: the bonnet measures 1.5205 here, so the louvre bank sat 15 mm under the
+    // panel and only the tips of its fins came through (`.vjprobe/deck.mjs suv y,0,1.72`)
+    { x: 0.0, y: 1.520, z: 1.72, w: 0.62, h: 0.22, fins: 4, angle: 0.5, rx: -1.5708, mirror: false },
     /**
      * ROUND-7: THE FENDER GILL, AND WHY A FLAT PART ON A CURVED PANEL ALWAYS STAIR-STEPS.
      *
@@ -291,7 +296,9 @@ export const blueprint = {
     { x: 1.020, y: 1.38, z: 0.95, w: 0.26, h: 0.13, fins: 3, angle: 0.4, ry: 1.5708 },
   ],
   mirrors: { x: 1.06, y: 1.60, z: 0.96, painted: false },
-  handles: [{ x: 1.055, y: 1.40, z: 0.30 }, { x: 1.055, y: 1.40, z: -0.86 }],
+  // see muscle.js — the flank measures 1.0249 / 1.0256 at these two stations, so at 1.055 the
+  // handle's inner face stood 13 mm clear of the door
+  handles: [{ x: 1.030, y: 1.40, z: 0.30 }, { x: 1.030, y: 1.40, z: -0.86 }],
 
   trim: [
     // (the front bumper box is gone — the tub carries it now, see the z 2.34/2.46 stations)
@@ -348,14 +355,25 @@ export const blueprint = {
    * AO DECALS — see the note on the tuner. The truck carries more bolt-ons than anything else in
    * the game, and every one of them used to sit on the paint with nothing under it.
    */
+  /**
+   * ---- AO DECALS, AND WHERE THEY ARE ALLOWED TO GO -----------------------------------------
+   *
+   * §7 caps a car that hovers over the road at 55 because a shape with no shadow under it is not
+   * resting on anything, and the same is true one scale down of a wing, a scoop or a handle bolted
+   * to a painted panel — it is most of what "props parked on a shell" looks like at 8x. One shared
+   * material for every decal on every car (kit.js `partShadow`), so the whole set is one call.
+   *
+   * Every y and x below is the MEASURED surface at that station (`.vjprobe/deck.mjs`), not the
+   * part's own authored height: a decal placed by eye either sinks behind the panel and vanishes on
+   * the depth test or floats in front of it, and the second is worse than having no decal at all.
+   * Anything mounted on the glasshouse rather than on the tub — the mirrors — has no decal, because
+   * the tub cannot tell us where that surface is.
+   */
   shadows: [
-    { x: 0.89, y: 2.098, z: -0.62, w: 0.14, d: 2.20 },                 // roof-rack rails
-    { x: 0.66, y: 2.108, z: 0.42, w: 0.14, d: 0.20 },                  // light-bar legs
-    { x: 1.022, y: 1.38, z: 0.95, w: 0.38, d: 0.22, face: 'x' },       // fender gill
-    { x: 1.06, y: 1.585, z: 0.96, w: 0.22, d: 0.19, face: 'x' },       // mirror stalk root
-    { x: 1.055, y: 1.40, z: 0.30, w: 0.26, d: 0.13, face: 'x' },       // door handles
-    { x: 1.055, y: 1.40, z: -0.86, w: 0.26, d: 0.13, face: 'x' },
-    { x: 0.0, y: 1.497, z: 1.72, w: 0.70, d: 0.30, mirror: false },    // scuttle louvre
+    { x: 1.034, y: 1.38, z: 0.95, w: 0.38, d: 0.22, face: 'x' },       // fender gill (flank 1.0263)
+    { x: 1.034, y: 1.40, z: 0.30, w: 0.26, d: 0.13, face: 'x' },       // door handles (flank 1.0249)
+    { x: 1.034, y: 1.40, z: -0.86, w: 0.26, d: 0.13, face: 'x' },      // (flank 1.0256)
+    { y: 1.525, z: 1.72, w: 0.70, d: 0.30, mirror: false },            // scuttle louvre (deck 1.5205)
   ],
   exhaust: [{ x: 0.78, y: 0.74, z: -2.46, r: 0.075, len: 0.24 }],
   extras: [

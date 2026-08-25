@@ -163,8 +163,15 @@ export const blueprint = {
     // dark forged turbofan on semi-slick rubber — near-solid tread, four fine grooves
     style: 'turbofan', rimColor: '#262a32', caliperColor: '#f0c419', lipColor: '#8a919c', tire: 'slick',
     capColor: '#f0c419',
-    front: { radius: 0.350, width: 0.30, spokes: 10, tireProfile: 0.215 },
-    rear: { radius: 0.390, width: 0.42, spokes: 10, tireProfile: 0.210 },
+    /**
+     * ROUND-7 (chassis footprint) — see the note in tuner.js. The rear goes to 412 mm and the
+     * profile down to a 195/185 series, so this car wears the biggest stagger in the game (a 60 mm
+     * larger rear than front, against the muscle car's 40 and the truck's 0) on the least sidewall.
+     * That difference is legible in a chase frame at a glance and it is what a mid-engine car
+     * actually looks like from behind.
+     */
+    front: { radius: 0.352, width: 0.30, spokes: 10, tireProfile: 0.195 },
+    rear: { radius: 0.412, width: 0.42, spokes: 10, tireProfile: 0.185 },
   },
   /**
    * THE ARCH OPENING — cut into the tub itself (kit.js `loftTub`), not bolted on.
@@ -244,23 +251,37 @@ export const blueprint = {
     { w: 1.16, h: 0.28, d: 0.13, y: 0.685, z: -2.325, slats: 6, mesh: true, frame: 'chrome', ry: Math.PI },
   ],
   vents: [
-    { x: 0.42, y: 0.995, z: -1.30, w: 0.44, h: 0.30, fins: 5, angle: 0.55, rx: -1.5708 },   // engine cover louvres
+    /**
+     * ---- ROUND-7: THREE VENTS THAT WERE INSIDE THE BODYWORK -----------------------------------
+     *
+     * Measured with `.vjprobe/deck.mjs supercar y,0.42,-1.30` and friends, the engine deck at these
+     * three stations sits at y 1.0418 / 1.0200 / 0.6794 — and the vents were authored at 0.995 /
+     * 0.975 / 0.628, i.e. 46, 45 and 51 mm BELOW the panel they are cut into. A `ventMesh` reaches
+     * 27 mm forward of its own origin, so all three were sealed inside the closed body and rendered
+     * to nobody. The round-5 note above ("dropped onto the panel and laid flatter") over-corrected:
+     * it moved them from proud of the panel to under it.
+     *
+     * Set ON the measured surface, the louvre bank stands 18 mm proud and its aperture box is 27 mm
+     * under — which is what an extractor is. The supercar gets three vents back for nothing.
+     */
+    { x: 0.42, y: 1.034, z: -1.30, w: 0.44, h: 0.30, fins: 5, angle: 0.55, rx: -1.5708 },   // engine cover louvres
     // ROUND-2: a second, smaller louvre pair over the rear deck. The verdict called the rear "a
     // stack of flat rectangular slabs — plank wing, plank engine cover, plank tail panel, plank
     // diffuser"; the engine cover is the largest of those planks and it had one vent in the middle
     // of 0.9 m of flat paint. Two banks of louvres at different sizes break the panel into a
     // vented deck, which is what §1.3 asks for ("a visible engine cover with vents").
-    { x: 0.38, y: 0.975, z: -1.76, w: 0.34, h: 0.20, fins: 4, angle: 0.5, rx: -1.5708 },
+    { x: 0.38, y: 1.012, z: -1.76, w: 0.34, h: 0.20, fins: 4, angle: 0.5, rx: -1.5708 },
     // BONNET EXTRACTORS. They were at y 0.70 with the bonnet crown at ~0.645, so the vent's dark
     // aperture box stood 55 mm PROUD of the panel and the round-5 crop reads exactly what it is:
     // "two plain rounded cuboids" sitting on the hood. Dropped onto the panel and laid flatter, so
     // what shows is the louvre bank in a recess — which is what an extractor is.
-    { x: 0.30, y: 0.628, z: 2.14, w: 0.30, h: 0.14, fins: 3, angle: 0.6, rx: -1.50 },        // bonnet extractors
+    { x: 0.30, y: 0.671, z: 2.14, w: 0.30, h: 0.14, fins: 3, angle: 0.6, rx: -1.50 },        // bonnet extractors
   ],
   // carbon pods, not body colour: at this camera the near mirror is a hand's width across in frame
   // and a saturated red brick beside the screen was the loudest object in the round-5 hero crop
   mirrors: { x: 0.90, y: 0.90, z: 0.62, painted: false },
-  handles: [{ x: 0.965, y: 0.80, z: -0.10, mat: 'paint' }],
+  // see muscle.js — the flank measures 0.9412 at this station
+  handles: [{ x: 0.950, y: 0.80, z: -0.10, mat: 'paint' }],
 
   trim: [
     // FRONT LIP. 1.44 m under a 1.67 m undertray, so it is 115 mm inboard of the bodywork on each
@@ -334,12 +355,25 @@ export const blueprint = {
   /**
    * AO DECALS — see the note on the tuner. One shared material for every decal on every car.
    */
+  /**
+   * ---- AO DECALS, AND WHERE THEY ARE ALLOWED TO GO -----------------------------------------
+   *
+   * §7 caps a car that hovers over the road at 55 because a shape with no shadow under it is not
+   * resting on anything, and the same is true one scale down of a wing, a scoop or a handle bolted
+   * to a painted panel — it is most of what "props parked on a shell" looks like at 8x. One shared
+   * material for every decal on every car (kit.js `partShadow`), so the whole set is one call.
+   *
+   * Every y and x below is the MEASURED surface at that station (`.vjprobe/deck.mjs`), not the
+   * part's own authored height: a decal placed by eye either sinks behind the panel and vanishes on
+   * the depth test or floats in front of it, and the second is worse than having no decal at all.
+   * Anything mounted on the glasshouse rather than on the tub — the mirrors — has no decal, because
+   * the tub cannot tell us where that surface is.
+   */
   shadows: [
-    { x: 0.90, y: 0.885, z: 0.62, w: 0.16, d: 0.15, face: 'x' },       // mirror stalk root
-    { x: 0.965, y: 0.80, z: -0.10, w: 0.24, d: 0.11, face: 'x' },      // door handle
-    { x: 0.60, y: 0.960, z: -1.95, w: 0.16, d: 0.24 },                 // swan-neck arm feet
-    { x: 0.30, y: 0.622, z: 2.14, w: 0.40, d: 0.22 },                  // bonnet extractors
-    { x: 0.325, y: 0.648, z: -0.50, w: 0.13, d: 0.42 },                // roll-hoop feet
+    { x: 0.952, y: 0.80, z: -0.10, w: 0.24, d: 0.11, face: 'x' },      // door handle (flank 0.9412)
+    { x: 0.60, y: 0.981, z: -1.95, w: 0.16, d: 0.24 },                 // swan-neck arm feet (deck 0.9771)
+    { x: 0.30, y: 0.683, z: 2.14, w: 0.40, d: 0.22 },                  // bonnet extractors (deck 0.6794)
+    { x: 0.325, y: 0.672, z: -0.50, w: 0.13, d: 0.42 },                // roll-hoop feet (deck 0.6681)
   ],
   extras: [
     // Round 2 stood a 280 mm PAINTED blade on each side of the engine deck: from any side view it

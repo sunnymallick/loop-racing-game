@@ -55,7 +55,7 @@ export const blueprint = {
   // (the tub reaches 0.958 / 0.969 half-width at z = ±1.31) — a tucked-in tyre caps §6.1 at 60.
   // staggered: 1.64 front / 1.70 rear, so the rear tyres stand ~9 cm outboard of the hatch tail and
   // break the silhouette from behind (§6.1 round-2: no wheel was readable in any harness frame)
-  dims: { length: 4.24, width: 2.10, height: 1.36, wheelbase: 2.62, track: 1.660, trackRear: 1.744, rideHeight: 0.13 },
+  dims: { length: 4.24, width: 2.10, height: 1.36, wheelbase: 2.62, track: 1.660, trackRear: 1.744, rideHeight: 0.115 },
   // envIntensity 0.70 (0.88 after the lighting piece's 1.25x) on a 0.15-metalness body put almost
   // no city into the paint, so the car sat in the frame as a flat coloured shape and went to a grey
   // silhouette in NYC. §1.6.3 wants "a sky reflection above and a dark ground reflection below" —
@@ -270,8 +270,19 @@ export const blueprint = {
     capColor: '#18b6e8',
     // 0.165 profile left a 58 mm sidewall: from ten metres the tyre vanished and the car appeared
     // to be riding on bare bronze discs. 0.24 is a real 35-series performance sidewall.
-    front: { radius: 0.350, width: 0.275, spokes: 5, tireProfile: 0.240 },
-    rear: { radius: 0.360, width: 0.315, spokes: 5, tireProfile: 0.235 },
+    /**
+     * ROUND-7 (chassis footprint). Verdict: "all four share ONE chassis footprint — identical
+     * wheelbase, identical wheel diameter and identical beltline height across a lifted 4x4 and a
+     * supercar." The wheelbase and the beltline were already apart; the WHEELS were not far enough.
+     * At 0.350 this car ran the same front rolling radius as the supercar, which is wrong twice
+     * over — a Type R wears 18s under a 4.2 m body and a mid-engine car wears staggered 20/21s.
+     *
+     * The four fronts now measure 664 / 704 / 730 / 1040 mm of rolling diameter (tuner, supercar,
+     * muscle, truck) and the rears 684 / 824 / 810 / 1040, so no two classes share a wheel and the
+     * truck is 57 % larger than the smallest car in the game.
+     */
+    front: { radius: 0.332, width: 0.275, spokes: 5, tireProfile: 0.240 },
+    rear: { radius: 0.342, width: 0.315, spokes: 5, tireProfile: 0.235 },
   },
   // Bolt-on over-fenders: satin black, riveted all round. `blackArches` no longer bolts a ring onto
   // the wing — it tells loftTub to hand the flare band of the SHELL to the plastic material, so the
@@ -341,7 +352,9 @@ export const blueprint = {
     { x: 0.898, y: 0.62, z: 1.05, w: 0.24, h: 0.15, fins: 3, angle: 0.4, ry: 1.5708 },
   ],
   mirrors: { x: 0.82, y: 0.985, z: 0.72, painted: false },
-  handles: [{ x: 0.90, y: 0.875, z: -0.18 }],
+  // see muscle.js: the flank measures 0.8466 here, so at x 0.90 the handle's inner face was 36 mm
+  // clear of the door skin
+  handles: [{ x: 0.850, y: 0.875, z: -0.18 }],
 
   trim: [
     /**
@@ -438,12 +451,25 @@ export const blueprint = {
    * shadow under it is the same defect at one tenth the scale, and it is most of what "props
    * parked on a shell" looks like at 8x. One shared material for the whole set.
    */
+  /**
+   * ---- AO DECALS, AND WHERE THEY ARE ALLOWED TO GO -----------------------------------------
+   *
+   * §7 caps a car that hovers over the road at 55 because a shape with no shadow under it is not
+   * resting on anything, and the same is true one scale down of a wing, a scoop or a handle bolted
+   * to a painted panel — it is most of what "props parked on a shell" looks like at 8x. One shared
+   * material for every decal on every car (kit.js `partShadow`), so the whole set is one call.
+   *
+   * Every y and x below is the MEASURED surface at that station (`.vjprobe/deck.mjs`), not the
+   * part's own authored height: a decal placed by eye either sinks behind the panel and vanishes on
+   * the depth test or floats in front of it, and the second is worse than having no decal at all.
+   * Anything mounted on the glasshouse rather than on the tub — the mirrors — has no decal, because
+   * the tub cannot tell us where that surface is.
+   */
   shadows: [
-    { y: 0.940, z: 1.42, w: 0.56, d: 0.52, mirror: false },            // bonnet scoop
-    { x: 0.82, y: 0.980, z: 0.72, w: 0.17, d: 0.15, face: 'x' },       // mirror stalk root
-    { x: 0.90, y: 0.875, z: -0.18, w: 0.26, d: 0.12, face: 'x' },      // door handle
-    { x: 0.52, y: 0.945, z: -1.94, w: 0.20, d: 0.30 },                 // wing pedestals
-    { x: 0.40, y: 0.910, z: 1.62, w: 0.38, d: 0.24 },                  // bonnet extractors
+    { y: 0.935, z: 1.42, w: 0.56, d: 0.52, mirror: false },            // bonnet scoop (deck 0.9308)
+    { x: 0.852, y: 0.875, z: -0.18, w: 0.26, d: 0.12, face: 'x' },     // door handle (flank 0.8466)
+    { x: 0.52, y: 0.962, z: -1.94, w: 0.20, d: 0.30 },                 // wing pedestals (deck 0.9579)
+    { x: 0.40, y: 0.915, z: 1.62, w: 0.38, d: 0.24 },                  // bonnet extractors (deck 0.9104)
   ],
   extras: [{ type: 'scoop', w: 0.44, h: 0.10, d: 0.40, y: 0.948, z: 1.42, painted: true }],
 };
