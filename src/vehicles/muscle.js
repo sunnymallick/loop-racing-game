@@ -516,7 +516,10 @@ export const blueprint = {
    * that says so. They ride on the bonnet's own measured surface (1.0226 at x 0.40, z 1.58) just
    * outside the lip, inboard of the header ports at x 0.515.
    */
-  fasteners: [{ x: 0.40, y: 1.021, z: 1.58, n: 4, span: 0.56, axis: 'z', r: 0.017, h: 0.013, face: 'y' }],
+  // y is the deck (1.0226 at x 0.40, z 1.58) PLUS the aperture's own rolled lip, which reaches
+  // +9.7 mm at this station (loftTub §4b: sd 0.070 inside a 0.095 lip band). At the bare deck value
+  // a 13 mm head would have sat 10 mm inside the metal it is supposed to be screwed into.
+  fasteners: [{ x: 0.40, y: 1.031, z: 1.58, n: 4, span: 0.56, axis: 'z', r: 0.017, h: 0.013, face: 'y' }],
   extras: [
     { type: 'blower', y: 1.06, z: 1.58 },
     /**
