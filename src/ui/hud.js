@@ -557,7 +557,9 @@ export function fmtSplit(t) {
   const s = Math.floor(v % 60);
   const cs = Math.floor((v % 1) * 100);
   const tail = `${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
-  return m > 0 ? `${m}:${tail}` : tail;
+  // …and the minutes are padded, so a split over a minute reads "01:25.00" beside a "02:08:15"
+  // rather than "1:25.00". Two clock rhythms one line apart is the same fault as two clock formats.
+  return m > 0 ? `${String(m).padStart(2, '0')}:${tail}` : tail;
 }
 
 /** Label type: the upright geometric face, one call so every label in the HUD matches. */
@@ -927,6 +929,81 @@ export class HUD {
     const VW = W / k, VH = H / k;
     const L = resultsLayout(VW, VH);
     return { x: (L.carX / VW) * 2 - 1, y: 1 - (L.carY / VH) * 2, w: L.carW / VW };
+  }
+
+  /**
+   * ONE SNAPSHOT, ONE STORY — the invariant that makes the round-7 bug unrepresentable.
+   *
+   * The panel reads the same fact from four places: the ordinal in the headline (`pos`), the gold
+   * row in the classification (`rows[].you`), the clock (`time`) and the record badge
+   * (`recordBeaten` / `recordBy`). Nothing forced them to agree, and the whole-game critic caught
+   * exactly what that permits: "'8TH CLASSIFIED / OF 8' with a +04.25 gap to the leader, and
+   * simultaneously a 'NEW COURSE RECORD' badge". main.js has since fixed WHAT COUNTS as a record
+   * (`_classification`), which fixed that snapshot — but the drawing code would still faithfully
+   * render any contradiction it was handed, so the fix lived in one file and the fault lived in
+   * another.
+   *
+   * This is the guard, on the drawing side, where the assertion is actually made: the player's own
+   * ROW is the authority, and everything the screen says about the player is derived from it.
+   *
+   *   · retired if the row is retired, whatever the header says — and a retired race has no clock
+   *   · the ordinal is the row's own position
+   *   · the unqualified green badge requires the row to be classified, to be the leader, and to be
+   *     first. Anything else falls through to the NAMED form, which states the holder and their
+   *     time and therefore cannot be read as being about the player.
+   *   · a BEST is a lap that exists
+   *
+   * There is no longer a value of the snapshot for which this screen prints two incompatible
+   * claims. It is a pure function of the snapshot, so it is also the thing to unit-test.
+   */
+  static resultsView(s) {
+    const src = s.rows || [];
+    const dnf = !!(s.dnf || src.find((x) => x.you)?.dnf);
+    // 1 — the player's ROW is made to agree with the header. A screen that says DID NOT FINISH
+    //     cannot also print that driver a finishing time three inches below it.
+    let rows = src.map((x) => (x.you && dnf
+      ? { ...x, dnf: true, finished: false, time: null, gap: null, gapM: 0, leader: false }
+      : { ...x }));
+    // 2 — retirements to the foot of the table, and the ladder renumbered off THAT order, so a
+    //     position printed on the panel is always the row's own place in it (main.js does the same
+    //     on the snapshot; this is the guard, and a guard that trusts its input is not one)
+    rows.sort((a, b) => (a.dnf === b.dnf ? (a.pos ?? 99) - (b.pos ?? 99) : (a.dnf ? 1 : -1)));
+    let cls = 0;
+    for (const x of rows) x.pos = x.dnf ? null : ++cls;
+    // 3 — exactly one leader, and it is the fastest classified time, because every interval in the
+    //     TIME column is measured off it
+    let lead = null;
+    for (const x of rows) {
+      if (!x.dnf && x.finished && x.time != null && (!lead || x.time < lead.time)) lead = x;
+    }
+    for (const x of rows) x.leader = x === lead;
+    const me = rows.find((x) => x.you) || null;
+    const pos = (!dnf && me && me.pos != null) ? me.pos : (s.pos ?? 1);
+    const laps = (s.laps || []).filter((t) => t != null && t > 0);
+    const mine = !!(s.recordBeaten && !dnf && me && me.leader && pos === 1);
+    const holderIsMe = !!(me && s.recordBy && s.recordBy === me.name);
+    return {
+      ...s,
+      rows,
+      laps,
+      dnf,
+      pos,
+      time: dnf ? null : s.time,
+      best: laps.length ? Math.min(...laps) : null,
+      recordBeaten: mine,
+      // …and if the record is not the player's, whoever holds it has to be NAMED. An unqualified
+      // "NEW COURSE RECORD" over somebody else's time is the sentence the critic read as the
+      // screen congratulating a player who finished eighth.
+      //
+      // The remaining hole is the mirror of it: a snapshot where the fastest time is the PLAYER'S
+      // but the rest of the screen does not agree they won — retired, or classified behind
+      // somebody. `mine` is already false there, and the named form would then print "NEW COURSE
+      // RECORD  YOU  02:20:12" over an eighth place, which is the same sentence with a different
+      // hat on. Either the whole screen agrees the record is yours, or the badge names somebody
+      // else; there is no third badge.
+      recordBy: (mine || holderIsMe) ? null : (s.recordBy || null),
+      recordTime: (mine || holderIsMe) ? null : (s.recordTime ?? null),
+    };
   }
 
   /**
@@ -2372,12 +2449,14 @@ export class HUD {
   // thousandth — see the note above `_patch` for why that matters here. The clock is drawn live
   // because `_seg` blits its own sprites under the identity transform and cannot go inside a patch.
 
-  _drawResults(ctx, r, VW, VH) {
+  _drawResults(ctx, snap, VW, VH) {
     const T = clamp(this.resultsT, 0, 1);
     const L = resultsLayout(VW, VH);
     const { M, BAR, CUT, RS, barY, yT, panelH, leftW, midX: rightX, midW: rightW,
       cardAH, cardBY, cardBH, stageX, stageW } = L;
 
+    // THE SCREEN AGREES WITH ITSELF BEFORE IT DRAWS ANYTHING. See `resultsView`.
+    const r = HUD.resultsView(snap);
     const rows = r.rows || [];
     const laps = r.laps || [];
     const win = r.pos === 1 && !r.dnf;
@@ -2853,7 +2932,9 @@ export class HUD {
       const rh = pitch - 5;
       const rl = lx(ry + rh);
       const you = row.you;
-      const pod = row.pos <= 3 ? PODIUM[row.pos - 1] : null;
+      // a retired car carries no position (main.js `_classification` nulls it), so it gets no
+      // podium rail and no numeral either — see below
+      const pod = (row.pos != null && row.pos <= 3) ? PODIUM[row.pos - 1] : null;
 
       if (you) {
         // the player's row, in the garage's gold — the one bar of colour on the panel
@@ -2874,7 +2955,7 @@ export class HUD {
       const base = ry + rh - Math.round(rh * 0.33);
       const bl = lx(base);
       // position numeral in the display face — a rank is a number, and it is set as one
-      drawText(ctx, String(row.pos), {
+      drawText(ctx, row.pos == null ? '--' : String(row.pos), {
         x: bl + 52, y: base, size: 25, weight: 0.215, italic: 0.22, align: 'right',
         color: you ? '#2a1701' : pod ? pod : 'rgba(176,199,220,0.95)',
         glow: pod && !you ? { color: pod, blur: 10 } : null,
@@ -2934,6 +3015,27 @@ export class HUD {
     // one word, which is the same fault as the badge wearing a different hat.
     const rec = r.recordSec ?? parseClock(r.record);
     const delta = (rec > 0 && r.time != null && !r.dnf) ? r.time - rec : null;
+    // …AND IT SAYS WHICH RECORD, because by the time this is drawn there may be two.
+    //
+    // The whole-game critic on the r1 screen: "the banner announces 'NEW COURSE RECORD ROMAN
+    // 02:21:81' while the panel below simultaneously credits the player 'UNDER RECORD BY 28.54'
+    // against 02:52:40 … presented without distinguishing them, so the screen appears to
+    // congratulate the player for beating a record that the frame also says someone else just
+    // took." Both numbers were right and the WORDS were wrong: one said "the record" meaning the
+    // one that stood coming in, the other meaning the one that stands now.
+    //
+    // So the label is tensed off the same fact the badge is drawn from. If nobody took it today the
+    // record is still the one you raced, and it is "COURSE RECORD"; if it changed hands — to you or
+    // to anybody — the target this card measures against is the OLD one and says so. There is no
+    // wording left in which the two halves of the screen can be read as the same record.
+    const took = !!(r.recordBeaten || r.recordBy);
+    const targetLbl = took ? 'PREVIOUS RECORD' : 'COURSE RECORD';
+    // "IT", once the row above has named which record this is measured against — the long forms
+    // ("UNDER PREVIOUS RECORD BY") do not fit the card and abbreviating them is worse than binding
+    // the pronoun to the line above it, which is how a results card reads anyway.
+    const deltaLbl = delta == null ? 'AGAINST IT'
+      : delta <= 0 ? (took ? 'UNDER IT BY' : 'UNDER RECORD BY')
+        : (took ? 'OVER IT BY' : 'OVER RECORD BY');
     const rowY = [y + h - 54, y + h - 20];
     const put = (i, k, v, col) => {
       rtext(ctx, k, {
@@ -2947,8 +3049,8 @@ export class HUD {
     };
     // …and the record is set with the panel's own clock face, not echoed as the city file's raw
     // string: "2:08:15" beside a "02:06:65" is two clock formats one line apart.
-    put(0, 'RECORD TO BEAT', rec > 0 ? fmtTime(rec) : '--:--:--', GOLD);
-    put(1, delta == null ? 'AGAINST RECORD' : delta <= 0 ? 'UNDER RECORD BY' : 'OVER RECORD BY',
+    put(0, targetLbl, rec > 0 ? fmtTime(rec) : '--:--:--', GOLD);
+    put(1, deltaLbl,
       delta == null ? '--' : fmtSplit(Math.abs(delta)), delta == null ? LABEL : delta <= 0 ? GREEN : '#ff8f7a');
   }
 
@@ -3041,17 +3143,23 @@ export class HUD {
 
     const hy = y + h - 30;
     let hx = M - 24;
-    // the one action this screen wants, on both keys that do it (core/input.js confirm | cancel)
-    hx += keycap(ctx, hx, hy + 13, 'ENTER', 34) + 6;
-    hx += keycap(ctx, hx, hy + 13, 'ESC', 34) + 14;
-    rtext(ctx, 'GARAGE', {
-      x: hx, y: hy + 5, size: 16, weight: 0.16, tracking: 0.18, color: GOLD_HOT, face: 'geo',
-      glow: { color: ORANGE, blur: 14 },
-    });
+    // TWO KEYS, TWO DOORS. Round 1 drew both keycaps against the single word GARAGE — "both keys
+    // lead to the same place and the screen is a one-way exit; the player cannot tell which key
+    // does what". Confirm now re-runs the race (main.js `retry`), cancel leaves.
+    const prompt = (cap, word, col, glow) => {
+      hx += keycap(ctx, hx, hy + 13, cap, 34) + 15;   // the caps are sheared: 8 px read as touching
+      rtext(ctx, word, {
+        x: hx, y: hy + 5, size: 16, weight: 0.16, tracking: 0.18, color: col, face: 'geo',
+        glow: { color: glow, blur: 14 },
+      });
+      hx += rmeasure(word, { size: 16, tracking: 0.18, face: 'geo' }).width + 26;
+    };
+    prompt('ENTER', 'RACE AGAIN', GOLD_HOT, ORANGE);
+    prompt('ESC', 'GARAGE', '#cfe2f2', 'rgba(57,215,242,0.7)');
 
     // the car you drove, at the far end of the bar — the garage's own sign-off
     const name = String(r.carName || '');
-    const MAXW = VW - M - 640;
+    const MAXW = VW - M - Math.max(640, hx + 40);
     let ns = 46;
     while (ns > 22 && measure(name, { size: ns, tracking: 0.078 }).width > MAXW) ns -= 1;
     const nw = measure(name, { size: ns, tracking: 0.078 }).width;

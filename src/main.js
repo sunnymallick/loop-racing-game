@@ -469,6 +469,21 @@ class Game {
   }
 
   /**
+   * Results → the same race again. `startRace()` already IS the restart path — it rebuilds the
+   * director, re-seats the grid, drops the old opponents, clears the FX and calls `_resetFinish()`
+   * — so this is that plus the two things that belong to the flag beat rather than to the race:
+   * the banner slot, which would otherwise carry "FINISHED 8TH" into the new countdown, and the
+   * sound.
+   */
+  retry() {
+    this.hud.msg = null;
+    this.hud.msgQueue = [];
+    this.audio?.init?.();
+    this.audio?.ui?.('confirm');
+    this.startRace();
+  }
+
+  /**
    * Race → garage. The exact inverse of the teardown `startRace()` already does on a restart, so
    * the two paths cannot drift apart: detach the director's line group and plumes, drop the
    * opponents, clear the FX director, then hand the scene to the menu (which hides the city,
@@ -724,9 +739,13 @@ class Game {
       // that is already lit and already composed — so the shout, the angle and the classification
       // are one sequence rather than three takes on the same news.
       if (!this._resultsUp && this._finishT > FIN.PANEL) this._resultsUp = true;
-      if (this._finishT > 1.0 && (this.input.pressed('confirm') || this.input.pressed('cancel'))) {
-        this.toGarage();
-        return;
+      // TWO KEYS, TWO DOORS. Round 1 prompted [ENTER] and [ESC] under one word, GARAGE, and both
+      // went there: "after a personal best the only exit is the garage". A results screen in this
+      // genre has to offer the race again without a round trip through the car select, so confirm
+      // re-runs it — same city, same car, same colour — and cancel is the way out.
+      if (this._finishT > 1.0) {
+        if (this.input.pressed('confirm')) { this.retry(); return; }
+        if (this.input.pressed('cancel')) { this.toGarage(); return; }
       }
     }
 
@@ -1665,6 +1684,16 @@ class Game {
     // 1,3,2 down the classification. Order the DISPLAY by the director's own number — this sorts,
     // it does not re-derive.
     rows.sort((a, b) => (a.dnf === b.dnf ? a.pos - b.pos : (a.dnf ? 1 : -1)));
+    // …AND THE LADDER IS RENUMBERED OFF THAT ORDER, because a retired car has no classification.
+    //
+    // The director's `pos` is its place in the running order, and a car can retire while it is
+    // still physically ahead — so a snapshot with one retirement printed 1, 2, 4, 5, 6, 7, 8 down
+    // the table and then a 3 at the bottom of it, under a heading that says FINAL STANDINGS. The
+    // sort above already puts the retirements last; this makes the numbers agree with where the
+    // rows actually are, and a retired row carries no numeral at all (`_resTable` draws a dash),
+    // which is what a classification does.
+    let cls = 0;
+    for (const row of rows) row.pos = row.dnf ? null : ++cls;
     // the winner is the FASTEST classified time, not the first finisher the snapshot happens to
     // list — every gap on the panel is measured off it
     let winner = null;
