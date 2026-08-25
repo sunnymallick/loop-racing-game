@@ -2411,33 +2411,109 @@ export class HUD {
     bgg.addColorStop(1, 'rgba(1,2,6,0.98)');
     ctx.fillStyle = bgg; ctx.fillRect(0, barY - 200, VW, VH - barY + 200);
 
-    // ---- THE STAGE. A hole is cut in the scrim over the right third and the hero car is driven
-    // into it (main.js `_finishCamera`, composed off `resultsStageNDC`). `destination-out` is the
-    // only way to get a SOFT hole: clipping to a rectangle leaves a hard edge, and painting light
-    // back over the scrim only greys it. The centre is not fully cleared — 0.90, not 1.0 — and the
-    // hole is kept tight around the car rather than spread over the whole third, so the buildings
-    // behind it stay in the scrim and cannot read as brighter than the subject.
-    const pool = ctx.createRadialGradient(L.carX, L.carY - stageW * 0.02, stageW * 0.08,
-      L.carX, L.carY - stageW * 0.02, stageW * 0.62);
-    pool.addColorStop(0, 'rgba(0,0,0,0.90)');
-    pool.addColorStop(0.42, 'rgba(0,0,0,0.76)');
-    pool.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.fillStyle = pool; ctx.fillRect(stageX - stageW * 0.55, yT - 190, stageW * 1.9, panelH + 300);
-    ctx.globalCompositeOperation = 'source-over';
-    // …and a warm floor pool under it, the garage's turntable light. Drawn ON the frame rather than
-    // into it, so it reads as light in the room rather than as a decal on the road.
-    const floor = ctx.createRadialGradient(L.carX, L.carY + stageW * 0.30, stageW * 0.04,
-      L.carX, L.carY + stageW * 0.30, stageW * 0.62);
-    floor.addColorStop(0, 'rgba(255,196,110,0.20)');
-    floor.addColorStop(0.45, 'rgba(255,170,80,0.085)');
-    floor.addColorStop(1, 'rgba(255,150,60,0)');
-    ctx.fillStyle = floor;
+    /**
+     * ---- THE STAGE, WHICH IS A SET AND NOT A HOLE.
+     *
+     * Round 1 cut one soft round hole in the scrim over the right third and let the race show
+     * through it. The critic measured what that produces: "it is the live race camera pointed at
+     * wherever the car stopped … no key, no rim, NO BACKDROP, the car in the top third of its
+     * bracket with blown-out empty road filling the rest", and named the fix — "push the race scene
+     * behind it to a darkened, blurred backdrop instead of letting the chase camera and the ground
+     * bloom decide the composition".
+     *
+     * A 2D overlay cannot blur what is behind it and cannot paint behind the car. What it CAN do is
+     * build the room first and then cut the subject out of it: paint a back wall, a floor and the
+     * seam between them across the whole third, then erase a tight ellipse around the car. What is
+     * left around the subject is a set this file drew — §1.4's garage, dark, with one cool bloom on
+     * the wall behind the roofline — instead of Miami's neon skyline growing out of the roof. The
+     * hole is sized off `carW`, the same number `resultsStageNDC()` hands the camera solve, so it
+     * hugs the car at whatever scale the layout asked for.
+     */
+    const CW = L.carW;
+    const setX = stageX - stageW * 0.36;
+    const seam = L.carY + CW * 0.150;                   // where the wall meets the floor
+    // The set is the same picture on every frame of the screen — it is built out of the layout and
+    // nothing else — so it is baked once and blitted, which is also what makes its LEFT edge
+    // affordable: feathering it needs a `destination-out` pass, and that can only run inside a
+    // layer of its own. Straight onto the frame it would eat the scrim underneath and leave the
+    // city brighter along the seam than it is anywhere else.
+    this._patch(ctx, 'resSet', setX, 0, VW - setX, VH, `${VW}|${VH}|${CW}|set`, (c) => {
+      // the wall — near-black overhead, lifting a little toward the seam so the plane is readable
+      const wall = c.createLinearGradient(0, 0, 0, seam);
+      wall.addColorStop(0, 'rgba(2,5,11,0.84)');
+      wall.addColorStop(0.62, 'rgba(5,12,21,0.68)');
+      wall.addColorStop(1, 'rgba(14,29,44,0.42)');
+      c.fillStyle = wall; c.fillRect(setX, 0, VW - setX, seam);
+      // the floor — darker again and warm rather than cool, so the two planes are not one wash
+      const flr = c.createLinearGradient(0, seam, 0, VH);
+      flr.addColorStop(0, 'rgba(16,12,12,0.48)');
+      flr.addColorStop(0.55, 'rgba(6,6,10,0.82)');
+      flr.addColorStop(1, 'rgba(1,2,6,0.96)');
+      c.fillStyle = flr; c.fillRect(setX, seam, VW - setX, VH - seam);
+      // the backdrop lamp: a wide cool bloom on the wall behind the roofline. This is the light
+      // that separates a car from a black rectangle, and §1.4 has it — "a cool rim from behind
+      // that separates it from the wall".
+      c.save();
+      c.translate(L.carX, L.carY - CW * 0.055);
+      c.scale(1, 0.46);
+      const back = c.createRadialGradient(0, 0, CW * 0.05, 0, 0, CW * 0.92);
+      back.addColorStop(0, 'rgba(104,176,220,0.26)');
+      back.addColorStop(0.46, 'rgba(74,132,182,0.11)');
+      back.addColorStop(1, 'rgba(58,106,156,0)');
+      c.fillStyle = back; c.fillRect(-CW, -CW, CW * 2, CW * 2);
+      c.restore();
+      // the seam itself, brightest behind the car and gone at both ends
+      const sg = c.createLinearGradient(setX, 0, VW, 0);
+      sg.addColorStop(0, 'rgba(126,190,226,0)');
+      sg.addColorStop(0.46, 'rgba(126,190,226,0.26)');
+      sg.addColorStop(1, 'rgba(126,190,226,0.03)');
+      c.fillStyle = sg; c.fillRect(setX, seam - 0.8, VW - setX, 1.6);
+      // …and the left edge feathered away into the frame's own scrim. Without this the set ends on
+      // a ruled vertical line down the middle of the screen — one plate edge that belongs to no
+      // plate, which at 1:1 reads as a rendering fault rather than as a room.
+      const fade = c.createLinearGradient(setX, 0, setX + stageW * 0.52, 0);
+      fade.addColorStop(0, 'rgba(0,0,0,1)');
+      fade.addColorStop(0.45, 'rgba(0,0,0,0.55)');
+      fade.addColorStop(1, 'rgba(0,0,0,0)');
+      c.globalCompositeOperation = 'destination-out';
+      c.fillStyle = fade; c.fillRect(setX, 0, stageW * 0.52, VH);
+      c.globalCompositeOperation = 'source-over';
+      // (no `alpha` option: the block's ambient `io` is already on the blit, and passing it again
+      //  would square it and make the set lag the rest of the entrance)
+    });
+
+    // …and the subject, erased out of it. `destination-out` is the only way to get a SOFT hole:
+    // clipping to a rectangle leaves a hard edge, and painting light back over the scrim only greys
+    // it. An ELLIPSE, not a circle — a car is three times as wide as it is tall at this azimuth,
+    // and a round hole big enough to clear the roof clears half the skyline with it, which is
+    // exactly how the neon got back in. The centre is not fully cleared (0.94) so the set still
+    // lies faintly over the road under the car.
+    const HX = CW * 0.615, HY = CW * 0.255;
     ctx.save();
-    ctx.translate(L.carX, L.carY + stageW * 0.30);
-    ctx.scale(1, 0.34);                                   // a pool on the ground, not a halo
-    ctx.translate(-L.carX, -(L.carY + stageW * 0.30));
-    ctx.fillRect(L.carX - stageW * 0.7, L.carY - stageW * 0.6, stageW * 1.4, stageW * 1.8);
+    ctx.translate(L.carX, L.carY - CW * 0.012);
+    ctx.scale(1, HY / HX);
+    const hole = ctx.createRadialGradient(0, 0, HX * 0.30, 0, 0, HX);
+    hole.addColorStop(0, 'rgba(0,0,0,0.94)');
+    hole.addColorStop(0.50, 'rgba(0,0,0,0.86)');
+    hole.addColorStop(0.80, 'rgba(0,0,0,0.36)');
+    hole.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = hole; ctx.fillRect(-HX, -HX, HX * 2, HX * 2);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+
+    // …and a warm floor pool under it, the garage's turntable light. Drawn ON the frame rather than
+    // into it, so it reads as light in the room rather than as a decal on the road. It sits on the
+    // seam, so the car stands where the two planes of the set meet instead of hovering over one.
+    const fy = seam + CW * 0.045;
+    ctx.save();
+    ctx.translate(L.carX, fy);
+    ctx.scale(1, 0.26);                                   // a pool on the ground, not a halo
+    const floor = ctx.createRadialGradient(0, 0, CW * 0.05, 0, 0, CW * 0.72);
+    floor.addColorStop(0, 'rgba(255,198,116,0.24)');
+    floor.addColorStop(0.40, 'rgba(255,172,84,0.10)');
+    floor.addColorStop(1, 'rgba(255,150,60,0)');
+    ctx.fillStyle = floor; ctx.fillRect(-CW, -CW, CW * 2, CW * 2);
     ctx.restore();
     ctx.restore();
 

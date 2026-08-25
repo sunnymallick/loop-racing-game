@@ -663,6 +663,45 @@ class Game {
       if (!this._flagDone) this._flagCut();
       this._finishT = (this._finishT ?? 0) + dt;
       if (!this.results) this.results = this._classification();
+      /**
+       * PARK THE HERO — the portrait is a still, so the subject has to be still.
+       *
+       * main.js stops feeding input at the flag and race.js's `_flag` trails the car off racing
+       * speed down to a cruise it never leaves (`if (before > 8)`), which is right for the flyby
+       * and wrong for the end card: the stage is a composition solved for one fixed point, and a
+       * subject still making 8 m/s sits wherever the rig's own lag leaves it. That is on top of the
+       * §1.4 reading — the reference's hero is PARKED under its lights, not driving through them.
+       *
+       * The brake pedal cannot do this: physics.js reads a held brake under 0.6 m/s as a request
+       * for REVERSE (`else drive -= brakeIn * p.brake * 0.28`), so the car would creep backwards
+       * out of its own frame. The stand is made on the velocity itself, easing in so the last few
+       * metres of the cool-down still read as a car rolling to a halt rather than hitting a wall,
+       * and it leaves `_flag`'s gentle line-up alone — the car settles back onto the crown of the
+       * road while it stops, which is where the portrait wants it.
+       */
+      if (this._finishT > FIN.FLAG * 0.55) {
+        const k = 1 - Math.exp(-dt * lerp(1.6, 5.2,
+          smoothstep(FIN.FLAG * 0.55, FIN.FLAG + FIN.MOVE, this._finishT)));
+        this.body.vel.x -= this.body.vel.x * k;
+        this.body.vel.z -= this.body.vel.z * k;
+        this.body.yawRate -= this.body.yawRate * k;
+      }
+      /**
+       * …AND ON THE CROWN OF THE ROAD. `_flag` already eases the car back toward the middle, but at
+       * 0.9 m/s, which over the two and a half seconds this beat lasts moves a car sitting nine
+       * tenths of the way to the barrier by about a fifth of the road. That is why Miami's portrait
+       * was shot with the subject parked on the shoulder: the rig had nowhere to stand on that
+       * flank, so the shot it could reach was not the shot the layout asked for. The end card is a
+       * staged shot and the mark it is staged on is the middle of the road, so the car is walked
+       * onto it — rate-limited, so at speed it reads as a driver easing back to the racing line
+       * rather than as a car being slid sideways.
+       */
+      const ptrk = this.city?.track;
+      if (ptrk) {
+        const nc = ptrk.nearest(this.body.pos, this.race?.playerU ?? null);
+        const vLat = clamp(-nc.lateral * ptrk.halfWidth * 1.5, -3.0, 3.0);
+        this.body.pos.addScaledVector(nc.sample.right, vLat * dt);
+      }
       // two more waves while the camera is still down at the line — a celebration is a burst, a
       // beat, and another burst, and one pop reads as something misfiring
       if (this._pyro < 2 && this._finishT > 0.34 + this._pyro * 0.34) {
@@ -793,8 +832,16 @@ class Game {
     // a hero staged on the right third facing off the right edge of the screen is a car leaving.
     // It only crosses over when the car is hugging the left barrier hard enough that standing
     // there would put the rig through it.
-    const lat = trk ? trk.nearest(this.body.pos, this.race?.playerU ?? null).lateral : 0;
-    this._finSide = lat < -0.45 ? 1 : -1;
+    // …and it no longer has to read the road to do it. The reason it crossed over was that
+    // standing on the preferred flank could put the rig through a barrier — which was true when the
+    // clamp for that was "snap the camera onto the road edge" and the car was left parked wherever
+    // it stopped. Neither is true now: the finished block walks the car back onto the crown of the
+    // road, and `_finishCamera` shortens the rig's LATERAL arm to the room the corridor has while
+    // holding the distance, so a tight flank costs some azimuth and nothing else. One side, every
+    // city, every race: the car's nose ends the beat pointing back into the frame, toward the
+    // classification, instead of off the right edge of the screen.
+    void trk;
+    this._finSide = -1;
 
     // 1 — a clean winner
     this.effects.body?.clear?.();
@@ -922,30 +969,56 @@ class Game {
     ndcX = lerp(ndcX, stg.x, w);
     ndcY = lerp(ndcY, stg.y, w);
 
-    // ---- the road frame
+    // ---- THE FRAME THE RIG HANGS ON, AND IT CHANGES HANDS DURING THE BEAT.
+    //
+    // The flyby is built in the ROAD's frame, for the reason in this method's header: the director
+    // spends the whole cool-down steering the car back onto the racing line (race.js `_flag`), and
+    // a rig hung off the car's own yaw inherits every degree of that correction as a camera wobble.
+    //
+    // The PORTRAIT is built in the CAR's, and round 1 shipped without that distinction. An azimuth
+    // is only "three-quarter front" with respect to the thing being photographed, and the finish
+    // line is not obliged to be on a straight: measured off the flag beat with `tools/_stage.mjs`,
+    // a rig asking for 33 deg off the nose delivered 42 deg in Los Angeles and 48 deg in Miami,
+    // because the car was standing 9 and 15 deg off the local tangent. 48 deg is not a
+    // three-quarter, it is a flank — which is exactly what the critic read off the Miami capture
+    // ("side-on in a wash of ground bloom"), and the two cities did not even get the same shot.
+    // Rotating the frame onto the car as the panel rises makes the portrait the SAME shot in all
+    // four cities, and it costs nothing at the other end of the beat because by then the car is
+    // parked and its yaw is the only axis left that means anything.
+    let yawFrame = b.yaw;
     if (trk) {
       const nc = trk.nearest(b.pos, this.race?.playerU ?? null);
-      _finFwd.copy(nc.sample.tan).setY(0).normalize();
-      _finRight.copy(nc.sample.right).setY(0).normalize();
-    } else {
-      _finFwd.copy(b.forward).setY(0).normalize();
-      _finRight.copy(b.right).setY(0).normalize();
+      _finTmp.copy(nc.sample.tan).setY(0).normalize();
+      const yawRoad = Math.atan2(_finTmp.x, _finTmp.z);
+      let dy = b.yaw - yawRoad;
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy));      // shortest way round
+      yawFrame = yawRoad + dy * w;
     }
+    _finFwd.set(Math.sin(yawFrame), 0, Math.cos(yawFrame));
+    // the track's own convention (`track.js`: right = tan x UP), so `side` means the same thing
+    // here as it does everywhere else in this file
+    _finRight.crossVectors(_finFwd, UP).normalize();
 
-    // ---- the rig, AHEAD of the car and off one flank
-    const want = _finWant.copy(b.pos)
-      .addScaledVector(_finFwd, Math.cos(az) * dist)
-      .addScaledVector(_finRight, side * Math.sin(az) * dist);
-    want.y = b.pos.y + high;
-    // never outside the barriers: a hero angle shot through a wall is not a hero angle
+    // ---- the rig, AHEAD of the car and off one flank.
+    //
+    // Never outside the barriers — a hero angle shot through a wall is not a hero angle — but the
+    // correction cannot be "snap the camera onto the road edge", which is what it was: that moves
+    // the rig by an unbounded amount along BOTH arms at once, so the distance changes, and the
+    // distance is the one number the whole composition solve above is spent computing. Done in the
+    // rig's own polar coordinates instead: the lateral arm is shortened to whatever the corridor
+    // has room for and the forward arm grows to hold `dist` to the digit, which swings the shot
+    // toward head-on rather than changing the size the car measures.
+    let latArm = Math.sin(az) * dist;
     if (trk) {
-      const nc = trk.nearest(want, this.race?.playerU ?? null);
-      if (Math.abs(nc.lateral) > 1.02) {
-        const s = nc.sample;
-        want.x = s.pos.x + s.right.x * Math.sign(nc.lateral) * trk.halfWidth * 1.02;
-        want.z = s.pos.z + s.right.z * Math.sign(nc.lateral) * trk.halfWidth * 1.02;
-      }
+      const latCar = trk.nearest(b.pos, this.race?.playerU ?? null).lateral;
+      const room = (1.02 - side * latCar) * trk.halfWidth;
+      latArm = clamp(latArm, 0, Math.max(0.5, room));
     }
+    const fwdArm = Math.sqrt(Math.max(0, dist * dist - latArm * latArm));
+    const want = _finWant.copy(b.pos)
+      .addScaledVector(_finFwd, fwdArm)
+      .addScaledVector(_finRight, side * latArm);
+    want.y = b.pos.y + high;
 
     if (this._finSnap) { this.camPos.copy(want); this._finSnap = false; }
     else this.camPos.lerp(want, 1 - Math.exp(-11 * dt));
