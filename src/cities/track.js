@@ -2139,11 +2139,16 @@ export class Track {
     F = null, segs = null, from, to, seed = 5, tint = '#6b6459', rock = '#8d8375', scrub = null,
     night = false, mask = null, chunk = 420, rockGap = 3.4, tuftGap = 2.9, density = 1,
     outerT = 1, outerY = null, reject = null, weeds = true, contact = true, sizeBias = 1,
+    pointAt = null,
   } = {}) {
     const g = new THREE.Group();
     g.name = 'runoffScatter';
     const rng = new RNG(seed * 13 + 7);
-    if (!F) {
+    // `pointAt(u, side, t)` lets a caller that has already SOLVED its cross-section — a branch,
+    // whose bands taper to nothing at both mouths and under a rising deck — hand the exact world
+    // point back instead of being re-derived from stations. It is the difference between a stone
+    // lying on the verge and a stone hovering where the verge would be if it were full width.
+    if (!F && !pointAt) {
       segs = segs || Math.min(this.N, 400);
       F = [];
       for (let i = 0; i <= segs; i++) F.push(this.frame(i / segs));
@@ -2234,16 +2239,22 @@ export class Track {
           travelled += gap * rng.range(0.35, 1.9);
           const w = mask ? clamp(mask(u, side), 0, 1) : 1;
           if (w < 0.45) continue;
-          const f = frameAt(u);
-          const pA = this.station(f, side, from);
-          const pB = this.station(f, side, to);
           // biased outward: the metre nearest the tarmac is swept clean by everything that
           // has run wide over it
           const t = clamp(Math.pow(rng.next(), 0.7) * (latHi - latLo) + latLo, 0, 0.97) * w;
-          const p = pA.clone().lerp(pB, t);
-          // Past the modelled band the object is standing on the world ground plane, which holds
-          // ONE height everywhere — so its y comes from the plane, not from the road's frame.
-          if (outerY !== null && t > outerT) p.y = outerY;
+          let p;
+          if (pointAt) {
+            p = pointAt(u, side, t);
+            if (!p) continue;
+          } else {
+            const f = frameAt(u);
+            const pA = this.station(f, side, from);
+            const pB = this.station(f, side, to);
+            p = pA.clone().lerp(pB, t);
+            // Past the modelled band the object is standing on the world ground plane, which
+            // holds ONE height everywhere — so its y comes from the plane, not the road's frame.
+            if (outerY !== null && t > outerT) p.y = outerY;
+          }
           if (reject && reject(p)) continue;
           const sc = rng.range(sizeLo, sizeHi);
           E.set(kind === 'rock' ? rng.range(-0.25, 0.25) : rng.range(-0.06, 0.06),
@@ -3051,6 +3062,8 @@ class Branch {
         const x = e * this.length;
         return a1 * Math.sin(x * (Math.PI * 2 / l1) + p1) + a2 * Math.sin(x * (Math.PI * 2 / l2) + p2);
       };
+      const solved = { '-1': null, 1: null };
+      const taperArr = new Float32Array(segs + 1);
       const shoulder = (side) => {
         const K = [], Ap = [], V = [], R = [], Mi = [];
         for (let i = 0; i <= segs; i++) {
@@ -3075,7 +3088,9 @@ class Branch {
           const mid = apron.clone().lerp(verge, OVERB);
           mid.y += 0.02;
           K.push(kerb); Ap.push(apron); V.push(verge); R.push(run); Mi.push(mid);
+          taperArr[i] = taper;
         }
+        solved[side] = { Ap, V, R };
         const band = (Pp, Qq, m, vs, uB = 1) => {
           const pos = [], uv = [], idx = [];
           for (let i = 0; i <= segs; i++) {
@@ -3113,6 +3128,36 @@ class Branch {
         band(Mi, R, rm, 1 / rt.tileM);
       };
       shoulder(-1); shoulder(1);
+
+      /**
+       * THINGS STANDING ON THE SHORTCUT'S SHOULDER.
+       *
+       * Round 2's note was "zero relief anywhere — every verge is a flat plate", and the branch
+       * shoulder had not even the carriageway's stones. A band with real aggregate in its albedo
+       * is still a PLANE until something on it casts a shadow, and 11 m of it is what the drift
+       * capture is standing on.
+       *
+       * `pointAt` hands the scatter the shoulder this branch actually solved, vertex for vertex,
+       * so a stone sits on the verge as it is HERE — narrowed at the mouths, gone under a rising
+       * ramp deck — rather than where a full-width verge would have been. The taper doubles as
+       * the mask, so nothing is ever placed across the carriageway it joins.
+       */
+      if (ro.scatter !== false) {
+        const pointAt = (u, side, t) => {
+          const S = solved[side];
+          if (!S) return null;
+          const i = clamp(Math.round(u * segs), 0, segs);
+          return S.Ap[i].clone().lerp(S.R[i], t);
+        };
+        g.add(Track.prototype.runoffScatter.call(this, {
+          pointAt,
+          mask: (u) => taperArr[clamp(Math.round(u * segs), 0, segs)],
+          seed: 61 + this.index * 7, tint: dirt,
+          rock: ro.rock || '#8d8375', scrub: ro.scrub || null,
+          night: !!opts.surface?.night,
+          chunk: 160, rockGap: 4.6, tuftGap: 4.2, density: 0.85, sizeBias: 0.9,
+        }));
+      }
     }
 
     // --- elevated structure: an ascending deck has to be held up by something ---
