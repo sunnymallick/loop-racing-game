@@ -868,7 +868,7 @@ export function vergeTexture(opts = {}) {
 }
 
 function buildVergeTexture({
-  seed = 3, paveTint = '#2d3037', dirtTint = '#6b6459', gravelTint = '#a2957c',
+  seed = 3, paveTint = '#6b6459', dirtTint = '#6b6459', gravelTint = '#a2957c',
   W = 256, H = 768, spanM = 1.9, tileM = 38,
 } = {}) {
   const rng = new RNG(seed * 29 + 11);
@@ -904,10 +904,13 @@ function buildVergeTexture({
       let col = pave.clone().lerp(dirt, smoothstep(0, 1, past));
       col.lerp(dirt, clamp(wash * 0.55 * (1 - past), 0, 0.6));
       col.lerp(grav, clamp(gravel, 0, 0.85));
-      let l = 1.0 + stone * (past > 0.5 ? 0.62 : 0.44) + (blot[i] - 0.5) * 0.34;
-      if (g.raw[i] > 0.962) l += 0.45;                        // a pale chip catching the light
+      // 0.82, within a hair of the run-off's 0.80 and the ground plane's 0.80. At 1.0 the verge
+      // came out a quarter brighter than the band it hands off to and printed a hard line 1.9 m
+      // out from the kerb the whole length of the lap — the seam again, one band further out.
+      let l = 0.82 + stone * (past > 0.5 ? 0.56 : 0.42) + (blot[i] - 0.5) * 0.34;
+      if (g.raw[i] > 0.962) l += 0.38;                        // a pale chip catching the light
       if (past < 0.5 && blot[i] < 0.30) l *= 0.80;            // tar patch
-      l = clamp(l, 0.30, 1.85);
+      l = clamp(l, 0.28, 1.7);
       d[i * 4] = clamp(col.r * 255 * l, 0, 255);
       d[i * 4 + 1] = clamp(col.g * 255 * l, 0, 255);
       d[i * 4 + 2] = clamp(col.b * 255 * l, 0, 255);
@@ -937,13 +940,13 @@ function buildVergeTexture({
     ctx.stroke();
   }
   // loose stones scattered out of the break
-  for (let k = 0; k < 520; k++) {
+  for (let k = 0; k < 430; k++) {
     const t = Math.pow(rng.next(), 0.7);
     const y = rng.range(0, H);
     const x = clamp(edgeAt(Math.floor(y) % H) + t * rng.range(0.02, 0.75), 0.02, 0.99) * W;
-    const r = rng.range(0.014, 0.055) * pxU;
-    const lit = rng.range(0.75, 1.5);
-    ctx.fillStyle = `rgba(${(grav.r * 255 * lit) | 0},${(grav.g * 255 * lit) | 0},${(grav.b * 255 * lit) | 0},${rng.range(0.35, 0.9)})`;
+    const r = rng.range(0.012, 0.048) * pxU;
+    const lit = rng.range(0.50, 1.20);
+    ctx.fillStyle = `rgba(${(grav.r * 255 * lit) | 0},${(grav.g * 255 * lit) | 0},${(grav.b * 255 * lit) | 0},${rng.range(0.24, 0.70)})`;
     ctx.beginPath();
     ctx.ellipse(x, y, r, r * rng.range(0.6, 1.1), rng.range(0, 3), 0, 7);
     ctx.fill();
@@ -1618,7 +1621,9 @@ export class Track {
 
       const vt = vergeTexture({
         seed: (surface.seed ?? 3) + 1,
-        paveTint: surface.apronTint || '#5a544b',
+        // the same tint the 0.55 m apron strip above it is generated from, so the two paved
+        // surfaces meet at apronLip without a colour step
+        paveTint: surface.apronTint || '#6b6459',
         dirtTint,
         gravelTint: runoff.gravel || '#a2957c',
         spanM: vergeWidth,
@@ -2170,7 +2175,7 @@ class Branch {
       const gY = this.groundY;
       const dirt = ro.tint || opts.surface?.apronTint || '#6b6459';
       const vt = vergeTexture({
-        seed: 12, paveTint: opts.surface?.apronTint || '#5a544b', dirtTint: dirt,
+        seed: 12, paveTint: opts.surface?.apronTint || '#6b6459', dirtTint: dirt,
         gravelTint: ro.gravel || '#a2957c', spanM: 1.7,
       });
       const rt = runoffTexture({
