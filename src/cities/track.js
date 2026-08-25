@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RNG, clamp, lerp, smoothstep } from '../core/rng.js';
-import { asphalt, concrete, canvas, toTexture, grain, fbmField, normalFromHeight } from '../core/textures.js';
+import { asphalt, concrete, canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas } from '../core/textures.js';
 
 /**
  * Shared track infrastructure. City builders describe a route as control points and let this
@@ -626,6 +626,369 @@ class DecalSheet {
   }
 }
 
+
+// ------------------------------------------------------------------ the ground off the racing line
+//
+// §7 fired twice on this band. "GEOMETRY SEAMS → 62": the tan run-off terminated against the blue
+// asphalt as a raw sawtooth of the ground mesh's own triangle edges. And the run-off itself
+// measured hfH 1.20 / hfV 1.28 against the asphalt's 7.46 / 9.28 at the same depth in the same
+// frame — i.e. the whole world was built to one standard on the racing line and to a much lower
+// one two metres either side of it.
+//
+// The sawtooth had a specific cause. Every cross-section station was offset along the BANKED
+// frame, and the outermost one sits ~21 m from the centreline: at Miami's 0.055 bank strength a
+// 100 m-radius corner tilts `right` by 0.14 rad, which lifts that station THREE METRES. So the
+// shoulder swung metres above and below the flat ground plane around every bend, and where it
+// crossed, the plane sliced the ribbon along its own triangulation — countable right-triangle
+// wedges. Stations now carry a `flat` weight and relax back to the horizontal ground frame as
+// they go outboard (see buildRoad), so the outer edge holds one height all the way round.
+//
+// On top of that the paved edge now ends in a MODELLED BAND rather than at a polygon boundary:
+//   verge   1.9 m  ravelled tarmac edge → gravel spill → dirt, all inside one texture
+//   run-off  15 m  dirt with the same aggregate machinery the asphalt uses, dissolving into the
+//                  ground plane through a noise-broken alpha ramp so there is no outer edge either
+// plus scattered stones and scrub tufts standing on it, because ground has things on it.
+
+/**
+ * Value-noise fbm that TILES exactly on both axes.
+ *
+ * `fbmField` in textures.js does not wrap, which is fine for the carriageway (its seam is a
+ * straight line under a lane marking every 44 m) but not for a 15 m dirt band running the whole
+ * lap: a discontinuity every tile down the verge is precisely §7's visible-repeat tell. Each
+ * octave here samples an integer lattice of period `freq`, so the field is periodic by
+ * construction.
+ */
+function periodicFbm(w, h, { seed = 1, octaves = 5, freq = 4, gain = 0.5, lac = 2 } = {}) {
+  const out = new Float32Array(w * h);
+  let amp = 1, norm = 0, f = freq;
+  for (let o = 0; o < octaves; o++) {
+    const P = Math.max(2, Math.round(f));
+    const r = new RNG(seed * 131 + o * 977 + 7);
+    const grid = new Float32Array(P * P);
+    for (let i = 0; i < P * P; i++) grid[i] = r.next();
+    const at = (ix, iy) => grid[(((iy % P) + P) % P) * P + (((ix % P) + P) % P)];
+    for (let y = 0; y < h; y++) {
+      const fy = (y / h) * P, iy = Math.floor(fy), ty = fy - iy;
+      const sy = ty * ty * (3 - 2 * ty);
+      for (let x = 0; x < w; x++) {
+        const fx = (x / w) * P, ix = Math.floor(fx), tx = fx - ix;
+        const sx = tx * tx * (3 - 2 * tx);
+        const a = at(ix, iy), b = at(ix + 1, iy), c = at(ix, iy + 1), d = at(ix + 1, iy + 1);
+        const top = a + (b - a) * sx;
+        out[y * w + x] += amp * (top + ((c + (d - c) * sx) - top) * sy);
+      }
+    }
+    norm += amp; amp *= gain; f *= lac;
+  }
+  for (let i = 0; i < out.length; i++) out[i] /= norm;
+  return out;
+}
+
+/**
+ * Wrapped 3x3 box blur of white noise: the aggregate field. This is the same construction the
+ * carriageway uses for its chippings (see buildRoadSurfaceTexture) and it is what the run-off was
+ * missing — raw per-texel noise is TV static, a blurred field is stones.
+ */
+function grainField(w, h, seed) {
+  const r = new RNG(seed);
+  const n = new Float32Array(w * h);
+  for (let i = 0; i < n.length; i++) n[i] = r.next();
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let acc = 0;
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) acc += n[((y + ky + h) % h) * w + ((x + kx + w) % w)];
+      }
+      out[y * w + x] = acc / 9;
+    }
+  }
+  return { raw: n, blur: out };
+}
+
+/** Concatenate a few small non-indexed geometries into one. (Avoids pulling in an addon.) */
+function mergeSimple(geos) {
+  const parts = geos.map((gg) => (gg.index ? gg.toNonIndexed() : gg));
+  let n = 0;
+  for (const gg of parts) { if (!gg.attributes.normal) gg.computeVertexNormals(); n += gg.attributes.position.count; }
+  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2);
+  let o = 0;
+  for (const gg of parts) {
+    pos.set(gg.attributes.position.array, o * 3);
+    nor.set(gg.attributes.normal.array, o * 3);
+    uv.set(gg.attributes.uv.array, o * 2);
+    o += gg.attributes.position.count;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return out;
+}
+
+const _tuftCache = new Map();
+/** Alpha-cut sheet of dry blades, for the crossed quads standing in the run-off. */
+function tuftTexture(blade = '#9c8a5e', dirt = '#6b6459') {
+  const key = `${blade}|${dirt}`;
+  if (_tuftCache.has(key)) return _tuftCache.get(key);
+  const S = 128;
+  const { c, ctx } = canvas(S, S);
+  const rng = new RNG(4211);
+  ctx.clearRect(0, 0, S, S);
+  const b = sColor(blade), d = sColor(dirt);
+  ctx.lineCap = 'round';
+  for (let k = 0; k < 34; k++) {
+    const x0 = S * 0.5 + rng.range(-0.34, 0.34) * S;
+    const h = rng.range(0.45, 0.98) * S;
+    const lean = rng.range(-0.42, 0.42) * S;
+    // dry grass is not one green: root end takes the dirt colour, tip bleaches out
+    const tipL = rng.range(0.85, 1.5);
+    const gr = ctx.createLinearGradient(x0, S, x0 + lean, S - h);
+    gr.addColorStop(0, `rgb(${(d.r * 255 * 1.05) | 0},${(d.g * 255 * 1.05) | 0},${(d.b * 255 * 1.0) | 0})`);
+    gr.addColorStop(1, `rgb(${clamp(b.r * 255 * tipL, 0, 255) | 0},${clamp(b.g * 255 * tipL, 0, 255) | 0},${clamp(b.b * 255 * tipL, 0, 255) | 0})`);
+    ctx.strokeStyle = gr;
+    ctx.lineWidth = rng.range(1.6, 4.2);
+    ctx.beginPath();
+    ctx.moveTo(x0, S);
+    ctx.quadraticCurveTo(x0 + lean * 0.35, S - h * 0.55, x0 + lean, S - h);
+    ctx.stroke();
+  }
+  const t = _tuftCache.set(key, toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping })).get(key);
+  return t;
+}
+
+const _vergeCache = new Map();
+/**
+ * THE MODELLED BAND. U runs across it: 0 = the paved edge it grows out of, 1 = open ground.
+ *
+ * Everything the §7 note asked for happens inside these ~1.9 m: the tarmac does not stop at a
+ * straight polygon boundary, it RAVELS — an irregular noise-driven edge with bites out of it,
+ * exposed aggregate along the break, a gravel apron spilling outward, and a dust wash that carries
+ * the ground colour back over the tarmac so the two surfaces interpenetrate instead of abutting.
+ */
+export function vergeTexture(opts = {}) {
+  const key = JSON.stringify(opts);
+  if (_vergeCache.has(key)) return _vergeCache.get(key);
+  const v = buildVergeTexture(opts);
+  _vergeCache.set(key, v);
+  return v;
+}
+
+function buildVergeTexture({
+  seed = 3, paveTint = '#2d3037', dirtTint = '#6b6459', gravelTint = '#a2957c',
+  W = 256, H = 768, spanM = 1.9, tileM = 26,
+} = {}) {
+  const rng = new RNG(seed * 29 + 11);
+  const { c, ctx } = canvas(W, H);
+  const pave = sColor(paveTint), dirt = sColor(dirtTint), grav = sColor(gravelTint);
+  const pxU = W / spanM, pxV = H / tileM;               // texels per metre across / along
+
+  // the ravel line: where the tarmac gives out, in U, as a function of V
+  const edgeN = periodicFbm(4, H, { seed: seed + 5, octaves: 4, freq: 6 });
+  const biteN = periodicFbm(4, H, { seed: seed + 61, octaves: 3, freq: 23 });
+  const edgeAt = (y) => clamp(0.20 + (edgeN[y * 4] - 0.5) * 0.30 + (biteN[y * 4] - 0.5) * 0.22, 0.03, 0.52);
+
+  const blot = periodicFbm(W, H, { seed: seed + 13, octaves: 5, freq: 3 });
+  const dust = periodicFbm(W, H, { seed: seed + 41, octaves: 4, freq: 7 });
+  const g = grainField(W, H, seed * 7 + 3);
+  const img = ctx.createImageData(W, H);
+  const d = img.data;
+  const hgt = new Float32Array(W * H);
+  const rough = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const e = edgeAt(y);
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const u = x / (W - 1);
+      // aggregate: the same stone term the carriageway carries, at the same physical size
+      const stone = (g.blur[i] - 0.5) * 0.66 + (g.raw[i] - 0.5) * 0.30;
+      // how far past the ravel line this texel is, in band units
+      const past = clamp((u - e) / 0.22, 0, 1);
+      // gravel apron rides the break — brightest right at it, thinning outward
+      const gravel = Math.pow(1 - Math.abs(u - e) / 0.30, 3) * clamp((g.blur[i] - 0.32) * 2.6, 0, 1);
+      // dust blown back over the tarmac: this is what makes the join a blend, not a butt joint
+      const wash = clamp((0.55 - Math.abs(u - e + 0.14)) * 2.0, 0, 1) * (0.35 + dust[i] * 0.75);
+      let col = pave.clone().lerp(dirt, smoothstep(0, 1, past));
+      col.lerp(dirt, clamp(wash * 0.55 * (1 - past), 0, 0.6));
+      col.lerp(grav, clamp(gravel, 0, 0.85));
+      let l = 1.0 + stone * (past > 0.5 ? 0.62 : 0.44) + (blot[i] - 0.5) * 0.34;
+      if (g.raw[i] > 0.962) l += 0.45;                        // a pale chip catching the light
+      if (past < 0.5 && blot[i] < 0.30) l *= 0.80;            // tar patch
+      l = clamp(l, 0.30, 1.85);
+      d[i * 4] = clamp(col.r * 255 * l, 0, 255);
+      d[i * 4 + 1] = clamp(col.g * 255 * l, 0, 255);
+      d[i * 4 + 2] = clamp(col.b * 255 * l, 0, 255);
+      d[i * 4 + 3] = 255;
+      // relief: the tarmac is flat, the break is a lip, the gravel is lumpy
+      hgt[i] = 0.5 + (g.blur[i] - 0.5) * (0.25 + past * 0.65) + (blot[i] - 0.5) * 0.25
+        - Math.pow(clamp(1 - Math.abs(u - e) / 0.10, 0, 1), 2) * 0.30;
+      rough[i] = clamp(0.80 + past * 0.16 + (g.blur[i] - 0.5) * 0.12, 0.5, 1);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // cracks running parallel to the ravel, in the tarmac only
+  ctx.lineCap = 'round';
+  for (let k = 0; k < 26; k++) {
+    const y0 = rng.range(0, H);
+    ctx.strokeStyle = `rgba(10,10,12,${rng.range(0.28, 0.6)})`;
+    ctx.lineWidth = rng.range(0.8, 2.2);
+    ctx.beginPath();
+    let y = y0, x = edgeAt(Math.floor(y0) % H) * W - rng.range(0.1, 0.6) * pxU;
+    ctx.moveTo(x, y);
+    for (let s = 0; s < 9; s++) {
+      y += rng.range(6, 26) * (pxV / 30 + 0.6);
+      x += rng.range(-0.10, 0.10) * pxU;
+      ctx.lineTo(x, y % H);
+    }
+    ctx.stroke();
+  }
+  // loose stones scattered out of the break
+  for (let k = 0; k < 520; k++) {
+    const t = Math.pow(rng.next(), 0.7);
+    const y = rng.range(0, H);
+    const x = clamp(edgeAt(Math.floor(y) % H) + t * rng.range(0.02, 0.75), 0.02, 0.99) * W;
+    const r = rng.range(0.014, 0.055) * pxU;
+    const lit = rng.range(0.75, 1.5);
+    ctx.fillStyle = `rgba(${(grav.r * 255 * lit) | 0},${(grav.g * 255 * lit) | 0},${(grav.b * 255 * lit) | 0},${rng.range(0.35, 0.9)})`;
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * rng.range(0.6, 1.1), rng.range(0, 3), 0, 7);
+    ctx.fill();
+  }
+  grain(ctx, W, H, 6, rng);
+  return {
+    map: toTexture(c, { srgb: true, wrap: THREE.RepeatWrapping }),
+    roughnessMap: toTexture(grayCanvas(rough, W, H), { srgb: false, wrap: THREE.RepeatWrapping }),
+    normalMap: toTexture(normalFromHeight(hgt, W, H, 1.5), { srgb: false, wrap: THREE.RepeatWrapping }),
+    tileM,
+  };
+}
+
+const _runoffCache = new Map();
+/**
+ * THE RUN-OFF. U across (0 = the verge it grows out of, 1 = open ground), V along the lap.
+ *
+ * Two jobs. First, carry real aggregate: 3.5 cm texels with a blurred stone field, pale chips,
+ * gravel drifts and dried ruts, which is the whole answer to "hfH 1.20 against asphalt's 7.46".
+ * Second, END WITHOUT AN EDGE — the alpha ramp over the outer third is broken up by noise so the
+ * band dissolves into the ground plane in patches rather than stopping on a line parallel to the
+ * road, which would just be the old seam moved fifteen metres.
+ */
+export function runoffTexture(opts = {}) {
+  const key = JSON.stringify(opts);
+  if (_runoffCache.has(key)) return _runoffCache.get(key);
+  const v = buildRunoffTexture(opts);
+  _runoffCache.set(key, v);
+  return v;
+}
+
+function buildRunoffTexture({
+  seed = 9, tint = '#6b6459', accent = null, gravelTint = '#a2957c', scrub = null,
+  S = 512, spanM = 15, tileM = 26, fadeFrom = 0.58,
+} = {}) {
+  const rng = new RNG(seed * 37 + 5);
+  const { c, ctx } = canvas(S, S);
+  const base = sColor(tint);
+  const alt = sColor(accent || tint).clone().multiplyScalar(0.78);
+  const grav = sColor(gravelTint);
+  const scrubC = scrub ? sColor(scrub) : null;
+  const pxU = S / spanM, pxV = S / tileM;
+
+  const blot = periodicFbm(S, S, { seed, octaves: 6, freq: 3 });
+  const mid = periodicFbm(S, S, { seed: seed + 23, octaves: 4, freq: 11 });
+  const g = grainField(S, S, seed * 11 + 7);
+  const img = ctx.createImageData(S, S);
+  const d = img.data;
+  const hgt = new Float32Array(S * S);
+  const rough = new Float32Array(S * S);
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = y * S + x;
+      const stone = (g.blur[i] - 0.5) * 0.70 + (g.raw[i] - 0.5) * 0.34;
+      const col = base.clone().lerp(alt, clamp((blot[i] - 0.44) * 2.6, 0, 1));
+      col.lerp(grav, clamp((mid[i] - 0.68) * 2.2, 0, 0.55));       // gravel drifts
+      let l = 0.94 + stone * 0.60 + (blot[i] - 0.5) * 0.42 + (mid[i] - 0.5) * 0.22;
+      if (g.raw[i] > 0.958) l += 0.42;
+      l = clamp(l, 0.35, 1.8);
+      d[i * 4] = clamp(col.r * 255 * l, 0, 255);
+      d[i * 4 + 1] = clamp(col.g * 255 * l, 0, 255);
+      d[i * 4 + 2] = clamp(col.b * 255 * l, 0, 255);
+      d[i * 4 + 3] = 255;
+      hgt[i] = 0.5 + (g.blur[i] - 0.5) * 0.55 + (mid[i] - 0.5) * 0.35 + (blot[i] - 0.5) * 0.2;
+      rough[i] = clamp(0.95 + (g.blur[i] - 0.5) * 0.10, 0.7, 1);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // ruts: everything that leaves the road leaves them, and they give the band a direction
+  for (let k = 0; k < 7; k++) {
+    const x0 = rng.range(0.05, 0.9) * S;
+    ctx.save();
+    ctx.globalAlpha = rng.range(0.10, 0.26);
+    ctx.fillStyle = `rgb(${(base.r * 150) | 0},${(base.g * 148) | 0},${(base.b * 146) | 0})`;
+    ctx.beginPath();
+    ctx.moveTo(x0, 0);
+    for (let y = 0; y <= S; y += 32) ctx.lineTo(x0 + Math.sin(y / S * Math.PI * 2 + k) * 0.35 * pxU, y);
+    for (let y = S; y >= 0; y -= 32) ctx.lineTo(x0 + Math.sin(y / S * Math.PI * 2 + k) * 0.35 * pxU + rng.range(0.18, 0.34) * pxU, y);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  // stones, from chippings to fist-sized
+  for (let k = 0; k < 900; k++) {
+    const r = Math.pow(rng.next(), 2.2) * 0.20 * pxU + 0.012 * pxU;
+    const lit = rng.range(0.7, 1.55);
+    ctx.fillStyle = `rgba(${(grav.r * 255 * lit) | 0},${(grav.g * 255 * lit) | 0},${(grav.b * 255 * lit) | 0},${rng.range(0.3, 0.85)})`;
+    ctx.beginPath();
+    ctx.ellipse(rng.range(0, S), rng.range(0, S), r, r * rng.range(0.55, 1.05), rng.range(0, 3), 0, 7);
+    ctx.fill();
+  }
+  // dry scrub patches, where the city has one
+  if (scrubC) {
+    for (let k = 0; k < 46; k++) {
+      const x = rng.range(0, S), y = rng.range(0, S), r = rng.range(0.25, 1.5) * pxU;
+      const gr = ctx.createRadialGradient(x, y, 0, x, y, r);
+      const a = rng.range(0.10, 0.34);
+      gr.addColorStop(0, `rgba(${(scrubC.r * 255) | 0},${(scrubC.g * 255) | 0},${(scrubC.b * 255) | 0},${a})`);
+      gr.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    }
+  }
+  // dark damp stains and dust drifts
+  for (let k = 0; k < 60; k++) {
+    const x = rng.range(0, S), y = rng.range(0, S), r = rng.range(0.4, 2.4) * pxU;
+    const gr = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const warm = rng.bool(0.55);
+    const a = rng.range(0.05, 0.20);
+    gr.addColorStop(0, warm ? `rgba(${(base.r * 330) | 0},${(base.g * 300) | 0},${(base.b * 250) | 0},${a})` : `rgba(20,17,15,${a})`);
+    gr.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  }
+  grain(ctx, S, S, 7, rng);
+
+  // --- the dissolve. Written into alpha AFTER everything else so nothing paints over it. ---
+  {
+    const fade = periodicFbm(S, S, { seed: seed + 91, octaves: 4, freq: 9 });
+    const im2 = ctx.getImageData(0, 0, S, S);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x;
+        const u = x / (S - 1);
+        const t = clamp((u - fadeFrom) / (1 - fadeFrom), 0, 1);
+        // noise pulls the threshold about, so the band breaks into patches on its way out
+        const a = clamp(1 - (t * 1.25 + (fade[i] - 0.5) * 0.85 * smoothstep(0, 0.35, t)), 0, 1);
+        im2.data[i * 4 + 3] = Math.round(clamp(a * a * (3 - 2 * a), 0, 1) * 255);
+      }
+    }
+    ctx.putImageData(im2, 0, 0);
+  }
+  return {
+    map: toTexture(c, { srgb: true, wrap: THREE.RepeatWrapping }),
+    roughnessMap: toTexture(grayCanvas(rough, S, S), { srgb: false, wrap: THREE.RepeatWrapping }),
+    normalMap: toTexture(normalFromHeight(hgt, S, S, 1.4), { srgb: false, wrap: THREE.RepeatWrapping }),
+    tileM,
+  };
+}
+
 // ------------------------------------------------------------------ Track
 
 export class Track {
@@ -638,6 +1001,12 @@ export class Track {
     this.def = def;
     this.halfWidth = def.width ?? 9;
     this.bankStrength = def.bank ?? 0;
+    // How far the CARRIAGEWAY EDGE may rise or fall out of grade, in metres. See frame().
+    this.bankLift = def.bankLift ?? 0.30;
+    // Where buildCity() puts the world ground plane. Every station of the cross-section is kept
+    // above it by `groundGuard`, which is the whole of the §7 geometry-seam fix.
+    this.groundY = def.groundY ?? -0.35;
+    this.groundGuard = 0.07;
     const pts = def.main.map((p, i) => new THREE.Vector3(p[0], (def.heights?.[i] ?? p[2] ?? 0), p[1]));
     this.curve = new THREE.CatmullRomCurve3(pts, true, 'centripetal', 0.5);
     this.length = this.curve.getLength();
@@ -705,14 +1074,50 @@ export class Track {
   frame(u) {
     const s = this.at(u);
     const k = this.turnRate(u);
-    const bank = clamp(this.bankStrength * k * 260, -0.30, 0.30);
+    // THE BANK IS A HEIGHT BUDGET, NOT AN ANGLE — and this is the §7 geometry-seam fix.
+    //
+    // Round 7 clamped the bank at 0.30 rad. Across 12.5 m of half-width that lifts one edge of
+    // the carriageway 3.3 m out of grade, and the world's ground plane is FLAT at -0.35: for
+    // 57-67% of every lap (measured, all four cities) one edge of the road ribbon sat below the
+    // plane, the plane covered it, and the covered region ended on the ribbon's own quad
+    // diagonals. That is the "individually countable right-triangle wedges" the critic measured
+    // at the Miami road/run-off boundary — the sawtooth was never the run-off's edge, it was the
+    // ground plane slicing the shoulder.
+    //
+    // The same clamp also floated the car: physics keeps the chassis at grade (`groundY = 0`),
+    // so a car running wide on a banked corner hung up to 1.6 m off its own contact patch.
+    //
+    // Expressed as a lift instead, the road edge moves `bankLift` metres and no more — a 2.4%
+    // crossfall on a 25 m street, which is camber, the thing real roads actually have — and the
+    // whole cross-section is guaranteed to clear the ground plane. Raise `bankLift` only if the
+    // ground plane ever learns to follow the shoulder.
+    const maxBank = Math.asin(clamp(this.bankLift / Math.max(1, this.halfWidth), 0, 0.6));
+    const bank = clamp(this.bankStrength * k * 260, -maxBank, maxBank);
     const right = s.right.clone().applyAxisAngle(s.tan, bank);
     const normal = new THREE.Vector3().crossVectors(right, s.tan).normalize();
     if (normal.y < 0) normal.negate();
     // pinch guard: never offset further than the local radius of curvature, or the inner edge
     // of the ribbon folds through itself on a tight corner.
     const half = Math.abs(k) > 1e-5 ? Math.min(this.halfWidth, 0.88 / Math.abs(k)) : this.halfWidth;
-    return { u, pos: s.pos, tan: s.tan, right, normal, bank, half, turn: k };
+    return { u, pos: s.pos, tan: s.tan, right, rightFlat: s.right, normal, bank, half, turn: k };
+  }
+
+  /**
+   * World position of one cross-section station on one side, at frame `f`.
+   *
+   * A station carries `flat` — how far it has relaxed out of the banked frame and back into the
+   * horizontal one. The banked and flat candidates are two POINTS and the station is their lerp,
+   * which means any two strips that share a station compute bit-identical vertices however they
+   * are relaxed: no gap, no z-fight (§7 seams). The relaxation is what lets a banked carriageway
+   * hand off to a shoulder that has to lie down flat on the ground plane.
+   */
+  station(f, side, st) {
+    const lat = side * (f.half + st.off);
+    const p = f.pos.clone().addScaledVector(f.right, lat).addScaledVector(f.normal, st.y);
+    if (!st.flat) return p;
+    const q = f.pos.clone().addScaledVector(f.rightFlat, lat);
+    q.y = f.pos.y + st.y;
+    return p.lerp(q, st.flat);
   }
 
   /** World point on the driving surface. `lateral` is -1..1 across the road. */
@@ -881,8 +1286,9 @@ export class Track {
     segments = null, material = null, surface = {}, shoulder = true,
     curb = 'stripe', curbWidth = 1.2, tileM = 44, bankStrength = null,
     sidewalk = true, sidewalkWidth = 4.6, apronWidth = 9.0, sidewalkTint = '#7c7873',
-    wallLateral = 1.52,
+    wallLateral = 1.52, vergeWidth = 1.9, runoff = {}, groundY = null,
   } = {}) {
+    if (groundY !== null) this.groundY = groundY;
     if (bankStrength !== null) this.bankStrength = bankStrength;
     const segs = segments || this.N;
     const g = new THREE.Group();
@@ -917,15 +1323,23 @@ export class Track {
      * Emit one longitudinal strip between two cross-section stations.
      * @param a  {off, y} inner station   @param b {off, y} outer station
      */
-    const strip = (side, a, b, m, { vScale = 0.06, uA = 0, uB = 1, shadows = true } = {}) => {
+    const strip = (side, a, b, m, { vScale = 0.06, uA = 0, uB = 1, shadows = true, mask = null } = {}) => {
       const pos = [], uv = [], idx = [];
       for (let i = 0; i <= segs; i++) {
         const f = F[i];
         const v = (i / segs) * this.length * vScale;
-        for (const st of [a, b]) {
-          const p = f.pos.clone()
-            .addScaledVector(f.right, side * (f.half + st.off))
-            .addScaledVector(f.normal, st.y);
+        // A city that lays its own ground over the shoulder — Miami's terrazzo promenade, LA's
+        // flood-channel right-of-way — masks the band away here. It TAPERS rather than stopping:
+        // the outer station walks back onto the inner one, so the dirt narrows out of frame
+        // instead of ending on a cut edge, which would be the seam again one band further out.
+        const w = mask ? clamp(mask(i / segs, side), 0, 1) : 1;
+        const bw = w >= 1 ? b : {
+          off: a.off + (b.off - a.off) * w,
+          y: a.y + (b.y - a.y) * w,
+          flat: a.flat + (b.flat - a.flat) * w,
+        };
+        for (const st of [a, bw]) {
+          const p = this.station(f, side, st);
           pos.push(p.x, p.y, p.z);
         }
         uv.push(uA, v, uB, v);
@@ -981,15 +1395,41 @@ export class Track {
     this.wallOffset = wallOff;
     this.kerbHeight = 0.17;
     const kerbTop = this.kerbHeight;
-    const S = {
-      roadEdge: { off: -0.05, y: 0.021 },                    // tucked *under* the road lip
-      curbOut: { off: curbWidth, y: 0.10 },
-      gutterOut: { off: wallOff, y: 0.07 },
-      kerbTop: { off: wallOff + 0.18, y: kerbTop },
-      walkOut: { off: wallOff + 0.18 + sidewalkWidth, y: kerbTop - 0.04 },
-      apronLip: { off: wallOff + 0.55 + sidewalkWidth, y: -0.05 },
-      apronOut: { off: wallOff + 0.55 + sidewalkWidth + apronWidth, y: -0.36 },
+
+    /**
+     * How far a station has RELAXED out of the banked frame (see Track.station).
+     *
+     * `want` is the look — the kerb line holds the road's camber, the sidewalk half lets go, the
+     * dirt lies down flat. The rest is the §7 guarantee: whatever the bank does, no station may
+     * end up within `groundGuard` of the world ground plane, because that is the plane that was
+     * slicing the ribbon into countable triangle wedges. `sinMax` is the steepest the frame can
+     * now tilt (frame() bounds it by `bankLift`), so the worst-case fall of a station is
+     * `(1 - flat) * sinMax * (half + off)` and the relaxation needed to survive it is exact.
+     */
+    const sinMax = this.bankLift / Math.max(1, this.halfWidth);
+    const floorY = this.groundY + this.groundGuard;
+    const relax = (off, y, want) => {
+      const fall = sinMax * (this.halfWidth + off);
+      const room = y - floorY;
+      const need = fall <= 1e-6 ? 0 : 1 - room / fall;
+      return clamp(Math.max(want, need), 0, 1);
     };
+    const st = (off, y, want) => ({ off, y, flat: relax(off, y, want) });
+
+    const walkEnd = wallOff + 0.18 + sidewalkWidth;
+    const lipOff = wallOff + 0.55 + sidewalkWidth;
+    const runW = runoff.width ?? apronWidth + 6;
+    const S = {
+      roadEdge: st(-0.05, 0.021, 0),                         // tucked *under* the road lip
+      curbOut: st(curbWidth, 0.10, 0),
+      gutterOut: st(wallOff, 0.07, 0.30),
+      kerbTop: st(wallOff + 0.18, kerbTop, 0.32),
+      walkOut: st(walkEnd, kerbTop - 0.04, 0.52),
+      apronLip: st(lipOff, -0.05, 0.70),
+      vergeOut: st(lipOff + vergeWidth, -0.12, 0.86),
+      runoffOut: st(lipOff + vergeWidth + runW, -0.26, 1),
+    };
+    S.apronOut = S.vergeOut;                                 // kept for callers that read the old name
     g.userData.section = S;
 
     // curbs: the red/white striped rumble strip seen in every reference frame
@@ -1052,17 +1492,198 @@ export class Track {
         strip(side, S.kerbTop, S.walkOut, wm, { vScale: 1 / Math.max(2.5, sidewalkWidth) });
       }
     }
-    // apron: a graded verge that ties the raised street into the ground plane
+    // THE MODELLED BAND AND THE RUN-OFF — the answer to §7's "the tan run-off terminates against
+    // the blue asphalt as a raw sawtooth" and to the run-off measuring hfH 1.20 against asphalt's
+    // 7.46 in the same frame.
+    //
+    // Three surfaces, and the transition happens INSIDE them rather than at a polygon boundary:
+    //   1. the back of the sidewalk drops to grade  (0.55 m, paved)
+    //   2. the VERGE: 1.9 m whose texture ravels the tarmac out into gravel and then dirt, with a
+    //      dust wash carrying the ground colour back over the paving so the two interpenetrate
+    //   3. the RUN-OFF: dirt carrying the same blurred-stone aggregate the carriageway carries,
+    //      at the same physical grain size, dissolving into the ground plane through a
+    //      noise-broken alpha ramp so it has no outer edge either.
+    const dirtTint = runoff.tint || surface.apronTint || '#6b6459';
     if (shoulder) {
       const asp = asphalt({ seed: 41, tint: preGamma(surface.apronTint || '#6b6459') });
       const shMat = floorLit(new THREE.MeshStandardMaterial({
         map: asp.map, roughnessMap: asp.roughnessMap, normalMap: asp.normalMap, roughness: 1,
         envMapIntensity: 0.9,
       }), 0.24);
+      for (const side of [-1, 1]) strip(side, S.walkOut, S.apronLip, shMat, { vScale: 0.05, uA: 0, uB: 0.1 });
+
+      const vt = vergeTexture({
+        seed: (surface.seed ?? 3) + 1,
+        paveTint: surface.apronTint || '#5a544b',
+        dirtTint,
+        gravelTint: runoff.gravel || '#a2957c',
+        spanM: vergeWidth,
+      });
+      const vm = floorLit(new THREE.MeshStandardMaterial({
+        map: vt.map, roughnessMap: vt.roughnessMap, normalMap: vt.normalMap,
+        roughness: 1, envMapIntensity: 0.9,
+      }), 0.24);
+      vm.normalScale.set(0.85, 0.85);
       for (const side of [-1, 1]) {
-        strip(side, S.walkOut, S.apronLip, shMat, { vScale: 0.05, uA: 0, uB: 0.1 });
-        strip(side, S.apronLip, S.apronOut, shMat, { vScale: 0.05, uA: 0.1, uB: 3 });
+        strip(side, S.apronLip, S.vergeOut, vm, { vScale: 1 / vt.tileM, uA: 0, uB: 1, mask: runoff.mask || null });
       }
+
+      const rt = runoffTexture({
+        seed: (surface.seed ?? 9) + 4,
+        tint: dirtTint, accent: runoff.accent || null,
+        gravelTint: runoff.gravel || '#a2957c', scrub: runoff.scrub || null,
+        spanM: runW,
+      });
+      const rm = new THREE.MeshStandardMaterial({
+        map: rt.map, roughnessMap: rt.roughnessMap, normalMap: rt.normalMap,
+        roughness: 1, envMapIntensity: 0.85,
+        transparent: true, depthWrite: false, alphaTest: 0.02,
+      });
+      rm.normalScale.set(0.8, 0.8);
+      if (surface.night) {
+        rm.emissiveMap = rt.map;
+        rm.emissive = new THREE.Color(runoff.glowColor || '#ffffff');
+        rm.emissiveIntensity = runoff.glow ?? 0.24;
+      }
+      for (const side of [-1, 1]) {
+        const m = strip(side, S.vergeOut, S.runoffOut, rm, {
+          vScale: 1 / rt.tileM, uA: 0, uB: 1, mask: runoff.mask || null, shadows: false,
+        });
+        m.renderOrder = -1;                                  // under every other transparent thing
+      }
+
+      // ...and things standing on it. A dirt lot with nothing on it is a coloured plane however
+      // good its aggregate is (§7's cap-50 tell, one band out).
+      if (runoff.scatter !== false) {
+        g.add(this.runoffScatter({
+          F, segs, from: S.vergeOut, to: S.runoffOut,
+          seed: (surface.seed ?? 5) + 17, tint: dirtTint,
+          rock: runoff.rock || '#8d8375', scrub: runoff.scrub || null,
+          night: surface.night, mask: runoff.mask || null,
+        }));
+      }
+    }
+    return g;
+  }
+
+
+  /**
+   * Stones and dry tufts standing on the run-off.
+   *
+   * A dirt band with real aggregate in its albedo is still a *plane* until something casts a
+   * shadow on it — the eye reads ground from the little vertical silhouettes, not from the
+   * speckle. Everything here is instanced and chunked into ~420 m cells so the far side of the
+   * lap is frustum-culled rather than drawn: two prototypes x three variants x N chunks, which
+   * is a handful of draw calls for the whole lap.
+   */
+  runoffScatter({
+    F, segs, from, to, seed = 5, tint = '#6b6459', rock = '#8d8375', scrub = null,
+    night = false, mask = null, chunk = 420, rockGap = 13, tuftGap = 11,
+  } = {}) {
+    const g = new THREE.Group();
+    g.name = 'runoffScatter';
+    const rng = new RNG(seed * 13 + 7);
+    const frameAt = (u) => F[clamp(Math.round(((u % 1) + 1) % 1 * segs), 0, segs)];
+
+    // ---- prototypes ----
+    const stone = concrete({ size: 256, seed: 71, tint: preGamma(rock), stains: false });
+    const rockMat = new THREE.MeshStandardMaterial({
+      map: stone.map, roughnessMap: stone.roughnessMap, normalMap: stone.normalMap,
+      roughness: 1, metalness: 0, envMapIntensity: 0.8,
+    });
+    if (night) {
+      rockMat.emissiveMap = stone.map;
+      rockMat.emissive = new THREE.Color(0xffffff);
+      rockMat.emissiveIntensity = 0.18;
+    }
+    const rockGeos = [];
+    for (let v = 0; v < 3; v++) {
+      const geo = new THREE.IcosahedronGeometry(0.5, 0);
+      const pos = geo.attributes.position;
+      const r2 = new RNG(seed * 5 + v * 31 + 3);
+      for (let i = 0; i < pos.count; i++) {
+        pos.setXYZ(i,
+          pos.getX(i) * r2.range(0.7, 1.5),
+          pos.getY(i) * r2.range(0.35, 0.8),
+          pos.getZ(i) * r2.range(0.7, 1.5));
+      }
+      geo.computeVertexNormals();
+      rockGeos.push(geo);
+    }
+
+    const tuftMat = scrub || tint ? new THREE.MeshStandardMaterial({
+      map: tuftTexture(scrub || '#9c8a5e', tint),
+      transparent: false, alphaTest: 0.45, side: THREE.DoubleSide,
+      roughness: 1, metalness: 0, envMapIntensity: 0.7,
+    }) : null;
+    if (tuftMat && night) {
+      tuftMat.emissiveMap = tuftMat.map;
+      tuftMat.emissive = new THREE.Color(0xffffff);
+      tuftMat.emissiveIntensity = 0.16;
+    }
+    const tuftGeos = [];
+    for (let v = 0; v < 3; v++) {
+      const parts = [];
+      const r2 = new RNG(seed * 9 + v * 17 + 5);
+      for (let k = 0; k < 2; k++) {
+        const q = new THREE.PlaneGeometry(1, 1);
+        q.translate(0, 0.5, 0);
+        q.rotateY(k * Math.PI / 2 + r2.range(-0.3, 0.3));
+        q.rotateX(r2.range(-0.10, 0.10));
+        parts.push(q);
+      }
+      const merged = mergeSimple(parts);
+      tuftGeos.push(merged);
+    }
+
+    // ---- placement ----
+    const buckets = new Map();
+    const push = (kind, v, cell, m) => {
+      const key = `${kind}|${v}|${cell}`;
+      let b = buckets.get(key);
+      if (!b) { b = { kind, v, list: [] }; buckets.set(key, b); }
+      b.list.push(m);
+    };
+    const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler();
+    const place = (kind, gap, sizeLo, sizeHi, latLo, latHi) => {
+      for (const side of [-1, 1]) {
+        let travelled = rng.range(0, gap);
+        while (travelled < this.length) {
+          const u = travelled / this.length;
+          travelled += gap * rng.range(0.35, 1.9);
+          const w = mask ? clamp(mask(u, side), 0, 1) : 1;
+          if (w < 0.45) continue;
+          const f = frameAt(u);
+          const pA = this.station(f, side, from);
+          const pB = this.station(f, side, to);
+          // biased outward: the metre nearest the tarmac is swept clean by everything that
+          // has run wide over it
+          const t = clamp(Math.pow(rng.next(), 0.7) * (latHi - latLo) + latLo, 0, 0.97) * w;
+          const p = pA.clone().lerp(pB, t);
+          const sc = rng.range(sizeLo, sizeHi);
+          E.set(kind === 'rock' ? rng.range(-0.25, 0.25) : rng.range(-0.06, 0.06),
+            rng.range(0, Math.PI * 2), rng.range(-0.18, 0.18));
+          Q.setFromEuler(E);
+          M.compose(p, Q, new THREE.Vector3(sc * rng.range(0.75, 1.3), sc * rng.range(0.7, 1.25), sc * rng.range(0.75, 1.3)));
+          push(kind, rng.int(0, 2), Math.floor((travelled / chunk)), M.clone());
+        }
+      }
+    };
+    place('rock', rockGap, 0.22, 0.95, 0.10, 0.92);
+    if (tuftMat) place('tuft', tuftGap, 0.30, 0.85, 0.22, 0.95);
+
+    for (const b of buckets.values()) {
+      const geo = b.kind === 'rock' ? rockGeos[b.v] : tuftGeos[b.v];
+      const mat = b.kind === 'rock' ? rockMat : tuftMat;
+      const im = new THREE.InstancedMesh(geo, mat, b.list.length);
+      for (let i = 0; i < b.list.length; i++) im.setMatrixAt(i, b.list[i]);
+      im.instanceMatrix.needsUpdate = true;
+      im.castShadow = b.kind === 'rock';
+      im.receiveShadow = false;
+      im.userData.noMerge = true;
+      im.frustumCulled = true;
+      im.computeBoundingSphere();
+      g.add(im);
     }
     return g;
   }

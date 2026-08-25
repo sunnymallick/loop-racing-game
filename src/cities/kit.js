@@ -856,6 +856,13 @@ function shopWindowMaterial(cache, color, night, seed = 1) {
  * aprons, kerbed blocks, dirt, oil-stained service yards — so the far ground reads as a city that
  * continues past the barriers instead of a void the storefronts float on.
  */
+/**
+ * Height of the world ground plane. Track.buildRoad is told this number and guarantees that no
+ * station of its cross-section ever falls within 7 cm of it, which is the §7 geometry-seam fix:
+ * the plane used to slice the banked shoulder along its own quad diagonals.
+ */
+const GROUND_Y = -0.35;
+
 function groundTexture({ seed = 1, tint = '#3a3d43', accent = null, size = 1024, tileM = 176 } = {}) {
   const rng = new RNG(seed * 17 + 3);
   const { c, ctx } = canvas(size, size);
@@ -4132,7 +4139,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   }
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), groundMat);
   ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.35;
+  ground.position.y = GROUND_Y;
   ground.receiveShadow = true;
   ground.userData.noMerge = true;
   group.add(ground);
@@ -4143,13 +4150,31 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   // ---- track ----
   const track = new Track(def.track);
   const tdef = def.track;
+  const rdef = tdef.runoff || {};
   const road = track.buildRoad({
-    surface: { ...(tdef.surface || {}), wet: L.wet ?? 0, night },
+    surface: { ...(tdef.surface || {}), wet: L.wet ?? 0, night, seed: def.seed ?? 1 },
     curb: tdef.curb ?? 'stripe',
     bankStrength: tdef.bank ?? 0,
     sidewalk: tdef.sidewalk !== false,
     sidewalkWidth: tdef.sidewalkWidth ?? 5.0,
     sidewalkTint: tdef.sidewalkTint ?? L.sidewalk ?? '#9a9691',
+    // THE GROUND OFF THE RACING LINE. The verge and the run-off are generated from the SAME
+    // colours the ground plane below them is generated from, and at night they carry the same
+    // self-lit floor at the same intensity — that is what lets the run-off's alpha dissolve
+    // hand over to the plane without a line where one becomes the other.
+    groundY: GROUND_Y,
+    runoff: {
+      width: rdef.width ?? 15,
+      tint: rdef.tint || L.ground?.color || '#6b6459',
+      accent: rdef.accent ?? L.ground?.accent ?? null,
+      gravel: rdef.gravel || null,
+      scrub: rdef.scrub || null,
+      rock: rdef.rock || null,
+      mask: rdef.mask || null,
+      scatter: rdef.scatter,
+      glow: L.groundGlow ?? 0.85,
+      glowColor: L.groundGlowColor || L.fog.color,
+    },
   });
   group.add(road);
   const dressing = track.roadDressing({
