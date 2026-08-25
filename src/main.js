@@ -1503,6 +1503,9 @@ class Game {
       slipDeg: Math.abs((this.body?.slip ?? 0) * 57.29578),
       driftScore: (this.body?.drift ?? 0) * Math.abs(this.body?.speedMph ?? 0) * 0.6,
       cityName: this.city?.name,
+      // one lap in metres, so the standings deck can call a lapped car a lap down instead of
+      // showing it an interval in seconds it will never close (ui/hud.js `_deckIntervals`)
+      lapMetres: this.city?.track?.length ?? 0,
       record: getCity(this.cityId)?.def.record,
       countdown: r?.state === 'countdown' ? r.countdown : (r ? r.time : null),
       state: r?.state,

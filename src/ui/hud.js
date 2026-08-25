@@ -1362,11 +1362,21 @@ export class HUD {
     const n = Math.min(8, rows.length);
     if (!n) return;
     const head = 20;
+    // The interval column, and it is a TIME, not a placeholder. Round 7 clamped anything past 99 s
+    // to the literal string "+99", which is what a car half a lap down showed for the rest of the
+    // race — a number that never moves reads as an unimplemented field, and the one car it happens
+    // to most is the player having a bad race. Past a minute the interval is set as m:ss, and once
+    // a car is a whole lap behind the honest answer is laps, not seconds.
+    const lapM = s.lapMetres || 0;
     const txt = (r, i) => {
       if (r.dnf) return 'DNF';
       if (i === 0) return 'LEAD';
+      const down = lapM > 100 ? Math.floor((r.gapM ?? 0) / lapM) : 0;
+      if (down >= 1) return `+${down} LAP${down > 1 ? 'S' : ''}`;
       const g = Math.abs(r.gap ?? 0);
-      return g >= 99 ? '+99' : `+${g.toFixed(g < 10 ? 2 : 1)}`;
+      if (g < 10) return `+${g.toFixed(2)}`;
+      if (g < 60) return `+${g.toFixed(1)}`;
+      return `+${Math.floor(g / 60)}:${String(Math.floor(g % 60)).padStart(2, '0')}`;
     };
     for (let i = 0; i < n; i++) {
       const r = rows[i];
@@ -1440,7 +1450,9 @@ export class HUD {
     ctx.strokeStyle = 'rgba(255,190,110,0.45)'; ctx.lineWidth = 1; ctx.stroke();
     if (s.record) {
       label(ctx, 'RECORD', lx(base) + RAIL + GR.PAD, base, 10.5, 'rgba(255,181,94,0.9)', { tracking: 0.28 });
-      label(ctx, String(s.record), lx(base) + w - GR.PAD, base, 13.5, '#e2ecf6',
+      // the HUD's own clock face, not the city file's raw string — one format for every time on
+      // screen, so this deck and the mission clock's `REC` read as the same instrument
+      label(ctx, fmtTime(parseClock(s.record)), lx(base) + w - GR.PAD, base, 13.5, '#e2ecf6',
         { align: 'right', tracking: 0.1, weight: 0.17 });
     }
   }
@@ -2404,8 +2416,12 @@ export class HUD {
       color: gradientFill([[0, '#ffffff'], [0.5, '#fff0d2'], [1, accent]]),
       bevel: true, glow: { color: accent, blur: 20 },
     });
+    // `lapsRun` is laps COMPLETED; the lap deck the player was staring at a second ago counts the
+    // lap they are ON (`LAP 2/3` with one lap in the book). Retiring must not renumber the race
+    // under them, so the datum names the same lap the deck did.
+    const onLap = clamp((r.lapsRun ?? 0) + 1, 1, r.lapCount || 3);
     const datum = `OF ${r.total || 8}  /  ${String(r.cityName || '').toUpperCase()}  /  `
-      + `${r.dnf ? `LAP ${Math.max(1, r.lapsRun)} OF ${r.lapCount}` : `${r.lapCount} LAPS`}`;
+      + `${r.dnf ? `LAP ${onLap} OF ${r.lapCount}` : `${r.lapCount} LAPS`}`;
     rtext(ctx, datum, {
       x: hx + 78, y: by - 8, size: 15, weight: 0.15, tracking: 0.24, color: LABEL, face: 'geo',
     });
