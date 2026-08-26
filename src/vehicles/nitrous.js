@@ -625,18 +625,33 @@ export const NITRO = {
     ramp: 0.78, curve: 1.55, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
-      len: 3.70, rad: 0.660, merge: 0.050, standoff: 0.13, flameRise: 0.26,
+      // (r23) merge 0.050 -> 0.115. The SUV's outlets are 1.56 m apart and at 0.050 rad the two
+      // columns close by 0.20 m over the whole solved length — i.e. they never merge at all, and
+      // what the wave-10 critic photographed as "a formless orange fog" is two wide plumes that
+      // diverge on screen with a bright seam between them. The cap in the constructor still holds
+      // it under |x| / (0.78*len*scale) = 0.235 rad, so this converges, it never splays.
+      len: 3.70, rad: 0.660, merge: 0.115, standoff: 0.13, flameRise: 0.26,
       // (r23) screen 1.12 -> 1.04. "A formless orange fog filling a quarter of the frame and
       // washing over an opponent car" is a size problem as well as an edge problem.
       screen: 1.04, profile: [0.76, 0.115, 1.14, 0.125],  // blunt bell — fat off the pipe, stubby
-      bands: 3.4, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.17, bandFade: 0.42, flick: 16, turb: 1.20,
+      // (r23) knot 0.14 -> 0.34 and hotI down again. At lobe^2 the SUV's incandescence was a
+      // LAZY SWELL half-lit over a third of every cell, which on the widest column in the game
+      // integrates to two continuous pale bars down the middle of an orange fog — the wave-10
+      // "formless". It is still the softest pip of the four (the supercar runs 0.92), it just no
+      // longer covers the whole column.
+      bands: 3.4, knot: 0.34, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.17, bandFade: 0.42, flick: 16, turb: 1.05,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 0.58, hotI: 5.00, burn: 0.44, filW: 0.078, bodyW: 0.54, wisp: 0.82,
-      skirtW: 0.96, skirtI: 1.10, bodyD: 1.62, thick: 0.86, occ: 0.94,
+            // (r23) THE ANTI-BLOWOUT SETTING, AGAIN, AND IT IS bodyW AS WELL AS THE GAIN. The SUV's
+      // body is a super-gaussian 0.54 half-widths wide — deliberately flat across the middle —
+      // on the widest column in the game, so T sat above the warm threshold across more than half
+      // the radius and the plume photographed as one cream-white mass with orange edges. 0.48 and
+      // a gain of 0.46 keep the incandescence to a core inside a bell that is still class yellow.
+      gasGain: 0.46, hotI: 2.90, burn: 0.44, filW: 0.078, bodyW: 0.48, wisp: 0.82,
+      skirtW: 0.96, skirtI: 0.94, bodyD: 1.62, thick: 0.86, occ: 0.94,
       // (r23) the bell gets an EDGE. rimW 0.210 -> 0.165 and rimI/rimE up: a bell's boundary is a
       // band you can watch the gas mixing across, which is still a boundary — the SUV had neither.
       rimR: 1.00, rimW: 0.165, rimI: 1.05, rimE: 1.55,
@@ -1782,8 +1797,18 @@ const PLUME_FRAG = /* glsl */`
           // white — so the column had a permanent pale wash on it and a diamond had to climb out
           // of that before it could read. The gaps are now uMid at full chroma and the whole of
           // the warm ramp is spent on the knots.
-          col = mix(col, warm, smoothstep(0.70, 1.45, T));
-          col = mix(col, uCore, smoothstep(1.35, 2.45, T));
+          // ── (r23) THE PALE CORE IS A THREAD, NOT A BAR — AND THE THRESHOLDS DECIDE THAT ──
+          // The body that carries T is a SUPER-gaussian: deliberately flat across the middle. So
+          // wherever T crosses these two steps it crosses them across the whole flat top at once,
+          // and the result is a broad pale BAR down every plume in the game with the class colour
+          // surviving only as a rim — which is both "a soft motion-smeared worm rather than an
+          // incandescent thread" and, at four different hues, "one shape in four colours". The
+          // steps move out to 1.00/1.95 and 1.85/3.20, which only the on-axis lens (exp(-q2*2.9),
+          // 0.05 at the edge) and a shock knot can reach. The genuinely white part of the jet is
+          // unaffected because it does not come through here at all: the filament is accumulated
+          // separately (accH) and mixed towards uCore on its own authority.
+          col = mix(col, warm, smoothstep(1.00, 1.95, T));
+          col = mix(col, uCore, smoothstep(1.85, 3.20, T));
           vec3 fil = mix(uMid, uCore, clamp(hotA * 0.60, 0.0, 1.0));
           // ── LIGHT AND GAS ARE NOT THE SAME CURVE ─────────────────────────────────────────
           // The r17-a column measured 247 at the throat and 195 at four fifths of its length: a
