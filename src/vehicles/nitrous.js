@@ -508,7 +508,7 @@ export const NITRO = {
       len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.72, 0.100, 1.30, 0.095],  // fat barrel, widest right off the bumper
       bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.22, bandFade: 0.34, flick: 28, turb: 1.12,
-      gasGain: 0.74, hotI: 5.50, burn: 0.40, filW: 0.120, bodyW: 0.49, wisp: 0.94,
+      gasGain: 0.74, hotI: 4.70, burn: 0.40, filW: 0.096, bodyW: 0.49, wisp: 0.94,
       skirtW: 0.86, skirtI: 1.00, bodyD: 1.78, thick: 0.86, occ: 0.94,
       rimR: 1.03, rimW: 0.195, rimI: 0.88, rimE: 1.20,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
@@ -531,9 +531,9 @@ export const NITRO = {
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 0.74, hotI: 5.70, burn: 0.44, filW: 0.116, bodyW: 0.54, wisp: 1.05,
+      gasGain: 0.74, hotI: 4.40, burn: 0.44, filW: 0.086, bodyW: 0.54, wisp: 1.05,
       skirtW: 0.96, skirtI: 1.04, bodyD: 1.62, thick: 0.86, occ: 0.94,
-      rimR: 1.08, rimW: 0.255, rimI: 0.72, rimE: 0.95,
+      rimR: 1.08, rimW: 0.210, rimI: 0.88, rimE: 1.30,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
