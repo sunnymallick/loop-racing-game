@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries, toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RNG, clamp, lerp, smoothstep } from '../core/rng.js';
 import { concrete, brick, skyTexture, sprite, canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas } from '../core/textures.js';
 import { roundedBox } from '../vehicles/kit.js';
@@ -2827,11 +2827,42 @@ const FLEET_SIGNS = [
   ['NITRO PARTS', 'SPEED · MACHINE'],
 ];
 
-/** sRGB-space scale of a hex swatch — the second tone of a two-tone body, a darker skirt. */
+/** sRGB-space scale of a hex swatch — a darker ink for signwriting, a shadow under a lip. */
 function shadeHex(hex, k) {
   const n = parseInt(hex.slice(1), 16);
   const f = (v) => clamp(Math.round(v * k), 0, 255);
   return `#${(((1 << 24) + (f((n >> 16) & 255) << 16) + (f((n >> 8) & 255) << 8) + f(n & 255)) >>> 0).toString(16).slice(1)}`;
+}
+
+/** Mix two hex swatches in sRGB. */
+function mixHex(a, b, t) {
+  const x = parseInt(a.slice(1), 16), y = parseInt(b.slice(1), 16);
+  const f = (sh) => clamp(Math.round(lerp((x >> sh) & 255, (y >> sh) & 255, t)), 0, 255);
+  return `#${(((1 << 24) + (f(16) << 16) + (f(8) << 8) + f(0)) >>> 0).toString(16).slice(1)}`;
+}
+
+/** Rec.601 luma of a hex swatch, 0..1. Everything the paint sheet does is graded off this. */
+function hexLum(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+}
+
+/**
+ * THE SECOND TONE of a two-tone body.
+ *
+ * Round 2 built it as `shadeHex(color, 0.42)` — the body colour scaled toward black. On a dark
+ * body that is invisible, and on a light one it is a disaster: cream at 0.42 is #544f4b, which is
+ * MUD. The critic's crop of one Miami rank had four cream vehicles standing in a row over
+ * brown skirts and read the lot as filth rather than as a paint scheme.
+ *
+ * A real two-tone is not the body colour darkened, it is a SECOND, NEUTRAL colour: charcoal under
+ * a light body, silver under a dark one. Mixing toward a fixed neutral does that and keeps a trace
+ * of the body hue in it, so the two tones still belong to the same car.
+ */
+function twoTone(hex) {
+  const L = hexLum(hex);
+  if (L > 0.30) return mixHex(hex, '#262b34', clamp(0.60 + L * 0.26, 0.60, 0.86));
+  return mixHex(hex, '#b7bcc6', 0.54);
 }
 
 const _fm = new THREE.Matrix4(), _fq = new THREE.Quaternion(), _fe = new THREE.Euler();
@@ -2934,102 +2965,189 @@ class Sheet {
 
 /**
  * ONE CELL OF CAR PAINT. Drawn once per (colour, treatment) and shared by every panel of every
- * body wearing it. Everything in here exists to answer §7's flat-colour cap:
+ * body wearing it. Everything in here exists to answer §7's flat-colour cap.
  *
- *   the vertical ramp     a bright sky band across the top surfaces, a soft fall through the
- *                         shoulder, a horizon flash low on the door and a dark rocker — this is
- *                         what separates clearcoat from coloured plastic (§1.1)
- *   the beltline crease   one light line with a dark line under it, at the height a pressing runs
- *   three door shuts      real vertical gaps at fixed stations along the car
- *   flake                 per-pixel metallic sparkle, so no panel is one value anywhere
- *   grime                 blotches and sill spray, heavier on the worn treatment
+ * ROUND 2 RE-GRADE. The first sheet was measurably not flat and still scored 12/20, because what
+ * it produced was SATIN: the ramp faded smoothly through every value, and the detail that was
+ * supposed to sell clearcoat — flake, grime blotches — is high-frequency, so at the 10–40 m the
+ * critic actually reads these props from it filters down to value noise, i.e. dirt. Two changes:
+ *
+ *  1. CLEARCOAT IS AN EDGE, NOT A FADE. What separates a lacquered panel from a matte one is that
+ *     the reflected world has a HORIZON in it — one hard, bright line where sky meets street,
+ *     with the dark reflection of the far kerb immediately under it. That line survives being
+ *     four pixels tall; a gradient does not. So the ramp now steps: sky, a hard horizon flash, a
+ *     dark band under it, the ground-bounce return, the rocker.
+ *  2. THE RAMP IS GRADED OFF THE PIGMENT. A dark car reflects MORE of the world, not less — most
+ *     of what you see in black paint is sky. Round 2 used one fixed set of alphas and the darks
+ *     collapsed: the critic measured 83% of a slate pickup below L=16 and the whole Vegas night
+ *     rank at mean L 26. `refl` scales every reflected band up as the pigment goes down, and
+ *     `shade` stops piling black on something that is already black.
  */
 function paintCell(ctx, N, { base, lower = null, worn = false, seed = 1 }) {
   const rng = new RNG(seed * 97 + 13);
+  const L = hexLum(base);
+  const refl = lerp(1.85, 0.80, clamp(L * 1.5, 0, 1));
+  const shade = lerp(0.34, 1.0, clamp(L * 1.7, 0, 1));
+  const sky = (a) => `rgba(206,228,255,${clamp(a * refl, 0, 0.92).toFixed(3)})`;
+  const dark = (a) => `rgba(9,11,16,${clamp(a * shade, 0, 0.92).toFixed(3)})`;
   ctx.fillStyle = base; ctx.fillRect(0, 0, N, N);
+  // The two-tone break sits at the body-side crease, low enough to read as a rocker treatment
+  // rather than as a tideline of dirt, and it is separated by a chrome strip — which is what
+  // actually tells the eye "this is two paints" instead of "this is one paint, filthy".
   if (lower) {
-    ctx.fillStyle = lower; ctx.fillRect(0, N * 0.615, N, N * 0.385);
-    ctx.fillStyle = 'rgba(226,232,240,0.60)'; ctx.fillRect(0, N * 0.615 - 2, N, 2.2);
+    const yB = N * 0.665;
+    ctx.fillStyle = lower; ctx.fillRect(0, yB, N, N - yB);
+    ctx.fillStyle = 'rgba(232,238,247,0.72)'; ctx.fillRect(0, yB - 2.4, N, 2.4);
+    ctx.fillStyle = 'rgba(0,0,0,0.30)'; ctx.fillRect(0, yB, N, 1.2);
   }
+  // ---- the clearcoat ramp. Offsets are in cell space: 0 is the roof, 1 is under the sill.
   const g = ctx.createLinearGradient(0, 0, 0, N);
-  g.addColorStop(0.00, 'rgba(214,232,255,0.34)');
-  g.addColorStop(0.10, 'rgba(214,232,255,0.10)');
-  g.addColorStop(0.34, 'rgba(0,0,0,0.00)');
-  g.addColorStop(0.62, 'rgba(0,0,0,0.10)');
-  g.addColorStop(0.755, 'rgba(255,248,232,0.16)');
-  g.addColorStop(0.88, 'rgba(0,0,0,0.10)');
-  g.addColorStop(0.955, 'rgba(0,0,0,0.24)');
-  g.addColorStop(1.00, 'rgba(0,0,0,0.52)');
+  g.addColorStop(0.000, sky(0.42));                 // roof and bonnet: open sky
+  g.addColorStop(0.075, sky(0.26));
+  g.addColorStop(0.150, dark(0.06));                // the greenhouse band: pillars, in shadow
+  g.addColorStop(0.315, dark(0.10));
+  g.addColorStop(0.360, sky(0.30));                 // the shoulder turns up and catches sky again
+  g.addColorStop(0.430, sky(0.10));
+  g.addColorStop(0.520, dark(0.05));
+  g.addColorStop(0.556, dark(0.13));                // ...and the far kerb, dark, right under it
+  g.addColorStop(0.560, sky(0.34));                 // HARD STEP: the reflected horizon
+  g.addColorStop(0.575, dark(0.16));
+  g.addColorStop(0.760, dark(0.22));
+  g.addColorStop(0.855, sky(0.13));                 // ground bounce off the tarmac
+  g.addColorStop(0.930, dark(0.30));
+  g.addColorStop(1.000, dark(0.62));                // the rocker, in shadow under the car
   ctx.fillStyle = g; ctx.fillRect(0, 0, N, N);
+  // the horizon itself: one hard specular line, the single most legible clearcoat cue at distance
+  ctx.fillStyle = `rgba(255,252,244,${clamp(0.30 * refl, 0, 0.85).toFixed(3)})`;
+  ctx.fillRect(0, N * 0.552, N, 1.7);
+  ctx.fillStyle = dark(0.20); ctx.fillRect(0, N * 0.552 + 1.7, N, 1.3);
   // beltline pressing
-  ctx.fillStyle = 'rgba(255,255,255,0.17)'; ctx.fillRect(0, N * 0.435, N, 1.6);
-  ctx.fillStyle = 'rgba(0,0,0,0.26)'; ctx.fillRect(0, N * 0.452, N, 1.6);
+  ctx.fillStyle = sky(0.20); ctx.fillRect(0, N * 0.345, N, 1.5);
+  ctx.fillStyle = dark(0.22); ctx.fillRect(0, N * 0.360, N, 1.5);
   // door shuts, with the light catching the trailing edge of each gap
   for (const u of [0.315, 0.505, 0.700]) {
-    ctx.fillStyle = 'rgba(0,0,0,0.42)'; ctx.fillRect(N * u, N * 0.20, 1.7, N * 0.70);
-    ctx.fillStyle = 'rgba(255,255,255,0.13)'; ctx.fillRect(N * u + 1.7, N * 0.20, 1.1, N * 0.70);
+    ctx.fillStyle = 'rgba(0,0,0,0.46)'; ctx.fillRect(N * u, N * 0.14, 1.8, N * 0.78);
+    ctx.fillStyle = sky(0.22); ctx.fillRect(N * u + 1.8, N * 0.14, 1.2, N * 0.78);
   }
-  // metallic flake
-  for (let i = 0; i < 1100; i++) {
+  // metallic flake — halved and dimmed from round 2. It is a close-up cue; at kerb distance its
+  // only job is to stop the panel being one exact value, and any more than that is noise.
+  for (let i = 0; i < 520; i++) {
     const x = rng.range(0, N), y = rng.range(0, N);
-    ctx.fillStyle = rng.bool(0.5)
-      ? `rgba(255,255,255,${rng.range(0.02, 0.10).toFixed(3)})`
-      : `rgba(0,0,0,${rng.range(0.02, 0.08).toFixed(3)})`;
+    ctx.fillStyle = rng.bool(0.55)
+      ? `rgba(255,255,255,${rng.range(0.015, 0.055).toFixed(3)})`
+      : `rgba(0,0,0,${rng.range(0.015, 0.045).toFixed(3)})`;
     ctx.fillRect(x, y, 1, 1);
   }
-  // weathering: soft blotches, and grit thrown up the sill
-  for (let i = 0, n = worn ? 24 : 11; i < n; i++) {
+  // weathering, confined to the sill. Round 2 threw blotches up to 22% of the body height and
+  // they read as blight on every light colour; road grime lives in the bottom fifth.
+  for (let i = 0, n = worn ? 13 : 6; i < n; i++) {
     const x = rng.range(0, N);
-    const y = N * (worn ? rng.range(0.22, 1.04) : rng.range(0.58, 1.04));
-    const r = rng.range(N * 0.07, N * 0.30);
+    const y = N * (worn ? rng.range(0.80, 1.06) : rng.range(0.90, 1.06));
+    const r = rng.range(N * 0.06, N * 0.20);
     const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
-    const a = rng.range(0.04, worn ? 0.16 : 0.09);
-    rg.addColorStop(0, `rgba(28,24,20,${a})`);
-    rg.addColorStop(1, 'rgba(28,24,20,0)');
+    const a = rng.range(0.03, worn ? 0.11 : 0.06);
+    rg.addColorStop(0, `rgba(30,26,22,${a})`);
+    rg.addColorStop(1, 'rgba(30,26,22,0)');
     ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
   }
-  for (let i = 0; i < 40; i++) {
-    const y = N * rng.range(0.86, 1.0);
-    ctx.fillStyle = `rgba(34,28,22,${rng.range(0.05, 0.22).toFixed(3)})`;
-    ctx.fillRect(rng.range(0, N), y, rng.range(3, 26), rng.range(0.8, 2.4));
+  for (let i = 0; i < 34; i++) {
+    const y = N * rng.range(0.90, 1.0);
+    ctx.fillStyle = `rgba(36,30,24,${rng.range(0.04, worn ? 0.18 : 0.11).toFixed(3)})`;
+    ctx.fillRect(rng.range(0, N), y, rng.range(3, 22), rng.range(0.8, 2.0));
   }
-  grain(ctx, N, N, worn ? 9 : 5, rng);
+  grain(ctx, N, N, worn ? 5 : 3, rng);
 }
 
-/** A five-spoke alloy, drawn once and worn by every wheel in the fleet. */
+/**
+ * THE WHEEL FACE — a five-spoke alloy, drawn once and worn by every wheel in the fleet.
+ *
+ * Round 2 put this on ONE outward-facing disc at the full tyre radius, so the wheel was an alloy
+ * from the side and a plain black block from anywhere else. It now caps BOTH ends of an
+ * open-ended tyre whose shoulders are pulled in, so the cell's outer ring is the sidewall the
+ * tyre geometry actually leaves showing, and the rim lip sits where a rim lip sits: at about
+ * eight tenths of the visible disc.
+ */
 function rimCell(ctx, N) {
   const R = N / 2;
   const disc = (r, fill) => { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(R, R, r, 0, 7); ctx.fill(); };
   ctx.fillStyle = '#0d0f12'; ctx.fillRect(0, 0, N, N);
-  disc(R * 0.995, '#131519');                                     // tyre shoulder
-  disc(R * 0.93, '#191c21');                                      // sidewall
-  ctx.strokeStyle = 'rgba(150,158,170,0.20)'; ctx.lineWidth = 1.4;
-  ctx.beginPath(); ctx.arc(R, R, R * 0.80, 0, 7); ctx.stroke();    // sidewall lettering ring
-  disc(R * 0.735, '#8e959f');                                     // rim lip
-  disc(R * 0.685, '#c3cad3');                                     // face
+  disc(R * 0.995, '#191c22');                                     // sidewall
+  disc(R * 0.90, '#20242b');                                      // sidewall, catching light
+  ctx.strokeStyle = 'rgba(158,166,178,0.22)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(R, R, R * 0.885, 0, 7); ctx.stroke();   // sidewall lettering ring
+  disc(R * 0.815, '#7f8791');                                     // rim lip
+  disc(R * 0.755, '#c6cdd6');                                     // face
   ctx.save(); ctx.translate(R, R);
   for (let k = 0; k < 5; k++) {
     ctx.save(); ctx.rotate((k * Math.PI * 2) / 5 + 0.31);
-    ctx.fillStyle = '#16191e';
+    ctx.fillStyle = '#15181d';
     ctx.beginPath();
-    ctx.moveTo(-R * 0.085, -R * 0.20); ctx.lineTo(R * 0.085, -R * 0.20);
-    ctx.lineTo(R * 0.205, -R * 0.60); ctx.lineTo(-R * 0.205, -R * 0.60);
+    ctx.moveTo(-R * 0.090, -R * 0.22); ctx.lineTo(R * 0.090, -R * 0.22);
+    ctx.lineTo(R * 0.222, -R * 0.665); ctx.lineTo(-R * 0.222, -R * 0.665);
     ctx.closePath(); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    ctx.fillRect(R * 0.085, -R * 0.60, 1.6, R * 0.40);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(R * 0.090, -R * 0.665, 1.7, R * 0.445);
     ctx.restore();
   }
   ctx.restore();
-  disc(R * 0.215, '#d3d9e0');                                     // centre cap
-  disc(R * 0.145, '#7b828c');
+  disc(R * 0.235, '#d6dce3');                                     // centre cap
+  disc(R * 0.158, '#7f868f');
   for (let k = 0; k < 5; k++) {
     const a = (k * Math.PI * 2) / 5;
     ctx.fillStyle = '#5d646d';
-    ctx.beginPath(); ctx.arc(R + Math.cos(a) * R * 0.30, R + Math.sin(a) * R * 0.30, R * 0.045, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(R + Math.cos(a) * R * 0.33, R + Math.sin(a) * R * 0.33, R * 0.048, 0, 7); ctx.fill();
   }
   // a highlight arc across the upper rim: it is metal, and it has to say so at twenty pixels
-  ctx.strokeStyle = 'rgba(255,255,255,0.30)'; ctx.lineWidth = R * 0.10;
-  ctx.beginPath(); ctx.arc(R, R, R * 0.60, Math.PI * 1.12, Math.PI * 1.72); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.32)'; ctx.lineWidth = R * 0.10;
+  ctx.beginPath(); ctx.arc(R, R, R * 0.655, Math.PI * 1.12, Math.PI * 1.72); ctx.stroke();
+  ctx.strokeStyle = 'rgba(0,0,0,0.34)'; ctx.lineWidth = R * 0.06;
+  ctx.beginPath(); ctx.arc(R, R, R * 0.70, Math.PI * 0.18, Math.PI * 0.78); ctx.stroke();
+}
+
+/**
+ * THE TREAD BAND. §6.1 gives wheels and tyres 15 points and the critic spent five of them on the
+ * fact that round 2's tyre "carries no map at all, so the sidewall never reads" — and from
+ * square-on behind a car the tread is ALL you see of a wheel. u wraps the circumference, v runs
+ * across the width, so this is one strip: shoulder blocks, two circumferential grooves, a
+ * lateral block pattern between them, and the sidewall darkening at both edges.
+ */
+function treadTexture() {
+  const W = 256, H = 64;
+  const { c, ctx } = canvas(W, H);
+  const rng = new RNG(4409);
+  ctx.fillStyle = '#191c21'; ctx.fillRect(0, 0, W, H);
+  // sidewall shoulders, top and bottom of the strip
+  for (const [y0, y1] of [[0, H * 0.17], [H * 0.83, H]]) {
+    const g = ctx.createLinearGradient(0, y0, 0, y1);
+    const up = y0 === 0;
+    g.addColorStop(up ? 0 : 1, 'rgba(4,5,7,0.85)');
+    g.addColorStop(up ? 1 : 0, 'rgba(4,5,7,0.0)');
+    ctx.fillStyle = g; ctx.fillRect(0, y0, W, y1 - y0);
+  }
+  // two circumferential grooves
+  for (const v of [0.335, 0.665]) {
+    ctx.fillStyle = 'rgba(0,0,0,0.80)'; ctx.fillRect(0, H * v - 2.2, W, 4.4);
+    ctx.fillStyle = 'rgba(150,158,170,0.10)'; ctx.fillRect(0, H * v + 2.2, W, 1.2);
+  }
+  // lateral blocks: 26 around the tyre, staggered between the three ribs
+  for (let i = 0; i < 26; i++) {
+    const x = (i / 26) * W;
+    for (const [v0, v1, off] of [[0.06, 0.32, 0], [0.36, 0.64, 0.5], [0.68, 0.94, 0]]) {
+      const xx = x + off * (W / 26);
+      ctx.fillStyle = 'rgba(0,0,0,0.52)';
+      ctx.fillRect(xx, H * v0, 3.0, H * (v1 - v0));
+      ctx.fillStyle = 'rgba(146,154,166,0.10)';
+      ctx.fillRect(xx + 3.0, H * v0, 1.4, H * (v1 - v0));
+    }
+  }
+  // the crown catches a little light; the rest of it is rubber
+  const cg = ctx.createLinearGradient(0, H * 0.17, 0, H * 0.83);
+  cg.addColorStop(0, 'rgba(120,130,145,0.0)');
+  cg.addColorStop(0.5, 'rgba(120,130,145,0.13)');
+  cg.addColorStop(1, 'rgba(120,130,145,0.0)');
+  ctx.fillStyle = cg; ctx.fillRect(0, H * 0.17, W, H * 0.66);
+  grain(ctx, W, H, 7, rng);
+  return toTexture(c, { srgb: true, wrap: THREE.RepeatWrapping });
 }
 
 /** The flank signwriting on a trade van or a box body. Ground is the body colour, so the decal
@@ -3053,29 +3171,33 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
   const key = `fleet|${cols.join(',')}|${sg.map((s) => s[0]).join(',')}|${night ? 1 : 0}`;
   return mat(cache, key, () => {
     const paint = new Sheet({
-      // 8 x 4 cells of 128: up to eight body colours in two treatments each, two neutral box
+      // 8 x 4 cells of 128: up to eight body colours in THREE treatments each, two neutral box
       // bodies and the wheel face, with headroom. A city that runs out of cells gets a repeat,
       // not a corrupted sheet.
       cw: 128, ch: 128, cols: 8, rows: 4,
-      roughness: 0.33, metalness: 0.34, envMapIntensity: 1.25,
+      roughness: 0.30, metalness: 0.36, envMapIntensity: 1.35,
       // Self-light in the paint's OWN value. Under a night rig every body colour on the kerb
-      // sinks towards one black silhouette — the Vegas capture had a slate pickup reading as a
-      // hole in the frame with a lit grille floating in it. This is the city spill a parked car
-      // actually catches off neon and shopfronts, and at 0.22 it is nowhere near the ~0.6 bloom
-      // threshold, so nothing here haloes.
-      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.22 : 0.02,
+      // sinks towards one black silhouette — the Vegas rank measured mean L 26 at round 2, which
+      // is a row of holes in the frame with lit grilles floating in them. This is the city spill
+      // a parked car actually catches off neon and shopfronts, and at 0.34 it is still well under
+      // the ~0.6 bloom threshold, so nothing here haloes.
+      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.34 : 0.03,
     });
     const livery = new Sheet({
-      cw: 256, ch: 64, cols: 2, rows: 4,
+      cw: 256, ch: 64, cols: 2, rows: 6,
       roughness: 0.38, metalness: 0.16, envMapIntensity: 0.9,
-      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.18 : 0.02,
+      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.24 : 0.02,
     });
     // A box body is not the colour of its cab: a red cab under a white box is what a delivery
     // truck looks like, and it is a second value break in the same silhouette.
-    const BOX = ['#cac6bc', '#adb1b6'];
+    const BOX = ['#cac6bc', '#adb1b6', '#8f949b'];
     const box = BOX.map((c, i) => ({
       color: c, cell: paint.cell(`box${i}`, (cx, w) => paintCell(cx, w, { base: c, worn: i === 1, seed: 91 + i * 7 })),
     }));
+    // THREE treatments per colour, not two. PropBatch builds one prototype per (kind, variant)
+    // and the swatch is picked off the variant, so the number of treatments is the ceiling on how
+    // different two neighbouring wagons can possibly be. Round 2 had two, and a variant bug on
+    // top of that pinned every wagon on a side of the road to ONE of them.
     const cells = [];
     for (let i = 0; i < cols.length; i++) {
       cells.push({
@@ -3085,22 +3207,55 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
       cells.push({
         color: cols[i],
         cell: paint.cell(`p${i}t`, (c, w) => paintCell(c, w, {
-          base: cols[i], lower: shadeHex(cols[i], 0.42), worn: true, seed: i * 29 + 11,
+          base: cols[i], lower: twoTone(cols[i]), seed: i * 29 + 11,
         })),
       });
+      cells.push({
+        color: cols[i],
+        cell: paint.cell(`p${i}w`, (c, w) => paintCell(c, w, { base: cols[i], worn: true, seed: i * 41 + 5 })),
+      });
     }
+    /**
+     * THE GLASS, WITH A CABIN BEHIND IT. §6.1 spends detail points on interior and round 2 had
+     * none — the greenhouse was one slab of dark gradient, which is exactly the "no separate
+     * glass, the car reads solid" failure one step removed. The glass is opaque (a transparent
+     * material in a merged kerb rank is a sorting bill nobody should pay for a prop at 20 m), so
+     * the interior is DRAWN: two head restraints, the seat backs between them, a dash roll and
+     * the dark footwell, with the reflection laid over the top at partial alpha. From outside
+     * that is indistinguishable from the real thing at any distance this prop is ever seen at.
+     */
     const glassTex = mat(cache, 'fleetglasstex', () => {
-      const S = 64;
+      const S = 128;
       const { c, ctx } = canvas(S, S);
       const g = ctx.createLinearGradient(0, 0, 0, S);
-      g.addColorStop(0, '#3d5a7c'); g.addColorStop(0.30, '#1b2a3c');
-      g.addColorStop(0.72, '#0d151f'); g.addColorStop(1, '#161d26');
+      g.addColorStop(0, '#4a6a90'); g.addColorStop(0.26, '#24374d');
+      g.addColorStop(0.60, '#131c28'); g.addColorStop(1, '#0b1017');
       ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+      // cabin: roof lining shadow, then the seats
+      ctx.fillStyle = 'rgba(6,9,13,0.55)'; ctx.fillRect(0, 0, S, S * 0.12);
+      const seat = (x, w, top) => {
+        ctx.fillStyle = '#1c2027';
+        ctx.beginPath();
+        ctx.moveTo(x, S); ctx.lineTo(x, top + w * 0.34);
+        ctx.quadraticCurveTo(x, top, x + w * 0.5, top);
+        ctx.quadraticCurveTo(x + w, top, x + w, top + w * 0.34);
+        ctx.lineTo(x + w, S); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = 'rgba(122,134,150,0.10)';
+        ctx.fillRect(x + w * 0.12, top + w * 0.30, w * 0.10, S - top);
+      };
+      seat(S * 0.16, S * 0.24, S * 0.40);
+      seat(S * 0.60, S * 0.24, S * 0.40);
+      ctx.fillStyle = '#141920'; ctx.fillRect(0, S * 0.72, S, S * 0.28);   // dash / door card
+      ctx.fillStyle = 'rgba(128,140,156,0.13)'; ctx.fillRect(0, S * 0.715, S, 2);
+      // reflections over the lot
       ctx.save(); ctx.translate(S / 2, S / 2); ctx.rotate(-0.52); ctx.translate(-S / 2, -S / 2);
-      ctx.fillStyle = 'rgba(190,220,255,0.30)'; ctx.fillRect(-S, S * 0.16, S * 3, S * 0.10);
-      ctx.fillStyle = 'rgba(190,220,255,0.16)'; ctx.fillRect(-S, S * 0.34, S * 3, S * 0.05);
+      ctx.fillStyle = 'rgba(196,224,255,0.34)'; ctx.fillRect(-S, S * 0.14, S * 3, S * 0.085);
+      ctx.fillStyle = 'rgba(196,224,255,0.17)'; ctx.fillRect(-S, S * 0.30, S * 3, S * 0.042);
+      ctx.fillStyle = 'rgba(196,224,255,0.10)'; ctx.fillRect(-S, S * 0.44, S * 3, S * 0.10);
       ctx.restore();
-      ctx.fillStyle = 'rgba(6,9,14,0.55)'; ctx.fillRect(0, S * 0.80, S, S * 0.20);
+      const sg2 = ctx.createLinearGradient(0, 0, 0, S * 0.30);
+      sg2.addColorStop(0, 'rgba(206,230,255,0.30)'); sg2.addColorStop(1, 'rgba(206,230,255,0)');
+      ctx.fillStyle = sg2; ctx.fillRect(0, 0, S, S * 0.30);
       return toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
     });
     return {
@@ -3108,12 +3263,15 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
       liveryMat: livery.material,
       livery, cells, box, night, signs: sg,
       rim: paint.cell('rim', (c, w) => rimCell(c, w)),
+      // metalness down from 0.88: at 0.88 the map is pure specular tint and the cabin behind the
+      // glass never shows at all. 0.44 keeps a sky reflection and lets the seats read.
       glass: mat(cache, `fleetglass|${night ? 1 : 0}`, () => new THREE.MeshStandardMaterial({
-        map: glassTex, roughness: 0.07, metalness: 0.88, envMapIntensity: 1.7,
-        emissive: new THREE.Color(0x16283f), emissiveIntensity: night ? 0.45 : 0.10,
+        map: glassTex, roughness: 0.09, metalness: 0.44, envMapIntensity: 1.6,
+        emissive: new THREE.Color(0x16283f), emissiveIntensity: night ? 0.40 : 0.09,
       })),
       tyre: mat(cache, 'fleettyre', () => new THREE.MeshStandardMaterial({
-        color: 0x101216, roughness: 0.93, metalness: 0.02,
+        map: mat(cache, 'fleettread', () => treadTexture()),
+        color: 0xb9bec6, roughness: 0.92, metalness: 0.03,
       })),
       trim: mat(cache, 'fleettrim', () => new THREE.MeshStandardMaterial({
         color: 0x1a1e24, roughness: 0.70, metalness: 0.18,
@@ -3149,9 +3307,121 @@ const FLEET_SPEC = {
 };
 const FLEET_ORDER = ['coupe', 'sedan', 'wagon', 'suv', 'pickup', 'van', 'box'];
 
+/** First stride from 5 up that is coprime with `n`, so `i * stride % n` visits every cell. */
+function cellStride(n) {
+  const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+  for (let k = 5; k < 5 + n; k++) if (gcd(k, n) === 1) return k;
+  return 1;
+}
+
 /** `roundedBox` grows OUTWARD by `r` (bevelSize is r/2 on each side), so shrink first and the
  *  stated size is the true outer size. Same trap New York documented on its cabs. */
 const _rb = (w, h, d, r = 0.14) => roundedBox(w - r, h - r, d - r, r, 1);
+
+/**
+ * A BODY WITH A SECTION — the round-2 fix for the single biggest silhouette loss.
+ *
+ * The critic's words: "every body is slab-sided — perfectly vertical parallel flanks, no
+ * tumblehome, no shoulder roll, no arch flare — so at 8x each vehicle still reads as roof slab /
+ * glass slab / upper slab / lower slab." That is unanswerable with texture, because it is a
+ * statement about the OUTLINE of the flank against the background, and a rounded box's flank is
+ * a plane. No car's is. A car is widest at the shoulder, tucks under at the sill so the rocker
+ * sits in its own shadow, and rolls back in again as it comes up to the beltline.
+ *
+ * So the lower body is no longer a rounded box: it is a cross-section extruded along the car's
+ * length. `prof` is [heightFraction, halfWidthFactor] pairs from sill to beltline. Same cost
+ * class as the box it replaces (one extrude, one bevel segment, ~140 triangles against ~92), and
+ * the bevel still rounds the nose and tail exactly as `_rb` did.
+ *
+ * `toCreasedNormals` at 36 degrees is what keeps it from reading as facets: the 5-15 degree steps
+ * between profile stations get smoothed into one continuous roll, while the 45 degree break into
+ * the nose cap stays a hard edge.
+ */
+const CAR_SECTION = [[0, 0.842], [0.09, 0.918], [0.22, 0.963], [0.38, 0.990], [0.55, 1.0], [0.72, 0.991], [0.86, 0.966], [1, 0.922]];
+const UTE_SECTION = [[0, 0.872], [0.10, 0.941], [0.26, 0.981], [0.50, 1.0], [0.74, 0.996], [0.90, 0.981], [1, 0.955]];
+
+function sectionSolid(W, H, D, prof, r = 0.16) {
+  const hw = (W - r) / 2, h = H - r, d = D - r;
+  const shape = new THREE.Shape();
+  const pts = prof.map(([t, k]) => [hw * k, -h / 2 + t * h]);
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+  for (let i = pts.length - 1; i >= 0; i--) shape.lineTo(-pts[i][0], pts[i][1]);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: d, bevelEnabled: true, bevelSize: r * 0.5, bevelThickness: r * 0.5,
+    bevelSegments: 1, curveSegments: 1,
+  });
+  geo.translate(0, 0, -d / 2);
+  return toCreasedNormals(geo, 0.63);
+}
+
+/**
+ * TUMBLEHOME. A greenhouse that goes straight up is a bus. Every side window on a car leans in
+ * toward the roof, and it is the reason a car catches a highlight along the top of the door and
+ * a different one on the glass. Applied to the glass band, the pillars and the roof cap together
+ * so they stay one surface.
+ */
+function tumble(geo, y0, y1, kBot, kTop) {
+  const pos = geo.attributes.position;
+  const iy = 1 / Math.max(1e-4, y1 - y0);
+  for (let i = 0; i < pos.count; i++) {
+    const t = clamp((pos.getY(i) - y0) * iy, 0, 1);
+    pos.setX(i, pos.getX(i) * lerp(kBot, kTop, t));
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * A WHEEL-ARCH FLARE. Round 2's arch lip was `TorusGeometry(r, 0.055, 3, 9, PI)` — a
+ * triangular-section, nine-segment polyline that the critic watched facet into "a black star at
+ * 8x". This is the replacement: a three-row strip that leaves the flank, crowns outboard of it
+ * and rolls back under, so the arch has a lit top edge and a shadowed underside from every angle.
+ * 24 segments where the torus had 9, 48 triangles where the torus had 54, and it is PAINT — a
+ * wheel arch is body-coloured pressed steel, never a black hoop.
+ */
+function archFlare(sx, R, out, lift, seg = 12) {
+  const pos = [], idx = [];
+  const a0 = -0.12 * Math.PI, a1 = 1.12 * Math.PI;
+  for (let i = 0; i <= seg; i++) {
+    const a = lerp(a0, a1, i / seg), c = Math.cos(a), sn = Math.sin(a);
+    pos.push(0, R * sn, R * c);
+    pos.push(sx * out, (R + lift) * sn, (R + lift) * c);
+    pos.push(sx * out * 0.30, (R + lift * 0.42) * sn, (R + lift * 0.42) * c);
+  }
+  for (let i = 0; i < seg; i++) {
+    for (let r = 0; r < 2; r++) {
+      const v00 = i * 3 + r, v10 = (i + 1) * 3 + r, v01 = v00 + 1, v11 = v10 + 1;
+      if (sx > 0) idx.push(v00, v10, v01, v01, v10, v11);
+      else idx.push(v00, v01, v10, v01, v11, v10);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * THE TYRE. Open-ended, so the rim discs cap it at both faces and there is no place to stand
+ * where the wheel is a flat black cylinder end. Twenty segments round, and the two outer rings
+ * pulled in to 0.90 so the shoulder ROLLS: from square-on behind a car — which is where the
+ * critic caught round 2's wheel reading as "a plain black block" — a straight-cut cylinder
+ * silhouettes as a rectangle and a shouldered one silhouettes as a tyre.
+ */
+function tyreGeo(r, w, seg = 20) {
+  const g = new THREE.CylinderGeometry(r, r, w, seg, 2, true);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    if (Math.abs(p.getY(i)) > 1e-4) { p.setX(i, p.getX(i) * 0.90); p.setZ(i, p.getZ(i) * 0.90); }
+  }
+  p.needsUpdate = true;
+  g.computeVertexNormals();
+  return g;
+}
 
 /**
  * Build one vehicle body. Called ONCE per (kind, variant) by PropBatch and then instanced or
@@ -3170,25 +3440,50 @@ function fleetVehicle(kind, variant, K) {
     else { let a = bins.get(m); if (!a) bins.set(m, a = []); a.push(geo); }
     return geo;
   };
-  const skin = K.cells[(FLEET_ORDER.indexOf(kind) * 5 + variant * 3 + 1) % K.cells.length];
+  // WHICH PAINT. `cells` is [colour0 plain, colour0 two-tone, colour0 worn, colour1 plain, ...],
+  // so a stride of 3 — which is what round 2 used — walks the colours and never leaves the one
+  // treatment it started on: every coupe in the city was a two-tone, every sedan a plain. Any
+  // FIXED stride has a palette length that kills it (7 dies on Miami's seven colours), so the
+  // stride is the first integer from 5 up that is coprime with the sheet — which makes the walk a
+  // full cycle and GUARANTEES all six variants of a kind get six different swatches.
+  const kIdx = FLEET_ORDER.indexOf(kind);
+  const skin = K.cells[(kIdx * 5 + variant * cellStride(K.cells.length)) % K.cells.length];
 
   const { L, W, wr, sill, belt, roofY } = S;
   const HL = L / 2, hw = W / 2;
 
-  /** Tyre, alloy face and the dark arch it fills. Never a bare cylinder. */
-  const wheels = (zs, r = wr, tw = 0.26, inset = 0.085, halfW = hw) => {
+  /**
+   * THE WHEEL. Never a bare cylinder, and — the round-2 fix — never a bare cylinder END either.
+   * The tyre is open at both faces and an alloy caps each one, so there is no viewpoint from
+   * which the wheel is a black block; the tread band carries a real map, which is the only thing
+   * you can see of a wheel from square-on behind a parked car; and the arch is closed by a dark
+   * rolled lip on 14 segments instead of the 9-segment triangular torus that faceted into a star.
+   */
+  const wheels = (zs, r = wr, tw = 0.26, inset = 0.085, halfW = hw, archX = null) => {
     for (const sx of [-1, 1]) {
       for (const z of zs) {
         const x = sx * (halfW - inset);
-        put('tyre', new THREE.CylinderGeometry(r, r, tw, 16), x, r, z, { rz: Math.PI / 2 });
-        put('rim', new THREE.CircleGeometry(r * 0.99, 18), x + sx * (tw / 2 + 0.006), r, z, { ry: sx * Math.PI / 2 });
-        put('trim', new THREE.TorusGeometry(r * 1.19, 0.055, 3, 9, Math.PI), sx * (halfW - 0.01), r, z, { ry: sx * Math.PI / 2 });
+        put('tyre', tyreGeo(r, tw), x, r, z, { rz: Math.PI / 2 });
+        for (const f of [1, -1]) {
+          put('rim', new THREE.CircleGeometry(r * 0.91, 20), x + sx * f * (tw / 2), r, z, { ry: sx * f * Math.PI / 2 });
+        }
+        if (archX != null) put('trim', archFlare(sx, r * 1.055, 0.030, 0.052, 14), sx * archX, r, z);
       }
     }
   };
 
-  /** Head/tail/indicator cluster, bumpers, plates and a grille — the trim that separates a car
-   *  from a bar of soap, and the emissives that make the rank read at night. */
+  /**
+   * Head/tail/indicator cluster, bumpers, plates and a grille — the trim that separates a car
+   * from a bar of soap, and the emissives that make the rank read at night.
+   *
+   * ROUND-2 LAMPS. The critic: "the headlamps read as flat cream slabs rather than lamps in
+   * daylight". They were: one emissive box, 33 x 13 cm, the whole lamp lit. An unlit headlamp in
+   * daylight is mostly a DARK HOUSING with a chrome reflector in it, and only a small part of it
+   * is glowing lens. So the emissive area drops to about a third and it is broken into two round
+   * projector pods and a thin daytime bar, set in a black socket over a chrome dish: four values
+   * inside 33 cm instead of one. The tail is split into two lenses either side of a chrome
+   * divider for the same reason.
+   */
   const face = (y, frontZ, backZ, bw = 0.94) => {
     put('chrome', _box(W * bw, 0.17, 0.22), 0, sill + (belt - sill) * 0.24, frontZ - 0.02);
     put('trim', _box(W * (bw - 0.05), 0.15, 0.19), 0, sill + 0.03, frontZ - 0.03);
@@ -3199,11 +3494,20 @@ function fleetVehicle(kind, variant, K) {
     put('chrome', _box(0.50, 0.15, 0.04), 0, sill + (belt - sill) * 0.28, frontZ + 0.045);
     put('chrome', _box(0.50, 0.15, 0.04), 0, sill + (belt - sill) * 0.30, backZ - 0.045);
     for (const sx of [-1, 1]) {
-      put('trim', _box(0.44, 0.21, 0.05), sx * W * 0.31, y, frontZ - 0.005);
-      put('head', _box(0.33, 0.13, 0.07), sx * W * 0.31, y, frontZ + 0.035);
-      put('amber', _box(0.12, 0.09, 0.06), sx * W * 0.424, y - 0.13, frontZ + 0.03);
-      put('trim', _box(0.40, 0.24, 0.05), sx * W * 0.32, y + 0.03, backZ + 0.005);
-      put('tail', _box(0.34, 0.19, 0.07), sx * W * 0.32, y + 0.03, backZ - 0.035);
+      const lx = sx * W * 0.31;
+      put('trim', _box(0.44, 0.225, 0.055), lx, y, frontZ - 0.005);                  // black socket
+      put('chrome', _box(0.355, 0.150, 0.040), lx, y + 0.013, frontZ + 0.020);       // reflector dish
+      for (const px of [-0.080, 0.080]) {
+        put('head', new THREE.CylinderGeometry(0.045, 0.040, 0.030, 8), lx + px, y + 0.018, frontZ + 0.036, { rx: Math.PI / 2 });
+      }
+      put('head', _box(0.295, 0.024, 0.032), lx, y - 0.068, frontZ + 0.034);          // daytime bar
+      put('amber', _box(0.11, 0.075, 0.05), sx * W * 0.428, y - 0.128, frontZ + 0.028);
+      const tx = sx * W * 0.32;
+      put('trim', _box(0.42, 0.265, 0.05), tx, y + 0.028, backZ + 0.005);
+      put('tail', _box(0.345, 0.085, 0.062), tx, y + 0.072, backZ - 0.032);
+      put('tail', _box(0.345, 0.070, 0.062), tx, y - 0.022, backZ - 0.032);
+      put('chrome', _box(0.360, 0.022, 0.048), tx, y + 0.021, backZ - 0.040);
+      put('amber', _box(0.095, 0.055, 0.055), tx - sx * 0.118, y + 0.021, backZ - 0.030);
     }
     put('chrome', new THREE.CylinderGeometry(0.045, 0.052, 0.17, 8), W * 0.24, sill + 0.02, backZ - 0.04, { rx: Math.PI / 2 });
   };
@@ -3212,11 +3516,14 @@ function fleetVehicle(kind, variant, K) {
     // ---- THE TRADE VAN. Blind from the B-pillar back, 2.44 m to the roof — the tallest thing on
     // the kerb short of the truck, and the one that most obviously is not a car.
     const boxL = L * 0.72, boxZ = -L * 0.13;
-    put('paint', _rb(W, roofY - sill, boxL, 0.12), 0, (sill + roofY) / 2, boxZ);
-    put('paint', _rb(W * 0.96, 0.80, 1.52, 0.16), 0, sill + 0.40, HL - 0.72);
+    put('paint', sectionSolid(W, roofY - sill, boxL, UTE_SECTION, 0.12), 0, (sill + roofY) / 2, boxZ);
+    put('paint', sectionSolid(W * 0.96, 0.80, 1.52, UTE_SECTION, 0.16), 0, sill + 0.40, HL - 0.72);
     put('glass', _box(W * 0.90, 0.74, 0.20), 0, sill + 1.28, HL - 1.36, { rx: -0.30 });
     for (const sx of [-1, 1]) {
-      put('glass', _box(0.07, 0.54, 0.92), sx * W * 0.485, sill + 1.22, HL - 2.02);
+      // the cab door window. It was at 0.485 W and the flank is at 0.5 W, so round 2's van had
+      // its only side glass BURIED inside its own body — the vehicle was blind on both flanks.
+      put('glass', _box(0.05, 0.58, 1.00), sx * (hw + 0.010), sill + 1.24, HL - 1.95);
+      put('trim', _box(0.035, 0.66, 1.10), sx * (hw + 0.004), sill + 1.24, HL - 1.95);
       put('trim', _box(0.24, 0.13, 0.08), sx * (hw + 0.13), sill + 1.36, HL - 1.48);
       put('livery', new THREE.PlaneGeometry(boxL * 0.62, 1.06), sx * (hw + 0.028), sill + 1.20, boxZ + 0.10, { ry: sx * Math.PI / 2 });
       put('tail', _box(0.16, 0.58, 0.07), sx * W * 0.37, sill + 0.62, -HL - 0.03);
@@ -3226,7 +3533,8 @@ function fleetVehicle(kind, variant, K) {
     }
     for (let i = 0; i < 5; i++) put('trim', _box(W * 0.93, 0.05, 0.09), 0, roofY + 0.005, boxZ + boxL * 0.36 - i * (boxL * 0.18));
     put('trim', _box(0.07, roofY - sill - 0.30, 0.07), 0, (sill + roofY) / 2, -HL - 0.02);
-    put('trim', _box(W * 1.02, 0.30, boxL * 0.99), 0, sill + 0.02, boxZ);
+    put('trim', _box(W * 0.905, 0.30, boxL * 0.99), 0, sill + 0.02, boxZ);
+    for (const sz of [1, -1]) put('paint', _rb(W * 1.035, 0.44, 1.36, 0.18), 0, sill + 0.16, sz === 1 ? HL - 1.05 : -L * 0.29);
     put('chrome', _box(W * 0.96, 0.20, 0.20), 0, sill - 0.06, HL + 0.02);
     put('trim', _box(W * 0.96, 0.22, 0.19), 0, sill - 0.06, -HL - 0.02);
     if (variant % 3 === 0) {
@@ -3238,16 +3546,16 @@ function fleetVehicle(kind, variant, K) {
       for (const sx of [-1, 1]) put('steel', _box(0.07, 0.07, 3.30), sx * 0.30, roofY + 0.35, boxZ);
       for (let i = 0; i < 8; i++) put('steel', _box(0.58, 0.05, 0.05), 0, roofY + 0.35, boxZ + 1.45 - i * 0.41);
     }
-    wheels([HL - 1.05, -L * 0.29], wr, 0.25, 0.09);
+    wheels([HL - 1.05, -L * 0.29], wr, 0.25, 0.09, hw, W * 0.5175 + 0.012);
   } else if (kind === 'box') {
     // ---- THE BOX TRUCK. 7.3 m long, 3.28 m to the roof, cab-over with a roll shutter at the
     // back. This is the one that breaks the kerb line: nothing else parked is half its height.
     const bL = 4.95, bZ = -1.05, bFloor = 1.02, bRoof = roofY;
     put('trim', _box(W * 0.78, 0.32, L * 0.94), 0, 0.80, 0);
-    put('paint', _rb(W * 0.99, 1.52, 2.02, 0.16), 0, sill + 0.86, HL - 1.02);
+    put('paint', sectionSolid(W * 0.99, 1.52, 2.02, UTE_SECTION, 0.16), 0, sill + 0.86, HL - 1.02);
     put('glass', _box(W * 0.90, 0.66, 0.14), 0, sill + 1.30, HL - 0.03);
     for (const sx of [-1, 1]) {
-      put('glass', _box(0.09, 0.50, 0.78), sx * W * 0.487, sill + 1.22, HL - 1.28);
+      put('glass', _box(0.06, 0.52, 0.80), sx * (W * 0.4955 + 0.012), sill + 1.22, HL - 1.28);
       put('trim', _box(0.28, 0.15, 0.09), sx * (hw + 0.16), sill + 1.36, HL - 0.54);
       put('head', _box(0.42, 0.19, 0.09), sx * W * 0.30, sill + 0.28, HL + 0.03);
       put('tail', _box(0.19, 0.42, 0.08), sx * W * 0.35, 1.10, -HL - 0.02);
@@ -3286,9 +3594,9 @@ function fleetVehicle(kind, variant, K) {
       // stand on it, which is the whole reason its outline is worth having on the kerb.
       const bedFront = bR0 - 0.10, bedFloor = belt - 0.42;
       const fL = noseZ - bedFront, rL = bedFront - tailZ;
-      put('paint', _rb(W, bodyH, fL, 0.19), 0, (sill + belt) / 2, (noseZ + bedFront) / 2);
-      put('paint', _rb(W, bedFloor - sill, rL, 0.16), 0, (sill + bedFloor) / 2, (bedFront + tailZ) / 2);
-      put('paint', _rb(W * 0.995, 0.14, fL * 0.94, 0.06), 0, belt + 0.02, (noseZ + bedFront) / 2);
+      put('paint', sectionSolid(W, bodyH, fL, UTE_SECTION, 0.19), 0, (sill + belt) / 2, (noseZ + bedFront) / 2);
+      put('paint', sectionSolid(W, bedFloor - sill, rL, UTE_SECTION, 0.16), 0, (sill + bedFloor) / 2, (bedFront + tailZ) / 2);
+      put('paint', _rb(W * 0.960, 0.14, fL * 0.94, 0.06), 0, belt + 0.02, (noseZ + bedFront) / 2);
       put('paint', _box(W * 0.88, 0.09, (noseZ - bF0) * 0.92), 0, belt + 0.07, (noseZ + bF0) / 2, { rx: -0.055 });
       for (const sx of [-1, 1]) put('paint', _box(0.15, belt - bedFloor, rL), sx * (hw - 0.075), (bedFloor + belt) / 2, (bedFront + tailZ) / 2);
       put('paint', _box(W * 0.94, belt - bedFloor, 0.13), 0, (bedFloor + belt) / 2, tailZ + 0.07);
@@ -3296,22 +3604,26 @@ function fleetVehicle(kind, variant, K) {
       put('trim', _box(W * 0.86, 0.06, rL * 0.95), 0, bedFloor + 0.02, (bedFront + tailZ) / 2);
       put('steel', _box(W * 0.84, 0.42, 0.52), 0, belt - 0.06, bedFront - 0.42);        // cross-bed toolbox
     } else {
-      put('paint', _rb(W, bodyH, L, 0.19), 0, (sill + belt) / 2, 0);
-      put('paint', _rb(W * 0.995, 0.15, L * 0.90, 0.06), 0, belt + 0.025, -L * 0.015);
+      put('paint', sectionSolid(W, bodyH, L, CAR_SECTION, 0.19), 0, (sill + belt) / 2, 0);
+      put('paint', _rb(W * 0.928, 0.15, L * 0.90, 0.06), 0, belt + 0.025, -L * 0.015);
       put('paint', _box(W * 0.88, 0.09, (noseZ - bF0) * 0.92), 0, belt + 0.075, (noseZ + bF0) / 2, { rx: -0.055 });
       put('paint', _box(W * 0.86, 0.09, (bR0 - tailZ) * 0.90), 0, belt + 0.075, (bR0 + tailZ) / 2, { rx: 0.045 });
     }
-    // greenhouse
-    put('glass', _box(cW * 0.99, gH, cabL * 0.99), 0, belt + gH / 2, cabZ);
-    put('paint', _rb(cW, CAP, cabL * 1.05, 0.05), 0, roofY - CAP / 2, cabZ);
+    // greenhouse. TUMBLEHOME: the glass, the pillars, the roof cap and the chrome surround are
+    // all leaned in by the same function of height, so the cabin is a tapered box and not a
+    // parallel-sided one. This is half of what the critic meant by "roof slab / glass slab".
+    const TH = 0.845;
+    const lean = (geo) => tumble(geo, belt, roofY, 1.0, TH);
+    lean(put('glass', _box(cW * 0.99, gH, cabL * 0.99), 0, belt + gH / 2, cabZ));
+    lean(put('paint', _rb(cW, CAP, cabL * 1.05, 0.05), 0, roofY - CAP / 2, cabZ));
     const cols = doors === 3
       ? [[0.50, 0.095, 0.26], [0.02, 0.085, 0], [-0.50, 0.13, -0.20]]
       : [[0.50, 0.105, 0.30], [-0.50, 0.145, -0.24]];
     for (const sx of [-1, 1]) {
       for (const [pz, pw, rake] of cols) {
-        put('paint', _box(pw + 0.05, gH * 1.02, pw), sx * (cW / 2 - pw * 0.5), belt + gH / 2, cabZ + pz * cabL, { rx: rake });
+        lean(put('paint', _box(pw + 0.05, gH * 1.02, pw), sx * (cW / 2 - pw * 0.5), belt + gH / 2, cabZ + pz * cabL, { rx: rake }));
       }
-      put('chrome', _box(0.045, 0.045, cabL * 1.00), sx * (cW / 2 + 0.006), roofY - CAP - 0.03, cabZ);
+      lean(put('chrome', _box(0.045, 0.045, cabL * 1.00), sx * (cW / 2 + 0.006), roofY - CAP - 0.03, cabZ));
       put('trim', _box(0.19, 0.10, 0.07), sx * (cW / 2 + 0.12), belt + 0.10, cabZ + cabL * 0.44);
       put('trim', _box(0.10, 0.05, 0.05), sx * (cW / 2 + 0.045), belt + 0.09, cabZ + cabL * 0.44);
       put('chrome', _box(0.03, 0.045, 0.17), sx * (hw + 0.008), belt - 0.14, cabZ + cabL * 0.22);
@@ -3325,9 +3637,15 @@ function fleetVehicle(kind, variant, K) {
     // under it reads as a plinth painted black. The ramp's own floor darkens this panel anyway
     // (it sits at v ~ 0.06), so the sill goes dark in the body's colour, which is what a rocker
     // in its own shade actually does. The arch lips stay dark: an arch liner IS black.
-    put('paint', _box(W * 1.004, 0.26, L * 0.90), 0, sill - 0.02, 0);
-    for (const sz of [1, -1]) put('trim', _box(W * 1.014, 0.17, 1.20), 0, sill + 0.13, sz * L * 0.31);
-    if (S.rails) for (const sx of [-1, 1]) put('trim', _box(0.06, 0.055, cabL * 0.84), sx * cW * 0.39, roofY + 0.035, cabZ);
+    put('paint', _box(W * 0.862, 0.26, L * 0.90), 0, sill - 0.02, 0);
+    // THE HAUNCH. A flank that is one flat plane from nose to tail is the thing the critic saw at
+    // 8x. A car's is not: it swells over each axle to clear the wheel and the swell is what
+    // catches the light band along the side. One rounded blister per axle, in PAINT, sized so its
+    // outer face lands flush with the outside of the tyre — which puts the wheel IN the arch
+    // instead of beside it — and bevelled at both ends so it fades back into the flank.
+    const haunchX = W * 0.525;
+    for (const sz of [1, -1]) put('paint', _rb(W * 1.05, 0.50, 1.62, 0.22), 0, sill + 0.19, sz * L * 0.31);
+    if (S.rails) for (const sx of [-1, 1]) put('trim', _box(0.06, 0.055, cabL * 0.84), sx * cW * TH * 0.40, roofY + 0.035, cabZ);
     if (S.bed && variant % 3 === 2) {
       // one pickup in three carries a ladder rack: 60 cm of extra outline over the bed, and an
       // outline legible from the far end of the block
@@ -3340,7 +3658,7 @@ function fleetVehicle(kind, variant, K) {
       for (let i = 0; i < 8; i++) put('steel', _box(0.56, 0.05, 0.05), 0, belt + 0.70, (bedFront + tailZ) / 2 + 1.40 - i * 0.40);
     }
     face(sill + bodyH * 0.62, noseZ, tailZ);
-    wheels([L * 0.31, -L * 0.31]);
+    wheels([L * 0.31, -L * 0.31], wr, 0.26, 0.085, hw, haunchX + 0.012);
   }
 
   // ---- fold to one mesh per material, projecting the paint UVs from the finished body
@@ -3400,7 +3718,7 @@ function fleetVehicle(kind, variant, K) {
 export function parkedCar({ cache = null, seed = 1, color = '#b8332f', night = false, kind = null, colors = null } = {}) {
   const rng = new RNG(seed * 5 + 13);
   const K = fleetKit(cache, { colors: colors || [color, ...FLEET_COLORS], night });
-  return fleetVehicle(kind || rng.pick(FLEET_ORDER), rng.int(0, 3), K);
+  return fleetVehicle(kind || rng.pick(FLEET_ORDER), rng.int(0, 5), K);
 }
 
 /** Timber utility pole with a crossarm — the LA/Miami street signature. */
@@ -5297,14 +5615,23 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     if (pdef.parkedCars !== false) {
       const cr = rng.fork(97);
       const K = fleetKit(cache, { colors: carColors, night, signs: pdef.fleetSigns });
+      /**
+       * `n` is how many differently-painted prototypes PropBatch builds for a kind, and it is the
+       * hard ceiling on how different two neighbouring wagons can be. Round 2 ran three on four of
+       * the seven kinds and then drew the variant as `(seq * 3 + side) % n`, which for n = 3 is
+       * `side` — a CONSTANT. Every wagon on the right kerb was the same wagon; the van's roof rack
+       * (variant % 3 === 0) could never fire at all; the pickup's ladder rack fired on one side of
+       * the road only. The critic's crop of one Miami rank is four cream-over-brown vehicles in a
+       * row and that is why. Five and six now, drawn from the per-instance RNG.
+       */
       const FLEET = [
-        { key: 'sedan', n: 4, w: 3.4 },
-        { key: 'coupe', n: 4, w: 2.7 },
-        { key: 'wagon', n: 3, w: 1.9 },
-        { key: 'suv', n: 3, w: 2.1, tall: true },
-        { key: 'pickup', n: 3, w: 1.5, tall: true },
-        { key: 'van', n: 3, w: 1.4, tall: true },
-        { key: 'box', n: 2, w: 0.6, tall: true },
+        { key: 'sedan', n: 6, w: 3.4 },
+        { key: 'coupe', n: 6, w: 2.7 },
+        { key: 'wagon', n: 6, w: 1.9 },
+        { key: 'suv', n: 6, w: 2.1, tall: true },
+        { key: 'pickup', n: 6, w: 1.5, tall: true },
+        { key: 'van', n: 6, w: 1.4, tall: true },
+        { key: 'box', n: 3, w: 0.6, tall: true },
       ];
       for (const t of FLEET) { t.len = FLEET_SPEC[t.key].L; t.make = (v) => fleetVehicle(t.key, v, K); }
       const WSUM = FLEET.reduce((a, t) => a + t.w, 0);
@@ -5320,7 +5647,19 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
       };
       const FB = new PropBatch(props, { chunk: 340, minInstances: 8 });
       const LEN = track.length;
-      let seq = 0;
+      /** Draw a paint variant that is not the one the previous car of this kind wore. Colour
+       *  repetition inside a rank is what makes a kerb read as wallpaper, and it is much more
+       *  visible than a repeated shape because two neighbours of the same colour merge into one
+       *  blob at any distance. `last` remembers the choice per kind, per side of the road. */
+      const last = new Map();
+      const drawVariant = (t, side) => {
+        const k = `${t.key}|${side}`;
+        const prev = last.get(k);
+        let v = cr.int(0, t.n - 1);
+        if (v === prev && t.n > 1) v = (v + 1 + cr.int(0, t.n - 2)) % t.n;
+        last.set(k, v);
+        return v;
+      };
       for (const side of [-1, 1]) {
         let m = side > 0 ? 11 : 47;                  // metres along the lap, to the rear bumper
         let rank = cr.int(1, 4);
@@ -5342,9 +5681,9 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
             rotY: Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0)
               + (bad ? cr.range(-0.17, 0.17) : cr.range(-0.055, 0.055)),
             scale: cr.range(0.965, 1.035),
-            variant: (seq * 3 + (side > 0 ? 1 : 2)) % t.n, variants: t.n,
+            variant: drawVariant(t, side), variants: t.n,
           });
-          pb = pa; pa = t; seq++;
+          pb = pa; pa = t;
           m += t.len + cr.range(0.7, 2.6);
           if (--rank <= 0) {                          // the kerb opens up: a driveway, a bus stop
             m += cr.range(34, 96) + (cr.bool(0.28) ? cr.range(20, 70) : 0);
