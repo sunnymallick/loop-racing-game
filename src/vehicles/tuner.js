@@ -85,7 +85,7 @@ export const blueprint = {
   // break the silhouette from behind (§6.1 round-2: no wheel was readable in any harness frame)
   // WAVE-13: length 4.24 -> 3.96 and height 1.36 -> 1.46. `dims` feeds the collision hull and the
   // camera, not the physics model — only `wheelbase` reaches VehicleBody, and it has not moved.
-  dims: { length: 3.96, width: 2.10, height: 1.46, wheelbase: 2.62, track: 1.660, trackRear: 1.744, rideHeight: 0.115 },
+  dims: { length: 3.96, width: 2.10, height: 1.42, wheelbase: 2.62, track: 1.660, trackRear: 1.744, rideHeight: 0.115 },
   // envIntensity 0.70 (0.88 after the lighting piece's 1.25x) on a 0.15-metalness body put almost
   // no city into the paint, so the car sat in the frame as a flat coloured shape and went to a grey
   // silhouette in NYC. §1.6.3 wants "a sky reflection above and a dark ground reflection below" —
@@ -161,22 +161,22 @@ export const blueprint = {
   body: [
     // tail panel: TALL and near-vertical (yBelt 0.985 against the nose's 0.900) — a tailgate, not a
     // boot lid, and the single most legible difference from the muscle car in a chase crop
-    { z: -1.96, w: 0.770, y0: 0.375, floor: 0.55, rocker: 0.95, ySill: 0.545, yBelt: 0.985, belt: 0.96, yDeck: 0.980, deck: 0.92, crown: 0.005 },
-    { z: -1.90, w: 0.852, y0: 0.325, floor: 0.58, rocker: 0.94, ySill: 0.49, yBelt: 0.995, belt: 0.95, yDeck: 0.990, deck: 0.90, crown: 0.008 },
-    { z: -1.82, w: 0.886, y0: 0.290, rocker: 0.92, ySill: 0.445, yBelt: 1.000, belt: 0.945, yDeck: 0.996, deck: 0.88, crown: 0.010, flare: 1.02 },
+    { z: -1.96, w: 0.770, y0: 0.375, floor: 0.55, rocker: 0.95, ySill: 0.545, yBelt: 1.018, belt: 0.96, yDeck: 1.013, deck: 0.92, crown: 0.005 },
+    { z: -1.90, w: 0.852, y0: 0.325, floor: 0.58, rocker: 0.94, ySill: 0.49, yBelt: 1.028, belt: 0.95, yDeck: 1.023, deck: 0.90, crown: 0.008 },
+    { z: -1.82, w: 0.886, y0: 0.290, rocker: 0.92, ySill: 0.445, yBelt: 1.034, belt: 0.945, yDeck: 1.030, deck: 0.88, crown: 0.010, flare: 1.02 },
     // the base of the hatch glass. Deck and belt meet here: the glass starts where the panel ends.
-    { z: -1.72, w: 0.896, y0: 0.275, rocker: 0.912, ySill: 0.432, yBelt: 1.000, belt: 0.942, yDeck: 0.998, deck: 0.87, crown: 0.010, flare: 1.03 },
-    { z: -1.66, w: 0.901, y0: 0.268, rocker: 0.905, ySill: 0.425, yBelt: 0.999, belt: 0.940, yDeck: 0.775, deck: 0.86, crown: 0.008, flare: 1.036 },
-    { z: -1.48, w: 0.906, y0: 0.252, rocker: 0.898, ySill: 0.415, yBelt: 0.993, belt: 0.939, yDeck: 0.760, deck: 0.85, crown: 0.008, flare: 1.048 },
-    { z: -1.31, w: 0.914, y0: 0.235, rocker: 0.89, ySill: 0.405, yBelt: 0.984, belt: 0.938, yDeck: 0.745, deck: 0.85, crown: 0.008, flare: 1.062 },
-    { z: -1.05, w: 0.902, y0: 0.235, rocker: 0.885, ySill: 0.40, yBelt: 0.976, belt: 0.936, yDeck: 0.738, deck: 0.85, crown: 0.008, flare: 1.028 },
-    { z: -0.50, w: 0.888, y0: 0.230, rocker: 0.875, ySill: 0.395, yBelt: 0.962, belt: 0.935, yDeck: 0.726, deck: 0.85, crown: 0.008 },
-    { z: 0.20, w: 0.888, y0: 0.230, rocker: 0.875, ySill: 0.395, yBelt: 0.950, belt: 0.935, yDeck: 0.720, deck: 0.85, crown: 0.008 },
-    { z: 0.94, w: 0.893, y0: 0.235, rocker: 0.878, ySill: 0.40, yBelt: 0.945, belt: 0.936, yDeck: 0.726, deck: 0.85, crown: 0.008 },
+    { z: -1.72, w: 0.896, y0: 0.275, rocker: 0.912, ySill: 0.432, yBelt: 1.034, belt: 0.942, yDeck: 1.032, deck: 0.87, crown: 0.010, flare: 1.03 },
+    { z: -1.66, w: 0.901, y0: 0.268, rocker: 0.905, ySill: 0.425, yBelt: 1.033, belt: 0.940, yDeck: 0.812, deck: 0.86, crown: 0.008, flare: 1.036 },
+    { z: -1.48, w: 0.906, y0: 0.252, rocker: 0.898, ySill: 0.415, yBelt: 1.028, belt: 0.939, yDeck: 0.798, deck: 0.85, crown: 0.008, flare: 1.048 },
+    { z: -1.31, w: 0.914, y0: 0.235, rocker: 0.89, ySill: 0.405, yBelt: 1.022, belt: 0.938, yDeck: 0.784, deck: 0.85, crown: 0.008, flare: 1.062 },
+    { z: -1.05, w: 0.902, y0: 0.235, rocker: 0.885, ySill: 0.40, yBelt: 1.014, belt: 0.936, yDeck: 0.776, deck: 0.85, crown: 0.008, flare: 1.028 },
+    { z: -0.50, w: 0.888, y0: 0.230, rocker: 0.875, ySill: 0.395, yBelt: 0.998, belt: 0.935, yDeck: 0.762, deck: 0.85, crown: 0.008 },
+    { z: 0.20, w: 0.888, y0: 0.230, rocker: 0.875, ySill: 0.395, yBelt: 0.980, belt: 0.935, yDeck: 0.754, deck: 0.85, crown: 0.008 },
+    { z: 0.94, w: 0.893, y0: 0.235, rocker: 0.878, ySill: 0.40, yBelt: 0.965, belt: 0.936, yDeck: 0.760, deck: 0.85, crown: 0.008 },
     // — cowl. The bonnet behind the windscreen is 1.00 m of a 3.96 m car; the muscle's is 34 %. —
-    { z: 1.00, w: 0.894, y0: 0.235, rocker: 0.878, ySill: 0.40, yBelt: 0.945, belt: 0.938, yDeck: 0.932, deck: 0.86, crown: 0.012 },
-    { z: 1.16, w: 0.898, y0: 0.237, rocker: 0.882, ySill: 0.405, yBelt: 0.944, belt: 0.938, yDeck: 0.934, deck: 0.86, crown: 0.014, flare: 1.026 },
-    { z: 1.31, w: 0.905, y0: 0.240, rocker: 0.885, ySill: 0.41, yBelt: 0.942, belt: 0.938, yDeck: 0.934, deck: 0.86, crown: 0.014, flare: 1.058 },
+    { z: 1.00, w: 0.894, y0: 0.235, rocker: 0.878, ySill: 0.40, yBelt: 0.962, belt: 0.938, yDeck: 0.944, deck: 0.86, crown: 0.012 },
+    { z: 1.16, w: 0.898, y0: 0.237, rocker: 0.882, ySill: 0.405, yBelt: 0.955, belt: 0.938, yDeck: 0.940, deck: 0.86, crown: 0.014, flare: 1.026 },
+    { z: 1.31, w: 0.905, y0: 0.240, rocker: 0.885, ySill: 0.41, yBelt: 0.948, belt: 0.938, yDeck: 0.934, deck: 0.86, crown: 0.014, flare: 1.058 },
     /**
      * THE NOSE, BLUNT — and this is a reversal of round 1, deliberately.
      *
@@ -192,7 +192,7 @@ export const blueprint = {
      * 676 mm tall x 1.78 m wide front panel — the canvas the new face needs, and 276 mm taller
      * than the one the supercar cuts its letterbox into.
      */
-    { z: 1.52, w: 0.900, y0: 0.250, rocker: 0.89, ySill: 0.42, yBelt: 0.936, belt: 0.94, yDeck: 0.930, deck: 0.86, crown: 0.014, flare: 1.032 },
+    { z: 1.52, w: 0.900, y0: 0.250, rocker: 0.89, ySill: 0.42, yBelt: 0.940, belt: 0.94, yDeck: 0.922, deck: 0.86, crown: 0.014, flare: 1.032 },
     /**
      * ---- THE FRONT CLIP, LOFTED (round-1, this piece) --------------------------------------
      *
@@ -218,9 +218,9 @@ export const blueprint = {
      * panel folds through itself. The bonnet/fender step is still authored, it just develops over
      * the two stations BEHIND the tip (0.932/0.902 -> 0.922/0.892 -> 0.900/0.894).
      */
-    { z: 1.76, w: 0.896, y0: 0.242, rocker: 0.905, ySill: 0.400, yBelt: 0.932, belt: 0.945, yDeck: 0.902, deck: 0.87, crown: 0.012 },
-    { z: 1.90, w: 0.898, y0: 0.228, floor: 0.78, rocker: 0.930, ySill: 0.375, yBelt: 0.922, belt: 0.955, yDeck: 0.892, deck: 0.86, crown: 0.010 },
-    { z: 2.00, w: 0.892, y0: 0.218, floor: 0.90, rocker: 0.958, ySill: 0.358, yBelt: 0.900, belt: 0.968, yDeck: 0.894, deck: 0.86, crown: 0.008 },
+    { z: 1.76, w: 0.896, y0: 0.242, rocker: 0.905, ySill: 0.400, yBelt: 0.926, belt: 0.945, yDeck: 0.896, deck: 0.87, crown: 0.012 },
+    { z: 1.90, w: 0.898, y0: 0.228, floor: 0.78, rocker: 0.930, ySill: 0.375, yBelt: 0.910, belt: 0.955, yDeck: 0.880, deck: 0.86, crown: 0.010 },
+    { z: 2.00, w: 0.892, y0: 0.218, floor: 0.90, rocker: 0.958, ySill: 0.358, yBelt: 0.880, belt: 0.968, yDeck: 0.874, deck: 0.86, crown: 0.008 },
   ],
 
   /**
@@ -248,24 +248,24 @@ export const blueprint = {
    */
   cabin: {
     stations: [
-      { z: 1.00, hw: 0.800, rw: 0.766, yBelt: 0.945, yRoof: 0.958 },
-      { z: 0.90, hw: 0.806, rw: 0.746, yBelt: 0.945, yRoof: 1.062 },
-      { z: 0.68, hw: 0.816, rw: 0.700, yBelt: 0.947, yRoof: 1.272 },
-      { z: 0.50, hw: 0.822, rw: 0.676, yBelt: 0.948, yRoof: 1.390 },
-      { z: 0.34, hw: 0.826, rw: 0.668, yBelt: 0.949, yRoof: 1.436 },
-      { z: -0.40, hw: 0.828, rw: 0.664, yBelt: 0.960, yRoof: 1.418 },
-      { z: -1.06, hw: 0.824, rw: 0.668, yBelt: 0.976, yRoof: 1.352 },
-      { z: -1.40, hw: 0.816, rw: 0.686, yBelt: 0.989, yRoof: 1.312 },
-      { z: -1.58, hw: 0.808, rw: 0.740, yBelt: 0.996, yRoof: 1.144 },
-      { z: -1.72, hw: 0.798, rw: 0.792, yBelt: 1.000, yRoof: 1.006 },
+      { z: 1.00, hw: 0.800, rw: 0.766, yBelt: 0.962, yRoof: 0.976 },
+      { z: 0.92, hw: 0.806, rw: 0.748, yBelt: 0.964, yRoof: 1.072 },
+      { z: 0.74, hw: 0.816, rw: 0.702, yBelt: 0.969, yRoof: 1.246 },
+      { z: 0.58, hw: 0.822, rw: 0.676, yBelt: 0.973, yRoof: 1.348 },
+      { z: 0.42, hw: 0.826, rw: 0.668, yBelt: 0.977, yRoof: 1.390 },
+      { z: -0.40, hw: 0.828, rw: 0.664, yBelt: 0.996, yRoof: 1.374 },
+      { z: -1.06, hw: 0.824, rw: 0.668, yBelt: 1.014, yRoof: 1.322 },
+      { z: -1.44, hw: 0.816, rw: 0.686, yBelt: 1.026, yRoof: 1.288 },
+      { z: -1.60, hw: 0.808, rw: 0.740, yBelt: 1.031, yRoof: 1.152 },
+      { z: -1.72, hw: 0.798, rw: 0.792, yBelt: 1.034, yRoof: 1.040 },
     ],
-    roof: { z0: -1.38, z1: 0.44, a: 5, offset: 0.014 },
+    roof: { z0: -1.42, z1: 0.52, a: 5, offset: 0.014 },
     wipers: { z: 0.920, w: 0.44, x: 0.26, sweep: 0.22 },
     pillars: [
       // roof-edge rail in satin black — see the note in muscle.js. On a JDM hatch it is the
       // moulded gutter, not a bright strip, so it takes the dark trim the pillars already use.
-      { z0: -1.42, z1: 0.50, a: 5, b: 6, mat: 'dark', steps: 9, offset: 0.018 },
-      { z0: 0.50, z1: 1.00, a: 2, b: 5, mat: 'dark', steps: 5 },      // A
+      { z0: -1.46, z1: 0.58, a: 5, b: 6, mat: 'dark', steps: 9, offset: 0.018 },
+      { z0: 0.58, z1: 1.00, a: 2, b: 5, mat: 'dark', steps: 5 },      // A
       /**
        * ROUND-5: the B-pillar is gone, and that is what makes this a THREE-DOOR.
        *
@@ -277,15 +277,15 @@ export const blueprint = {
        * One fewer pillar is also one fewer bucket of geometry.
        */
       { z0: -0.80, z1: -0.96, a: 2, b: 5, mat: 'dark', steps: 2 },    // C
-      { z0: -1.44, z1: -1.72, a: 2, b: 5, mat: 'paint', steps: 5 },   // D
+      { z0: -1.48, z1: -1.72, a: 2, b: 5, mat: 'paint', steps: 5 },   // D
     ],
-    beltZ0: -1.42, beltZ1: 0.46, beltMat: 'dark',
+    beltZ0: -1.46, beltZ1: 0.54, beltMat: 'dark',
     // stripped-out JDM cabin: grey buckets, black cage, the car's own cyan on the harnesses and
     // door pulls. Authored light enough to survive being read through 56%-opaque hatch glass.
     // shelfZ/shelfD are a BOOT FLOOR running back to z -1.60 — with the glass dropping onto the
     // tailgate there is a metre of cabin behind the seats in every chase frame's sightline, and an
     // unfilled one would show the inside of the tub through the hatch.
-    interior: { seat: 0x4e535e, trim: 0x35393f, accent: 0x18b6e8, floorY: 0.742, headY: 1.226, dashY: 0.958, wheelY: 1.004, shelfY: 0.988, seatZ: -0.20, dashZ: 0.88, dashW: 1.34, seatX: 0.33, shelfZ: 1.10, shelfD: 0.60, rollBar: true, rhd: true, clusterColor: '#ff4d3d' },
+    interior: { seat: 0x4e535e, trim: 0x35393f, accent: 0x18b6e8, floorY: 0.762, headY: 1.208, dashY: 0.972, wheelY: 1.018, shelfY: 1.010, seatZ: -0.20, dashZ: 0.88, dashW: 1.34, seatX: 0.33, shelfZ: 1.10, shelfD: 0.60, rollBar: true, rhd: true, clusterColor: '#ff4d3d' },
   },
 
   /**
@@ -334,7 +334,7 @@ export const blueprint = {
       // THE BADGE SLOT — a narrow opening at bonnet-shut height between the two lamps, which is
       // where a hatch carries its marque. Slightly wider at the top so it agrees with the lamps
       // leaning away from it.
-      { y: 0.786, w: 0.56, h: 0.098, r: 0.030, taper: 0.16, depth: 0.052, rim: 0.020, shade: 1 },
+      { y: 0.766, w: 0.56, h: 0.098, r: 0.030, taper: 0.16, depth: 0.052, rim: 0.020, shade: 1 },
       /**
        * THE LAMP WEDGE, and this is the aperture the whole finding turns on.
        *
@@ -353,7 +353,7 @@ export const blueprint = {
        * 120 mm tall lens AND a 32 mm DRL blade beside it with 26 mm of black between them. The
        * opening is the shape; the two tall elements standing in it are the signature.
        */
-      { x: 0.625, y: 0.710, w: 0.320, h: 0.280, r: 0.042, taper: 0.24, shear: 0.36, depth: 0.058, rim: 0.026, shade: 1, lip: 0.013, lipW: 0.046, mirror: true },
+      { x: 0.625, y: 0.690, w: 0.320, h: 0.270, r: 0.042, taper: 0.24, shear: 0.36, depth: 0.058, rim: 0.026, shade: 1, lip: 0.013, lipW: 0.046, mirror: true },
     ],
   },
 
@@ -394,7 +394,7 @@ export const blueprint = {
      * round-1 "black shard poking through" was that housing mounted on the FLANK, where the
      * bodywork is turning away hard.
      */
-    head: [{ x: 0.626, y: 0.710, z: 1.964, w: 0.118, h: 0.190, shape: 'rect', color: '#dfe9ff', intensity: 3.2, segs: 3 }],
+    head: [{ x: 0.626, y: 0.690, z: 1.964, w: 0.118, h: 0.185, shape: 'rect', color: '#dfe9ff', intensity: 3.2, segs: 3 }],
     /**
      * THE DRL BLADE — the one lit element on the front of this car in the garage, and now a
      * VERTICAL one.
@@ -405,21 +405,44 @@ export const blueprint = {
      * lozenge, and it stands on its END alongside the main lens, down at the narrow inboard point
      * of the wedge — where the supercar's sits horizontally UNDER its strip.
      */
-    drl: [{ x: 0.532, y: 0.710, z: 1.964, w: 0.028, h: 0.185, shape: 'strip', color: '#54e4ff', intensity: 2.7, glow: 0.30, segs: 4 }],
+    drl: [{ x: 0.532, y: 0.690, z: 1.964, w: 0.040, h: 0.180, shape: 'strip', color: '#54e4ff', intensity: 2.7, glow: 0.30, segs: 4 }],
     /**
      * TALL CORNER CLUSTERS, standing up the outer edges of the tailgate — the lamp shape that goes
      * with a hatch, and nothing like the muscle's four round lenses or the supercar's two rings.
      * `segs` splits each into three lit elements, or at this size the bloom fuses the lens into one
      * orange lozenge and the shape of the lamp is lost.
      */
+    /**
+     * ---- WHERE A TAIL LAMP HAS TO STAND, MEASURED ---------------------------------------------
+     *
+     * WAVE-13. `seat()` solves the FRONT clip's inserts against the loft's own measurement; the tail
+     * cap has no such service, so these three z values are hand-set against `tools/_t13_tailz.mjs`,
+     * which reports the rear-most surface of the tub by (x, y). It measures -1.960 flat across the
+     * middle of this panel, curving forward to -1.930 at the outer edge.
+     *
+     * `lightUnit` puts its lens 6 mm BEHIND its own origin, and a tail lamp is yawed by pi, so the
+     * lens ends up at `z + 0.006` — i.e. INSIDE the car relative to the origin. The first cut of
+     * this tail put the x 0.34 strip lamp at -1.945, so its lens landed 2 mm proud of a panel at
+     * -1.960 and the pair photographed as two dark rectangles with bright rims: a bezel standing
+     * out of the bodywork with its lens z-fighting the panel behind it. Everything back here now
+     * clears the measured surface by at least 12 mm.
+     */
     tail: [
-      { x: 0.665, y: 0.828, z: -1.935, w: 0.235, h: 0.285, color: '#ff2a18', intensity: 1.75, segs: 3 },
-      { x: 0.34, y: 0.762, z: -1.945, w: 0.22, h: 0.075, shape: 'strip', color: '#ff2a18', intensity: 1.8, glow: 0.3 },
+      { x: 0.665, y: 0.845, z: -1.957, w: 0.235, h: 0.270, color: '#ff2a18', intensity: 1.75, segs: 3 },
+      /**
+       * THE BAR BETWEEN THEM. A modern hatch ties its two corner clusters together across the
+       * tailgate, which is a signature no other car in this game has — the muscle's tail is four
+       * round lenses, the supercar's is two rings, the truck's is a pair of vertical stacks. It
+       * also gets the lamp OUT of the extractor grille's footprint: the strip pair it replaces sat
+       * at x 0.34 / y 0.796, inside the 0.90 x 0.115 m vent, so two dark meshes and two lamps were
+       * stacked in the same 60 mm of z.
+       */
+      { x: 0, y: 0.918, z: -1.965, w: 1.02, h: 0.040, shape: 'strip', color: '#ff2a18', intensity: 1.8, glow: 0.3, segs: 5, mirror: false },
       // the high-mount stop lamp, under the lip of the roof spoiler at the top of the hatch glass —
       // which is where a hatchback's third lamp lives and where a fastback's cannot be
-      { x: 0, y: 1.292, z: -1.428, w: 0.42, h: 0.042, shape: 'strip', color: '#ff2a18', intensity: 1.9, segs: 3, mirror: false, bezel: false },
+      { x: 0, y: 1.264, z: -1.478, w: 0.42, h: 0.042, shape: 'strip', color: '#ff2a18', intensity: 1.9, segs: 3, mirror: false, bezel: false },
     ],
-    reverse: [{ x: 0.16, y: 0.640, z: -1.950, w: 0.14, h: 0.07, color: '#fff2d8', intensity: 1.4, glow: 0.25 }],
+    reverse: [{ x: 0.32, y: 0.546, z: -1.974, w: 0.13, h: 0.066, color: '#fff2d8', intensity: 1.4, glow: 0.25 }],
   },
 
   grilles: [
@@ -432,30 +455,33 @@ export const blueprint = {
      * directions and ignores `vertical` (kit.js `grilleMesh`), which is what the supercar's mouth
      * is and what the first cut of this one was — a woven grid, i.e. the same texture. Twelve
      * VERTICAL bars and no horizontals is a JDM slat grille, and `grilleMesh` gives an unwoven
-     * pack the extra value range it needs on its own: 62 % of the bars take the frame's bright
-     * satin and the rest take the darker mesh steel, sitting 22 % further back — which is why the
-     * frame is `chrome` here and `dark` on the supercar. At `dark` the first cut of this screen was
-     * near-black bars in a near-black recess and the 6x crop returned one flat void, which is a
-     * §7 tell in its own right; kit.js's `chrome` is satin gunmetal, not a mirror.
+     * pack the extra value range it needs on its own: 62 % of the bars take the frame's own
+     * material and the rest take the darker mesh steel, sitting 22 % further back.
+     *
+     * `dark`, not `chrome`, and that was measured rather than assumed: A/B'd in the garage hero
+     * (`shots/tun_menu/grille_ab.png`), kit.js's `chrome` bar is a light satin steel and under the
+     * garage's warm key twelve of them across a 0.96 m shield came back CREAM — the front of the
+     * car read as a picket fence, and the grille became the brightest thing on the lower clip,
+     * which on this car the lamps are supposed to be.
      */
     // `perRow` (assemble.js `seat`): a woven screen fits any shape of hole on its own, bar by bar,
     // so it is placed rather than shrunk. Without it a rectangle-fit clamps this one to the
     // trapezoid's NARROWEST row — measured 0.658 against a 1.13 m floor.
-    { w: 1.28, h: 0.315, d: 0.11, y: 0.442, z: 1.944, slats: 12, vertical: true, frame: 'chrome', perRow: true },
-    { w: 0.600, h: 0.056, d: 0.07, y: 0.786, z: 1.972, slats: 2, mesh: true, frame: 'dark', perRow: true },
+    { w: 1.28, h: 0.315, d: 0.11, y: 0.442, z: 1.944, slats: 12, vertical: true, frame: 'dark', perRow: true },
+    { w: 0.600, h: 0.056, d: 0.07, y: 0.766, z: 1.972, slats: 2, mesh: true, frame: 'dark', perRow: true },
     // tailgate extractor mesh under the lamps, so the tall tail panel has a hole in it
     // ry: PI — see the note on the supercar's rear extractor. A rear-facing aperture built to open
     // along +Z shows a chase camera the closed back of its own cavity box unless it is turned round.
-    { w: 0.80, h: 0.17, d: 0.10, y: 0.700, z: -1.955, slats: 4, mesh: true, frame: 'dark', ry: Math.PI },
+    { w: 0.90, h: 0.115, d: 0.10, y: 0.700, z: -1.982, slats: 3, mesh: true, frame: 'dark', ry: Math.PI },
   ],
   vents: [
-    { x: 0.40, y: 0.928, z: 1.60, w: 0.28, h: 0.16, fins: 3, angle: 0.6, rx: -1.5708 },
+    { x: 0.40, y: 0.915, z: 1.60, w: 0.28, h: 0.16, fins: 3, angle: 0.6, rx: -1.5708 },
     { x: 0.898, y: 0.62, z: 1.05, w: 0.24, h: 0.15, fins: 3, angle: 0.4, ry: 1.5708 },
   ],
-  mirrors: { x: 0.82, y: 0.995, z: 0.74, painted: false },
+  mirrors: { x: 0.82, y: 1.012, z: 0.74, painted: false },
   // see muscle.js: the flank measures 0.8466 here, so at x 0.90 the handle's inner face was 36 mm
   // clear of the door skin
-  handles: [{ y: 0.888, z: -0.24 }],
+  handles: [{ y: 0.925, z: -0.24 }],
 
   trim: [
     /**
@@ -517,21 +543,21 @@ export const blueprint = {
      * crowned, so the tips have to fall to stay on it, where a splitter's have to rise to get
      * inside the bumper corner.
      */
-    { w: 1.38, h: 0.036, d: 0.20, y: 1.316, z: -1.464, mat: 'dark', r: 0.012, sweep: 0.05, sweepPow: 2.0, taper: 0.34, drop: 0.028 },
-    { w: 1.24, h: 0.048, d: 0.020, y: 1.334, z: -1.556, mat: 'dark', r: 0.008, sweep: 0.05, taper: 0.38, drop: 0.026 },
-    { w: 1.50, h: 0.09, d: 0.14, y: 0.560, z: -1.955, mat: 'dark', r: 0.03 },
-    { w: 0.42, h: 0.19, d: 0.03, y: 0.512, z: -1.968, mat: 'dark', r: 0.014 },     // plate recess
-    { w: 0.36, h: 0.145, d: 0.03, y: 0.512, z: -1.978, mat: 'chrome', r: 0.010 },
+    { w: 1.38, h: 0.036, d: 0.20, y: 1.294, z: -1.464, mat: 'dark', r: 0.012, sweep: 0.05, sweepPow: 2.0, taper: 0.34, drop: 0.028 },
+    { w: 1.24, h: 0.048, d: 0.020, y: 1.328, z: -1.556, mat: 'dark', r: 0.008, sweep: 0.05, taper: 0.38, drop: 0.026 },
+    { w: 1.50, h: 0.09, d: 0.14, y: 0.594, z: -1.955, mat: 'dark', r: 0.03 },
+    { w: 0.42, h: 0.19, d: 0.03, y: 0.546, z: -1.968, mat: 'dark', r: 0.014 },     // plate recess
+    { w: 0.36, h: 0.145, d: 0.03, y: 0.546, z: -1.978, mat: 'chrome', r: 0.010 },
     // rear valance: a satin bar across the bottom of the bumper, above the diffuser, so the tail
     // has three tonal steps (paint / bar / diffuser) instead of one black mass
-    { w: 1.34, h: 0.055, d: 0.10, y: 0.430, z: -1.936, mat: 'chrome', r: 0.018 },
+    { w: 1.34, h: 0.055, d: 0.10, y: 0.464, z: -1.936, mat: 'chrome', r: 0.018 },
     // the tailgate's own shut line, across the top of the panel under the glass
-    { w: 1.44, h: 0.030, d: 0.05, y: 0.958, z: -1.932, mat: 'chrome', r: 0.010 },
+    { w: 1.44, h: 0.030, d: 0.05, y: 0.992, z: -1.948, mat: 'chrome', r: 0.010 },
   ],
   // The wing stands on the tailgate's top edge rather than on a boot lid, and it is TALL — the
   // blade sits level with the roof crest (roof 1.436, blade 1.430) over a tail 430 mm lower than
   // it, which no other car in the game does.
-  wing: { type: 'pedestal', w: 1.46, chord: 0.30, x: 0.52, y: 1.430, z: -1.856, h: 0.44, mat: 'carbon', postMat: 'dark', aoa: -0.20 },
+  wing: { type: 'pedestal', w: 1.46, chord: 0.30, x: 0.52, y: 1.412, z: -1.856, h: 0.38, mat: 'carbon', postMat: 'dark', aoa: -0.20 },
   // narrow and lifted: the rear tyres are the widest thing back here, not the bodykit
   diffuser: { w: 1.06, h: 0.22, d: 0.30, y: 0.318, z: -1.875, strakes: 4, rx: 0.30, mat: 'carbon' },
   exhaust: [{ x: 0.0, y: 0.330, z: -1.980, r: 0.098, len: 0.24, mirror: false }],
@@ -549,10 +575,10 @@ export const blueprint = {
    * goes stale the moment a station moves — which is exactly what wave-13 did to every one of them.
    */
   shadows: [
-    { y: 0.930, z: 1.44, w: 0.56, d: 0.52, mirror: false },            // bonnet scoop
-    { x: 0.852, y: 0.888, z: -0.24, w: 0.26, d: 0.12, face: 'x' },     // door handle
-    { x: 0.52, y: 1.000, z: -1.856, w: 0.20, d: 0.30 },                // wing pedestals
-    { x: 0.40, y: 0.925, z: 1.60, w: 0.38, d: 0.24 },                  // bonnet extractors
+    { y: 0.925, z: 1.44, w: 0.56, d: 0.52, mirror: false },            // bonnet scoop
+    { x: 0.852, y: 0.925, z: -0.24, w: 0.26, d: 0.12, face: 'x' },     // door handle
+    { x: 0.52, y: 1.032, z: -1.856, w: 0.20, d: 0.30 },                // wing pedestals
+    { x: 0.40, y: 0.913, z: 1.60, w: 0.38, d: 0.24 },                  // bonnet extractors
     // ROUND-8: the side skirt. 2 m of carbon along the bottom of both doors with nothing under it —
     // the same "moulding glued to a shell" read the muscle car's spear had.
     { x: 0.7955, y: 0.437, z: -0.06, w: 1.56, d: 0.10, face: 'x' },    // side skirt
@@ -576,7 +602,7 @@ export const blueprint = {
     { x: 0, z: 1.44, w: 0.46, d: 0.42, h: 0.015, flange: 1.13, bolts: 4, boltR: 0.0105,
       boltH: 0.009, bead: 0.0085, boss: false, mat: 'dark', mirror: false, spread: 1.72 },
   ],
-  extras: [{ type: 'scoop', w: 0.44, h: 0.10, d: 0.40, y: 0.944, z: 1.44, painted: true }],
+  extras: [{ type: 'scoop', w: 0.44, h: 0.10, d: 0.40, y: 0.940, z: 1.44, painted: true }],
 };
 
 export function build(opts) { return assembleCar(blueprint, opts); }
