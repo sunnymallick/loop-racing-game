@@ -26,16 +26,18 @@ import { assembleCar } from './assemble.js';
  *
  * ---- WHAT CHANGED, IN ORDER OF HOW MUCH IT MOVES THE SILHOUETTE -----------------------------
  *
- *   A. THE BACKLIGHT IS A HATCH'S, AND THERE IS A KINK ABOVE IT. The roof tapers gently to z -1.40
- *      (1.352 -> 1.312, about 7 degrees) and then falls 306 mm over 320 mm to the belt at z -1.72:
- *      46 degrees from vertical, against the old 71. The 37-degree corner between those two runs is
+ *   A. THE BACKLIGHT IS A HATCH'S, AND THERE IS A KINK ABOVE IT. The roof tapers gently to z -1.44
+ *      (1.322 -> 1.288, about 5 degrees) and then falls 248 mm over 280 mm to the belt at z -1.72:
+ *      48 degrees from vertical, against the old 71. The 43-degree corner between those two runs is
  *      the single thing that separates a hatch from a fastback in a chase crop, and there is now a
- *      carbon roof spoiler standing on it so it cannot be missed.
- *   B. TALLER, ON A SHORTER CAR. Roof peak 1.336 -> 1.436 and length 4.24 -> 3.96, so height/length
- *      goes 0.315 -> 0.363. The four classes now read 0.257 (supercar) / 0.281 (muscle) / 0.363
- *      (this) / 0.435 (truck) — monotonic, and no two within 8 %.
- *   C. A STEEPER SCREEN. The A-pillar foot stays at the cowl but its head comes back to z 0.50
- *      instead of 0.34, so the windscreen is 46 degrees off vertical rather than 62. A laid-back
+ *      satin roof spoiler standing on it so it cannot be missed.
+ *   B. TALLER AND THICKER, ON A SHORTER CAR. Roof peak 1.336 -> 1.390 and length 4.24 -> 3.96, so
+ *      height/length goes 0.315 -> 0.351. The four classes read 0.257 (supercar) / 0.281 (muscle) /
+ *      0.351 (this) / 0.435 (truck) — monotonic, and no two within 8 %. The belt comes up 55 mm
+ *      through the cabin with it: a tall glasshouse on a thin body is a crossover, and the first cut
+ *      of this wave was one. Glass depth over body depth is 0.37 now, against 0.51 then.
+ *   C. A STEEPER SCREEN. The A-pillar foot stays at the cowl but its head comes back to z 0.58
+ *      instead of 0.34, so the windscreen is 49 degrees off vertical rather than 62. A laid-back
  *      screen over a long bonnet is a coupe; an upright one over a short bonnet is a hatch.
  *   D. A SHORTER BONNET AND A BLUNT NOSE. Nose tip 2.16 -> 2.00, so the bonnet is 1.00 m of a
  *      3.96 m car (25 %) against the muscle's 34 %. And it no longer WEDGES: the deck falls 38 mm
@@ -122,10 +124,10 @@ export const blueprint = {
    * recess for 2.66 m — the whole middle of the car — and comes back up for only 240 mm at the very
    * back. That is a two-box car. The muscle's equivalent column has 1.4 m of deck behind the recess.
    *
-   * And read the yBelt column, which is the other half of the archetype. It RISES 100 mm from the
-   * cowl (0.945) to the tail (1.000, and 0.985 at the very last station where the panel rolls
+   * And read the yBelt column, which is the other half of the archetype. It RISES 72 mm from the
+   * cowl (0.962) to the tail (1.034, and 1.018 at the very last station where the panel rolls
    * under): a rising belt under a falling roof is the wedge every hot hatch has, and it is what
-   * makes the tail panel TALL — 600 mm of near-vertical bodywork from the bumper to the glass,
+   * makes the tail panel TALL — 640 mm of near-vertical bodywork from the bumper to the glass,
    * where the muscle car has a boot lid at 0.86.
    */
   /**
@@ -233,14 +235,14 @@ export const blueprint = {
    *
    * A hatch is three straight runs and two corners:
    *
-   *     windscreen   z 1.00 -> 0.50    0.958 -> 1.390     46 deg off vertical
-   *     roof         z 0.34 -> -1.40   1.436 -> 1.312      7 deg off horizontal, gently falling
-   *     backlight    z -1.40 -> -1.72  1.312 -> 1.006     46 deg off vertical
+   *     windscreen   z 1.00 -> 0.58    0.976 -> 1.348     49 deg off vertical
+   *     roof         z 0.42 -> -1.44   1.390 -> 1.288      3 deg off horizontal, gently falling
+   *     backlight    z -1.44 -> -1.72  1.288 -> 1.040     48 deg off vertical
    *
-   * The 37-degree corner at z -1.40 is the whole read. It is not left to the eye either: the roof
+   * The 43-degree corner at z -1.44 is the whole read. It is not left to the eye either: the roof
    * spoiler in `trim` stands on it, and the high-mount stop lamp sits under its lip.
    *
-   * The roof itself is NOT level — 124 mm of fall over 1.74 m — because that is the difference
+   * The roof itself is NOT level — 102 mm of fall over 1.86 m — because that is the difference
    * between a hatch and an estate, and the estate is the failure mode round 5 was looking at.
    *
    * The belt is shared with the tub's own `yBelt` column and is checked against it station by
@@ -442,7 +444,7 @@ export const blueprint = {
       // which is where a hatchback's third lamp lives and where a fastback's cannot be
       { x: 0, y: 1.264, z: -1.478, w: 0.42, h: 0.042, shape: 'strip', color: '#ff2a18', intensity: 1.9, segs: 3, mirror: false, bezel: false },
     ],
-    reverse: [{ x: 0.32, y: 0.546, z: -1.974, w: 0.13, h: 0.066, color: '#fff2d8', intensity: 1.4, glow: 0.25 }],
+    reverse: [{ x: 0.62, y: 0.664, z: -1.968, w: 0.155, h: 0.052, color: '#fff2d8', intensity: 1.4, glow: 0.25 }],
   },
 
   grilles: [
@@ -545,9 +547,17 @@ export const blueprint = {
      */
     { w: 1.38, h: 0.036, d: 0.20, y: 1.294, z: -1.464, mat: 'dark', r: 0.012, sweep: 0.05, sweepPow: 2.0, taper: 0.34, drop: 0.028 },
     { w: 1.24, h: 0.048, d: 0.020, y: 1.328, z: -1.556, mat: 'dark', r: 0.008, sweep: 0.05, taper: 0.38, drop: 0.026 },
-    { w: 1.50, h: 0.09, d: 0.14, y: 0.594, z: -1.955, mat: 'dark', r: 0.03 },
-    { w: 0.42, h: 0.19, d: 0.03, y: 0.546, z: -1.968, mat: 'dark', r: 0.014 },     // plate recess
-    { w: 0.36, h: 0.145, d: 0.03, y: 0.546, z: -1.978, mat: 'chrome', r: 0.010 },
+    /**
+     * ---- THE BUMPER STEP, AND THE PLATE THAT IS BOLTED TO IT --------------------------------
+     *
+     * The plate recess used to be its own y band under this bar, and at 5x dead astern it was
+     * simply GONE: the bar is 140 mm deep and reaches z -2.025, so a 30 mm recess seated at -1.968
+     * was inside it. A number plate on a hatch is bolted to the bumper skin, so it is now on this
+     * bar's own face — same y, 12 mm proud of it — and the bar is deep enough (120 mm) to carry it.
+     */
+    { w: 1.50, h: 0.12, d: 0.14, y: 0.575, z: -1.955, mat: 'dark', r: 0.03 },
+    { w: 0.44, h: 0.100, d: 0.03, y: 0.575, z: -2.022, mat: 'dark', r: 0.014 },    // plate recess, on the bar
+    { w: 0.38, h: 0.075, d: 0.03, y: 0.575, z: -2.032, mat: 'chrome', r: 0.010 },
     // rear valance: a satin bar across the bottom of the bumper, above the diffuser, so the tail
     // has three tonal steps (paint / bar / diffuser) instead of one black mass
     { w: 1.34, h: 0.055, d: 0.10, y: 0.464, z: -1.936, mat: 'chrome', r: 0.018 },
@@ -555,8 +565,8 @@ export const blueprint = {
     { w: 1.44, h: 0.030, d: 0.05, y: 0.992, z: -1.948, mat: 'chrome', r: 0.010 },
   ],
   // The wing stands on the tailgate's top edge rather than on a boot lid, and it is TALL — the
-  // blade sits level with the roof crest (roof 1.436, blade 1.430) over a tail 430 mm lower than
-  // it, which no other car in the game does.
+  // blade sits at 1.412 against a roof crest of 1.390, i.e. ABOVE the roofline, on posts standing
+  // 380 mm off a tailgate top at 1.031. No other car in the game carries its wing over its roof.
   wing: { type: 'pedestal', w: 1.46, chord: 0.30, x: 0.52, y: 1.412, z: -1.856, h: 0.38, mat: 'carbon', postMat: 'dark', aoa: -0.20 },
   // narrow and lifted: the rear tyres are the widest thing back here, not the bodykit
   diffuser: { w: 1.06, h: 0.22, d: 0.30, y: 0.318, z: -1.875, strakes: 4, rx: 0.30, mat: 'carbon' },
