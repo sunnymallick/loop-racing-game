@@ -2121,13 +2121,42 @@ const TUB_SUB = [2, 2, 3, 6, 5, 5, 6, 3, 2, 2, 2];
  */
 const TUB_SUB_DECK = [2, 2, 3, 6, 5, 5, 6, 3, 2, 3, 14];
 
-function subdivideProfile(pts, subs) {
+/**
+ * ---- CAMBER: THE SEGMENT BETWEEN TWO AUTHORED POINTS IS AN ARC, NOT A CHORD ----------------
+ *
+ * WAVE-11 verdict, the one gap: "the specular band peaks at exactly y=375 at x=680, 760, 840, 920
+ * and 1000 — it does not move by a single pixel over 320 px of bodywork".
+ *
+ * Half of that is longitudinal (see `bodySection`'s flank field in assemble.js). The other half is
+ * right here. The authored half-profile has FIVE points between the rocker and the belt, and this
+ * function joined them with straight lines — so a vertical cut through a door was a four-segment
+ * POLYLINE, i.e. four flat facets. A flat facet reflects one patch of sky at one angle, and the
+ * only place a clearcoat highlight can sit on a polyline is exactly on a corner. That is what put
+ * the band on the character line and nailed it there: it was the only vertical tangent on the
+ * whole flank.
+ *
+ * `bow` gives each authored SEGMENT a camber — the interpolated points are pushed off the chord,
+ * perpendicular to it, by `bow * sin(pi t)`. The authored points do not move by a micron, so every
+ * pressed corner (the crease apex, the rocker tuck, the belt roll) stays exactly as sharp as it was
+ * and every anchor the livery hangs off keeps its u. What changes is that the metal BETWEEN them is
+ * now curved, so the surface sweeps continuously through its tangent instead of jumping at a corner
+ * and the highlight becomes a graded band that a change in section can actually move.
+ */
+function subdivideProfile(pts, subs, bow = null) {
   const out = [pts[0]];
   for (let i = 1; i < pts.length; i++) {
     const k = Math.max(1, subs[(i - 1) % subs.length] || 1);
+    const a = pts[i - 1], b = pts[i];
+    const cb = bow ? (bow[(i - 1) % bow.length] || 0) : 0;
+    let nx = 0, ny = 0;
+    if (cb) {
+      const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+      // (dy, -dx) points away from the car's centreline on the authored (x >= 0) half
+      nx = dy / l; ny = -dx / l;
+    }
     for (let j = 1; j <= k; j++) {
-      const t = j / k;
-      out.push([lerp(pts[i - 1][0], pts[i][0], t), lerp(pts[i - 1][1], pts[i][1], t)]);
+      const t = j / k, s = cb * Math.sin(Math.PI * t);
+      out.push([lerp(a[0], b[0], t) + nx * s, lerp(a[1], b[1], t) + ny * s]);
     }
   }
   return out;
@@ -2139,7 +2168,7 @@ export function loftTub(sections, {
   openings = [], capU = [0.100, 0.442], zNear = 0.030, zMid = 0.070, zFar = 0.175, linerAt = 0.34,
   zTip = 0.055, zEnd = 0.62,
   flareAt = null, noseCap = {}, tailCap = {}, deckWells = [],
-  shutV = [], shutDepth = 0.0068,
+  shutV = [], shutDepth = 0.0068, bow = null,
 } = {}) {
   const src = [...sections].sort((a, b) => a.z - b.z).map((s) => {
     const sc = s.scale ?? 1;
@@ -2295,7 +2324,7 @@ export function loftTub(sections, {
     }
     return last.pts;
   };
-  const dense = zs.map((z) => ({ z, pts: subdivideProfile(ptsAt(z), subs) }));
+  const dense = zs.map((z) => ({ z, pts: subdivideProfile(ptsAt(z), subs, bow) }));
 
   // ---- 2. rings + the untouched skin parameterisation ---------------------
   const { rings, norms, L, us, vs } = buildRings(dense);
@@ -4387,8 +4416,19 @@ export function partShadow(w, d, {
   face = 'y', sign = 1, spread = 2.05, strength = 1, at = null, conform = null, seg = 1,
 } = {}) {
   const geos = [];
+  /**
+   * WAVE-11: the conform grid is sized off the RING, not off a constant.
+   *
+   * `seg = 4` was fine on a planar flank. It is not fine on a crowned one: the door-handle halo is
+   * 590 x 420 mm, so four segments sample the panel every 105-146 mm, and the wave-11 flank crown
+   * moves the skin by more than that over one such step. The middle of the decal then tents INSIDE
+   * the paint and the depth test eats it, which showed up at 7x as a hard-edged pale wedge under
+   * the muscle car's handle — the exact opposite of contact shading. A 50 mm grid follows the
+   * camber; the extra vertices are free, since every decal on the car merges into one draw call.
+   */
+  const grid = (r) => (conform ? Math.max(seg, Math.min(16, Math.ceil(r / 0.05))) : seg);
   const ring = (rw, rd, a) => {
-    const g = new THREE.PlaneGeometry(rw, rd, seg, seg).toNonIndexed();
+    const g = new THREE.PlaneGeometry(rw, rd, grid(rw), grid(rd)).toNonIndexed();
     if (face === 'y') g.rotateX(sign > 0 ? -Math.PI / 2 : Math.PI / 2);
     else if (face === 'x') g.rotateY(sign > 0 ? Math.PI / 2 : -Math.PI / 2);
     else if (sign < 0) g.rotateY(Math.PI);

@@ -82,6 +82,36 @@ export const blueprint = {
    * recess for 2.8 m — the whole middle of the car — and comes back up for only 210 mm at the very
    * back. That is a two-box car. The muscle's equivalent column has 1.4 m of deck behind the recess.
    */
+  /**
+   * ---- THE FLANK, CROWNED (wave-11) -------------------------------------------------------
+   *
+   * See `flankField` in assemble.js. A compact hatch has a shallower, higher-set swage than a
+   * muscle car: it starts just above the front wheel centre, rises gently through the single long
+   * door, and drops away over the rear arch where the wide-body flare takes over. The shoulder
+   * break is what gives a small car its "thick" look — a narrow tumblehome band and a hard roll
+   * into the belt, so the sky lands in a tight strip along the top of the door instead of washing
+   * the whole panel.
+   */
+  flank: {
+    crease: [
+      [-2.08, 0.620], [-1.87, 0.600], [-1.58, 0.545], [-1.31, 0.500], [-1.05, 0.585],
+      [-0.90, 0.700], [-0.20, 0.665], [0.50, 0.600], [0.94, 0.545], [1.31, 0.485],
+      [1.62, 0.535], [2.16, 0.600],
+    ],
+    shoulder: [
+      [-2.08, 0.09], [-1.58, 0.15], [-0.95, 0.26], [-0.20, 0.28],
+      [0.60, 0.25], [1.31, 0.15], [2.16, 0.09],
+    ],
+    swell: [
+      [-2.08, 0], [-1.58, 0.007], [-1.05, 0.010], [-0.20, 0.012],
+      [0.50, 0.011], [1.16, 0.006], [1.90, 0.001], [2.16, 0],
+    ],
+    bow: [
+      [-2.08, 0], [-1.80, 0.005], [-1.20, 0.010], [-0.20, 0.012],
+      [0.94, 0.009], [1.62, 0.004], [2.16, 0],
+    ],
+  },
+
   body: [
     // tail panel: TALL and near-vertical (yBelt 0.935 against the nose's 0.855) — a tailgate, not a
     // boot lid, and the single most legible difference from the muscle car in a chase crop
@@ -356,7 +386,7 @@ export const blueprint = {
   mirrors: { x: 0.82, y: 0.985, z: 0.72, painted: false },
   // see muscle.js: the flank measures 0.8466 here, so at x 0.90 the handle's inner face was 36 mm
   // clear of the door skin
-  handles: [{ x: 0.850, y: 0.875, z: -0.18 }],
+  handles: [{ y: 0.875, z: -0.18 }],
 
   trim: [
     /**

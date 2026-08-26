@@ -80,6 +80,41 @@ export const blueprint = {
    */
   glass: { tint: '#0a1017', opacity: 0.68 },
 
+  /**
+   * ---- THE FLANK, CROWNED (wave-11) -------------------------------------------------------
+   *
+   * The verdict's words for this car were "a stack of perfectly level bands", and the truck was the
+   * worst of the four because its section is nearly a plane: rocker 0.987, swage 1.044, belt 1.028,
+   * i.e. 16 mm of tuck over 234 mm of door — four degrees. Nothing on a surface that flat can make
+   * a reflection do anything but rule a line.
+   *
+   * `bow` runs NEGATIVE here, which is the point: it pulls the beltline IN by up to 26 mm through
+   * the doors and leaves it out at the ends, so the truck gets a real tumblehome that varies down
+   * its length, the shoulder rolls over instead of stopping dead, and the flat slab becomes a panel
+   * with a top and a side. The swage itself sits low and level over the doors — a Bronco's body
+   * line is horizontal, which is the class read — and then drops over each axle so the highlight
+   * dives into the arches instead of running past them.
+   */
+  flank: {
+    crease: [
+      [-2.46, 0.600], [-2.04, 0.565], [-1.78, 0.520], [-1.58, 0.500], [-1.32, 0.630],
+      [-1.10, 0.680], [-0.30, 0.665], [0.60, 0.620], [0.94, 0.575], [1.35, 0.520],
+      [1.58, 0.490], [1.86, 0.530], [2.10, 0.565], [2.46, 0.600],
+    ],
+    shoulder: [
+      [-2.46, 0.08], [-1.98, 0.13], [-1.20, 0.22], [-0.30, 0.24],
+      [0.60, 0.22], [1.42, 0.13], [2.46, 0.08],
+    ],
+    swell: [
+      [-2.46, 0], [-1.98, 0.006], [-1.42, 0.010], [-0.30, 0.013],
+      [0.60, 0.012], [1.42, 0.008], [2.10, 0.002], [2.46, 0],
+    ],
+    bow: [
+      [-2.46, -0.002], [-2.04, -0.010], [-1.42, -0.022], [-0.30, -0.026],
+      [0.60, -0.024], [1.42, -0.016], [2.10, -0.006], [2.46, -0.002],
+    ],
+  },
+
   body: [
     { z: -2.46, w: 0.975, y0: 0.72, floor: 0.66, rocker: 0.97, ySill: 0.98, yBelt: 1.44, belt: 0.985, yDeck: 1.44, deck: 0.955, crown: 0.004 },
     { z: -2.38, w: 1.030, y0: 0.66, floor: 0.70, rocker: 0.97, ySill: 0.92, yBelt: 1.46, belt: 0.985, yDeck: 1.46, deck: 0.945, crown: 0.006 },
@@ -314,7 +349,7 @@ export const blueprint = {
   mirrors: { x: 1.005, y: 1.55, z: 0.96, painted: false },
   // see muscle.js — the flank measures 1.0249 / 1.0256 at these two stations, so at 1.055 the
   // handle's inner face stood 13 mm clear of the door
-  handles: [{ x: 1.030, y: 1.40, z: 0.30 }, { x: 1.030, y: 1.40, z: -0.86 }],
+  handles: [{ y: 1.40, z: 0.30 }, { y: 1.40, z: -0.86 }],
 
   trim: [
     // (the front bumper box is gone — the tub carries it now, see the z 2.34/2.46 stations)

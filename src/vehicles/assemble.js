@@ -58,9 +58,11 @@ import { lerp, clamp, RNG } from '../core/rng.js';
 export function bodySection(z, {
   w = 0.95, y0 = 0.22, floor = 0.62, rocker = 0.90, ySill = 0.45,
   yBelt = 1.00, belt = 0.94, yDeck = 1.04, deck = 0.80, crown = 0.03,
-  flare = 1.0, crease = 0.62, tuckY = 0.55,
+  flare = 1.0, crease = 0.62, tuckY = 0.55, swell = 0, beltBow = 0, shoulderF = 0.075,
 }) {
   const d = yBelt - ySill;
+  // the shoulder break can never climb through the belt roll, whatever a table asks for
+  const shF = Math.max(0.03, Math.min(shoulderF, (1 - crease) * 0.62));
   /**
    * CROWN, x1.9.
    *
@@ -97,11 +99,23 @@ export function bodySection(z, {
        * STRAIGHT segments either side, the apex keeps its own vertex with short steep neighbours,
        * so the normal actually breaks there and the crease draws a line down the length of the car.
        */
-      [w * 0.9742 * flare, ySill + d * (crease - 0.20)],
-      [w * flare, ySill + d * crease],
-      [w * 0.9765 * flare, ySill + d * (crease + 0.075)],
-      [w * belt, yBelt],
-      [w * belt * 0.955, lerp(yBelt, yDeck, 0.45)],
+      [w * 0.9742 * flare + swell * 0.52, ySill + d * (crease - 0.20)],
+      [w * flare + swell, ySill + d * crease],
+      /**
+       * POINT 6 IS THE SHOULDER CREASE, and `shoulderF` is how far above the swage it sits.
+       *
+       * At the authored default (0.075 d, i.e. 40 mm) this point exists only to keep the character
+       * line's apex a corner, and the flank above it is ONE straight run of 170-210 mm from the
+       * crease to the belt — one facet, one tone. Pushed up to 0.26-0.34 d it becomes a second
+       * pressed break in its own right: the panel falls back gently from the swage (a shallow
+       * tumblehome that mirrors the horizon), then rolls over hard in the last 40-70 mm to the belt
+       * (which is where the sky lands). Two bands with a line between them instead of one flat
+       * band, which is what the shoulder of a real door does and the whole reason a car flank has
+       * a highlight that changes width down its length.
+       */
+      [w * 0.9765 * flare + swell * 0.58, ySill + d * (crease + shF)],
+      [w * belt + beltBow, yBelt],
+      [w * belt * 0.955 + beltBow * 0.45, lerp(yBelt, yDeck, 0.45)],
       [w * deck, yDeck],
       // 0.62 rather than 0.54 of the deck half-width: with a real crown the shoulder of the panel
       // wants to be further outboard, so the roll happens over the outer third and the middle of
@@ -111,6 +125,83 @@ export function bodySection(z, {
     ],
   };
 }
+
+/**
+ * ------------------------------------------------------------------ THE FLANK IS NOT A PLANE
+ *
+ * WAVE-11 verdict, the single biggest gap, verbatim: "Put a real crown on every flank so the
+ * environment reflection stops running as a dead-straight horizontal stripe. Right now the
+ * door/quarter panel is planar: probing muscle-side.png, the specular band peaks at exactly y=375
+ * at x=680, 760, 840, 920 and 1000 — it does not move by a single pixel over 320 px of bodywork."
+ *
+ * That measurement is not describing a shader. It is describing a fact about the geometry: on a
+ * near-vertical flank seen from a near-horizontal camera, the reflected ray crosses the horizon
+ * exactly where the surface tangent is VERTICAL, so the bright band lands on the widest line of the
+ * section and nowhere else. Rounds 1-10 authored `crease` once, as a constant 0.62 of the
+ * sill-to-belt height, for every station of every car — so the widest line was at the same height
+ * at the nose, at the door and at the tail, and the band ruled one straight stripe from end to end.
+ *
+ * `bp.flank` moves it. Four tables, each `[[z, value], …]` smoothstep-interpolated down the car:
+ *
+ *   crease    the height of the character line as a fraction of sill → belt. Raise it through the
+ *             doors and the highlight CLIMBS; drop it hard over the rear axle and the highlight
+ *             PINCHES DOWN over the wheel, which is what the verdict asked for in those words.
+ *   shoulder  how far above the swage the second break sits, same units. Wide over the door,
+ *             narrow at the ends, so the band between the two lines opens and closes.
+ *   swell     extra half-width at the character line, in metres — the haunch over the rear arch and
+ *             the muscle over the front wing.
+ *   bow       extra half-width at the BELTLINE, in metres, tapering to nothing at the sill: the
+ *             25-40 mm of crown the verdict named, applied where the door is and not at the ends,
+ *             so it is a bow along the length rather than a uniform fattening.
+ *
+ * Everything is additive on top of what a station already declares, so the four car files keep
+ * every hand-placed `flare` and every duplicated edge-holding station exactly as authored.
+ */
+function flankTable(tbl, dflt) {
+  if (!tbl || !tbl.length) return () => dflt;
+  const t = [...tbl].sort((a, b) => a[0] - b[0]);
+  return (z) => {
+    if (z <= t[0][0]) return t[0][1];
+    if (z >= t[t.length - 1][0]) return t[t.length - 1][1];
+    for (let i = 1; i < t.length; i++) {
+      if (z <= t[i][0]) {
+        const k = (z - t[i - 1][0]) / ((t[i][0] - t[i - 1][0]) || 1);
+        return lerp(t[i - 1][1], t[i][1], k * k * (3 - 2 * k));
+      }
+    }
+    return t[t.length - 1][1];
+  };
+}
+
+function flankField(bp) {
+  const F = bp.flank || {};
+  const crease = flankTable(F.crease, null);
+  const shoulder = flankTable(F.shoulder, null);
+  const swell = flankTable(F.swell, 0);
+  const bow = flankTable(F.bow, 0);
+  return (st) => {
+    const o = { ...st };
+    if (st.crease === undefined && F.crease) o.crease = crease(st.z);
+    if (st.shoulderF === undefined && F.shoulder) o.shoulderF = shoulder(st.z);
+    o.swell = (st.swell ?? 0) + swell(st.z);
+    o.beltBow = (st.beltBow ?? 0) + bow(st.z);
+    return o;
+  };
+}
+
+/**
+ * The per-segment camber handed to `loftTub` (kit.js `subdivideProfile`). Index i is the segment
+ * from authored point i to point i+1, and the number is how far off the chord its middle bulges,
+ * in metres. Only the FLANK is cambered: the underbody is never seen, and the deck and the belt
+ * roll already carry their own crown from `bodySection`.
+ *
+ *   3→4 rocker → lower door        the biggest run on the car (200-260 mm) and the one that was
+ *                                  reflecting the ground as one flat plate
+ *   4→5 lower door → swage         short; a little camber keeps the approach to the crease convex
+ *   5→6 swage → shoulder           the tumblehome; curved, so the horizon sweeps across it
+ *   6→7 shoulder → belt            the hard roll-over that catches the sky
+ */
+const FLANK_CAMBER = [0, 0, 0.004, 0.013, 0.005, 0.006, 0.004, 0, 0, 0, 0];
 
 /** A 9-point half cross-section of the glasshouse: belt → tumblehome → roof. */
 function cabinSection(st) {
@@ -167,14 +258,22 @@ function sampleStation(list, z) {
  * The authored half-profile runs bottom-centre → deck-centre with y non-decreasing, so a height
  * lookup is a walk down the profile with one lerp at the end.
  */
-function profileSampler(tubSections) {
+function profileSampler(tubSections, camber = null) {
   const secs = [...tubSections].sort((a, b) => a.z - b.z);
+  // …and the SAME camber the tub is skinned with (`FLANK_CAMBER`), so a part that asks "where is
+  // the bodywork at this height" gets the arc's answer and not the chord's. Without this every
+  // mirror stalk, door handle and side spear on the flank would sit up to 13 mm INSIDE the paint —
+  // which is the wave-9 "bolt-ons never make contact" finding, re-created by the fix for the wave-11
+  // one.
   const widthAt = (pts, y) => {
     if (y <= pts[0][1]) return pts[0][0];
     for (let i = 1; i < pts.length; i++) {
       if (y <= pts[i][1]) {
         const t = (y - pts[i - 1][1]) / ((pts[i][1] - pts[i - 1][1]) || 1);
-        return lerp(pts[i - 1][0], pts[i][0], t);
+        const cb = camber ? (camber[(i - 1) % camber.length] || 0) : 0;
+        const dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1];
+        const nx = cb ? dy / (Math.hypot(dx, dy) || 1) : 0;
+        return lerp(pts[i - 1][0], pts[i][0], t) + nx * cb * Math.sin(Math.PI * t);
       }
     }
     return pts[pts.length - 1][0];
@@ -263,10 +362,12 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    *   - the livery is drawn in the tub's own skin coordinates, so its anchors have to come from the
    *     parameterisation the tub actually ended up with.
    */
-  const tubSections = bp.body.map((s) => bodySection(s.z, s));
+  const flank = flankField(bp);
+  const camber = bp.camber ?? FLANK_CAMBER;
+  const tubSections = bp.body.map((s) => bodySection(s.z, flank(s)));
   const wb = bp.dims.wheelbase;
   const trF = bp.dims.track, trR = bp.dims.trackRear ?? bp.dims.track;
-  const bodyAt = profileSampler(tubSections);
+  const bodyAt = profileSampler(tubSections, camber);
   const deckAt = deckSampler(tubSections);
   const wcfg = (cfg) => ({
     ...cfg, style: cfg.style || bp.wheels.style,
@@ -316,6 +417,8 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   }
   const tubGeo = loftTub(tubSections, {
     openings,
+    // the flank's camber — see FLANK_CAMBER
+    bow: camber,
     // The tuner and the truck wear satin bolt-on over-fenders. `archBlackBand` is how far down the
     // flare's fall-off the black runs (1 = only the lip itself, 0 = the whole flare): the plastic
     // is a band of the SHELL, so the over-fender and the wing it sits on share every vertex along
@@ -1158,11 +1261,21 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     }
   }
 
-  // door handles
+  /**
+   * Door handles — SNAPPED TO THE FLANK, not to a number typed once.
+   *
+   * WAVE-11. Every handle carried a hand-measured `x`, and the wave-11 flank crown moves the skin
+   * at the beltline by up to 40 mm, so the muscle car's handle went from 5 mm proud to 38 mm buried
+   * in one edit and simply vanished from the side view. The same class of bug the wave-10 note over
+   * `deckSampler` describes, on the other axis: a part declares its station and the assembler puts
+   * it on the surface the loft actually ended up with. `x` is kept as an optional override.
+   */
   for (const hcfg of bp.handles || []) {
+    const hw = hcfg.w ?? 0.035, hh = hcfg.h ?? 0.045, hd = hcfg.d ?? 0.16;
+    const px = hcfg.x ?? (bodyAt(hcfg.z, hcfg.y) + hw * 0.5 - (hcfg.sink ?? 0.010));
     for (const sx of [-1, 1]) {
-      const h = new THREE.Mesh(roundedBox(0.035, 0.045, 0.16, 0.018), hcfg.mat === 'paint' ? paintSolid : chrome);
-      h.position.set(sx * hcfg.x, hcfg.y, hcfg.z);
+      const h = new THREE.Mesh(roundedBox(hw, hh, hd, 0.018), hcfg.mat === 'paint' ? paintSolid : chrome);
+      h.position.set(sx * px, hcfg.y, hcfg.z);
       detail.add(h);
     }
   }

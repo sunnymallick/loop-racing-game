@@ -76,6 +76,36 @@ export const blueprint = {
    * and rear) now carries 30-44 mm of crown over a narrower flat, so the panel rolls from the arch
    * up to the bonnet/engine-deck line and the sky reflection SWEEPS across it instead of filling it.
    */
+  /**
+   * ---- THE FLANK, CROWNED (wave-11) -------------------------------------------------------
+   *
+   * A mid-engine car's body line is the opposite of a muscle car's: it starts high on the front
+   * wing, falls into the door to make the waist that feeds the side intake, then RISES hard over
+   * the rear haunch where the engine sits. That S is what the reflection has to draw. The swage
+   * peaks at 0.70 d just ahead of the intake mouth and is down at 0.48 d over the rear axle, so the
+   * highlight sweeps down the door and then climbs the haunch — 130 mm of vertical travel over
+   * 1.4 m of car, which is a diagonal, not a stripe.
+   */
+  flank: {
+    crease: [
+      [-2.31, 0.600], [-2.10, 0.565], [-1.79, 0.500], [-1.43, 0.470], [-1.06, 0.610],
+      [-0.54, 0.730], [-0.28, 0.710], [0.10, 0.660], [0.66, 0.590], [1.06, 0.530],
+      [1.43, 0.480], [1.71, 0.520], [2.00, 0.565], [2.31, 0.610],
+    ],
+    shoulder: [
+      [-2.31, 0.09], [-1.79, 0.15], [-1.06, 0.26], [-0.26, 0.30],
+      [0.66, 0.26], [1.43, 0.15], [2.31, 0.09],
+    ],
+    swell: [
+      [-2.31, 0], [-1.79, 0.011], [-1.43, 0.015], [-1.06, 0.012],
+      [-0.26, 0.010], [0.66, 0.009], [1.43, 0.008], [2.16, 0.001], [2.31, 0],
+    ],
+    bow: [
+      [-2.31, 0], [-1.90, 0.008], [-1.30, 0.016], [-0.26, 0.018],
+      [0.66, 0.013], [1.43, 0.007], [2.31, 0],
+    ],
+  },
+
   body: [
     /**
      * ---- WAVE-10: RE-CUT AS A MID-ENGINE CAR --------------------------------------------------
@@ -320,7 +350,7 @@ export const blueprint = {
   // and a saturated red brick beside the screen was the loudest object in the round-5 hero crop
   mirrors: { x: 0.90, y: 0.90, z: 0.88, painted: false },
   // see muscle.js — the flank measures 0.9412 at this station
-  handles: [{ x: 0.950, y: 0.80, z: 0.14, mat: 'paint' }],
+  handles: [{ y: 0.80, z: 0.14, mat: 'paint' }],
 
   trim: [
     // FRONT LIP. 1.44 m under a 1.67 m undertray, so it is 115 mm inboard of the bodywork on each

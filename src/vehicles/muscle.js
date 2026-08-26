@@ -95,6 +95,41 @@ export const blueprint = {
   // over all four cabins.
   glass: { tint: '#070c12', opacity: 0.54 },
 
+  /**
+   * ---- THE FLANK, CROWNED (wave-11) -------------------------------------------------------
+   *
+   * The verdict measured this car's side view and found the specular band nailed at y=375 across
+   * 320 px of door and quarter. See `flankField` in assemble.js for what the four tables do; these
+   * are the numbers for a '70 fastback:
+   *
+   *   the swage line starts low at the front wheel (0.52 d, i.e. just above the wheel centre),
+   *   CLIMBS steadily through both doors to 0.70 d at the rear shut, then PINCHES DOWN hard to
+   *   0.55 d as it runs out over the rear axle — which is what a coke-bottle haunch does and why
+   *   the highlight on a Charger sweeps down into the back wheel instead of ruling a line.
+   *
+   *   the shoulder break opens from 90 mm at the nose to 180 mm over the doors, so the band of
+   *   tumblehome between the two creases widens through the cabin and closes at both ends.
+   */
+  flank: {
+    crease: [
+      [-2.58, 0.620], [-2.30, 0.600], [-1.94, 0.555], [-1.62, 0.520], [-1.49, 0.548],
+      [-1.20, 0.685], [-1.02, 0.750], [-0.35, 0.700], [0.25, 0.615], [0.66, 0.560],
+      [1.05, 0.510], [1.42, 0.480], [1.80, 0.520], [2.12, 0.575], [2.48, 0.620],
+    ],
+    shoulder: [
+      [-2.58, 0.09], [-1.94, 0.15], [-1.30, 0.28], [-0.35, 0.32],
+      [0.66, 0.27], [1.42, 0.17], [2.48, 0.09],
+    ],
+    swell: [
+      [-2.58, 0], [-1.94, 0.008], [-1.30, 0.012], [-0.35, 0.015],
+      [0.30, 0.014], [1.05, 0.008], [2.12, 0.002], [2.48, 0],
+    ],
+    bow: [
+      [-2.58, 0], [-2.00, 0.006], [-1.40, 0.014], [-0.35, 0.016],
+      [0.66, 0.012], [1.42, 0.007], [2.12, 0.003], [2.48, 0],
+    ],
+  },
+
   // ---- the tub: ground → beltline, with the bonnet, the cabin recess and the boot lid ----
   body: [
     { z: -2.58, w: 0.790, y0: 0.50, floor: 0.55, rocker: 0.95, ySill: 0.62, yBelt: 0.90, belt: 0.96, yDeck: 0.90, deck: 0.92, crown: 0.005 },
@@ -284,7 +319,7 @@ export const blueprint = {
   mirrors: { x: 0.842, y: 1.06, z: 0.60, mat: 'chrome', scale: 0.84 },
   // x 0.955 -> 0.912: the handle is 35 mm thick and the flank measures 0.9067 at its own station,
   // so its INNER face stood 31 mm clear of the paint — a chrome bar floating beside the door.
-  handles: [{ x: 0.912, y: 0.94, z: -0.20 }],
+  handles: [{ y: 0.94, z: -0.20 }],          // x solved against the flank — see assemble.js
 
   trim: [
     /**
