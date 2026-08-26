@@ -485,15 +485,15 @@ export const NITRO = {
     ramp: 0.13, curve: 0.52, surge: 0.88, surgeTime: 0.22, color: '#3ce0ff',
     fx: {
       core: '#f4ffff', mid: '#1ecfff', edge: '#0a30f5', spark: '#cdf4ff',
-      len: 3.60, rad: 0.505, merge: 0.0, standoff: 0.10, flameRise: 0.045,
+      len: 3.60, rad: 0.556, merge: 0.0, standoff: 0.10, flameRise: 0.045,
       // profile = [throat fraction, station of the widest point, decay exponent, TAIL fraction].
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.44, 0.18, 1.72, 0.070],   // slim needle: closes fastest of the four
-      bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.28, bandFade: 0.32, flick: 62, turb: 0.84,
+      bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 0.86, hotI: 6.90, burn: 0.30, filW: 0.112, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.72, skirtI: 0.68, bodyD: 1.78, thick: 0.82, occ: 0.94,
-      rimR: 0.97, rimW: 0.100, rimI: 1.10, rimE: 1.75,
+      rimR: 0.95, rimW: 0.100, rimI: 1.10, rimE: 1.75,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
@@ -505,12 +505,12 @@ export const NITRO = {
     ramp: 0.52, curve: 1.20, surge: 0.62, surgeTime: 0.44, color: '#ff7a1e',
     fx: {
       core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
-      len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
+      len: 4.00, rad: 0.600, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.72, 0.100, 1.30, 0.095],  // fat barrel, widest right off the bumper
-      bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.22, bandFade: 0.34, flick: 28, turb: 1.12,
+      bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.34, bandFade: 0.34, flick: 28, turb: 1.12,
       gasGain: 0.74, hotI: 4.70, burn: 0.40, filW: 0.096, bodyW: 0.49, wisp: 0.94,
       skirtW: 0.86, skirtI: 1.00, bodyD: 1.78, thick: 0.86, occ: 0.94,
-      rimR: 1.03, rimW: 0.195, rimI: 0.88, rimE: 1.20,
+      rimR: 0.99, rimW: 0.195, rimI: 0.88, rimE: 1.20,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 13.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
@@ -523,9 +523,9 @@ export const NITRO = {
     ramp: 0.78, curve: 1.55, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
-      len: 3.70, rad: 0.555, merge: 0.050, standoff: 0.13, flameRise: 0.26,
+      len: 3.70, rad: 0.611, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.12, profile: [0.76, 0.090, 1.14, 0.110],  // blunt bell — fat off the pipe, stubby
-      bands: 3.4, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.18, bandFade: 0.42, flick: 16, turb: 1.28,
+      bands: 3.4, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.28, bandFade: 0.42, flick: 16, turb: 1.28,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
@@ -533,7 +533,7 @@ export const NITRO = {
       // half of the frame" — this is the number that fixes that, not the post chain.
       gasGain: 0.74, hotI: 4.40, burn: 0.44, filW: 0.086, bodyW: 0.54, wisp: 1.05,
       skirtW: 0.96, skirtI: 1.04, bodyD: 1.62, thick: 0.86, occ: 0.94,
-      rimR: 1.08, rimW: 0.210, rimI: 0.88, rimE: 1.30,
+      rimR: 1.00, rimW: 0.210, rimI: 0.88, rimE: 1.30,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
@@ -546,12 +546,12 @@ export const NITRO = {
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
-      len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
+      len: 4.60, rad: 0.600, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.42, 0.220, 1.70, 0.068],  // long spindle — the slenderest of the four
-      bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.30, bandFade: 0.30, flick: 74, turb: 0.76,
+      bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
       gasGain: 0.68, hotI: 6.20, burn: 0.28, filW: 0.105, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.70, skirtI: 0.62, bodyD: 1.78, thick: 0.80, occ: 0.94,
-      rimR: 0.96, rimW: 0.092, rimI: 1.20, rimE: 1.90,
+      rimR: 0.94, rimW: 0.092, rimI: 1.20, rimE: 1.90,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 17.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
@@ -888,7 +888,9 @@ function ringTexture() {
  */
 export function coneW(t, prof) {
   const [neck, peakAt, spread, tip] = prof || [0.40, 0.15, 1.10, 0.10];
-  const rise = neck + (1 - neck) * smoothstep(0, Math.max(peakAt, 1e-3), t);
+  // (r23) pow, not smoothstep: a rise that reaches its peak with zero slope draws a rounded top,
+  // and a rounded top photographs as a plateau. See the r23 note in halfW().
+  const rise = neck + (1 - neck) * Math.pow(clamp(t / Math.max(peakAt, 1e-3), 0, 1), 0.78);
   const u = clamp((t - peakAt) / Math.max(1 - peakAt, 1e-3), 0, 1);
   // ── (r17) THE DECAY RUNS THE WHOLE LENGTH, IT DOES NOT FALL OFF A CLIFF ──────────────────
   // Every profile up to r16 multiplied a term that reached exactly ZERO at t = 1, and the measured
@@ -1052,7 +1054,16 @@ const PLUME_FRAG = /* glsl */`
   // smooth decay to a fixed TIP FRACTION over the whole length. Used both for the marched samples
   // and, below, to shrink the bounding cylinder to the width the ray actually passes through.
   float halfW(float t){
-    float rise = uProf.x + (1.0 - uProf.x) * smoothstep(0.0, max(uProf.y, 1e-3), t);
+    // ── (r23) THE FLARE ENDS ON A CORNER. A ROUNDED TOP IS THE PLATEAU. ───────────────────
+    // smoothstep(0, peakAt, t) reaches 1 with ZERO SLOPE, so the widest point of the cone was
+    // not a point at all: the profile sat within 7% of its maximum from t = 0.14 to t = 0.28,
+    // which on this rig is 62 px of screen — measured (tools/_n23_sil.mjs, vegas supercar) as
+    // "60,62,64,64.5,65.5,65,64,63" over s = 96..152. That IS the "80 px flat plateau" the wave-10
+    // critic scanned, and it is drawn by the profile itself rather than by anything stacked on it.
+    // pow(x, 0.78) rises to the same peak but arrives with slope 0.78/peakAt, and the decay leaves
+    // it with slope -spread(1-tip)/(1-peakAt) — for the supercar +2.06 in, -2.03 out. A throat, a
+    // measurable expansion angle, an apex, and then a taper that starts narrowing IMMEDIATELY.
+    float rise = uProf.x + (1.0 - uProf.x) * pow(clamp(t / max(uProf.y, 1e-3), 0.0, 1.0), 0.78);
     float uu   = clamp((t - uProf.y) / max(1.0 - uProf.y, 1e-3), 0.0, 1.0);
     return uR0 * rise * (uProf.w + (1.0 - uProf.w) * pow(1.0 - uu, uProf.z))
          * clamp(1.0 + uPersp * t, 0.20, 2.40);
@@ -1262,7 +1273,7 @@ const PLUME_FRAG = /* glsl */`
       float jit = mix(h21(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0)),
                       h21(vec2((ci + 1.0) * 0.61 + 0.5, uPhase * 9.0 + 3.0)), cw);
       float amp = smoothstep(0.006, 0.045, ts) * exp(-uBandFade * ph) * uBandAmt
-                * (0.60 + 0.72 * jit)
+                * (0.74 + 0.50 * jit)
                 * (0.88 + 0.14 * sin(uTime * uFlick * 0.31 + cf * 1.7));
       amp = clamp(amp, 0.0, 1.0);
       // ── AND A CELL IS TWO DIFFERENT SHAPES AT ONCE ─────────────────────────────────────────
@@ -1326,8 +1337,26 @@ const PLUME_FRAG = /* glsl */`
       // pipe and only the tail snakes), in a direction that itself turns with distance.
       float wn = vn(vec2(t * 3.4 - uTime * 1.5, uPhase * 5.0 + 2.0));
       float wa = wn * 6.2831853;
+      // ── (r23) IT WANDERS BY A FIXED FRACTION OF THE LOCAL HALF-WIDTH, AND IT IS ALREADY
+      //          WANDERING BY THE TIME THE CONE PEAKS ─────────────────────────────────────────
+      // Two separate ways this term was inflating the outer half of the column, and between them
+      // they are most of the "re-widening tail" the wave-10 critic measured:
+      //   · the amplitude was uR0 * max(w/uR0, 0.10) — an ABSOLUTE floor. Past t ~ 0.85 the class
+      //     cone is under a tenth of the throat, so the floor took over and the axis swung by up
+      //     to 0.9 of the LOCAL half-width: the tail stopped narrowing and started shedding
+      //     detached islands (measured at s = 440-520 and again at s = 664-800, both of them
+      //     outside anything the cone still occupies). It is now w * (...) outright, with no floor
+      //     at all, so a station that is a tenth as wide wanders a tenth as far.
+      //   · and smoothstep(0.04, 0.80, t) ramped the wander IN over exactly the span where the
+      //     cone is necking OUT — 10% of full at t = 0.2, 84% at t = 0.58 — so the displacement
+      //     grew relative to the envelope all the way down the column. Ablation says what that
+      //     costs: rendered width / designed envelope runs 1.33 at the throat and 1.89 two fifths
+      //     of the way down, which turns a designed 2.16:1 taper into a rendered 1.76:1. It is
+      //     fully on by a quarter of the way down now, so it is a constant fraction thereafter.
+      // Peak displacement is 0.30 * uTurb local half-widths (0.23 supercar, 0.38 SUV) against
+      // 0.85 * uTurb before, and the plume's absolute envelope is uReach + that, at every station.
       vec2 rr = rq - vec2(cos(wa), sin(wa))
-              * (uR0 * (0.30 + 0.55 * wn) * uTurb * smoothstep(0.04, 0.80, t) * max(w / uR0, 0.10));
+              * (w * (0.09 + 0.21 * wn) * uTurb * smoothstep(0.02, 0.24, t));
 
       float rl = length(rr);
       float q  = rl / w;                        // true radius, in local half-widths
@@ -1372,8 +1401,16 @@ const PLUME_FRAG = /* glsl */`
         // Detached gas: fl CUBED is mostly zero and occasionally a real blob, well outside the
         // column. That is what tears the outline up — softness is not irregularity, and a smooth
         // analytic falloff reads as the edge of an OBJECT however gradual it is.
+        // (r23) ...and they are CONFINED. smoothstep(0.34, 1.20, q) rose all the way to the cut,
+        // so the wisps were densest exactly where nothing else was — the one term in the file
+        // whose weight moved OUTWARD as the column necked, which is how a tail re-inflates. They
+        // now live in a band around 0.9 half-widths and are gone before the shell, so they tear
+        // the outline up from the inside instead of drawing a second, wider one outside it. The
+        // station ramp closes at 0.26 rather than 0.44 for the same reason as the wander: a term
+        // that fades IN while the cone fades OUT is a taper cancelled.
         float wsp = fl * fl * fl * uWisp * exp(-q2 / 1.30)
-                  * smoothstep(0.34, 1.20, q) * smoothstep(0.05, 0.44, t);
+                  * smoothstep(0.30, 0.86, q) * (1.0 - smoothstep(0.86, 1.16, q))
+                  * smoothstep(0.05, 0.26, t);
 
         // ── (r21) THE PLUME HAS TO HAVE AN EDGE THE EYE CAN FIND ─────────────────────────────
         // Twenty rounds of measurement all agree that the class cone is correct in the DATA — an
@@ -1416,7 +1453,10 @@ const PLUME_FRAG = /* glsl */`
         // the whole cross-section — one flat navy wedge with a boundary, which trades "no edge"
         // for "a slab". The shell now carries very little density (it is a LINE, and a line does
         // not occlude a road) and instead has its own emission term below.
-        float qr  = uRimR * (0.87 + 0.26 * fl);
+        // (r23) 0.87 + 0.26*fl -> 0.905 + 0.15*fl. The shell IS the drawn outline, so a centre
+        // that swings over a quarter of a half-width is a quarter of a half-width of taper thrown
+        // away at every station — and it swung outward as often as in, which is a bulge.
+        float qr  = uRimR * (0.905 + 0.15 * fl);
         float dqr = (q - qr) / uRimW;
         float g4  = exp(-dqr * dqr);
 
@@ -1432,7 +1472,7 @@ const PLUME_FRAG = /* glsl */`
         // so the cut cannot draw a step and there is no radius at which a straight edge appears —
         // what it draws is a KNEE, which is the one thing an infinite gaussian could never give
         // the eye to find.
-        float cut = 1.0 - smoothstep(uReach * 0.80, uReach * 1.0, q);
+        float cut = 1.0 - smoothstep(uReach * 0.82, uReach * 1.0, q);
         cut *= cut;
         // ...and the same at both ends of the column. The tail runs out of gas at a different
         // station on every side and in every frame: the axial jitter alone terminated the whole
@@ -1441,7 +1481,14 @@ const PLUME_FRAG = /* glsl */`
         // index and in azimuth, i.e. it drew a straight line across the column and three straight
         // radial spokes around it. vn is value noise — smooth in both arguments — so the station
         // the column runs out of gas at now varies continuously around it and along it.
-        float endJ = 0.30 * (fl - 0.5) + 0.10 * (vn(vec2(cf * 0.72, c.x * 1.60 + 3.0)) - 0.5);
+        // (r23) 0.30/0.10 -> 0.13/0.05. At +-0.20 of the column's own length the tail did not end,
+        // it DISINTEGRATED over the last two fifths, and what the scan found past the visible tip
+        // was a string of detached blobs (s = 664..800 on the vegas supercar, i.e. a fifth of the
+        // frame beyond anything the cone occupies). The wave-10 critic photographed one of them on
+        // the SUV and called it "a detached amoeba-shaped wisp". The column still runs out of gas
+        // at a different station on every side and in every frame; it now does it over a tenth of
+        // its length instead of over half of it.
+        float endJ = 0.13 * (fl - 0.5) + 0.05 * (vn(vec2(cf * 0.72, c.x * 1.60 + 3.0)) - 0.5);
         float ax = smoothstep(-0.010, 0.030, tr) * (1.0 - smoothstep(uEnd0, uEnd1, tr + endJ));
         // the gas washes out into the asphalt over ~0.8 m instead of being sliced by it
         float gnd = smoothstep(-0.22, 0.62, hy);
@@ -1470,7 +1517,15 @@ const PLUME_FRAG = /* glsl */`
           // root is still gas on the lip (r7's "bare dark road between the bumper and the flame"
           // was a density hole, not an exposure one) — it is simply class-coloured rather than
           // white, which is what lets the eye see how narrow it is.
-          float lit = 0.20 + 0.80 * smoothstep(0.006, 0.105, t);
+          // ── (r23) ...AND IT HAS TO BE ALIGHT BEFORE THE CONE'S WIDEST STATION ───────────
+          // The ramp was a fixed 0.006-0.105 while peakAt is 0.09 (SUV) to 0.22 (supercar), so on
+          // three classes out of four the gas was still lighting UP while the cone had already
+          // started necking DOWN — the two cancelled and the rendered maximum landed downstream of
+          // the geometric one. Measured with tools/_n22_cmp.mjs on the vegas supercar: designed
+          // peak at t = 0.19, rendered peak at t = 0.25, and the width flat to within 3% across
+          // the whole span between them. Keyed to the class peak it is always fully lit by 55% of
+          // the way to the throat's widest point, so the rendered apex is the designed apex.
+          float lit = 0.20 + 0.80 * smoothstep(0.006, max(uProf.y * 0.55, 0.03), t);
           float bodyA  = (0.46 + 0.54 * exp(-t * 1.05)) * puff * (0.62 + 0.38 * lit);
           float skirtA = uSkirtI * (0.30 + 0.70 * smoothstep(0.0, 0.22, t)) * exp(-t * 0.50) * puff;
           // (r21) The shear shell. It lights up a little way off the lip (a jet leaving a pipe has
@@ -1479,8 +1534,17 @@ const PLUME_FRAG = /* glsl */`
           // before its interior does ends in a smudge, and a smudge has no taper in it. A shock
           // node compresses the shell as well as the body, so the two converging flank lines are
           // ALSO where the neck-and-belly reads: the train is drawn on the silhouette.
-          float rimA = uRimI * smoothstep(0.015, 0.14, t) * (0.42 + 0.58 * exp(-t * 0.85))
-                     * puff * (1.0 + node * 0.85);
+          // (r23) same, keyed to the class peak — and it fades a shade faster than the body, so
+          // the shell can never become the whole outline in the tail (see the r23 envelope note).
+          float rimA = uRimI * smoothstep(0.012, max(uProf.y * 0.62, 0.03), t)
+                     * (0.34 + 0.66 * exp(-t * 1.15))
+                     // ── (r23) A NODE MAY NOT RE-INFLATE THE OUTLINE IT IS SUPPOSED TO PINCH ──
+                     // At *0.85 a shock node brightened the shell by 56% at exactly the station
+                     // where it necks the column by 20%, and a brighter line crosses the eye's
+                     // threshold further out: the two cancelled and the train left NO trace in the
+                     // rendered silhouette (43 stations scanned, not one periodic wobble). The
+                     // node's job on this layer is to move the line, not to fatten it.
+                     * puff * (1.0 + node * 0.30);
           // ── ONLY A KNOT MAY GO WHITE ────────────────────────────────────────────────────────
           // Base authority 0.58 against a node term of 0.95, so the filament is continuous down
           // the whole column (a thread that is absent between nodes is a DASHED LINE) but only
@@ -1594,7 +1658,14 @@ const PLUME_FRAG = /* glsl */`
           // and the shear layer holds past that: uMid owns the column, uEdge is the FRINGE it
           // was named for, and the four palettes separate over the whole plume rather than in a
           // rim you have to go looking for.
-          vec3 col = mix(uEdge, uMid, smoothstep(0.012, 0.16, T));
+          // (r23) 0.16 -> 0.24. r22 moved this knee down to stop the column being uEdge (which is
+          // a nearly-black saturated blue by design) and overshot: completing at 0.16 put uMid on
+          // essentially the whole cross-section, and the wave-10 critic measured the result
+          // directly — "chroma is essentially FLAT from axis to edge, 166,176,184,188,184,171,177,
+          // 167,156,160,157 then a cliff to 3", i.e. no core-to-fringe temperature ramp at all,
+          // which is a rod. At 0.24 uMid still owns the lit body but the outer third of the radius
+          // is a genuine walk down towards the class edge colour, so there is a ramp to read.
+          vec3 col = mix(uEdge, uMid, smoothstep(0.010, 0.24, T));
           // (r20) 0.54/1.32 -> 0.70/1.45. The gas BETWEEN two diamonds sits at T ~ 0.8, and at the
           // old thresholds that was already a third of the way to a colour which is itself 30%
           // white — so the column had a permanent pale wash on it and a diamond had to climb out
@@ -1744,8 +1815,21 @@ const PLUME_FRAG = /* glsl */`
  * 6:1 cone photographs as a bar: a boundary set by brightness rather than by geometry cannot
  * taper. The gas now ends where the shell is: it rises into the limb and stops within ~0.3 of a
  * half-width of it, so the outline the eye finds IS the class cone, at every station.
+ *
+ * ── (r23) 1.42 -> 1.26, AND THE ENVELOPE IS NOW A HARD FRACTION OF THE CLASS CONE ────────────
+ * This constant is the plume's contract with the frame: NOTHING may be non-zero further than
+ * uReach local half-widths from the axis. It was only half a contract, because the axis itself
+ * wandered by up to 0.85*uTurb half-widths on top of it and the wander grew relative to the cone
+ * all the way down the column — so the real envelope was 2.07 half-widths on the supercar and
+ * 2.51 on the SUV, and it was WIDER, in units of the local cone, at the tail than at the throat.
+ * Measured (tools/_n23_sil.mjs): rendered width divided by the designed envelope ran 1.33 at the
+ * throat, 1.53 at a fifth, 1.68 at a third and 1.89 at two fifths, which is a 42% relative
+ * inflation of the outer half — exactly enough to turn a designed 2.16:1 taper into a rendered
+ * 1.76:1 lozenge. With the wander proportional and capped at 0.30*uTurb, the envelope is
+ * 1.26 + 0.30*uTurb half-widths at EVERY station: 1.49 on the supercar, 1.64 on the SUV, and
+ * constant, so whatever the cone does the silhouette does.
  */
-const PLUME_REACH = 1.42;
+const PLUME_REACH = 1.26;
 /** Flat margin on the rasterisation proxy, as a multiple of the throat radius. NEVER cut to the gas. */
 const PLUME_PAD = 1.30;
 
@@ -2253,7 +2337,12 @@ export class NitrousJet {
       // Twin outlets fed by one bottle still do not burn identically. A few per cent of length and
       // width difference is what stops the pair reading as one mirrored object drawn twice — the
       // "railway track" look two perfectly matched columns give.
-      const lenMul = 1 + (ni % 2 ? -0.055 : 0.055);
+      // (r23) +-5.5% -> +-3.0%. The shock phase runs on the station normalised by the nozzle's
+      // OWN length, so a 11% length difference walks the two trains half a cell apart by the tail
+      // and their nodes fill each other's waists — which is one of the reasons the neck never
+      // reached the frame. Twin pipes off one bottle stand at one pressure; 6% is still enough
+      // that the pair does not read as one object drawn twice.
+      const lenMul = 1 + (ni % 2 ? -0.030 : 0.030);
       const radMul = 1 + (ni % 2 ? 0.04 : -0.04);
       this.nozzles.push({ group: g, shells, core, coreMat, sheath, sheathMat: coreMat, coreRoll: 0, disc, flash, ring, phase, lenMul, radMul, base: g.position.clone() });
     }
