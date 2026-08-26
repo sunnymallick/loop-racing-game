@@ -2978,7 +2978,7 @@ class Sheet {
     if (relief) {
       const nO = canvas(this.nw * cols, this.nh * rows);
       nO.ctx.fillStyle = '#8080ff'; nO.ctx.fillRect(0, 0, nO.c.width, nO.c.height);
-      this.nc = nO.c; this.nctx = nO.ctx;
+      this.nctx = nO.ctx;
       this.ntex = toTexture(nO.c, { srgb: false, wrap: THREE.ClampToEdgeWrapping });
     }
     this._base = matOpts;
