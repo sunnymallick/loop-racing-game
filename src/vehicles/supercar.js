@@ -61,6 +61,16 @@ export const blueprint = {
       boot: [V(-2.14), V(-0.56)],
       arches: [V(1.43), V(-1.43)],
     },
+    // A GT entry carries its number small and high on the door, forward of the intake — see
+    // kit.js `drawBodyPaint` §1b — plus a class letter and the series mark on the sill.
+    marks: {
+      number: '09', numberU: 0.268, numberV: 0.640, numberR: 0.027,
+      disc: '#d9dde5', discEdge: '#14171c', numberColor: '#14171c', numberItalic: 0.20,
+      sponsors: [
+        { text: 'NITRO CIRCUIT', u: 0.204, v: 0.440, size: 0.0130, color: '#d9dde5' },
+        { text: 'GTE', u: 0.268, v: 0.290, size: 0.0175, color: '#d9dde5' },
+      ],
+    },
   },
   // see muscle.js — 0.74 made the cabin a §7 black void behind the wraparound screen
   glass: { tint: '#060b11', opacity: 0.56 },

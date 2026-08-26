@@ -72,6 +72,16 @@ export const blueprint = {
       arches: [V(1.31), V(-1.31)],
       fuelCap: [0.31, V(-1.62)],
     },
+    // A time-attack car is the one class that really is covered in decals: a small door number in
+    // a roundel and three sponsor marks down the sill. See kit.js `drawBodyPaint` §1b.
+    marks: {
+      number: '21', numberU: 0.250, numberV: 0.495, numberR: 0.028,
+      disc: '#f4f6f8', discEdge: '#15171c', numberColor: '#15171c', numberItalic: 0.20,
+      sponsors: [
+        { text: 'NITRO CIRCUIT', u: 0.206, v: 0.360, size: 0.0135, color: '#f4f6f8' },
+        { text: 'TURBO 4G63', u: 0.206, v: 0.628, size: 0.0125, color: '#f4f6f8' },
+      ],
+    },
   },
   // see muscle.js — 0.72 opacity made the cabin a §7 black void; 0.60 keeps the tint and the env
   // reflection but lets the roll cage, the door cards and the shelf read through the hatch glass

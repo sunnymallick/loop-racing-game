@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RNG, clamp, lerp, smoothstep } from '../core/rng.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas, sprite } from '../core/textures.js';
+import { drawText, measure } from '../core/font.js';
 
 /**
  * Vehicle construction kit.
@@ -5402,7 +5403,7 @@ export function bodyPaintTexture(opts = {}) {
 
 function drawBodyPaint({
   base = '#1b7f6b', stripe = '#f2f2ee', accent = null, style = 'none',
-  anchors = null, panels = {}, seed = 1, size = 1024,
+  anchors = null, panels = {}, seed = 1, size = 1024, marks = null,
 } = {}) {
   const { c, ctx } = canvas(size, size);
   const rng = new RNG(seed);
@@ -5538,6 +5539,76 @@ function drawBodyPaint({
       ctx.fillStyle = stripe;
       ctx.fillRect(x0 + size * 0.006, y0 + ph * 0.44, (x1 - x0) - size * 0.012, size * 0.010);
     });
+  }
+
+  /**
+   * ---- 1b. THE MARKS: NUMBERS, SPONSORS AND A COMPOSED SPLIT --------------------------------
+   *
+   * WAVE-11 verdict on livery, verbatim: "Each car carries a distinct scheme drawn into the
+   * texture … But they are generic: no numbers, sponsor marks or designed two-tone splits."
+   *
+   * A stripe is not a livery. What makes the reference frames read as a RACE is that every car is
+   * carrying identification — a competition number in a plate or a roundel, a class letter, a run
+   * of sponsor wordmarks along the sill — and those are the marks that also tell you the four cars
+   * belong to the same series. All of it is set in our own vector font (`core/font.js`), so no
+   * system family is touched.
+   *
+   * THE ORIENTATION PROBLEM, and why the marks are not drawn inside `mirrorDraw`.
+   *
+   * This canvas is the loft's skin: X is u — AROUND the section, i.e. UP the car's side — and Y is
+   * v, along the length with the nose at the top. Text therefore has to be turned a quarter turn
+   * to lie along the flank. And the two sides are the two halves of the ring, so the left flank is
+   * u -> 1 - u, which means "up the car" is +X on the right half and -X on the left: mirroring the
+   * canvas the way the stripes do would hand the far side an upside-down number. Each side gets its
+   * own quarter turn instead — +90 deg on the right half, -90 deg on the left — which lands the
+   * glyphs upright and reading nose-to-tail on both flanks.
+   */
+  if (marks) {
+    const flankText = (txt, u, v, px, o = {}) => {
+      for (const side of [1, -1]) {
+        ctx.save();
+        ctx.translate(side > 0 ? X(u) : size - X(u), Y(v));
+        ctx.rotate(side * Math.PI / 2);
+        drawText(ctx, txt, {
+          x: 0, y: 0, size: px, align: 'center', tracking: o.tracking ?? 0.06,
+          italic: o.italic ?? 0, face: o.face ?? 'display', weight: o.weight,
+          color: o.color ?? stripe, outline: o.outline ?? null,
+        });
+        ctx.restore();
+      }
+    };
+    /**
+     * THE COMPETITION ROUNDEL. A disc in the stripe colour with a hairline of the accent round it
+     * and the number cut out of the middle: three concentric hard edges, which is what survives at
+     * chase distance where a bare numeral on body colour turns to mush.
+     */
+    if (marks.number) {
+      const cu = marks.numberU ?? (uAt(iCrease) + uAt(iShoulder)) * 0.5;
+      const cv = marks.numberV ?? 0.44;
+      const r = size * (marks.numberR ?? 0.052);
+      for (const side of [1, -1]) {
+        const cx = side > 0 ? X(cu) : size - X(cu), cy = Y(cv);
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(side * Math.PI / 2);
+        ctx.beginPath(); ctx.ellipse(0, 0, r * 1.06, r, 0, 0, Math.PI * 2);
+        ctx.fillStyle = marks.discEdge || accent || '#15171c'; ctx.fill();
+        ctx.beginPath(); ctx.ellipse(0, 0, r * 0.94, r * 0.885, 0, 0, Math.PI * 2);
+        ctx.fillStyle = marks.disc || stripe; ctx.fill();
+        drawText(ctx, marks.number, {
+          x: 0, y: r * 0.44, size: r * 1.30, align: 'center', tracking: 0.02,
+          italic: marks.numberItalic ?? 0.16, color: marks.numberColor || accent || '#15171c',
+        });
+        ctx.restore();
+      }
+    }
+    // …and the wordmarks. Small, low on the door or along the sill, in the same family as the HUD.
+    for (const sp of marks.sponsors || []) {
+      flankText(sp.text, sp.u ?? (uAt(iRocker) + 0.030), sp.v ?? 0.30, size * (sp.size ?? 0.026), {
+        color: sp.color || stripe, italic: sp.italic ?? 0.14, face: sp.face || 'display',
+        tracking: sp.tracking ?? 0.10,
+      });
+    }
   }
 
   // ---- 2. surfacing: crease highlight, shoulder shade, rocker shadow ----

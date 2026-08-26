@@ -88,6 +88,20 @@ export const blueprint = {
       arches: [V(1.49), V(-1.49)],
       fuelCap: [0.30, V(-2.10)],
     },
+    /**
+     * ---- THE RACE MARKS (wave-11) -----------------------------------------------------------
+     * "no numbers, sponsor marks or designed two-tone splits". A '70 stocker runs a big painted
+     * roundel on the door and a run of decals along the lower quarter; both are set in the game's
+     * own vector face (kit.js `drawBodyPaint` §1b).
+     */
+    marks: {
+      number: '05', numberU: 0.281, numberV: 0.470, numberR: 0.029,
+      disc: '#f2efe6', discEdge: '#1b1d23', numberColor: '#141821', numberItalic: 0.18,
+      sponsors: [
+        { text: 'NITRO CIRCUIT', u: 0.228, v: 0.352, size: 0.0120, color: '#f2efe6' },
+        { text: '440 SIX PACK', u: 0.228, v: 0.588, size: 0.0112, color: '#f2efe6' },
+      ],
+    },
   },
   // The interior has to survive the pane (§7 caps an empty black void at 72), so the opacity stays
   // low — but the TINT goes deep. A privacy screen is a very dark glass you can still see through;

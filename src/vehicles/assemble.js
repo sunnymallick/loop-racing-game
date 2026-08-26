@@ -468,6 +468,9 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const lp = bp.livery?.panels || {};
   const upperCfg = {
     ...liveryCfg,
+    // …and no race marks on the roof map: a door roundel printed over the cabin band would land
+    // on the C-pillar, which is round 2's "badge on the SUV's roof" one scale down.
+    marks: null,
     panels: { stripeWidth: lp.stripeWidth, stripeGap: lp.stripeGap, splitIndex: lp.splitIndex, badge: false },
   };
   const mkPaint = (map) => paintMaterial({

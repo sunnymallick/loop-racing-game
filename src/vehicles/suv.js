@@ -62,6 +62,15 @@ export const blueprint = {
       arches: [V(1.58), V(-1.58)],
       fuelCap: [0.30, V(-1.86)],
     },
+    // The rally door plate this style already draws had no NUMBER in it, which is most of what a
+    // door plate is. See kit.js `drawBodyPaint` §1b.
+    marks: {
+      number: '44', numberU: 0.256, numberV: 0.345, numberR: 0.030,
+      disc: '#e6e2d4', discEdge: '#22252b', numberColor: '#22252b', numberItalic: 0.16,
+      sponsors: [
+        { text: 'NITRO CIRCUIT', u: 0.238, v: 0.700, size: 0.0130, color: '#e6e2d4' },
+      ],
+    },
   },
   /**
    * (COHERENCE PASS) 0.54 -> 0.68, and see `cabin.interior` below — the two are one change.
