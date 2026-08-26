@@ -2790,14 +2790,15 @@ export function trafficCones({ cache = null, seed = 1, n = 3 }) {
  *
  * What is here, and why each piece earns its place:
  *
- *  - SEVEN SILHOUETTES that break the roofline — coupe 1.33 m, sedan 1.46, wagon 1.62, SUV 1.90,
- *    pickup 1.93 (2.52 over the ladder rack), van 2.44, box truck 3.28. §7 caps "the same prop
- *    mesh repeated at a visible regular interval" at 66, and what the eye locks onto down a kerb
- *    line is the repeated OUTLINE. Nine paint swatches on one shape is still wallpaper.
- *  - ONE PAINT SHEET. Every painted panel in the fleet samples one 512² atlas whose cells carry a
- *    clearcoat ramp (a sky band across the upper surfaces, a horizon flash low on the flank, a
- *    dark rocker), a beltline crease, three door shuts, metallic flake and road grime creeping up
- *    from the sill. §7's "untextured MeshStandardMaterial in a flat colour on any large surface →
+ *  - SEVEN SILHOUETTES that break the roofline — coupe 1.33 m, sedan 1.46, wagon 1.66, SUV 1.90,
+ *    pickup 1.93 (2.7 over the ladder rack), van 2.44 (2.8 over the roof rack), box truck 3.28.
+ *    §7 caps "the same prop mesh repeated at a visible regular interval" at 66, and what the eye
+ *    locks onto down a kerb line is the repeated OUTLINE. Nine paint swatches on one shape is
+ *    still wallpaper.
+ *  - ONE PAINT SHEET. Every painted panel in the fleet samples one 1024x512 atlas whose cells
+ *    carry a clearcoat ramp (a sky band across the upper surfaces, a horizon flash low on the
+ *    flank, a dark rocker), a beltline crease, three door shuts, metallic flake and road grime
+ *    creeping up from the sill. §7's "untextured MeshStandardMaterial in a flat colour on any large surface →
  *    50" is the cap this prop was most at risk of, and a colour swatch — however well chosen — IS
  *    that tell.
  *  - The paint UVs are a PLANAR PROJECTION of the finished vehicle: u along its length, v up its
@@ -2811,10 +2812,11 @@ export function trafficCones({ cache = null, seed = 1, n = 3 }) {
  *
  * COST IS A HARD CONSTRAINT: there are dozens of these on screen at once, in ranks all along the
  * kerb of every lap, and not one of them may become a hero draw call. Eight materials cover the
- * whole fleet in any city — paint sheet, livery sheet, glass, tyre, dark trim, chrome, and the
- * three lamp glows — and PropBatch builds each (kind, variant) body ONCE and then instances or
- * merges it per material per 340 m chunk. Seventy parked vehicles cost about what the old rank of
- * four-colour boxes cost, and they are the same tier as the hero car.
+ * whole fleet in any city — paint sheet, livery sheet, glass, tyre, dark trim, chrome, steel and
+ * the three lamp glows — and PropBatch builds each (kind, variant) body ONCE and then instances or
+ * merges it per material per 340 m chunk. Measured: Vegas parks 135 vehicles and Miami 122, and
+ * every painted panel of every one of them lands in ONE buffer — 61 k triangles of a 1.04 M
+ * triangle city, at about ten draw calls for the whole kerb.
  */
 
 const FLEET_COLORS = ['#b8332f', '#2f4f8f', '#c8c4bc', '#2a2c30', '#d8a028', '#5d6d5a'];
