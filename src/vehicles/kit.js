@@ -2674,6 +2674,45 @@ export function loftTub(sections, {
     return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - rr;
   };
 
+  /**
+   * ---- APERTURE SHAPE, AND WHY A ROUNDED RECT IS NOT ENOUGH ---------------------------------
+   *
+   * WAVE-13. Every opening in every front clip in this game was the same primitive — an axis-
+   * aligned rounded rectangle — so the only vocabulary a car had for its face was WHERE the
+   * rectangles go and HOW BIG they are. Two cars that both want a wide mouth and a lamp either
+   * side of it therefore end up with the same face, which is exactly the finding: "the tuner and
+   * the supercar share one identical front clip … head-on they are the same car in two colours".
+   *
+   * Two parameters, both applied as a coordinate warp before the rounded-rect field is evaluated,
+   * so every consumer of the field (the recess push, the brow, the ray-band solver, the fan-centre
+   * clearance and the fit measurement) inherits the new shape for free:
+   *
+   *   taper   half-width scales linearly with height. +0.45 is a TRAPEZOID 45 % wider at the top
+   *           than at its centre and 45 % narrower at the bottom; negative inverts it. This is the
+   *           shape of a hatchback's grille aperture and of a canted lamp housing, and it is
+   *           nothing a supercar's letterbox can be mistaken for.
+   *   shear   x offset per unit y — leans the opening. A lamp that leans INBOARD at the bottom is
+   *           the whole "angry eye" read a tuner face lives on.
+   *
+   * The warp is not an isometry, so the returned value is a scaled distance rather than a true
+   * one. It is multiplied back by the local width factor (and by the shear's own foreshortening)
+   * so the fillet keeps its authored `rim` width to within a few per cent along the whole rim —
+   * which is all the field is ever asked for, since it is consumed as `clamp(-sd / rim, 0, 1)`.
+   */
+  const apSD = (px, py, a) => {
+    const qy = py - a.y;
+    let qx = px - a.x;
+    const sh = a.shear || 0;
+    if (sh) qx -= sh * qy;
+    let sc = 1;
+    if (a.taper) {
+      sc = Math.max(0.16, 1 + a.taper * clamp(qy / a.hh, -1, 1));
+      qx /= sc;
+    }
+    const k = Math.min(sc, 1) / Math.hypot(1, sh);
+    return rrSD(qx, qy, 0, 0, a.hw, a.hh, a.r / Math.max(sc, 1)) * k;
+  };
+
   const capPanel = (si, flip, cfg = {}) => {
     const dir = flip ? -1 : 1;                       // which way is "out of the car" here
     const zc = dense[si].z;
@@ -2718,11 +2757,18 @@ export function loftTub(sections, {
         x: a.x ?? 0, y: a.y, hw: (a.w ?? 0.2) * 0.5, hh: (a.h ?? 0.2) * 0.5, r: a.r ?? 0.035,
         depth: a.depth ?? 0.07, rim: Math.max(0.006, a.rim ?? 0.032), shade: a.shade ?? 1,
         lip: a.lip ?? 0, lipW: a.lipW ?? 0.045, flat: a.flat !== false,
+        taper: a.taper ?? 0, shear: a.shear ?? 0,
       };
+      // The warped shape's real x extent, which is what the bounds of every scan below must use —
+      // a trapezoid 45 % wider at the top reaches 45 % further out than its authored half-width,
+      // and a sheared one reaches `shear * hh` further still. Getting this wrong does not fold the
+      // mesh, it silently CLIPS the opening at the authored rectangle and the shape is lost.
+      o.ehw = o.hw * (1 + Math.abs(o.taper)) + Math.abs(o.shear) * o.hh;
       aps.push(o);
       // …and its mirror image. Authoring one side keeps a blueprint readable and guarantees the
-      // pair is symmetric to the millimetre, which a hand-typed second entry never is.
-      if (a.mirror && o.x !== 0) aps.push({ ...o, x: -o.x });
+      // pair is symmetric to the millimetre, which a hand-typed second entry never is. A sheared
+      // opening mirrors its LEAN as well as its position, or the two eyes both point left.
+      if (a.mirror && o.x !== 0) aps.push({ ...o, x: -o.x, shear: -o.shear });
     }
     /**
      * ---- COLUMNS AT AN EVEN ANGLE, NOT AT AN EVEN ARC ----------------------------------------
@@ -2778,7 +2824,7 @@ export function loftTub(sections, {
         for (const a of aps) {
           // the RIM is the hard constraint; the moulded brow outside it is a smooth bump now
           // (see `pushAt`) and only worth a fraction of a rim's clearance.
-          c = Math.min(c, rrSD(px, py, a.x, a.y, a.hw, a.hh, a.r) - (a.lip > 0 ? a.lipW * 0.35 : 0));
+          c = Math.min(c, apSD(px, py, a) - (a.lip > 0 ? a.lipW * 0.35 : 0));
         }
         return c;
       };
@@ -2941,7 +2987,7 @@ export function loftTub(sections, {
     const pushAt = (px, py) => {
       let d = 0, sh = 0, out = 0, fl = 0;
       for (const a of aps) {
-        const sd = rrSD(px, py, a.x, a.y, a.hw, a.hh, a.r);
+        const sd = apSD(px, py, a);
         if (sd < 0) {
           const f = clamp(-sd / a.rim, 0, 1);
           const dd = a.depth * Math.pow(f, 0.55);
@@ -3031,7 +3077,7 @@ export function loftTub(sections, {
       const len = Math.hypot(dx, dyv) || 1e-4;
       const bands = [];
       for (const a of aps) {
-        const sdAt = (t) => rrSD(mx + dx * t, my + dyv * t, a.x, a.y, a.hw, a.hh, a.r);
+        const sdAt = (t) => apSD(mx + dx * t, my + dyv * t, a);
         let best = Infinity, bt = 1, first = -1, last = -1;
         for (let s2 = 0; s2 <= SAMP; s2++) {
           const t = s2 / SAMP, sd = sdAt(t);
@@ -3280,7 +3326,7 @@ export function loftTub(sections, {
         const NR = 33, NC = 65;
         const pad = a.rim + 0.006;
         const yA = a.y - a.hh - pad, yB = a.y + a.hh + pad;
-        const xA = a.x - a.hw - pad, xB = a.x + a.hw + pad;
+        const xA = a.x - a.ehw - pad, xB = a.x + a.ehw + pad;
         const rIn0 = new Float64Array(NR).fill(NaN), rIn1 = new Float64Array(NR).fill(NaN);
         const rOut0 = new Float64Array(NR).fill(NaN), rOut1 = new Float64Array(NR).fill(NaN);
         const cIn0 = new Float64Array(NC).fill(NaN), cIn1 = new Float64Array(NC).fill(NaN);
@@ -3290,7 +3336,7 @@ export function loftTub(sections, {
           const py = lerp(yA, yB, NR === 1 ? 0.5 : r / (NR - 1));
           for (let c = 0; c < NC; c++) {
             const px = lerp(xA, xB, NC === 1 ? 0.5 : c / (NC - 1));
-            const sd = rrSD(px, py, a.x, a.y, a.hw, a.hh, a.r);
+            const sd = apSD(px, py, a);
             if (sd >= 0) continue;
             const t = tOf(px, py);
             const guard = smoothstep(0, 1, clamp((0.992 - t) / 0.085, 0, 1));
@@ -3317,7 +3363,7 @@ export function loftTub(sections, {
         }
         if (!any) continue;
         fits.push({
-          x: a.x, y: a.y, hw: a.hw, hh: a.hh, r: a.r, rim: a.rim, depth: a.depth,
+          x: a.x, y: a.y, hw: a.ehw, hh: a.hh, r: a.r, rim: a.rim, depth: a.depth,
           zc, dir, sinkFloor, zFloor: zc - dir * sinkFloor,
           yA, yB, xA, xB, NR, NC, rIn0, rIn1, rOut0, rOut1, cIn0, cIn1, cOut0, cOut1,
         });
