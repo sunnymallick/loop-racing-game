@@ -1657,7 +1657,7 @@ function plumeMaterial(fx, phase) {
       // gas either side of it down to 2.6:1 BEFORE the ACES curve got hold of it — i.e. it was
       // deleting the shock train on its way to the frame. With the body exposed to land near 0.7
       // instead of near 1.0 there is room above it for a knot to be genuinely brighter.
-      uSoft: { value: fx.soft ?? 0.85 },
+      uSoft: { value: fx.soft ?? 1.25 },
       // the knots' own shoulder — gentle, so a shock diamond can still clear the bloom threshold
       uHotSoft: { value: fx.hotSoft ?? 0.16 },
       // density of the detached wisps outside the column (fl^3 — sparse by construction)
