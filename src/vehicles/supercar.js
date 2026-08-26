@@ -46,7 +46,9 @@ export const blueprint = {
    * overhangs to 880 mm. The front wheel now sits close under the nose, which is half of what makes
    * a cab-forward wedge read as one.
    */
-  dims: { length: 4.62, width: 2.34, height: 1.25, wheelbase: 2.86, track: 1.850, trackRear: 1.938, rideHeight: 0.095 },
+  // WAVE-12: height 1.25 -> 1.20 with the canopy. This number is what §6.1 differentiation is
+  // read off and what menu.js frames the garage shot with, so it has to describe the actual roof.
+  dims: { length: 4.62, width: 2.34, height: 1.20, wheelbase: 2.86, track: 1.850, trackRear: 1.938, rideHeight: 0.095 },
   // the glossiest car in the game: show-car clearcoat over metallic red
   paint: { metalness: 0.30, roughness: 0.42, clearcoat: 1.0, clearcoatRoughness: 0.38, flake: 0.58, envIntensity: 0.94 },
   livery: {
@@ -212,16 +214,36 @@ export const blueprint = {
      * the roof peak sits AHEAD of the wheelbase centre, and the rear bulkhead closes at z -0.54 —
      * which leaves 1.50 m of engine deck behind it. Same section shapes, same tumblehome, same
      * roof height: only the station the cabin occupies has changed.
+     *
+     * ---- WAVE-12: …AND THE ROOF FINALLY COMES DOWN --------------------------------------------
+     *
+     * "Same roof height" was the omission. Moving the canopy 260 mm forward moved it 260 mm FURTHER
+     * from a chase camera that sits behind and above the car, and a silhouette edge that recedes
+     * rises toward the horizon: measured on la-supercar-still.png at x 800, the body-top edge went
+     * from y 499 pre-wave to y 491, so the car photographs with a taller cabin than the one it
+     * replaced. A blind A/B judge marked it, and it is the wrong direction twice over — §2.3 asks
+     * this class for a "low cab-forward wedge with a mid-engine deck", and roof height against the
+     * muscle car is the §6.1 class-differentiation axis.
+     *
+     * So the canopy is scaled about its own BELT LINE — every yRoof becomes yBelt + 0.85 x (yRoof -
+     * yBelt). Scaling about the belt rather than about the ground is what keeps this a canopy
+     * change and not a body change: yBelt, hw, rw and every z are untouched, so the shoulder line,
+     * the tumblehome, the body width and the whole cab-forward re-cut are bit-identical. Measured
+     * after: top edge back to y 499 at x 790, 800 and 810, and the car's silhouette still 490 px
+     * wide at y 690 — the wave-10 widening kept, the wave-10 canopy lift undone.
+     *
+     * The peak drops 1.240 -> 1.188, which puts 232 mm between this roof and the muscle car's 1.420
+     * instead of 180, and leaves 93 mm of head clearance over the interior's headY 1.095.
      */
     stations: [
-      { z: 1.18, hw: 0.900, rw: 0.858, yBelt: 0.842, yRoof: 0.860 },
-      { z: 1.14, hw: 0.904, rw: 0.812, yBelt: 0.845, yRoof: 0.940 },
-      { z: 0.82, hw: 0.914, rw: 0.706, yBelt: 0.864, yRoof: 1.118 },
-      { z: 0.56, hw: 0.920, rw: 0.648, yBelt: 0.876, yRoof: 1.222 },
-      { z: 0.16, hw: 0.924, rw: 0.636, yBelt: 0.892, yRoof: 1.240 },
-      { z: -0.16, hw: 0.926, rw: 0.652, yBelt: 0.906, yRoof: 1.196 },
-      { z: -0.40, hw: 0.928, rw: 0.712, yBelt: 0.916, yRoof: 1.086 },
-      { z: -0.54, hw: 0.928, rw: 0.804, yBelt: 0.921, yRoof: 0.972 },
+      { z: 1.18, hw: 0.900, rw: 0.858, yBelt: 0.842, yRoof: 0.857 },
+      { z: 1.14, hw: 0.904, rw: 0.812, yBelt: 0.845, yRoof: 0.926 },
+      { z: 0.82, hw: 0.914, rw: 0.706, yBelt: 0.864, yRoof: 1.080 },
+      { z: 0.56, hw: 0.920, rw: 0.648, yBelt: 0.876, yRoof: 1.170 },
+      { z: 0.16, hw: 0.924, rw: 0.636, yBelt: 0.892, yRoof: 1.188 },
+      { z: -0.16, hw: 0.926, rw: 0.652, yBelt: 0.906, yRoof: 1.153 },
+      { z: -0.40, hw: 0.928, rw: 0.712, yBelt: 0.916, yRoof: 1.061 },
+      { z: -0.54, hw: 0.928, rw: 0.804, yBelt: 0.921, yRoof: 0.964 },
     ],
     // z1 0.26 → 0.31 closes the 40 mm the roof panel used to stop short of the A-pillar band below,
     // so the header, the pillar and the rail are one continuous piece of bodywork round the screen.
@@ -235,7 +257,11 @@ export const blueprint = {
     beltZ0: -0.18, beltZ1: 0.60, beltMat: 'dark',
     // Two seats and an engine bulkhead — no rear shelf humps on a mid-engine car (rearHeads:false),
     // the roll hoops do that job. Alcantara grey with the car's own red on the bolsters.
-    interior: { seat: 0x4a4f5a, trim: 0x33373f, accent: 0xc9202f, floorY: 0.655, headY: 1.095, dashY: 0.875, wheelY: 0.915, shelfY: 0.895, seatZ: 0.30, dashZ: 0.96, dashW: 1.30, seatX: 0.34, shelfZ: 0.86, shelfD: 0.28, rearHeads: false, rollBar: true, clusterColor: '#ffd166' },
+    // headY 1.095 -> 1.055 with the roof above it. `rollBar` stands its hoop at headY + 0.06 with a
+    // 50 mm section, i.e. 1.180, and the lowered roof panel crosses z -0.10 at 1.173 — so at 1.095
+    // the hoop came through the paint as a 470 mm chrome blade lying across the roof stripe, which
+    // is what a lowered canopy costs if the package inside it does not come down with it.
+    interior: { seat: 0x4a4f5a, trim: 0x33373f, accent: 0xc9202f, floorY: 0.655, headY: 1.055, dashY: 0.875, wheelY: 0.915, shelfY: 0.895, seatZ: 0.30, dashZ: 0.96, dashW: 1.30, seatX: 0.34, shelfZ: 0.86, shelfD: 0.28, rearHeads: false, rollBar: true, clusterColor: '#ffd166' },
   },
 
   wheels: {
