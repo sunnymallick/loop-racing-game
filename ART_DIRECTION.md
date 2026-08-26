@@ -395,5 +395,58 @@ the same command produce the same frame. Always look at the full-resolution file
 
 ---
 
+## 9. Blind comparison — the tie-breaker when a score moves
+
+An absolute score from a fresh critic carries **±5–8 points of inter-judge variance**. That is
+smaller than the gap between bands, so absolute scoring is fine for answering *"is this piece good
+yet?"*. It is **not** reliable for answering *"did this round make it better or worse?"*, because a
+round's score and the previous round's score come from two different judges, and the difference
+between them is inside the noise.
+
+Wave 10 proved this in both directions at once. Nitrous scored 76 → 74 → 68 across three critics,
+which looked like a collapse; vehicles scored 69 → 76 → 71, which looked like a round-2 regression.
+A blind A/B/C judge then found that the nitrous "collapse" was **real and worse than it looked**
+(the pre-wave jet beat both later rounds by a full category, 72 vs 62 vs 58, because both rounds had
+deleted the white-hot core) while the vehicles "regression" was **only 3 points and barely
+defensible** — the judge would not defend more than that, and the actual defect was one narrow,
+repairable fault in the dark end rather than a reason to revert the round.
+
+Two opposite conclusions, neither of which the absolute scores supported correctly.
+
+**So: when a piece's score moves and the decision is whether to keep, repair or revert, do not act
+on the score. Run a blind comparison.**
+
+The protocol:
+
+1. **Render the same scenarios from each git revision** into separate worktrees, sequentially — one
+   browser at a time, so timing differences are not mistaken for code differences. Verify each
+   revision renders a real, non-black frame before capturing; a silent black frame poisons the set.
+2. **Anonymize.** Shuffle the revisions onto labels A/B/C in an order that is neither chronological
+   nor alphabetical. Keep the original scenario filenames so like is compared with like, and strip
+   everything else that identifies a revision — manifests, xattrs, PNG text chunks, mtimes. Confirm
+   the labels are pairwise distinct by hash, so a duplicate render cannot be ranked against itself.
+3. **One judge ranks all three**, using `tools/crop.mjs a.png b.png c.png --rect … --scale 8`, which
+   stacks all three sets on the *same* rect. One judge across all three sets removes the variance
+   entirely — the comparison is internal to a single context.
+4. The judge must be told **it is allowed to say they are the same**, and must not speculate about
+   which set is newest. That is not knowable from the pixels, and guessing it corrupts the answer.
+
+**Prefer measured pixel statistics to impressions** wherever the question admits them — luminance
+minima in a cavity, count of pixels above a brightness, apparent width at stations along an axis.
+Those are comparable across sets in a way that adjectives are not.
+
+### 9.1 A metric is not the objective
+
+Wave 10's nitrous rounds were asked to make the plume's *rendered* half-width narrow monotonically,
+because the critic said it read as a constant-width bar. Both rounds succeeded — they flared *wider*
+than the version they replaced (peak half-width 151 px and 133 px against 97 px) — and both scored
+far worse, because the extra width was unlit gas and the white-hot throat was gone.
+
+When you hand a builder a number to optimise, hand it the **floor it must not trade away** in the
+same breath. A metric introduced to describe a problem becomes the target, and whatever the metric
+does not measure is what gets spent to satisfy it.
+
+---
+
 *Written once, from `./references/f&f1–5.jpeg`. Do not re-open the reference images per round; this
 document is the target.*
