@@ -409,6 +409,19 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //                 (~23%). This is the per-class knob that stops all four jets sharing one interior:
 //                 a torch with three soft swells in it is a different OBJECT from a needle with
 //                 five hard pips down it, at the same colour, length and taper.
+//   fx.neckAmt    how deeply a shock node pinches the SILHOUETTE, as a fraction of the class
+//                 cone. (r23) THERE IS A CEILING ON THIS AND IT IS NOT A MATTER OF TASTE. The
+//                 neck is one-sided (r22), so between two nodes the column returns to the full
+//                 class cone — which means a node necks the outline DOWN and the anti-node after
+//                 it lets the outline back UP. The silhouette is only monotone if the cone's own
+//                 fall from a node to the next anti-node is larger than the pinch:
+//                     neckAmt * amp  <=  1 - hw(anti-node) / hw(node)
+//                 On the supercar that right-hand side is 0.40 across the first cell but only
+//                 0.26 across the second, so at neckAmt 0.44 the second cell re-inflated the
+//                 column by 8 px and the wave-10 critic's scan found 13 up-steps against 16 down.
+//                 Measured, vegas supercar, up-steps in the mean rendered half-width over the 98
+//                 stations after the apex: neckAmt 0.00 -> 7, 0.24 -> 3, 0.44 -> 7. 0.24 is both
+//                 the deepest waist that survives and the most monotone outline in the game.
 //   fx.bands      shock cells over the whole column. (r19) The phase is uBands*ts^2, so node n sits
 //                 at ts = sqrt((n + 0.09)/uBands) and the spacing crowds as the cone necks — the
 //                 supercar's five cells land at 0.13 / 0.44 / 0.61 / 0.74 / 0.86, spacings 0.31 /
@@ -485,15 +498,22 @@ export const NITRO = {
     ramp: 0.13, curve: 0.52, surge: 0.88, surgeTime: 0.22, color: '#3ce0ff',
     fx: {
       core: '#f4ffff', mid: '#1ecfff', edge: '#0a30f5', spark: '#cdf4ff',
-      len: 3.60, rad: 0.556, merge: 0.0, standoff: 0.10, flameRise: 0.045,
+      // (r23) rad 0.505 -> 0.455 and the whole raggedness budget cut. The wave-10 critic
+      // photographed the tuner's designed "slim white-cyan needle" as "a flat blue smear as wide
+      // as the car with a dark channel through it and no throat", and the reason it read as the
+      // same OBJECT as the SUV in a different colour is that every class was within 10% of the
+      // same reference radius and within 30% of the same turbulence. The four now run 0.455 /
+      // 0.640 / 0.660 / 0.545 on radius and 0.58 / 1.04 / 1.20 / 0.62 on turbulence: a drawn
+      // needle, a fat barrel, a boiling bell and a long spindle, before colour is considered.
+      len: 3.60, rad: 0.455, merge: 0.0, standoff: 0.10, flameRise: 0.045,
       // profile = [throat fraction, station of the widest point, decay exponent, TAIL fraction].
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
-      screen: 1.00, profile: [0.44, 0.18, 1.72, 0.070],   // slim needle: closes fastest of the four
-      bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.32, flick: 62, turb: 0.84,
-      gasGain: 0.86, hotI: 6.90, burn: 0.30, filW: 0.112, bodyW: 0.45, wisp: 0.58,
-      skirtW: 0.72, skirtI: 0.68, bodyD: 1.78, thick: 0.82, occ: 0.94,
-      rimR: 0.95, rimW: 0.100, rimI: 1.10, rimE: 1.75,
+      screen: 1.00, profile: [0.44, 0.18, 1.98, 0.050],   // slim needle: closes fastest of the four
+      bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.25, bandFade: 0.32, flick: 62, turb: 0.58,
+      gasGain: 0.63, hotI: 7.60, burn: 0.30, filW: 0.088, bodyW: 0.45, wisp: 0.32,
+      skirtW: 0.72, skirtI: 0.44, bodyD: 1.78, thick: 0.82, occ: 0.94,
+      rimR: 0.95, rimW: 0.072, rimI: 1.25, rimE: 2.00,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
@@ -505,12 +525,12 @@ export const NITRO = {
     ramp: 0.52, curve: 1.20, surge: 0.62, surgeTime: 0.44, color: '#ff7a1e',
     fx: {
       core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
-      len: 4.00, rad: 0.600, merge: 0.062, standoff: 0.12, flameRise: 0.15,
-      screen: 1.10, profile: [0.72, 0.100, 1.30, 0.095],  // fat barrel, widest right off the bumper
-      bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.34, bandFade: 0.34, flick: 28, turb: 1.12,
-      gasGain: 0.74, hotI: 4.70, burn: 0.40, filW: 0.096, bodyW: 0.49, wisp: 0.94,
+      len: 4.00, rad: 0.640, merge: 0.062, standoff: 0.12, flameRise: 0.15,
+      screen: 1.10, profile: [0.72, 0.125, 1.30, 0.095],  // fat barrel, widest right off the bumper
+      bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.21, bandFade: 0.34, flick: 28, turb: 1.04,
+      gasGain: 0.54, hotI: 5.40, burn: 0.40, filW: 0.085, bodyW: 0.49, wisp: 0.94,
       skirtW: 0.86, skirtI: 1.00, bodyD: 1.78, thick: 0.86, occ: 0.94,
-      rimR: 0.99, rimW: 0.195, rimI: 0.88, rimE: 1.20,
+      rimR: 0.99, rimW: 0.185, rimI: 0.95, rimE: 1.20,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 13.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
@@ -523,17 +543,21 @@ export const NITRO = {
     ramp: 0.78, curve: 1.55, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
-      len: 3.70, rad: 0.611, merge: 0.050, standoff: 0.13, flameRise: 0.26,
-      screen: 1.12, profile: [0.76, 0.090, 1.14, 0.110],  // blunt bell — fat off the pipe, stubby
-      bands: 3.4, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.28, bandFade: 0.42, flick: 16, turb: 1.28,
+      len: 3.70, rad: 0.660, merge: 0.050, standoff: 0.13, flameRise: 0.26,
+      // (r23) screen 1.12 -> 1.04. "A formless orange fog filling a quarter of the frame and
+      // washing over an opponent car" is a size problem as well as an edge problem.
+      screen: 1.04, profile: [0.76, 0.115, 1.14, 0.125],  // blunt bell — fat off the pipe, stubby
+      bands: 3.4, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.17, bandFade: 0.42, flick: 16, turb: 1.20,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 0.74, hotI: 4.40, burn: 0.44, filW: 0.086, bodyW: 0.54, wisp: 1.05,
-      skirtW: 0.96, skirtI: 1.04, bodyD: 1.62, thick: 0.86, occ: 0.94,
-      rimR: 1.00, rimW: 0.210, rimI: 0.88, rimE: 1.30,
+      gasGain: 0.50, hotI: 5.00, burn: 0.44, filW: 0.078, bodyW: 0.54, wisp: 1.05,
+      skirtW: 0.96, skirtI: 1.10, bodyD: 1.62, thick: 0.86, occ: 0.94,
+      // (r23) the bell gets an EDGE. rimW 0.210 -> 0.165 and rimI/rimE up: a bell's boundary is a
+      // band you can watch the gas mixing across, which is still a boundary — the SUV had neither.
+      rimR: 1.00, rimW: 0.165, rimI: 1.05, rimE: 1.55,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
@@ -546,12 +570,12 @@ export const NITRO = {
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
-      len: 4.60, rad: 0.600, merge: 0.085, standoff: 0.10, flameRise: 0.035,
+      len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.42, 0.220, 1.70, 0.068],  // long spindle — the slenderest of the four
-      bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
-      gasGain: 0.68, hotI: 6.20, burn: 0.28, filW: 0.105, bodyW: 0.43, wisp: 0.52,
-      skirtW: 0.70, skirtI: 0.62, bodyD: 1.78, thick: 0.80, occ: 0.94,
-      rimR: 0.94, rimW: 0.092, rimI: 1.20, rimE: 1.90,
+      bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.26, bandFade: 0.30, flick: 74, turb: 0.62,
+      gasGain: 0.50, hotI: 7.20, burn: 0.28, filW: 0.085, bodyW: 0.43, wisp: 0.30,
+      skirtW: 0.70, skirtI: 0.44, bodyD: 1.78, thick: 0.80, occ: 0.94,
+      rimR: 0.94, rimW: 0.082, rimI: 1.30, rimE: 1.90,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 17.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
@@ -1575,7 +1599,12 @@ const PLUME_FRAG = /* glsl */`
           // / 1.47 / 0.99 — a ladder rather than a cliff, and every rung above the ~0.7 the
           // bloom threshold wants.
           float hb   = exp(-t / uBurn);
-          float hotA = uHot * (0.11 * hb + knot * 1.55 * (0.34 + 0.66 * hb)) * lit;
+          // (r23) 0.11 -> 0.075 on the continuous thread. At 6x the white in the supercar's jet
+          // photographed as one soft smeared WORM down the axis rather than as a row of knots:
+          // the base thread was ~2.3x the knots' own floor, so the train had nothing to draw
+          // with. The thread is still continuous (a thread that is absent between nodes is a
+          // dashed line) — it is simply below the bloom threshold everywhere except at a knot.
+          float hotA = uHot * (0.075 * hb + knot * 1.55 * (0.34 + 0.66 * hb)) * lit;
           // A diamond is a LENS, brightest on the centreline and gone before the skirt — not a
           // rung laid across the jet. A row of rungs is a barcode.
           // (r18) exp(-q2·1.05) was still 0.77 at half the half-width and 0.35 at the full one, so
@@ -1925,7 +1954,16 @@ function plumeMaterial(fx, phase) {
       // gas either side of it down to 2.6:1 BEFORE the ACES curve got hold of it — i.e. it was
       // deleting the shock train on its way to the frame. With the body exposed to land near 0.7
       // instead of near 1.0 there is room above it for a knot to be genuinely brighter.
-      uSoft: { value: fx.soft ?? 1.25 },
+      // ── (r23) 1.25 -> 0.78, AND EVERY gasGain DOWN TO MATCH ────────────────────────────
+      // A shoulder with an asymptote of 1/uSoft = 0.80 compresses a 10:1 emission swing down to
+      // 1.9:1 before the tonemap sees it, and that is the whole reason the wave-10 critic could
+      // scan the axis and find "a smooth plateau, 189,178,166,161,147,152,148,144,144 — i.e. a
+      // rod" while the shader was computing shock nodes four times the brightness of the gas
+      // between them. It is the SAME defect the r22 note found in the per-channel form (a common
+      // asymptote bleaches the class colour); this is the luminance half of it, and it is what
+      // "BANDING IS AT ZERO" is actually made of. At 0.78 the same 10:1 arrives as 3.2:1 with the
+      // gains cut so the body still lands in the same place: dim gas 0.81x, a knot 1.24x.
+      uSoft: { value: fx.soft ?? 0.78 },
       // the knots' own shoulder — gentle, so a shock diamond can still clear the bloom threshold
       uHotSoft: { value: fx.hotSoft ?? 0.16 },
       // density of the detached wisps outside the column (fl^3 — sparse by construction)
