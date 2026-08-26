@@ -2357,21 +2357,25 @@ function buildExtra(x, mats) {
      * behind the car, so the panel is at LOCAL +z and the world outside is at local -z.
      */
     const hx = x.hinge ?? (rOut * 1.05);
-    const gate = x.gate ?? 0.14;
+    const gate = x.gate ?? 0.147;
     for (const sy of [-1, 1]) {
-      const br = mountPad(0.112, 0.112, {
-        h: 0.032, flange: 1.30, mat: trim, bolts: 4, boltR: 0.0118, boltH: 0.011, bead: 0.010,
+      // The plate has to be WIDER than the post it clamps, or it is invisible: the post is 100 mm
+      // across and a 145 mm plate behind it shows 22 mm on each side, which at chase distance is
+      // nothing. 220 x 100 crossing the post near each of its ends is a hinge bracket.
+      const br = mountPad(0.168, 0.078, {
+        h: 0.030, flange: 1.14, mat: trim, bolts: 4, boltR: 0.0098, boltH: 0.0085, bead: 0.008,
+        boss: false,
       });
       br.rotation.x = -Math.PI / 2;
-      br.position.set(hx, sy * rOut * 0.60, gate);
+      br.position.set(hx, sy * rOut * 0.72, gate);
       mesh.add(br);
-      mesh.add(partShadow(0.152, 0.152, {
-        face: 'z', sign: -1, spread: 2.0, at: [hx, sy * rOut * 0.60, gate - 0.006],
+      mesh.add(partShadow(0.208, 0.104, {
+        face: 'z', sign: -1, spread: 1.7, at: [hx, sy * rOut * 0.72, gate - 0.005],
       }));
     }
     // …and the shadow the wheel itself throws on the panel behind it
-    mesh.add(partShadow(rOut * 1.72, rOut * 1.72, {
-      face: 'z', sign: -1, spread: 1.24, strength: 0.72, at: [0, 0, gate - 0.006],
+    mesh.add(partShadow(rOut * 1.58, rOut * 1.58, {
+      face: 'z', sign: -1, spread: 1.18, strength: 0.78, at: [0, 0, gate - 0.005],
     }));
   } else if (x.type === 'tailgate') {
     /**

@@ -4462,7 +4462,9 @@ export function mountPad(w, d, {
   const g = new THREE.Group();
   const m = mat || darkMetalMaterial({ color: '#3c4048', rough: 0.40, metal: 0.72 });
   const fw = w * flange, fd = d * flange;
-  const fh = Math.max(0.010, h * 0.46);
+  // With no boss on top of it the flange IS the mount, so it gets the whole height: a 20 mm pad
+  // whose plate was 10 mm thick and sunk 5 mm into the panel stood 5 mm proud, i.e. invisible.
+  const fh = boss ? Math.max(0.010, h * 0.46) : Math.max(0.012, h);
   const rr = r ?? Math.min(fw, fd) * 0.22;
   const plate = new THREE.Mesh(roundedBox(fw, fh, fd, Math.min(rr, fh * 0.46)), m);
   plate.position.y = fh * 0.5 - sink;

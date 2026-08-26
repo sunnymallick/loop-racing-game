@@ -380,6 +380,18 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //   fx.bodyD      how much the body ABSORBS. The raymarch's transmittance comes from this, so it
 //                 decides whether the lane line behind the plume goes away, and how strongly the
 //                 near side of the column shades the far side.
+//   fx.rimR       (r21) where the SHEAR SHELL sits, in local half-widths — see the r21 block in
+//                 PLUME_FRAG. ~1.0 puts it on the class cone, so the two limb-brightened flank
+//                 lines the march produces ARE the taper and converge exactly as it necks.
+//   fx.rimW       its 1/e thickness in the same units, and the per-class knob for how HARD the
+//                 plume's edge is: 0.145 is the supercar's drawn line, 0.38 the SUV's boiling
+//                 bell whose boundary is a band you can see the gas mixing across. This is a
+//                 different OBJECT per class in a way colour alone cannot deliver — a needle with
+//                 a sharp outline against a bell with none.
+//   fx.rimE       how brightly it burns. The only emission in the file not routed through the
+//                 temperature ramp, so it lands at a fixed saturated fringe colour whatever the
+//                 body is doing: the reference's "white core and blue fringe", drawn rather than
+//                 arrived at by a gradient running out.
 //   fx.skirtW     the cool turbulent shear layer's 1/e half-width, same units (~0.86-1.06) — this
 //                 is what draws the plume's OUTLINE, and it is modulated by the flute noise
 //                 SQUARED, so the outline sits at a different radius at every station.
@@ -413,6 +425,7 @@ export const NITRO = {
       bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 0.86, hotI: 6.90, burn: 0.30, filW: 0.112, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.72, skirtI: 0.68, bodyD: 1.78, thick: 0.82, occ: 0.94,
+      rimR: 0.95, rimW: 0.155, rimE: 3.60,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
@@ -429,6 +442,7 @@ export const NITRO = {
       bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
       gasGain: 0.74, hotI: 5.50, burn: 0.40, filW: 0.120, bodyW: 0.49, wisp: 0.94,
       skirtW: 0.86, skirtI: 1.00, bodyD: 1.78, thick: 0.86, occ: 0.94,
+      rimR: 1.02, rimW: 0.30, rimE: 2.40,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 13.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
@@ -451,6 +465,7 @@ export const NITRO = {
       // half of the frame" — this is the number that fixes that, not the post chain.
       gasGain: 0.74, hotI: 5.70, burn: 0.44, filW: 0.116, bodyW: 0.54, wisp: 1.05,
       skirtW: 0.96, skirtI: 1.04, bodyD: 1.62, thick: 0.86, occ: 0.94,
+      rimR: 1.07, rimW: 0.38, rimE: 1.90,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
@@ -468,6 +483,7 @@ export const NITRO = {
       bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
       gasGain: 0.68, hotI: 6.20, burn: 0.28, filW: 0.105, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.70, skirtI: 0.62, bodyD: 1.78, thick: 0.80, occ: 0.94,
+      rimR: 0.94, rimW: 0.145, rimE: 4.00,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 17.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
