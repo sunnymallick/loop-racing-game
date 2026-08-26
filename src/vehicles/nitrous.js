@@ -411,7 +411,7 @@ export const NITRO = {
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
       bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
-      gasGain: 1.38, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
+      gasGain: 0.70, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
@@ -427,7 +427,7 @@ export const NITRO = {
       len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
       bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
-      gasGain: 1.20, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
+      gasGain: 0.60, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
       skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 13.0, smearWidth: 0.032,
@@ -449,7 +449,7 @@ export const NITRO = {
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 1.18, hotI: 4.50, burn: 0.44, filW: 0.152, bodyW: 0.54, wisp: 1.05,
+      gasGain: 0.60, hotI: 4.50, burn: 0.44, filW: 0.152, bodyW: 0.54, wisp: 1.05,
       skirtW: 1.10, skirtI: 1.04, bodyD: 1.62, thick: 1.25, occ: 0.97,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
@@ -466,7 +466,7 @@ export const NITRO = {
       len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
       bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
-      gasGain: 1.10, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
+      gasGain: 0.55, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 17.0, smearWidth: 0.042,
@@ -951,6 +951,7 @@ const PLUME_FRAG = /* glsl */`
   uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD;
   uniform float uThick, uOcc, uReach, uFade, uPersp, uSoft, uWisp;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
+  uniform float uRimR, uRimW, uRimI, uRimE, uBleach;
   varying vec3 vWorld;
   ${NOISE_GLSL}
 
@@ -1244,9 +1245,63 @@ const PLUME_FRAG = /* glsl */`
         float wsp = fl * fl * fl * uWisp * exp(-q2 / 1.30)
                   * smoothstep(0.34, 1.20, q) * smoothstep(0.05, 0.44, t);
 
+        // ── (r21) THE PLUME HAS TO HAVE AN EDGE THE EYE CAN FIND ─────────────────────────────
+        // Twenty rounds of measurement all agree that the class cone is correct in the DATA — an
+        // axis scan of the marched field gives a clean 6:1 neck-down over the visible column — and
+        // twenty rounds of verdicts say the picture is "a constant-width bar with no throat, no
+        // expansion angle and no defined fringe boundary". Both are true, and this is the join.
+        //
+        // Every density term up to r20 was a monotone falloff centred ON THE AXIS: a filament, a
+        // super-gaussian body, a gaussian skirt, and a gaussian tail on the skirt that only ever
+        // approaches zero. Integrate any of those along a ray and the result is a smooth bump with
+        // its maximum on the centreline and no feature anywhere else. There is nothing in the
+        // image that MARKS the silhouette, so the boundary the eye actually finds is not the cone
+        // at all — it is the contour where the interior stops being clipped, and that contour is
+        // set by the exposure and by bloom's fixed-screen-radius halo, both of which are the same
+        // at every station. A 6:1 taper drawn as an unmarked gradient photographs as a bar.
+        //
+        // A real jet does not look like that, and the reason is geometric rather than a matter of
+        // brightness: the burning happens in a SHEAR LAYER, a shell around the core, and a ray that
+        // grazes a shell runs along it for a long way while a ray through the middle crosses it
+        // twice at a steep angle. That is limb brightening, and it is what puts two bright,
+        // converging lines down the flanks of every photograph of an afterburner. The march
+        // already integrates real chords through a real 3-D field, so the shell is all it needs:
+        // put density at q ~ 1 instead of only at q ~ 0 and the limb comes out of the integral for
+        // free, at the correct radius, at every station, from every viewpoint.
+        //
+        // The consequences, in the order the critic reads them:
+        //   · the outline is DRAWN, so the taper is two lines that converge rather than a gradient
+        //     that has to be inferred — the expansion angle at the throat becomes a visible angle;
+        //   · the fringe has a KNEE (rise into the shell, fall away outside it) instead of an
+        //     infinite gaussian, so there is a boundary at all;
+        //   · and it is structure ACROSS the column, which is the one thing SpeedShader's radial
+        //     blur cannot average away, because the blur runs ALONG the axis.
+        // The shell's radius is pushed around by the same flute noise that fringes the silhouette,
+        // so it is never the analytic curve drawn as a line, and it is never a hard edge: it is a
+        // gaussian in radius whose centre wanders by up to a third of a half-width.
+        // (r21b) Photographed at 5x with the shell fed through the ordinary density path at
+        // 0.55 + 0.85·flm: it filled the column. dens is also what drives the transmittance, so
+        // a shell dense enough to draw a line is also opaque enough to absorb the incandescent
+        // core behind it, and a wandering centre 0.40 half-widths wide smears that opacity across
+        // the whole cross-section — one flat navy wedge with a boundary, which trades "no edge"
+        // for "a slab". The shell now carries very little density (it is a LINE, and a line does
+        // not occlude a road) and instead has its own emission term below.
+        float qr  = uRimR * (0.87 + 0.26 * fl);
+        float dqr = (q - qr) / uRimW;
+        float g4  = exp(-dqr * dqr);
+
         // Nothing may be non-zero where the march stops. Everything is taken to exactly zero,
         // with zero slope, before uReach, so the analytic cut cannot draw a step.
-        float cut = 1.0 - smoothstep(uReach * 0.62, uReach * 0.995, q);
+        // ── (r21) ...AND IT IS NOW A KNEE RATHER THAN A TAIL ─────────────────────────────────
+        // At uReach 1.85 with the bite opening at 0.62 the gas ran from the shell at q = 1 out to
+        // q = 1.84 as a slow gaussian tail — three quarters of a half-width of ever-fainter haze
+        // outside the boundary, which is precisely the "no defined fringe boundary" note: the
+        // shell would have been drawn and then buried under its own smoke. The bite now opens just
+        // outside the shell and is done within half a half-width of it, so the fringe rises into
+        // the limb and then stops. It is still smoothstep-squared, i.e. C1 with zero slope where
+        // it reaches zero, so the cut cannot draw a step and there is no radius at which a straight
+        // edge can appear.
+        float cut = 1.0 - smoothstep(uReach * 0.68, uReach * 0.995, q);
         cut *= cut;
         // ...and the same at both ends of the column. The tail runs out of gas at a different
         // station on every side and in every frame: the axial jitter alone terminated the whole
@@ -1270,6 +1325,14 @@ const PLUME_FRAG = /* glsl */`
           // reads as the fat parallel FRONT of a cone with nothing after it.
           float bodyA  = (0.46 + 0.54 * exp(-t * 1.05)) * puff;
           float skirtA = uSkirtI * (0.30 + 0.70 * smoothstep(0.0, 0.22, t)) * exp(-t * 0.50) * puff;
+          // (r21) The shear shell. It lights up a little way off the lip (a jet leaving a pipe has
+          // no mixing layer AT the lip) and is held out to the tip, because the boundary is the one
+          // thing that has to survive to the very end of the column — a plume whose outline fades
+          // before its interior does ends in a smudge, and a smudge has no taper in it. A shock
+          // node compresses the shell as well as the body, so the two converging flank lines are
+          // ALSO where the neck-and-belly reads: the train is drawn on the silhouette.
+          float rimA = uRimI * smoothstep(0.015, 0.14, t) * (0.42 + 0.58 * exp(-t * 0.85))
+                     * puff * (1.0 + node * 0.85);
           // ── ONLY A KNOT MAY GO WHITE ────────────────────────────────────────────────────────
           // Base authority 0.58 against a node term of 0.95, so the filament is continuous down
           // the whole column (a thread that is absent between nodes is a DASHED LINE) but only
@@ -1345,11 +1408,18 @@ const PLUME_FRAG = /* glsl */`
 
           float dens = (g2 * uBodyD * (1.0 + nd * 1.20) * mix(1.0, flm, 0.36)
                      +  g3 * skirtA * 1.60 * flm * flm
+                     +  g4 * rimA * (0.16 + 0.20 * flm)
                      +  wsp) * cut;
           // T is a TEMPERATURE and colour is a function of it, so fringe, body and core are three
           // readings of one continuous field rather than three stacked zones with rims between.
+          // (r21) The shell is the COOLEST gas in the jet — it is where the plume is mixing with
+          // cold air — so it contributes to the density that draws the outline but barely to the
+          // temperature that colours it. That is what makes the two flank lines land at uEdge, at
+          // full chroma, against a uMid interior: "a white core with a blue fringe", drawn as an
+          // actual edge rather than as the place a gradient happens to run out.
           float T = (g2 * bodyA * (1.0 + ndT * 4.20)
                   +  g3 * skirtA * (0.55 + ndT * 0.55)
+                  +  g4 * rimA * 0.10
                   +  g1 * ndT * 0.60) * cut;
           // (r18) The white step used to open at T = 1.0, which the body alone reaches at a node
           // anywhere in the first third — so "white core" meant "the entire throat". It opens at
@@ -1385,7 +1455,18 @@ const PLUME_FRAG = /* glsl */`
           // in front of it. The gradient throat-to-tail is still 3.6:1, which is what makes the
           // length read as depth; the tail is simply still alight.
           float glow = 0.28 + 0.72 * et;
-          vec3 e = (col * (dens * (0.20 + T * 1.05)) + fil * (g1 * hotA * cut)) * glow;
+          // ── (r21) THE SHELL EMITS ON ITS OWN LINE ────────────────────────────────────────
+          // Fed through col, the shell's own low temperature put it at uEdge — which on the
+          // supercar is #2a10ff, almost black — so a shell dense enough to be seen at all had to
+          // be dense enough to occlude. Its emission is its own term at a fixed fringe colour, a
+          // third of the way from the class edge to the class mid: saturated, unmistakably the
+          // FRINGE rather than the body, and bright enough to draw a line at a density that
+          // absorbs almost nothing. A ray grazing the shell runs along it for ~2.4x the path a
+          // ray through the middle crosses it in, so this term is what puts two converging
+          // flank lines on the plume — the taper, drawn instead of implied.
+          vec3 e = (col * (dens * (0.20 + T * 1.05))
+                  + fil * (g1 * hotA * cut)
+                  + mix(uEdge, uMid, 0.34) * (g4 * rimA * cut * uRimE)) * glow;
 
           // ── (r19) INTEGRATE THE STEP, DO NOT SAMPLE IT ──────────────────────────────────
           // The rectangle rule (acc += trans*e*dl; trans *= exp(-sigma*dl)) puts all of a step's
@@ -1417,12 +1498,23 @@ const PLUME_FRAG = /* glsl */`
     // #2a2fff is (0.02, 0.03, 1.0) in linear) clipping its blue alone, and a lone clipped channel
     // is a posterised region with a hard boundary. Second: a shoulder, em/(1 + em·uSoft), so a
     // knot four times the body's brightness still lands on a curve.
-    float pk = max(max(em.r, em.g), em.b);
     // (r18) 1.35/0.40/0.46 -> 1.70/0.34/0.34. This term exists so a lone channel cannot clip on
     // its own (uEdge #2a2fff is (0.02, 0.03, 1.0) linear), but it was firing across the whole
     // bright half of the column and bleaching the class colour out of it before the tonemap even
     // saw it. It now only reaches the knots, which are the only place a jet is genuinely white.
-    em = mix(em, vec3(pk), clamp((pk - 1.70) * 0.34, 0.0, 0.34));
+    // ── (r21) THE BLEACH IS WHAT WELDED THE THROAT INTO ONE WHITE LOZENGE ────────────────────
+    // Measured on the r20 vegas supercar with tools/_n21_width.mjs: a contiguous run 60 px wide
+    // through the axis at f = 0.06 in which some channel is pinned at 255, holding for a fifth of
+    // the column's length — and inside a saturated run there is no width, no banding and no edge,
+    // so the first fifth of the plume arrives at the frame as one featureless bar however good the
+    // field behind it is. The term is meant to stop uEdge (#2a10ff — (0.02, 0.01, 1.0) in linear)
+    // clipping its blue channel alone, which would be a posterised region with a hard boundary;
+    // at a knee of 1.70 it instead fired everywhere the body was merely bright and pulled a third
+    // of the way to white across the whole near half. The knee is now uBleach (2.9) and the
+    // authority 0.34 -> 0.22, so it reaches only the knots, which are the one place a jet is
+    // genuinely white.
+    float pk = max(max(em.r, em.g), em.b);
+    em = mix(em, vec3(pk), clamp((pk - uBleach) * 0.14, 0.0, 0.22));
     em = em / (1.0 + em * uSoft);
 
     float a = (1.0 - trans) * uOcc;
@@ -1437,7 +1529,7 @@ const PLUME_FRAG = /* glsl */`
 `;
 
 /** How many LOCAL half-widths of gas the march covers before it cuts (the density is already 0). */
-const PLUME_REACH = 1.85;
+const PLUME_REACH = 1.70;
 /** Flat margin on the rasterisation proxy, as a multiple of the throat radius. NEVER cut to the gas. */
 const PLUME_PAD = 1.30;
 
@@ -1533,9 +1625,24 @@ function plumeMaterial(fx, phase) {
       // gas either side of it down to 2.6:1 BEFORE the ACES curve got hold of it — i.e. it was
       // deleting the shock train on its way to the frame. With the body exposed to land near 0.7
       // instead of near 1.0 there is room above it for a knot to be genuinely brighter.
-      uSoft: { value: 0.20 },
+      uSoft: { value: fx.soft ?? 0.20 },
       // density of the detached wisps outside the column (fl^3 — sparse by construction)
       uWisp: { value: fx.wisp ?? 0.55 },
+      // ── (r21) THE SHEAR SHELL — the layer that DRAWS the silhouette ─────────────────────────
+      // uRimR  where the shell sits, in local half-widths. ~1.0 puts it exactly on the class cone,
+      //        so the two limb-brightened flank lines ARE the taper: they converge as it necks.
+      // uRimW  its 1/e thickness in the same units. Wide enough to survive bloom's fixed-screen
+      //        halo at the thin end, narrow enough that it is a line and not a second skirt.
+      // uRimI  how much gas is in it. This is the per-class knob for how DRAWN the plume is: the
+      //        supercar's needle has a hard bright edge, the SUV's bell a soft boiling one.
+      uRimR: { value: fx.rimR ?? 0.98 },
+      uRimW: { value: fx.rimW ?? 0.19 },
+      uRimI: { value: fx.rimI ?? 1.00 },
+      // how brightly the shell burns. It is the only layer whose emission is NOT routed through
+      // the temperature ramp, so this is the direct control on how DRAWN the plume's edge is.
+      uRimE: { value: fx.rimE ?? 2.40 },
+      // knee of the desaturate-towards-white term — see the r21 note at the bottom of PLUME_FRAG
+      uBleach: { value: fx.bleach ?? 2.90 },
     },
     vertexShader: PLUME_VERT,
     fragmentShader: PLUME_FRAG,
