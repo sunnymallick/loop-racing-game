@@ -1489,7 +1489,22 @@ const PLUME_FRAG = /* glsl */`
           // the four palettes only really separated out in the fringe. The class chroma now owns
           // the column and only the knots leave it.
           vec3 warm = mix(uMid, uCore, 0.30);
-          vec3 col = mix(uEdge, uMid, smoothstep(0.04, 0.40, T));
+          // ── (r22) THE CLASS COLOUR HAS TO OWN THE COLUMN, NOT A THREAD DOWN THE MIDDLE ─────
+          // T is a temperature and the body that carries it is a super-gaussian, so it falls off
+          // a cliff at ~0.45 half-widths — which meant smoothstep(0.04, 0.40, T) only reached uMid
+          // inside q ~ 0.40, a quarter of the visible radius. Everything outside that was uEdge,
+          // and uEdge is a nearly-black fully-saturated blue/red by design. Measured on the r22a
+          // vegas supercar with tools/_n22_px.mjs (the gas alone, on black): axis 205,204,248 ->
+          // 90,54,248 at a third of the way out -> 8,3,190 at two thirds. The plume photographed
+          // as a white thread inside one flat royal-blue mass, and #8a4dff — the colour that is
+          // supposed to say SUPERCAR — existed in a band a few pixels wide. Four classes whose
+          // bodies are all "the dark end of their own ramp" is the §6.3 identical-classes cap
+          // arriving through the colour ramp instead of through the geometry.
+          // The ramp now completes at T = 0.16, which the body reaches out to ~0.75 half-widths
+          // and the shear layer holds past that: uMid owns the column, uEdge is the FRINGE it
+          // was named for, and the four palettes separate over the whole plume rather than in a
+          // rim you have to go looking for.
+          vec3 col = mix(uEdge, uMid, smoothstep(0.012, 0.16, T));
           // (r20) 0.54/1.32 -> 0.70/1.45. The gas BETWEEN two diamonds sits at T ~ 0.8, and at the
           // old thresholds that was already a third of the way to a colour which is itself 30%
           // white — so the column had a permanent pale wash on it and a diamond had to climb out
@@ -1512,7 +1527,12 @@ const PLUME_FRAG = /* glsl */`
           // last third of the column was a navy shape occluding the road rather than gas burning
           // in front of it. The gradient throat-to-tail is still 3.6:1, which is what makes the
           // length read as depth; the tail is simply still alight.
-          float glow = 0.28 + 0.72 * et;
+          // (r22) 0.28 + 0.72*et -> 0.36 + 0.64*et. The taper only reads over the length you can
+          // still SEE: measured on the r22a vegas supercar the column was under 30/255 past
+          // t ~ 0.5, i.e. the half of the jet where the cone does most of its necking arrived
+          // below the neon it is drawn against. 2.8:1 throat-to-tail instead of 3.6:1 is still
+          // a jet that is incandescent at the pipe and merely glowing at the tip.
+          float glow = 0.36 + 0.64 * et;
           // ── (r21) THE SHELL EMITS ON ITS OWN LINE ────────────────────────────────────────
           // Fed through col, the shell's own low temperature put it at uEdge — which on the
           // supercar is #2a10ff, almost black — so a shell dense enough to be seen at all had to
@@ -1565,10 +1585,27 @@ const PLUME_FRAG = /* glsl */`
     // the gas rides a hard shoulder (uSoft ~ 0.85, asymptote ~1.2) so it is saturated, bright and
     // structurally intact but can never arrive as a plateau; the knots ride a gentle one and sit
     // on top of it, so the only thing in the frame that clips and blooms is a shock diamond.
+    // ── (r22) THE SHOULDER RUNS ON THE PEAK CHANNEL, NOT PER CHANNEL ────────────────────────
+    // em/(1 + em*uSoft) applied to each channel separately has the SAME ASYMPTOTE, 1/uSoft, in
+    // all three — so every bright region of the plume converges on neutral grey no matter what
+    // colour it started as. That is not a subtlety: measured on the r22b vegas supercar with the
+    // filament ablated out entirely (tools/_n22_px.mjs --set uHot=0), the gas alone arrives at
+    // 178,176,238 on the axis, i.e. R and G within 1% of each other, where uMid is 138,77,255 and
+    // R/G is 1.8. The near half of every plume in the game was being bleached to white by its own
+    // exposure curve before the tonemap or the bloom pass ever saw it — which is where "a pure
+    // white CLIPPED core", "a hard-edged uniform white stripe down its middle" and, in the end,
+    // "the four classes are one shape in four colours" all come from, because a class palette
+    // that only survives in the dim half is not a class palette.
+    // Dividing by the shoulder of the PEAK channel instead keeps the ratio between the channels
+    // exactly, at any brightness: the column holds uMid up to the top of the range, and the only
+    // things that can go white are the incandescent filament (which is mixed towards uCore on
+    // purpose) and the deliberate uBleach term below, which fires only at a knot.
     vec3 em = acc * uGain;
-    em = em / (1.0 + em * uSoft);
+    float el = max(max(em.r, em.g), em.b);
+    em *= 1.0 / (1.0 + el * uSoft);
     vec3 hm = accH * uGain;
-    em += hm / (1.0 + hm * uHotSoft);
+    float hl = max(max(hm.r, hm.g), hm.b);
+    em += hm * (1.0 / (1.0 + hl * uHotSoft));
     // ── NOTHING MAY ARRIVE AT THE FRAME ON A PLATEAU ──────────────────────────────────────────
     // First: a hot gas gives up its chroma before it gives up its structure, so as the peak
     // channel climbs the colour walks towards neutral — which also stops uEdge (the supercar's
