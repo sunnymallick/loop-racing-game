@@ -461,11 +461,13 @@ export const blueprint = {
    * to a painted panel — it is most of what "props parked on a shell" looks like at 8x. One shared
    * material for every decal on every car (kit.js `partShadow`), so the whole set is one call.
    *
-   * Every y and x below is the MEASURED surface at that station (`.vjprobe/deck.mjs`), not the
-   * part's own authored height: a decal placed by eye either sinks behind the panel and vanishes on
-   * the depth test or floats in front of it, and the second is worse than having no decal at all.
-   * Anything mounted on the glasshouse rather than on the tub — the mirrors — has no decal, because
-   * the tub cannot tell us where that surface is.
+   * WAVE-10: the `y` (or the `x`, on a flank decal) below is now only a FALLBACK. The assembler
+   * re-solves every one of these against the loft's own surface (`deckSampler` / `profileSampler`
+   * in assemble.js) and bends the decal down onto the panel's crown, because a hand-measured height
+   * goes stale the moment a station moves — two of these were already 4-6 mm under the bodywork by
+   * wave 9, rendering to nobody, which is most of why the critic could write "nothing they sit on
+   * darkens beneath them" about a car that already had an AO system. The mirrors have decals now
+   * too: the sail plate's own `sailX` IS the glasshouse surface at its station.
    */
   shadows: [
     { y: 0.935, z: 1.42, w: 0.56, d: 0.52, mirror: false },            // bonnet scoop (deck 0.9308)
