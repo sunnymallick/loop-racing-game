@@ -333,9 +333,19 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //                 taper once ~20 px of halo is welded to each side of every station, but a throat
 //                 at ~55% of the car's width can. The white FILAMENT inside it is ~0.16 of the
 //                 local half-width, i.e. ~0.08 m, so the two hot roots never merge into one blob.
-//   fx.profile    the class cone [neck, peakAt, spread, filament] — see coneW(). `spread` above ~1.1
-//                 and `filament` under ~0.12 are what make the column actually neck down over the
-//                 length you can see, which is what stops the shock train reading as a repeat.
+//   fx.profile    the class cone [neck, peakAt, spread, tip fraction] — see coneW() and halfW().
+//                 `spread` above ~1.1 and a tip fraction under ~0.12 are what make the column
+//                 actually neck down over the length you can see, which is what stops the shock
+//                 train reading as a repeat.
+//                 (r22) peakAt is roughly DOUBLED on every class, and the throat pinch deepened.
+//                 "No throat, no expansion angle" has been in three verdicts, and the reason is
+//                 that the flare had nowhere to happen: the jet fires at the chase lens, so world
+//                 station t maps to screen station t(1+p)/(1+p·t) with p ~ -0.45, and the first
+//                 tenth of the column is squeezed into the first FIFTH OF A TENTH of what you see.
+//                 At peakAt 0.115 the supercar's whole neck-and-flare — 0.50 of maximum opening to
+//                 1.00 — happened inside 6% of the drawn length, half of it behind the diffuser.
+//                 At 0.22 it happens over the first 14%: a 2.4:1 opening across a span the eye can
+//                 measure an ANGLE against, which is what an expansion angle is.
 //   fx.knot       how compact the incandescent pip inside a shock cell is. 0 = lobe^2, the SUV's
 //                 lazy swell (half-max over ~36% of the cell); 1 = lobe^5, the supercar's hard pip
 //                 (~23%). This is the per-class knob that stops all four jets sharing one interior:
@@ -421,7 +431,7 @@ export const NITRO = {
       // profile = [throat fraction, station of the widest point, decay exponent, TAIL fraction].
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
-      screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
+      screen: 1.00, profile: [0.44, 0.18, 1.72, 0.070],   // slim needle: closes fastest of the four
       bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.28, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 0.86, hotI: 6.90, burn: 0.30, filW: 0.112, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.72, skirtI: 0.68, bodyD: 1.78, thick: 0.82, occ: 0.94,
@@ -438,7 +448,7 @@ export const NITRO = {
     fx: {
       core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
       len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
-      screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
+      screen: 1.10, profile: [0.72, 0.100, 1.30, 0.095],  // fat barrel, widest right off the bumper
       bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.22, bandFade: 0.34, flick: 28, turb: 1.12,
       gasGain: 0.74, hotI: 5.50, burn: 0.40, filW: 0.120, bodyW: 0.49, wisp: 0.94,
       skirtW: 0.86, skirtI: 1.00, bodyD: 1.78, thick: 0.86, occ: 0.94,
@@ -456,7 +466,7 @@ export const NITRO = {
     fx: {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
       len: 3.70, rad: 0.555, merge: 0.050, standoff: 0.13, flameRise: 0.26,
-      screen: 1.12, profile: [0.80, 0.042, 1.02, 0.110],  // blunt bell — fat off the pipe, stubby
+      screen: 1.12, profile: [0.76, 0.090, 1.14, 0.110],  // blunt bell — fat off the pipe, stubby
       bands: 3.4, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.18, bandFade: 0.42, flick: 16, turb: 1.28,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
@@ -479,7 +489,7 @@ export const NITRO = {
     fx: {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
       len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
-      screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
+      screen: 1.25, profile: [0.42, 0.220, 1.70, 0.068],  // long spindle — the slenderest of the four
       bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.30, bandFade: 0.30, flick: 74, turb: 0.76,
       gasGain: 0.68, hotI: 6.20, burn: 0.28, filW: 0.105, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.70, skirtI: 0.62, bodyD: 1.78, thick: 0.80, occ: 0.94,
