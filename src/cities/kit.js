@@ -2953,10 +2953,11 @@ function paintCell(ctx, N, { base, lower = null, worn = false, seed = 1 }) {
   g.addColorStop(0.00, 'rgba(214,232,255,0.34)');
   g.addColorStop(0.10, 'rgba(214,232,255,0.10)');
   g.addColorStop(0.34, 'rgba(0,0,0,0.00)');
-  g.addColorStop(0.62, 'rgba(0,0,0,0.11)');
+  g.addColorStop(0.62, 'rgba(0,0,0,0.10)');
   g.addColorStop(0.755, 'rgba(255,248,232,0.16)');
-  g.addColorStop(0.86, 'rgba(0,0,0,0.16)');
-  g.addColorStop(1.00, 'rgba(0,0,0,0.46)');
+  g.addColorStop(0.88, 'rgba(0,0,0,0.10)');
+  g.addColorStop(0.955, 'rgba(0,0,0,0.24)');
+  g.addColorStop(1.00, 'rgba(0,0,0,0.52)');
   ctx.fillStyle = g; ctx.fillRect(0, 0, N, N);
   // beltline pressing
   ctx.fillStyle = 'rgba(255,255,255,0.17)'; ctx.fillRect(0, N * 0.435, N, 1.6);
@@ -3045,12 +3046,15 @@ function liveryCell(ctx, w, h, { body, ink, text, sub, seed }) {
  * the city and however many vehicles it parks.
  */
 function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
-  const cols = (colors && colors.length ? colors : FLEET_COLORS).slice(0, 7);
+  const cols = (colors && colors.length ? colors : FLEET_COLORS).slice(0, 8);
   const sg = (signs && signs.length ? signs : FLEET_SIGNS).slice(0, 4);
   const key = `fleet|${cols.join(',')}|${sg.map((s) => s[0]).join(',')}|${night ? 1 : 0}`;
   return mat(cache, key, () => {
     const paint = new Sheet({
-      cw: 128, ch: 128, cols: 4, rows: 4,
+      // 8 x 4 cells of 128: up to eight body colours in two treatments each, two neutral box
+      // bodies and the wheel face, with headroom. A city that runs out of cells gets a repeat,
+      // not a corrupted sheet.
+      cw: 128, ch: 128, cols: 8, rows: 4,
       roughness: 0.33, metalness: 0.34, envMapIntensity: 1.25,
       // Self-light in the paint's OWN value. Under a night rig every body colour on the kerb
       // sinks towards one black silhouette — the Vegas capture had a slate pickup reading as a
@@ -3064,6 +3068,12 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
       roughness: 0.38, metalness: 0.16, envMapIntensity: 0.9,
       emissiveColor: 0xffffff, emissiveIntensity: night ? 0.18 : 0.02,
     });
+    // A box body is not the colour of its cab: a red cab under a white box is what a delivery
+    // truck looks like, and it is a second value break in the same silhouette.
+    const BOX = ['#cac6bc', '#adb1b6'];
+    const box = BOX.map((c, i) => ({
+      color: c, cell: paint.cell(`box${i}`, (cx, w) => paintCell(cx, w, { base: c, worn: i === 1, seed: 91 + i * 7 })),
+    }));
     const cells = [];
     for (let i = 0; i < cols.length; i++) {
       cells.push({
@@ -3094,7 +3104,7 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
     return {
       paintMat: paint.material,
       liveryMat: livery.material,
-      livery, cells, night, signs: sg,
+      livery, cells, box, night, signs: sg,
       rim: paint.cell('rim', (c, w) => rimCell(c, w)),
       glass: mat(cache, `fleetglass|${night ? 1 : 0}`, () => new THREE.MeshStandardMaterial({
         map: glassTex, roughness: 0.07, metalness: 0.88, envMapIntensity: 1.7,
@@ -3132,8 +3142,8 @@ const FLEET_SPEC = {
   wagon: { L: 4.86, W: 1.95, wr: 0.345, sill: 0.40, belt: 1.03, roofY: 1.66, cabZ: -0.62, cabL: 2.74, roofW: 0.88, doors: 3, rails: true },
   suv: { L: 4.84, W: 2.02, wr: 0.395, sill: 0.48, belt: 1.22, roofY: 1.90, cabZ: -0.52, cabL: 2.88, roofW: 0.90, doors: 3, rails: true },
   pickup: { L: 5.54, W: 2.06, wr: 0.400, sill: 0.50, belt: 1.30, roofY: 1.93, cabZ: 0.62, cabL: 1.74, roofW: 0.87, doors: 2, bed: true },
-  van: { L: 5.42, W: 2.08, wr: 0.375, sill: 0.42, belt: 1.05, roofY: 2.44, cabZ: 0, cabL: 0, roofW: 0.94, doors: 2 },
-  box: { L: 7.30, W: 2.34, wr: 0.455, sill: 0.62, belt: 1.20, roofY: 3.28, cabZ: 0, cabL: 0, roofW: 0.96, doors: 2 },
+  van: { L: 5.42, W: 2.08, wr: 0.375, sill: 0.42, belt: 1.05, roofY: 2.44, cabZ: 0, cabL: 0, roofW: 0.94, doors: 2, uvTop: 2.05 },
+  box: { L: 7.30, W: 2.34, wr: 0.455, sill: 0.62, belt: 1.20, roofY: 3.28, cabZ: 0, cabL: 0, roofW: 0.96, doors: 2, uvTop: 2.45 },
 };
 const FLEET_ORDER = ['coupe', 'sedan', 'wagon', 'suv', 'pickup', 'van', 'box'];
 
@@ -3147,11 +3157,12 @@ const _rb = (w, h, d, r = 0.14) => roundedBox(w - r, h - r, d - r, r, 1);
  */
 function fleetVehicle(kind, variant, K) {
   const S = FLEET_SPEC[kind] || FLEET_SPEC.sedan;
-  const paintGeos = [], rimGeos = [], liveryGeos = [];
+  const paintGeos = [], bodyGeos = [], rimGeos = [], liveryGeos = [];
   const bins = new Map();
   const put = (m, geo, x = 0, y = 0, z = 0, o = {}) => {
     xform(geo, x, y, z, o);
     if (m === 'paint') paintGeos.push(geo);
+    else if (m === 'body') bodyGeos.push(geo);
     else if (m === 'rim') rimGeos.push(geo);
     else if (m === 'livery') liveryGeos.push(geo);
     else { let a = bins.get(m); if (!a) bins.set(m, a = []); a.push(geo); }
@@ -3161,7 +3172,6 @@ function fleetVehicle(kind, variant, K) {
 
   const { L, W, wr, sill, belt, roofY } = S;
   const HL = L / 2, hw = W / 2;
-  let top = roofY;
 
   /** Tyre, alloy face and the dark arch it fills. Never a bare cylinder. */
   const wheels = (zs, r = wr, tw = 0.26, inset = 0.085, halfW = hw) => {
@@ -3225,7 +3235,6 @@ function fleetVehicle(kind, variant, K) {
       }
       for (const sx of [-1, 1]) put('steel', _box(0.07, 0.07, 3.30), sx * 0.30, roofY + 0.35, boxZ);
       for (let i = 0; i < 8; i++) put('steel', _box(0.58, 0.05, 0.05), 0, roofY + 0.35, boxZ + 1.45 - i * 0.41);
-      top = roofY + 0.40;
     }
     wheels([HL - 1.05, -L * 0.29], wr, 0.25, 0.09);
   } else if (kind === 'box') {
@@ -3247,8 +3256,8 @@ function fleetVehicle(kind, variant, K) {
     // the box body. Skirt and rails OVERLAP: a body floating above its own frame is the most
     // obvious kind of broken.
     put('trim', _box(W * 0.98, 0.40, bL * 1.01), 0, bFloor - 0.06, bZ);
-    put('paint', _box(W, bRoof - bFloor, bL), 0, (bFloor + bRoof) / 2, bZ);
-    put('paint', _box(W * 0.92, 0.40, 0.84), 0, bRoof - 0.26, bZ + bL / 2 + 0.42, { rx: 0.16 });
+    put('body', _box(W, bRoof - bFloor, bL), 0, (bFloor + bRoof) / 2, bZ);
+    put('body', _box(W * 0.92, 0.40, 0.84), 0, bRoof - 0.26, bZ + bL / 2 + 0.42, { rx: 0.16 });
     for (const sx of [-1, 1]) {
       put('livery', new THREE.PlaneGeometry(bL * 0.86, 1.62), sx * (hw + 0.03), (bFloor + bRoof) / 2 + 0.14, bZ);
       put('trim', _box(0.07, bRoof - bFloor, 0.10), sx * (hw + 0.02), (bFloor + bRoof) / 2, bZ + bL / 2 - 0.05);
@@ -3327,7 +3336,6 @@ function fleetVehicle(kind, variant, K) {
       }
       for (const sx of [-1, 1]) put('steel', _box(0.07, 0.07, 3.20), sx * 0.30, belt + 0.70, (bedFront + tailZ) / 2);
       for (let i = 0; i < 8; i++) put('steel', _box(0.56, 0.05, 0.05), 0, belt + 0.70, (bedFront + tailZ) / 2 + 1.40 - i * 0.40);
-      top = belt + 0.74;
     }
     face(sill + bodyH * 0.62, noseZ, tailZ);
     wheels([L * 0.31, -L * 0.31]);
@@ -3336,23 +3344,30 @@ function fleetVehicle(kind, variant, K) {
   // ---- fold to one mesh per material, projecting the paint UVs from the finished body
   const g = new THREE.Group();
   const z0 = -HL - 0.22, z1 = HL + 0.22;
-  const y0 = sill - 0.13, y1 = top + 0.03;
+  // The ramp is framed by the KIND's own roof, not by this variant's ladder rack: two pickups
+  // that differ only by a rack must wear the same paint, or the rank shows two shades of one
+  // colour. `uvTop` shortens the frame on the tall bodies — stretched over a 3.3 m box the ramp
+  // put the whole lower two-thirds of a truck flank in shadow, and the cab read as black.
+  const y0 = sill - 0.13, y1 = (S.uvTop ?? roofY) + 0.03;
   const emit = (material, geos, opts) => {
     if (!geos.length) return;
     const b = new Batch(material, opts);
     for (const geo of geos) b.addRaw(geo);
     b.into(g);
   };
+  const bodySkin = K.box[variant % K.box.length];
   for (const geo of paintGeos) paintUV(geo, skin.cell, y0, y1, z0, z1);
+  for (const geo of bodyGeos) paintUV(geo, bodySkin.cell, y0, y1, z0, z1);
   for (const geo of rimGeos) cellUV(geo, K.rim);
   if (liveryGeos.length) {
     const SG = K.signs[(variant + (kind === 'box' ? 2 : 0)) % K.signs.length];
+    const ground = kind === 'box' ? bodySkin.color : skin.color;
     const cell = K.livery.cell(`${kind}${variant}`, (c, w, h) => liveryCell(c, w, h, {
-      body: skin.color, ink: shadeHex(skin.color, 0.26), text: SG[0], sub: SG[1], seed: variant + kind.length,
+      body: ground, ink: shadeHex(ground, 0.26), text: SG[0], sub: SG[1], seed: variant + kind.length,
     }));
     for (const geo of liveryGeos) cellUV(geo, cell);
   }
-  emit(K.paintMat, paintGeos.concat(rimGeos), { cast: true, receive: true });
+  emit(K.paintMat, paintGeos.concat(bodyGeos, rimGeos), { cast: true, receive: true });
   emit(K.liveryMat, liveryGeos, { cast: false, receive: true });
   emit(K.glass, bins.get('glass') || [], { cast: false, receive: false });
   emit(K.tyre, bins.get('tyre') || [], { cast: false, receive: false });
