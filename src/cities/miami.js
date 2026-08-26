@@ -3315,6 +3315,14 @@ export const def = {
     planterColor: '#e8dcc4',
     streetNames: ['OCEAN DR', 'COLLINS AVE', 'LINCOLN RD', '5TH ST', 'WASHINGTON', 'BISCAYNE'],
     carColors: ['#f4f2ec', '#ff5fa8', '#2fd8b4', '#ffab3a', '#1d2a3a', '#c8322a', '#7f5fff'],
+    // Signwriting for the kit fleet's trade vans and box bodies — the businesses that actually
+    // service a beach strip, so the kerb reads as South Beach and not as generic street dressing.
+    fleetSigns: [
+      ['BAYSIDE SEAFOOD', 'DAILY CATCH · DOCK 9'],
+      ['OCEAN DRIVE ICE', 'PARTY · EVENTS'],
+      ['DECO POOL CO', 'SERVICE · REPAIR'],
+      ['CUBANO BAKERY', 'PAN · CAFE · 8TH ST'],
+    ],
     billboards: [
       { u: 0.600, side: IN, text: 'MIAMI', sub: 'BEACH', color: '#ff3f80', offset: 24, h: 8 },
       { u: 0.700, side: IN, text: 'NEON', sub: 'NIGHTS', color: '#26e0a8', offset: 22 },

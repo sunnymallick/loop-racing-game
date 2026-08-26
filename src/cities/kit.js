@@ -3052,10 +3052,12 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
     const paint = new Sheet({
       cw: 128, ch: 128, cols: 4, rows: 4,
       roughness: 0.33, metalness: 0.34, envMapIntensity: 1.25,
-      // A whisper of self-light in the paint's own colour. Under a blue-hour hemisphere rig every
-      // body colour on the kerb slides towards the same slate; this keeps a red car red and a
-      // white van white, and at 0.09 it is nowhere near the ~0.6 bloom threshold.
-      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.09 : 0.015,
+      // Self-light in the paint's OWN value. Under a night rig every body colour on the kerb
+      // sinks towards one black silhouette — the Vegas capture had a slate pickup reading as a
+      // hole in the frame with a lit grille floating in it. This is the city spill a parked car
+      // actually catches off neon and shopfronts, and at 0.22 it is nowhere near the ~0.6 bloom
+      // threshold, so nothing here haloes.
+      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.22 : 0.02,
     });
     const livery = new Sheet({
       cw: 256, ch: 64, cols: 2, rows: 4,
@@ -3125,12 +3127,12 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
  * same height, and the spread runs 1.33 m to 3.28 m.
  */
 const FLEET_SPEC = {
-  coupe: { L: 4.60, W: 1.87, wr: 0.335, sill: 0.40, belt: 0.96, roofY: 1.33, cabZ: -0.56, cabL: 1.74, roofW: 0.79, doors: 2 },
-  sedan: { L: 4.92, W: 1.91, wr: 0.335, sill: 0.42, belt: 1.03, roofY: 1.46, cabZ: -0.34, cabL: 2.12, roofW: 0.86, doors: 3 },
-  wagon: { L: 4.86, W: 1.95, wr: 0.345, sill: 0.44, belt: 1.05, roofY: 1.66, cabZ: -0.62, cabL: 2.74, roofW: 0.88, doors: 3, rails: true },
-  suv: { L: 4.84, W: 2.02, wr: 0.395, sill: 0.53, belt: 1.24, roofY: 1.90, cabZ: -0.52, cabL: 2.88, roofW: 0.90, doors: 3, rails: true },
-  pickup: { L: 5.54, W: 2.06, wr: 0.400, sill: 0.56, belt: 1.32, roofY: 1.93, cabZ: 0.62, cabL: 1.74, roofW: 0.87, doors: 2, bed: true },
-  van: { L: 5.42, W: 2.08, wr: 0.375, sill: 0.44, belt: 1.05, roofY: 2.44, cabZ: 0, cabL: 0, roofW: 0.94, doors: 2 },
+  coupe: { L: 4.60, W: 1.87, wr: 0.335, sill: 0.36, belt: 0.94, roofY: 1.33, cabZ: -0.56, cabL: 1.74, roofW: 0.79, doors: 2 },
+  sedan: { L: 4.92, W: 1.91, wr: 0.335, sill: 0.38, belt: 1.01, roofY: 1.46, cabZ: -0.34, cabL: 2.12, roofW: 0.86, doors: 3 },
+  wagon: { L: 4.86, W: 1.95, wr: 0.345, sill: 0.40, belt: 1.03, roofY: 1.66, cabZ: -0.62, cabL: 2.74, roofW: 0.88, doors: 3, rails: true },
+  suv: { L: 4.84, W: 2.02, wr: 0.395, sill: 0.48, belt: 1.22, roofY: 1.90, cabZ: -0.52, cabL: 2.88, roofW: 0.90, doors: 3, rails: true },
+  pickup: { L: 5.54, W: 2.06, wr: 0.400, sill: 0.50, belt: 1.30, roofY: 1.93, cabZ: 0.62, cabL: 1.74, roofW: 0.87, doors: 2, bed: true },
+  van: { L: 5.42, W: 2.08, wr: 0.375, sill: 0.42, belt: 1.05, roofY: 2.44, cabZ: 0, cabL: 0, roofW: 0.94, doors: 2 },
   box: { L: 7.30, W: 2.34, wr: 0.455, sill: 0.62, belt: 1.20, roofY: 3.28, cabZ: 0, cabL: 0, roofW: 0.96, doors: 2 },
 };
 const FLEET_ORDER = ['coupe', 'sedan', 'wagon', 'suv', 'pickup', 'van', 'box'];
@@ -3307,7 +3309,13 @@ function fleetVehicle(kind, variant, K) {
     put('paint', _box(cW * 0.99, 0.07, 0.09), 0, belt + 0.038, cabZ + cabL / 2);
     put('paint', _box(cW * 0.99, 0.07, 0.09), 0, belt + 0.038, cabZ - cabL / 2);
     // rocker and arches
-    put('trim', _box(W * 1.008, 0.17, L * 0.90), 0, sill + 0.06, 0);
+    // The rocker runs BELOW the sill, not level with it, and it is PAINT rather than dark trim.
+    // A body slab floating 50 cm over its own shadow reads as a model on a plinth; a black valance
+    // under it reads as a plinth painted black. The ramp's own floor darkens this panel anyway
+    // (it sits at v ~ 0.06), so the sill goes dark in the body's colour, which is what a rocker
+    // in its own shade actually does. The arch lips stay dark: an arch liner IS black.
+    put('paint', _box(W * 1.004, 0.26, L * 0.90), 0, sill - 0.02, 0);
+    for (const sz of [1, -1]) put('trim', _box(W * 1.014, 0.17, 1.20), 0, sill + 0.13, sz * L * 0.31);
     if (S.rails) for (const sx of [-1, 1]) put('trim', _box(0.06, 0.055, cabL * 0.84), sx * cW * 0.39, roofY + 0.035, cabZ);
     if (S.bed && variant % 3 === 2) {
       // one pickup in three carries a ladder rack: 60 cm of extra outline over the bed, and an

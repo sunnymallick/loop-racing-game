@@ -3180,6 +3180,15 @@ export const def = {
     hydrantColor: '#c8a02a',
     planterColor: '#3a2c4c',
     carColors: ['#c8a02a', '#8f2f7a', '#2f6a8f', '#2a2230', '#a8a2b0'],
+    // Signwriting for the kit fleet's trade vans and box bodies. The Strip runs on laundry,
+    // vending and sign contractors, and a van with a real trade name on it is the difference
+    // between a parked prop and a parked business.
+    fleetSigns: [
+      ['DESERT LINEN', 'HOTEL SUPPLY · 24 HR'],
+      ['ACE VENDING', 'SLOTS · SERVICE'],
+      ['NEON SIGN CO', 'BOULDER HWY'],
+      ['PARADISE CATERING', 'BANQUET · EVENTS'],
+    ],
     streetNames: ['LAS VEGAS BLVD', 'FREMONT ST', 'PARADISE RD', 'FLAMINGO RD', 'TROPICANA AVE'],
     furnitureKinds: ['hydrant', 'trash', 'bench', 'newsbox', 'sign', 'planter', 'cones',
       'shelter', 'mailbox', 'bollards', 'cart'],
