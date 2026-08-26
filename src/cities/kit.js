@@ -3532,6 +3532,30 @@ function fleetVehicle(kind, variant, K) {
   };
 
   /**
+   * ONE HEADLAMP. The critic read round 2's as "flat cream slabs rather than lamps in daylight",
+   * and they were: one emissive box, the whole area lit. An unlit lamp in daylight is mostly a
+   * DARK HOUSING with a chrome reflector in it and only a small part of it glowing. So: a black
+   * socket, a chrome dish inside it, two round projector pods and a thin daytime bar — four
+   * values inside 33 cm, with about a third of the emissive area. Every vehicle in the fleet
+   * wears this, not just the cars; the van and the truck had the slab too.
+   */
+  const lamp = (x, y, z, w, h, dir = 1) => {
+    put('trim', _box(w, h, 0.055), x, y, z - dir * 0.012);
+    put('chrome', _box(w * 0.80, h * 0.66, 0.040), x, y + h * 0.06, z + dir * 0.014);
+    for (const px of [-w * 0.235, w * 0.235]) {
+      put('head', new THREE.CylinderGeometry(h * 0.30, h * 0.26, 0.030, 8), x + px, y + h * 0.08, z + dir * 0.028, { rx: Math.PI / 2 });
+    }
+    put('head', _box(w * 0.66, h * 0.12, 0.032), x, y - h * 0.31, z + dir * 0.026);
+  };
+  /** ...and one tail: two lenses either side of a chrome divider, in a housing. */
+  const tailLamp = (x, y, z, w, h, dir = -1) => {
+    put('trim', _box(w, h, 0.05), x, y, z - dir * 0.012);
+    put('tail', _box(w * 0.82, h * 0.34, 0.060), x, y + h * 0.25, z + dir * 0.022);
+    put('tail', _box(w * 0.82, h * 0.28, 0.060), x, y - h * 0.27, z + dir * 0.022);
+    put('chrome', _box(w * 0.86, h * 0.075, 0.046), x, y - h * 0.02, z + dir * 0.030);
+  };
+
+  /**
    * Head/tail/indicator cluster, bumpers, plates and a grille — the trim that separates a car
    * from a bar of soap, and the emissives that make the rank read at night.
    *
@@ -3553,20 +3577,10 @@ function fleetVehicle(kind, variant, K) {
     put('chrome', _box(0.50, 0.15, 0.04), 0, sill + (belt - sill) * 0.28, frontZ + 0.045);
     put('chrome', _box(0.50, 0.15, 0.04), 0, sill + (belt - sill) * 0.30, backZ - 0.045);
     for (const sx of [-1, 1]) {
-      const lx = sx * W * 0.31;
-      put('trim', _box(0.44, 0.225, 0.055), lx, y, frontZ - 0.005);                  // black socket
-      put('chrome', _box(0.355, 0.150, 0.040), lx, y + 0.013, frontZ + 0.020);       // reflector dish
-      for (const px of [-0.080, 0.080]) {
-        put('head', new THREE.CylinderGeometry(0.045, 0.040, 0.030, 8), lx + px, y + 0.018, frontZ + 0.036, { rx: Math.PI / 2 });
-      }
-      put('head', _box(0.295, 0.024, 0.032), lx, y - 0.068, frontZ + 0.034);          // daytime bar
+      lamp(sx * W * 0.31, y, frontZ, 0.44, 0.225);
       put('amber', _box(0.11, 0.075, 0.05), sx * W * 0.428, y - 0.128, frontZ + 0.028);
-      const tx = sx * W * 0.32;
-      put('trim', _box(0.42, 0.265, 0.05), tx, y + 0.028, backZ + 0.005);
-      put('tail', _box(0.345, 0.085, 0.062), tx, y + 0.072, backZ - 0.032);
-      put('tail', _box(0.345, 0.070, 0.062), tx, y - 0.022, backZ - 0.032);
-      put('chrome', _box(0.360, 0.022, 0.048), tx, y + 0.021, backZ - 0.040);
-      put('amber', _box(0.095, 0.055, 0.055), tx - sx * 0.118, y + 0.021, backZ - 0.030);
+      tailLamp(sx * W * 0.32, y + 0.028, backZ, 0.42, 0.265);
+      put('amber', _box(0.095, 0.055, 0.055), sx * W * 0.32 - sx * 0.118, y + 0.021, backZ - 0.030);
     }
     put('chrome', new THREE.CylinderGeometry(0.045, 0.052, 0.17, 8), W * 0.24, sill + 0.02, backZ - 0.04, { rx: Math.PI / 2 });
   };
@@ -3585,8 +3599,8 @@ function fleetVehicle(kind, variant, K) {
       put('trim', _box(0.035, 0.66, 1.10), sx * (hw + 0.004), sill + 1.24, HL - 1.95);
       put('trim', _box(0.24, 0.13, 0.08), sx * (hw + 0.13), sill + 1.36, HL - 1.48);
       put('livery', new THREE.PlaneGeometry(boxL * 0.62, 1.06), sx * (hw + 0.028), sill + 1.20, boxZ + 0.10, { ry: sx * Math.PI / 2 });
-      put('tail', _box(0.16, 0.58, 0.07), sx * W * 0.37, sill + 0.62, -HL - 0.03);
-      put('head', _box(0.38, 0.16, 0.08), sx * W * 0.31, sill + 0.40, HL + 0.03);
+      tailLamp(sx * W * 0.37, sill + 0.62, -HL - 0.01, 0.20, 0.60);
+      lamp(sx * W * 0.31, sill + 0.42, HL + 0.01, 0.40, 0.19);
       put('amber', _box(0.11, 0.09, 0.06), sx * W * 0.44, sill + 0.26, HL + 0.03);
       put('chrome', _box(0.03, 0.05, 0.16), sx * (hw + 0.012), sill + 0.86, HL - 1.98);
     }
@@ -3616,8 +3630,8 @@ function fleetVehicle(kind, variant, K) {
     for (const sx of [-1, 1]) {
       put('glass', _box(0.06, 0.52, 0.80), sx * (W * 0.4955 + 0.012), sill + 1.22, HL - 1.28);
       put('trim', _box(0.28, 0.15, 0.09), sx * (hw + 0.16), sill + 1.36, HL - 0.54);
-      put('head', _box(0.42, 0.19, 0.09), sx * W * 0.30, sill + 0.28, HL + 0.03);
-      put('tail', _box(0.19, 0.42, 0.08), sx * W * 0.35, 1.10, -HL - 0.02);
+      lamp(sx * W * 0.30, sill + 0.30, HL + 0.02, 0.44, 0.21);
+      tailLamp(sx * W * 0.35, 1.10, -HL, 0.21, 0.44);
       put('amber', _box(0.11, 0.08, 0.06), sx * W * 0.43, sill + 0.10, HL + 0.03);
     }
     put('trim', _box(W * 0.95, 0.32, 0.24), 0, sill - 0.10, HL + 0.05);
