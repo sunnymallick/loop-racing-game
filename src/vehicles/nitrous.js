@@ -1164,7 +1164,23 @@ const PLUME_FRAG = /* glsl */`
       // mirrored, and small enough that the banding survives the overlap.
       float bp  = (ph + 0.16) * 6.2831853 + uPhase * 0.50 + uBandDrift;
       float sw  = sin(bp);
-      float ci  = floor(bp * 0.1591549 + 0.5);
+      // ── (r22) A PER-CELL RANDOM IS A STRAIGHT LINE ACROSS THE COLUMN ───────────────────────
+      // ci was floor(bp/2pi + 0.5) and it indexed a hash — so the cell's random amplitude, its
+      // flicker phase and its end jitter all STEPPED at bp/2pi = n - 0.5, which is where
+      // sin(bp) = 0 and the cell is at HALF amplitude, not zero. A discontinuity in amp at half
+      // amplitude is a discontinuity in the drawn jet; ci is a function of the station alone, so
+      // the surface it steps on is a plane perpendicular to the axis, and a plane perpendicular
+      // to the axis projects to a DEAD STRAIGHT LINE across the column. Measured at 5x on the
+      // vegas SUV with one nozzle soloed and the whole scene ablated away: a straight diagonal
+      // cut through the incandescent core, in every capture, at the same station, independent of
+      // uReach — which is what ruled out the ray clip and the proxy quad. It is a §7 "visible
+      // hard edge" and it has been in the file since the train was first jittered.
+      // The cell coordinate is continuous now and the hash is interpolated between the two cells
+      // either side of it, so nothing in the train has a step in it at any station. It costs one
+      // extra hash per sample (h21 is three multiplies and a fract) against ~14 already there.
+      float cf  = bp * 0.1591549;
+      float ci  = floor(cf);
+      float cw  = fract(cf); cw = cw * cw * (3.0 - 2.0 * cw);
       // ── (r20) THE TRAIN FADES BY CELL, NOT BY DISTANCE — AND ONLY DIAMOND 1 WAS EVER DRAWN ──
       // Measured on the r19 LA muscle with tools/_n20_axis.mjs: the axial luminance runs 241 at
       // the throat and 205-220 through the whole middle of the column, and the strongest local
@@ -1185,9 +1201,11 @@ const PLUME_FRAG = /* glsl */`
       // because the phase is ts^2 each of them is also SHORTER (cell lengths 0.39 / 0.21 / 0.16 in
       // screen station) and sits inside a cone that has necked to 45% / 26% / 14% of the throat.
       // Smaller, closer together and fainter, in a fixed ratio: that is a shock train.
+      float jit = mix(h21(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0)),
+                      h21(vec2((ci + 1.0) * 0.61 + 0.5, uPhase * 9.0 + 3.0)), cw);
       float amp = smoothstep(0.006, 0.045, ts) * exp(-uBandFade * ph) * uBandAmt
-                * (0.60 + 0.72 * h21(vec2(ci * 0.61 + 0.5, uPhase * 9.0 + 3.0)))
-                * (0.88 + 0.14 * sin(uTime * uFlick * 0.31 + ci * 1.7));
+                * (0.60 + 0.72 * jit)
+                * (0.88 + 0.14 * sin(uTime * uFlick * 0.31 + cf * 1.7));
       amp = clamp(amp, 0.0, 1.0);
       // ── AND A CELL IS TWO DIFFERENT SHAPES AT ONCE ─────────────────────────────────────────
       // r18 drove the silhouette AND the incandescence off one term, pow(lobe, 0.80), which is
@@ -1361,7 +1379,11 @@ const PLUME_FRAG = /* glsl */`
         // ...and the same at both ends of the column. The tail runs out of gas at a different
         // station on every side and in every frame: the axial jitter alone terminated the whole
         // cross-section at once, which is an analytic point on the end of an analytic cone.
-        float endJ = 0.30 * (fl - 0.5) + 0.10 * (h21(vec2(ci, floor(c.x * 3.0))) - 0.5);
+        // (r22) ...and the same for the tail: h21(ci, floor(c.x*3)) stepped BOTH in the cell
+        // index and in azimuth, i.e. it drew a straight line across the column and three straight
+        // radial spokes around it. vn is value noise — smooth in both arguments — so the station
+        // the column runs out of gas at now varies continuously around it and along it.
+        float endJ = 0.30 * (fl - 0.5) + 0.10 * (vn(vec2(cf * 0.72, c.x * 1.60 + 3.0)) - 0.5);
         float ax = smoothstep(-0.010, 0.030, tr) * (1.0 - smoothstep(uEnd0, uEnd1, tr + endJ));
         // the gas washes out into the asphalt over ~0.8 m instead of being sliced by it
         float gnd = smoothstep(-0.22, 0.62, hy);
