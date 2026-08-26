@@ -3407,17 +3407,24 @@ function sectionSolid(W, H, D, prof, r = 0.16) {
 }
 
 /**
- * TUMBLEHOME. A greenhouse that goes straight up is a bus. Every side window on a car leans in
- * toward the roof, and it is the reason a car catches a highlight along the top of the door and
- * a different one on the glass. Applied to the glass band, the pillars and the roof cap together
- * so they stay one surface.
+ * THE CABIN TAPER — tumblehome and rake in one pass.
+ *
+ * TUMBLEHOME: a greenhouse that goes straight up is a bus. Every side window on a car leans in
+ * toward the roof, and it is why a car catches one highlight along the top of the door and a
+ * different one on the glass.
+ *
+ * RAKE: and a greenhouse whose front and back faces are vertical is a van. A windscreen lies
+ * back and a backlight lies forward, so the roof is 15-20% shorter than the base of the glass —
+ * which is most of what separates a car's outline from a box's. Scaling z about the cab centre
+ * gives both screens their rake AND lays the A and C pillars over with them, for one loop.
  */
-function tumble(geo, y0, y1, kBot, kTop) {
+function tumble(geo, y0, y1, kTop, kzTop = 1, zc = 0) {
   const pos = geo.attributes.position;
   const iy = 1 / Math.max(1e-4, y1 - y0);
   for (let i = 0; i < pos.count; i++) {
     const t = clamp((pos.getY(i) - y0) * iy, 0, 1);
-    pos.setX(i, pos.getX(i) * lerp(kBot, kTop, t));
+    pos.setX(i, pos.getX(i) * lerp(1, kTop, t));
+    if (kzTop !== 1) pos.setZ(i, zc + (pos.getZ(i) - zc) * lerp(1, kzTop, t));
   }
   pos.needsUpdate = true;
   geo.computeVertexNormals();
@@ -3685,13 +3692,18 @@ function fleetVehicle(kind, variant, K) {
     // greenhouse. TUMBLEHOME: the glass, the pillars, the roof cap and the chrome surround are
     // all leaned in by the same function of height, so the cabin is a tapered box and not a
     // parallel-sided one. This is half of what the critic meant by "roof slab / glass slab".
-    const TH = 0.845;
-    const lean = (geo) => tumble(geo, belt, roofY, 1.0, TH);
+    const TH = 0.845;                                   // tumblehome at the roof
+    const TZ = S.bed ? 0.90 : (S.rails ? 0.855 : 0.795); // and how far the screens lie back
+    const lean = (geo) => tumble(geo, belt, roofY, TH, TZ, cabZ);
     lean(put('glass', _box(cW * 0.99, gH, cabL * 0.99), 0, belt + gH / 2, cabZ));
     lean(put('paint', _rb(cW, CAP, cabL * 1.05, 0.05), 0, roofY - CAP / 2, cabZ));
+    // The pillar rakes were the wrong way round: +rx lays a box's top toward +z, which is the
+    // NOSE, so the A-pillar leaned forward and the C-pillar leaned back and the greenhouse came
+    // out longer at the roof than at the belt. The cabin taper above now lays both screens over
+    // correctly; these are the small extra lean each pillar has on top of that.
     const cols = doors === 3
-      ? [[0.50, 0.095, 0.26], [0.02, 0.085, 0], [-0.50, 0.13, -0.20]]
-      : [[0.50, 0.105, 0.30], [-0.50, 0.145, -0.24]];
+      ? [[0.50, 0.095, -0.10], [0.02, 0.085, 0], [-0.50, 0.13, 0.08]]
+      : [[0.50, 0.105, -0.12], [-0.50, 0.145, 0.10]];
     for (const sx of [-1, 1]) {
       for (const [pz, pw, rake] of cols) {
         lean(put('paint', _box(pw + 0.05, gH * 1.02, pw), sx * (cW / 2 - pw * 0.5), belt + gH / 2, cabZ + pz * cabL, { rx: rake }));
