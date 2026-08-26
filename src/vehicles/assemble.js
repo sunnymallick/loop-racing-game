@@ -771,12 +771,32 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    * @param cfg  {x,y,z,w,h} of the insert, in car space
    * @param out  how far the insert reaches FORWARD of its own origin (lamp unit 0.026, grille 0.016)
    * @param back how far it reaches BEHIND its own origin, so its back never breaks the floor
+   * @param perRow  the insert draws itself ROW BY ROW against the measurement, so it does not need
+   *                to be shrunk to fit — only placed. See the note below.
    */
-  const seat = (cfg, out, back = 0.02) => {
+  const seat = (cfg, out, back = 0.02, perRow = false) => {
     const x = cfg.x ?? 0, y = cfg.y ?? 0, z = cfg.z ?? 0;
     const f = fitAt(x, y, z);
     if (!f) return cfg;
     const PAD = 0.006;
+    /**
+     * ---- A SCREEN IS NOT A SOLID, AND A TAPERED HOLE PROVES IT ------------------------------
+     *
+     * WAVE-13. Everything below fits a RECTANGLE: it walks the part's y band, takes the NARROWEST
+     * row of flat floor across it, and shrinks the part until that row can hold it. That is exactly
+     * right for a lamp unit, which is a solid object — and it makes a tapered opening unusable,
+     * because the narrowest row of a trapezoid is nothing like its widest. Measured on the tuner's
+     * new shield: a 1.13 m floor, a 0.58 m top row, and a 0.92 m screen seated down to 0.658 —
+     * floating in the middle of a hole nearly twice its width, which is the round-2 defect this
+     * whole machinery exists to prevent, arriving from the opposite direction.
+     *
+     * A woven screen is not a solid. `grilleMesh` generates every bar from `span.outX(y)` /
+     * `span.outY(x)` — the measured recess wall AT THAT ROW — so it already fits any shape of hole
+     * exactly, and clipping it to a rectangle first is what throws the shape away. `perRow` says
+     * so: place the part, solve its z, and leave its extent alone. The bars still die into the
+     * wall wherever they meet it, and `cutTo` still intersects every span with the part's own
+     * authored rectangle so a screen that is meant to stop short of a lamp still does.
+     */
     /**
      * The floor is not a rectangle — it is a rounded region measured row by row — so a part is
      * fitted by ITERATION rather than by one clamp: take the y band the part wants, ask the
@@ -785,6 +805,14 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
      */
     let w = cfg.w ?? 0.02, h = cfg.h ?? 0.02, cx = Math.abs(x), cy = y;
     const yLo = f.y - f.hh, yHi = f.y + f.hh;
+    if (perRow) {
+      const zB = f.zFloor + f.dir * (back + 0.004);
+      const zM = f.zc - f.dir * (out + 0.008);
+      const zP = f.dir > 0 ? Math.min(zB, zM) : Math.max(zB, zM);
+      const out3 = { ...cfg, x, y: clamp(cy, yLo + h * 0.5, yHi - h * 0.5), z: zP, fit: f };
+      seated.push({ from: [x, y, z, w, h], to: [out3.x, out3.y, out3.z, w, h] });
+      return out3;
+    }
     for (let pass = 0; pass < 3; pass++) {
       cy = clamp(cy, yLo + h * 0.5, yHi - h * 0.5);
       let lo = -Infinity, hi = Infinity, ok = true;
@@ -977,7 +1005,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
    */
   let grSeed = 17;
   for (const rawGr of bp.grilles || (bp.grille ? [bp.grille] : [])) {
-    const gr = seat(rawGr, 0.016, (rawGr.d ?? 0.14) * 0.16 + 0.020);
+    const gr = seat(rawGr, 0.016, (rawGr.d ?? 0.14) * 0.16 + 0.020, rawGr.perRow === true);
     let span = null;
     if (gr.fit) {
       const f = gr.fit, ox = gr.x ?? 0, oy = gr.y;

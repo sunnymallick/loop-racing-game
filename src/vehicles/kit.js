@@ -4967,19 +4967,32 @@ export function lightUnit({
       fil.name = 'reflector';
       g.add(fil);
     } else {
-      // projector barrels — as many as fit along the lamp, at least one
+      /**
+       * Projector barrels — as many as fit along the lamp, at least one, and they run along
+       * whichever axis is LONGER.
+       *
+       * WAVE-13. This used to divide `lw` unconditionally, which is correct for every lamp that
+       * existed when it was written (all six were wider than tall) and wrong the moment a car
+       * wants a TALL unit: a 95 x 175 mm lens got one barrel floating in the middle of it, so the
+       * shape that is supposed to say "stacked projectors" said "one dot in a slot". A vertical
+       * stack is the tuner's whole headlamp signature against the supercar's horizontal strip, so
+       * it has to be the optic and not just the outline.
+       */
+      const tall = lh > lw;
+      const along = tall ? lh : lw;
       const br = Math.min(lw, lh) * 0.34;
-      const n = Math.max(1, Math.min(3, Math.round(lw / (br * 2.6))));
+      const n = Math.max(1, Math.min(3, Math.round(along / (br * 2.6))));
       for (let i = 0; i < n; i++) {
-        const f = n === 1 ? 0 : (i / (n - 1) - 0.5) * (lw - br * 2.3);
+        const f = n === 1 ? 0 : (i / (n - 1) - 0.5) * (along - br * 2.3);
+        const fx = tall ? 0 : f, fy = tall ? f : 0;
         const ring = new THREE.Mesh(new THREE.TorusGeometry(br, Math.max(0.003, br * 0.20), 5, 18), rmMat);
-        ring.position.set(f, 0, 0.002);
+        ring.position.set(fx, fy, 0.002);
         ring.name = 'reflector';
         g.add(ring);
         // …and the projector's own bulb, for the same reason as the sealed beam's filament above
         const boss = new THREE.Mesh(new THREE.SphereGeometry(br * 0.46, 10, 6),
           emissiveMaterial({ color: '#fff0d2', intensity: 1.35, shared: true }));
-        boss.position.set(f, 0, 0.004);
+        boss.position.set(fx, fy, 0.004);
         boss.name = 'reflector';
         g.add(boss);
       }
