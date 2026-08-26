@@ -2770,62 +2770,612 @@ export function trafficCones({ cache = null, seed = 1, n = 3 }) {
   return g;
 }
 
+// ---------------------------------------------------------------- THE KERBSIDE FLEET
 /**
- * A parked car at the kerb. Not a hero model — but a proper 3-box silhouette with glass, wheels
- * and lights, which is what makes a street read as inhabited rather than swept.
+ * THE KERBSIDE FLEET — one good fleet, shared by every city.
+ *
+ * The wave-9 whole-game critic cropped a real Miami frame to 4x and called this the weakest thing
+ * in the build: the parked cars were "stacks of unmodified boxes in flat untextured colour, with
+ * black cylinders", standing three metres from a hero car that has clearcoat, separate glass,
+ * spoked wheels and a contact shadow. One frame, TWO FIDELITY TIERS. The side-by-side is the
+ * fault; the polycount never was.
+ *
+ * The root cause was that the codebase had grown THREE fleets at three tiers. Los Angeles wrote
+ * its own (prototyped kinds, variants, a shared material cache) and switched this one off with a
+ * note saying these props stand three metres from the camera and have to be the good mesh. New
+ * York wrote a six-silhouette rank on a livery atlas and switched this one off too. Las Vegas and
+ * Miami were left on the tier nobody had looked at since round 1. So this is UNIFICATION, not
+ * invention: LA's prototype-and-cache discipline plus New York's six-silhouettes-on-one-sheet
+ * discipline, promoted into the kit so every city draws from one fleet.
+ *
+ * What is here, and why each piece earns its place:
+ *
+ *  - SEVEN SILHOUETTES that break the roofline — coupe 1.33 m, sedan 1.46, wagon 1.62, SUV 1.90,
+ *    pickup 1.93 (2.52 over the ladder rack), van 2.44, box truck 3.28. §7 caps "the same prop
+ *    mesh repeated at a visible regular interval" at 66, and what the eye locks onto down a kerb
+ *    line is the repeated OUTLINE. Nine paint swatches on one shape is still wallpaper.
+ *  - ONE PAINT SHEET. Every painted panel in the fleet samples one 512² atlas whose cells carry a
+ *    clearcoat ramp (a sky band across the upper surfaces, a horizon flash low on the flank, a
+ *    dark rocker), a beltline crease, three door shuts, metallic flake and road grime creeping up
+ *    from the sill. §7's "untextured MeshStandardMaterial in a flat colour on any large surface →
+ *    50" is the cap this prop was most at risk of, and a colour swatch — however well chosen — IS
+ *    that tell.
+ *  - The paint UVs are a PLANAR PROJECTION of the finished vehicle: u along its length, v up its
+ *    height. So the ramp runs the right way up on every panel of every kind, a door shut is a real
+ *    vertical gap down the flank rather than a stripe that wraps whichever way a box's faces
+ *    happen to point, and the grime always sits at the bottom.
+ *  - A SEPARATE GLASS MATERIAL with its own reflection texture (§2.3: no separate glass and the
+ *    car reads as solid), emissive lamps set well over the ~1.5 bloom cut at night, 16-segment
+ *    tyres carrying a drawn five-spoke alloy face, and a CONTACT SHADOW under every vehicle
+ *    (§7 cap 55 — the old fleet had none and hovered).
+ *
+ * COST IS A HARD CONSTRAINT: there are dozens of these on screen at once, in ranks all along the
+ * kerb of every lap, and not one of them may become a hero draw call. Eight materials cover the
+ * whole fleet in any city — paint sheet, livery sheet, glass, tyre, dark trim, chrome, and the
+ * three lamp glows — and PropBatch builds each (kind, variant) body ONCE and then instances or
+ * merges it per material per 340 m chunk. Seventy parked vehicles cost about what the old rank of
+ * four-colour boxes cost, and they are the same tier as the hero car.
  */
-export function parkedCar({ cache = null, seed = 1, color = '#b8332f', night = false, kind = null }) {
-  const rng = new RNG(seed * 5 + 13);
+
+const FLEET_COLORS = ['#b8332f', '#2f4f8f', '#c8c4bc', '#2a2c30', '#d8a028', '#5d6d5a'];
+const FLEET_SIGNS = [
+  ['CITY CARGO', 'SAME DAY · DEPOT 4'],
+  ['A-1 PLUMBING', '24 HOUR SERVICE'],
+  ['VALLEY LINEN', 'HOTEL SUPPLY CO'],
+  ['NITRO PARTS', 'SPEED · MACHINE'],
+];
+
+/** sRGB-space scale of a hex swatch — the second tone of a two-tone body, a darker skirt. */
+function shadeHex(hex, k) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = (v) => clamp(Math.round(v * k), 0, 255);
+  return `#${(((1 << 24) + (f((n >> 16) & 255) << 16) + (f((n >> 8) & 255) << 8) + f(n & 255)) >>> 0).toString(16).slice(1)}`;
+}
+
+const _fm = new THREE.Matrix4(), _fq = new THREE.Quaternion(), _fe = new THREE.Euler();
+const _fv = new THREE.Vector3(), _fs = new THREE.Vector3();
+/** Bake a pose into a geometry, in place. Everything in the fleet is authored in car space. */
+function xform(geo, x = 0, y = 0, z = 0, o = {}) {
+  _fe.set(o.rx || 0, o.ry || 0, o.rz || 0);
+  _fq.setFromEuler(_fe);
+  _fv.set(x, y, z);
+  _fs.set(o.sx ?? 1, o.sy ?? 1, o.sz ?? 1);
+  _fm.compose(_fv, _fq, _fs);
+  geo.applyMatrix4(_fm);
+  return geo;
+}
+
+/** Remap a geometry's own 0..1 UVs into one atlas cell (wheel faces, flank signwriting). */
+function cellUV(geo, cell) {
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, cell.u0 + uv.getX(i) * cell.du, cell.v0 + uv.getY(i) * cell.dv);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+
+/**
+ * PLANAR PAINT UVs. u runs nose-to-tail, v runs sill-to-roof, both normalised over the whole
+ * vehicle, then folded into the body's atlas cell.
+ *
+ * This is the load-bearing trick. `roundedBox` is an ExtrudeGeometry and its side-wall UVs mix x,
+ * y and z depending on which way each quad faces, so a cell drawn with a vertical clearcoat ramp
+ * would have come out running along the car on half its panels. Projecting from the finished
+ * position instead means one cell serves a coupe's boot lid, a box truck's flank and a pickup's
+ * tailgate with the ramp upright on all three — and it means a door shut drawn at u = 0.32 lands
+ * at the same station in metres on every panel it crosses.
+ */
+function paintUV(geo, cell, y0, y1, z0, z1) {
+  const pos = geo.attributes.position;
+  let uv = geo.attributes.uv;
+  if (!uv || uv.count !== pos.count) {
+    uv = new THREE.Float32BufferAttribute(new Float32Array(pos.count * 2), 2);
+    geo.setAttribute('uv', uv);
+  }
+  const iy = 1 / Math.max(1e-4, y1 - y0), iz = 1 / Math.max(1e-4, z1 - z0);
+  for (let i = 0; i < pos.count; i++) {
+    const u = clamp((pos.getZ(i) - z0) * iz, 0, 1);
+    const v = clamp((pos.getY(i) - y0) * iy, 0, 1);
+    uv.setXY(i, cell.u0 + u * cell.du, cell.v0 + v * cell.dv);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+
+/**
+ * A tiny lazily-filled texture atlas: one canvas, one material, N cells. Same idea as New York's
+ * — sixty lettered things used to be sixty materials — kept minimal here because the fleet only
+ * ever needs two sheets.
+ */
+class Sheet {
+  constructor({ cw, ch, cols, rows, ...matOpts }) {
+    this.cw = cw; this.ch = ch; this.cols = cols; this.rows = rows;
+    this.W = cw * cols; this.H = ch * rows;
+    const o = canvas(this.W, this.H);
+    this.ctx = o.ctx;
+    this.ctx.fillStyle = '#101014'; this.ctx.fillRect(0, 0, this.W, this.H);
+    this.tex = toTexture(o.c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+    const emissive = matOpts.emissiveIntensity || 0;
+    this.material = new THREE.MeshStandardMaterial({
+      map: this.tex,
+      emissiveMap: emissive > 0 ? this.tex : null,
+      emissive: new THREE.Color(matOpts.emissiveColor ?? 0xffffff),
+      emissiveIntensity: emissive,
+      roughness: matOpts.roughness ?? 0.4,
+      metalness: matOpts.metalness ?? 0.3,
+      envMapIntensity: matOpts.envMapIntensity ?? 1.0,
+    });
+    this.cells = new Map();
+    this.n = 0;
+  }
+
+  cell(key, draw) {
+    let c = this.cells.get(key);
+    if (c) return c;
+    if (this.n >= this.cols * this.rows) return this.cells.values().next().value;
+    const i = this.n % this.cols, j = (this.n / this.cols) | 0;
+    this.n++;
+    const o = canvas(this.cw, this.ch);
+    draw(o.ctx, this.cw, this.ch);
+    this.ctx.drawImage(o.c, i * this.cw, j * this.ch);
+    this.tex.needsUpdate = true;
+    const px = 0.5 / this.W, py = 0.5 / this.H;      // half a texel in, so mips never bleed
+    c = {
+      u0: (i * this.cw) / this.W + px, du: this.cw / this.W - px * 2,
+      v0: 1 - ((j + 1) * this.ch) / this.H + py, dv: this.ch / this.H - py * 2,
+    };
+    this.cells.set(key, c);
+    return c;
+  }
+}
+
+/**
+ * ONE CELL OF CAR PAINT. Drawn once per (colour, treatment) and shared by every panel of every
+ * body wearing it. Everything in here exists to answer §7's flat-colour cap:
+ *
+ *   the vertical ramp     a bright sky band across the top surfaces, a soft fall through the
+ *                         shoulder, a horizon flash low on the door and a dark rocker — this is
+ *                         what separates clearcoat from coloured plastic (§1.1)
+ *   the beltline crease   one light line with a dark line under it, at the height a pressing runs
+ *   three door shuts      real vertical gaps at fixed stations along the car
+ *   flake                 per-pixel metallic sparkle, so no panel is one value anywhere
+ *   grime                 blotches and sill spray, heavier on the worn treatment
+ */
+function paintCell(ctx, N, { base, lower = null, worn = false, seed = 1 }) {
+  const rng = new RNG(seed * 97 + 13);
+  ctx.fillStyle = base; ctx.fillRect(0, 0, N, N);
+  if (lower) {
+    ctx.fillStyle = lower; ctx.fillRect(0, N * 0.615, N, N * 0.385);
+    ctx.fillStyle = 'rgba(226,232,240,0.60)'; ctx.fillRect(0, N * 0.615 - 2, N, 2.2);
+  }
+  const g = ctx.createLinearGradient(0, 0, 0, N);
+  g.addColorStop(0.00, 'rgba(214,232,255,0.34)');
+  g.addColorStop(0.10, 'rgba(214,232,255,0.10)');
+  g.addColorStop(0.34, 'rgba(0,0,0,0.00)');
+  g.addColorStop(0.62, 'rgba(0,0,0,0.11)');
+  g.addColorStop(0.755, 'rgba(255,248,232,0.16)');
+  g.addColorStop(0.86, 'rgba(0,0,0,0.16)');
+  g.addColorStop(1.00, 'rgba(0,0,0,0.46)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, N, N);
+  // beltline pressing
+  ctx.fillStyle = 'rgba(255,255,255,0.17)'; ctx.fillRect(0, N * 0.435, N, 1.6);
+  ctx.fillStyle = 'rgba(0,0,0,0.26)'; ctx.fillRect(0, N * 0.452, N, 1.6);
+  // door shuts, with the light catching the trailing edge of each gap
+  for (const u of [0.315, 0.505, 0.700]) {
+    ctx.fillStyle = 'rgba(0,0,0,0.42)'; ctx.fillRect(N * u, N * 0.20, 1.7, N * 0.70);
+    ctx.fillStyle = 'rgba(255,255,255,0.13)'; ctx.fillRect(N * u + 1.7, N * 0.20, 1.1, N * 0.70);
+  }
+  // metallic flake
+  for (let i = 0; i < 1100; i++) {
+    const x = rng.range(0, N), y = rng.range(0, N);
+    ctx.fillStyle = rng.bool(0.5)
+      ? `rgba(255,255,255,${rng.range(0.02, 0.10).toFixed(3)})`
+      : `rgba(0,0,0,${rng.range(0.02, 0.08).toFixed(3)})`;
+    ctx.fillRect(x, y, 1, 1);
+  }
+  // weathering: soft blotches, and grit thrown up the sill
+  for (let i = 0, n = worn ? 24 : 11; i < n; i++) {
+    const x = rng.range(0, N);
+    const y = N * (worn ? rng.range(0.22, 1.04) : rng.range(0.58, 1.04));
+    const r = rng.range(N * 0.07, N * 0.30);
+    const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const a = rng.range(0.04, worn ? 0.16 : 0.09);
+    rg.addColorStop(0, `rgba(28,24,20,${a})`);
+    rg.addColorStop(1, 'rgba(28,24,20,0)');
+    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  }
+  for (let i = 0; i < 40; i++) {
+    const y = N * rng.range(0.86, 1.0);
+    ctx.fillStyle = `rgba(34,28,22,${rng.range(0.05, 0.22).toFixed(3)})`;
+    ctx.fillRect(rng.range(0, N), y, rng.range(3, 26), rng.range(0.8, 2.4));
+  }
+  grain(ctx, N, N, worn ? 9 : 5, rng);
+}
+
+/** A five-spoke alloy, drawn once and worn by every wheel in the fleet. */
+function rimCell(ctx, N) {
+  const R = N / 2;
+  const disc = (r, fill) => { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(R, R, r, 0, 7); ctx.fill(); };
+  ctx.fillStyle = '#0d0f12'; ctx.fillRect(0, 0, N, N);
+  disc(R * 0.995, '#131519');                                     // tyre shoulder
+  disc(R * 0.93, '#191c21');                                      // sidewall
+  ctx.strokeStyle = 'rgba(150,158,170,0.20)'; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.arc(R, R, R * 0.80, 0, 7); ctx.stroke();    // sidewall lettering ring
+  disc(R * 0.735, '#8e959f');                                     // rim lip
+  disc(R * 0.685, '#c3cad3');                                     // face
+  ctx.save(); ctx.translate(R, R);
+  for (let k = 0; k < 5; k++) {
+    ctx.save(); ctx.rotate((k * Math.PI * 2) / 5 + 0.31);
+    ctx.fillStyle = '#16191e';
+    ctx.beginPath();
+    ctx.moveTo(-R * 0.085, -R * 0.20); ctx.lineTo(R * 0.085, -R * 0.20);
+    ctx.lineTo(R * 0.205, -R * 0.60); ctx.lineTo(-R * 0.205, -R * 0.60);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(R * 0.085, -R * 0.60, 1.6, R * 0.40);
+    ctx.restore();
+  }
+  ctx.restore();
+  disc(R * 0.215, '#d3d9e0');                                     // centre cap
+  disc(R * 0.145, '#7b828c');
+  for (let k = 0; k < 5; k++) {
+    const a = (k * Math.PI * 2) / 5;
+    ctx.fillStyle = '#5d646d';
+    ctx.beginPath(); ctx.arc(R + Math.cos(a) * R * 0.30, R + Math.sin(a) * R * 0.30, R * 0.045, 0, 7); ctx.fill();
+  }
+  // a highlight arc across the upper rim: it is metal, and it has to say so at twenty pixels
+  ctx.strokeStyle = 'rgba(255,255,255,0.30)'; ctx.lineWidth = R * 0.10;
+  ctx.beginPath(); ctx.arc(R, R, R * 0.60, Math.PI * 1.12, Math.PI * 1.72); ctx.stroke();
+}
+
+/** The flank signwriting on a trade van or a box body. Ground is the body colour, so the decal
+ *  plane disappears into the panel it stands two centimetres proud of. */
+function liveryCell(ctx, w, h, { body, ink, text, sub, seed }) {
+  ctx.fillStyle = body; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = ink; ctx.fillRect(0, h * 0.70, w, 3);
+  fitText(ctx, text, { x0: 6, x1: w - 6, y: h * 0.55, size: h * 0.42, color: ink, tracking: 0.06, face: 'display' });
+  fitText(ctx, sub, { x0: 6, x1: w - 6, y: h * 0.94, size: h * 0.19, color: ink, tracking: 0.11, face: 'geo' });
+  ctx.fillStyle = 'rgba(0,0,0,0.26)'; ctx.fillRect(0, h - 5, w, 5);
+  grain(ctx, w, h, 5, new RNG(seed * 31 + 7));
+}
+
+/**
+ * Everything the fleet shares, built once per city. Eight materials and two canvases, whatever
+ * the city and however many vehicles it parks.
+ */
+function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
+  const cols = (colors && colors.length ? colors : FLEET_COLORS).slice(0, 7);
+  const sg = (signs && signs.length ? signs : FLEET_SIGNS).slice(0, 4);
+  const key = `fleet|${cols.join(',')}|${sg.map((s) => s[0]).join(',')}|${night ? 1 : 0}`;
+  return mat(cache, key, () => {
+    const paint = new Sheet({
+      cw: 128, ch: 128, cols: 4, rows: 4,
+      roughness: 0.33, metalness: 0.34, envMapIntensity: 1.25,
+      // A whisper of self-light in the paint's own colour. Under a blue-hour hemisphere rig every
+      // body colour on the kerb slides towards the same slate; this keeps a red car red and a
+      // white van white, and at 0.09 it is nowhere near the ~0.6 bloom threshold.
+      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.09 : 0.015,
+    });
+    const livery = new Sheet({
+      cw: 256, ch: 64, cols: 2, rows: 4,
+      roughness: 0.38, metalness: 0.16, envMapIntensity: 0.9,
+      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.18 : 0.02,
+    });
+    const cells = [];
+    for (let i = 0; i < cols.length; i++) {
+      cells.push({
+        color: cols[i],
+        cell: paint.cell(`p${i}g`, (c, w) => paintCell(c, w, { base: cols[i], seed: i * 17 + 3 })),
+      });
+      cells.push({
+        color: cols[i],
+        cell: paint.cell(`p${i}t`, (c, w) => paintCell(c, w, {
+          base: cols[i], lower: shadeHex(cols[i], 0.42), worn: true, seed: i * 29 + 11,
+        })),
+      });
+    }
+    const glassTex = mat(cache, 'fleetglasstex', () => {
+      const S = 64;
+      const { c, ctx } = canvas(S, S);
+      const g = ctx.createLinearGradient(0, 0, 0, S);
+      g.addColorStop(0, '#3d5a7c'); g.addColorStop(0.30, '#1b2a3c');
+      g.addColorStop(0.72, '#0d151f'); g.addColorStop(1, '#161d26');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+      ctx.save(); ctx.translate(S / 2, S / 2); ctx.rotate(-0.52); ctx.translate(-S / 2, -S / 2);
+      ctx.fillStyle = 'rgba(190,220,255,0.30)'; ctx.fillRect(-S, S * 0.16, S * 3, S * 0.10);
+      ctx.fillStyle = 'rgba(190,220,255,0.16)'; ctx.fillRect(-S, S * 0.34, S * 3, S * 0.05);
+      ctx.restore();
+      ctx.fillStyle = 'rgba(6,9,14,0.55)'; ctx.fillRect(0, S * 0.80, S, S * 0.20);
+      return toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+    });
+    return {
+      paintMat: paint.material,
+      liveryMat: livery.material,
+      livery, cells, night, signs: sg,
+      rim: paint.cell('rim', (c, w) => rimCell(c, w)),
+      glass: mat(cache, `fleetglass|${night ? 1 : 0}`, () => new THREE.MeshStandardMaterial({
+        map: glassTex, roughness: 0.07, metalness: 0.88, envMapIntensity: 1.7,
+        emissive: new THREE.Color(0x16283f), emissiveIntensity: night ? 0.45 : 0.10,
+      })),
+      tyre: mat(cache, 'fleettyre', () => new THREE.MeshStandardMaterial({
+        color: 0x101216, roughness: 0.93, metalness: 0.02,
+      })),
+      trim: mat(cache, 'fleettrim', () => new THREE.MeshStandardMaterial({
+        color: 0x1a1e24, roughness: 0.70, metalness: 0.18,
+      })),
+      chrome: mat(cache, 'fleetchrome', () => new THREE.MeshStandardMaterial({
+        color: 0x9aa2ad, roughness: 0.24, metalness: 0.90, envMapIntensity: 1.4,
+      })),
+      steel: mat(cache, 'fleetsteel', () => new THREE.MeshStandardMaterial({
+        color: 0x6e757f, roughness: 0.45, metalness: 0.78, envMapIntensity: 1.0,
+      })),
+      // Over the ~1.5 that `UnrealBloomPass` needs to halo at all, and no further: at 2.9 the two
+      // headlamps and their chrome bezels bloomed into one white bar across the nose.
+      head: glowMaterial(cache, '#ffe8c6', night ? 2.0 : 0.30),
+      tail: glowMaterial(cache, '#ff2a18', night ? 2.4 : 0.85),
+      amber: glowMaterial(cache, '#ff9422', night ? 1.8 : 0.35),
+      cache,
+    };
+  });
+}
+
+/**
+ * The seven silhouettes, as numbers. `roofY` is the tell: no two neighbours on the kerb are the
+ * same height, and the spread runs 1.33 m to 3.28 m.
+ */
+const FLEET_SPEC = {
+  coupe: { L: 4.60, W: 1.87, wr: 0.335, sill: 0.40, belt: 0.96, roofY: 1.33, cabZ: -0.56, cabL: 1.74, roofW: 0.79, doors: 2 },
+  sedan: { L: 4.92, W: 1.91, wr: 0.335, sill: 0.42, belt: 1.03, roofY: 1.46, cabZ: -0.34, cabL: 2.12, roofW: 0.86, doors: 3 },
+  wagon: { L: 4.86, W: 1.95, wr: 0.345, sill: 0.44, belt: 1.05, roofY: 1.66, cabZ: -0.62, cabL: 2.74, roofW: 0.88, doors: 3, rails: true },
+  suv: { L: 4.84, W: 2.02, wr: 0.395, sill: 0.53, belt: 1.24, roofY: 1.90, cabZ: -0.52, cabL: 2.88, roofW: 0.90, doors: 3, rails: true },
+  pickup: { L: 5.54, W: 2.06, wr: 0.400, sill: 0.56, belt: 1.32, roofY: 1.93, cabZ: 0.62, cabL: 1.74, roofW: 0.87, doors: 2, bed: true },
+  van: { L: 5.42, W: 2.08, wr: 0.375, sill: 0.44, belt: 1.05, roofY: 2.44, cabZ: 0, cabL: 0, roofW: 0.94, doors: 2 },
+  box: { L: 7.30, W: 2.34, wr: 0.455, sill: 0.62, belt: 1.20, roofY: 3.28, cabZ: 0, cabL: 0, roofW: 0.96, doors: 2 },
+};
+const FLEET_ORDER = ['coupe', 'sedan', 'wagon', 'suv', 'pickup', 'van', 'box'];
+
+/** `roundedBox` grows OUTWARD by `r` (bevelSize is r/2 on each side), so shrink first and the
+ *  stated size is the true outer size. Same trap New York documented on its cabs. */
+const _rb = (w, h, d, r = 0.14) => roundedBox(w - r, h - r, d - r, r, 1);
+
+/**
+ * Build one vehicle body. Called ONCE per (kind, variant) by PropBatch and then instanced or
+ * merged, so it is allowed to be generous — this is the only place the fleet spends geometry.
+ */
+function fleetVehicle(kind, variant, K) {
+  const S = FLEET_SPEC[kind] || FLEET_SPEC.sedan;
+  const paintGeos = [], rimGeos = [], liveryGeos = [];
+  const bins = new Map();
+  const put = (m, geo, x = 0, y = 0, z = 0, o = {}) => {
+    xform(geo, x, y, z, o);
+    if (m === 'paint') paintGeos.push(geo);
+    else if (m === 'rim') rimGeos.push(geo);
+    else if (m === 'livery') liveryGeos.push(geo);
+    else { let a = bins.get(m); if (!a) bins.set(m, a = []); a.push(geo); }
+    return geo;
+  };
+  const skin = K.cells[(FLEET_ORDER.indexOf(kind) * 5 + variant * 3 + 1) % K.cells.length];
+
+  const { L, W, wr, sill, belt, roofY } = S;
+  const HL = L / 2, hw = W / 2;
+  let top = roofY;
+
+  /** Tyre, alloy face and the dark arch it fills. Never a bare cylinder. */
+  const wheels = (zs, r = wr, tw = 0.26, inset = 0.085, halfW = hw) => {
+    for (const sx of [-1, 1]) {
+      for (const z of zs) {
+        const x = sx * (halfW - inset);
+        put('tyre', new THREE.CylinderGeometry(r, r, tw, 16), x, r, z, { rz: Math.PI / 2 });
+        put('rim', new THREE.CircleGeometry(r * 0.99, 18), x + sx * (tw / 2 + 0.006), r, z, { ry: sx * Math.PI / 2 });
+        put('trim', new THREE.TorusGeometry(r * 1.19, 0.055, 3, 9, Math.PI), sx * (halfW - 0.01), r, z, { ry: sx * Math.PI / 2 });
+      }
+    }
+  };
+
+  /** Head/tail/indicator cluster, bumpers, plates and a grille — the trim that separates a car
+   *  from a bar of soap, and the emissives that make the rank read at night. */
+  const face = (y, frontZ, backZ, bw = 0.94) => {
+    put('chrome', _box(W * bw, 0.17, 0.22), 0, sill + (belt - sill) * 0.24, frontZ - 0.02);
+    put('trim', _box(W * (bw - 0.05), 0.15, 0.19), 0, sill + 0.03, frontZ - 0.03);
+    put('chrome', _box(W * bw, 0.17, 0.22), 0, sill + (belt - sill) * 0.24, backZ + 0.02);
+    put('trim', _box(W * (bw - 0.05), 0.15, 0.19), 0, sill + 0.03, backZ + 0.03);
+    put('trim', _box(W * 0.54, 0.21, 0.09), 0, y, frontZ - 0.01);
+    for (let i = -2; i <= 2; i++) put('chrome', _box(0.03, 0.18, 0.05), i * 0.088, y, frontZ + 0.015);
+    put('chrome', _box(0.50, 0.15, 0.04), 0, sill + (belt - sill) * 0.28, frontZ + 0.045);
+    put('chrome', _box(0.50, 0.15, 0.04), 0, sill + (belt - sill) * 0.30, backZ - 0.045);
+    for (const sx of [-1, 1]) {
+      put('trim', _box(0.44, 0.21, 0.05), sx * W * 0.31, y, frontZ - 0.005);
+      put('head', _box(0.33, 0.13, 0.07), sx * W * 0.31, y, frontZ + 0.035);
+      put('amber', _box(0.12, 0.09, 0.06), sx * W * 0.424, y - 0.13, frontZ + 0.03);
+      put('trim', _box(0.40, 0.24, 0.05), sx * W * 0.32, y + 0.03, backZ + 0.005);
+      put('tail', _box(0.34, 0.19, 0.07), sx * W * 0.32, y + 0.03, backZ - 0.035);
+    }
+    put('chrome', new THREE.CylinderGeometry(0.045, 0.052, 0.17, 8), W * 0.24, sill + 0.02, backZ - 0.04, { rx: Math.PI / 2 });
+  };
+
+  if (kind === 'van') {
+    // ---- THE TRADE VAN. Blind from the B-pillar back, 2.44 m to the roof — the tallest thing on
+    // the kerb short of the truck, and the one that most obviously is not a car.
+    const boxL = L * 0.72, boxZ = -L * 0.13;
+    put('paint', _rb(W, roofY - sill, boxL, 0.12), 0, (sill + roofY) / 2, boxZ);
+    put('paint', _rb(W * 0.96, 0.80, 1.52, 0.16), 0, sill + 0.40, HL - 0.72);
+    put('glass', _box(W * 0.90, 0.74, 0.20), 0, sill + 1.28, HL - 1.36, { rx: -0.30 });
+    for (const sx of [-1, 1]) {
+      put('glass', _box(0.07, 0.54, 0.92), sx * W * 0.485, sill + 1.22, HL - 2.02);
+      put('trim', _box(0.24, 0.13, 0.08), sx * (hw + 0.13), sill + 1.36, HL - 1.48);
+      put('livery', new THREE.PlaneGeometry(boxL * 0.62, 1.06), sx * (hw + 0.028), sill + 1.20, boxZ + 0.10, { ry: sx * Math.PI / 2 });
+      put('tail', _box(0.16, 0.58, 0.07), sx * W * 0.37, sill + 0.62, -HL - 0.03);
+      put('head', _box(0.38, 0.16, 0.08), sx * W * 0.31, sill + 0.40, HL + 0.03);
+      put('amber', _box(0.11, 0.09, 0.06), sx * W * 0.44, sill + 0.26, HL + 0.03);
+      put('chrome', _box(0.03, 0.05, 0.16), sx * (hw + 0.012), sill + 0.86, HL - 1.98);
+    }
+    for (let i = 0; i < 5; i++) put('trim', _box(W * 0.93, 0.05, 0.09), 0, roofY + 0.005, boxZ + boxL * 0.36 - i * (boxL * 0.18));
+    put('trim', _box(0.07, roofY - sill - 0.30, 0.07), 0, (sill + roofY) / 2, -HL - 0.02);
+    put('trim', _box(W * 1.02, 0.30, boxL * 0.99), 0, sill + 0.02, boxZ);
+    put('chrome', _box(W * 0.96, 0.20, 0.20), 0, sill - 0.06, HL + 0.02);
+    put('trim', _box(W * 0.96, 0.22, 0.19), 0, sill - 0.06, -HL - 0.02);
+    if (variant % 3 === 0) {
+      // roof rack and a ladder: 40 cm more outline, and unmistakably a working van
+      for (const z of [boxZ + boxL * 0.30, boxZ - boxL * 0.32]) {
+        put('steel', _box(W * 0.92, 0.07, 0.07), 0, roofY + 0.28, z);
+        for (const sx of [-1, 1]) put('steel', _box(0.07, 0.20, 0.07), sx * W * 0.42, roofY + 0.16, z);
+      }
+      for (const sx of [-1, 1]) put('steel', _box(0.07, 0.07, 3.30), sx * 0.30, roofY + 0.35, boxZ);
+      for (let i = 0; i < 8; i++) put('steel', _box(0.58, 0.05, 0.05), 0, roofY + 0.35, boxZ + 1.45 - i * 0.41);
+      top = roofY + 0.40;
+    }
+    wheels([HL - 1.05, -L * 0.29], wr, 0.25, 0.09);
+  } else if (kind === 'box') {
+    // ---- THE BOX TRUCK. 7.3 m long, 3.28 m to the roof, cab-over with a roll shutter at the
+    // back. This is the one that breaks the kerb line: nothing else parked is half its height.
+    const bL = 4.95, bZ = -1.05, bFloor = 1.02, bRoof = roofY;
+    put('trim', _box(W * 0.78, 0.32, L * 0.94), 0, 0.80, 0);
+    put('paint', _rb(W * 0.99, 1.52, 2.02, 0.16), 0, sill + 0.86, HL - 1.02);
+    put('glass', _box(W * 0.90, 0.66, 0.14), 0, sill + 1.30, HL - 0.03);
+    for (const sx of [-1, 1]) {
+      put('glass', _box(0.09, 0.50, 0.78), sx * W * 0.487, sill + 1.22, HL - 1.28);
+      put('trim', _box(0.28, 0.15, 0.09), sx * (hw + 0.16), sill + 1.36, HL - 0.54);
+      put('head', _box(0.42, 0.19, 0.09), sx * W * 0.30, sill + 0.28, HL + 0.03);
+      put('tail', _box(0.19, 0.42, 0.08), sx * W * 0.35, 1.10, -HL - 0.02);
+      put('amber', _box(0.11, 0.08, 0.06), sx * W * 0.43, sill + 0.10, HL + 0.03);
+    }
+    put('trim', _box(W * 0.95, 0.32, 0.24), 0, sill - 0.10, HL + 0.05);
+    for (let i = 0; i < 3; i++) put('amber', _box(0.13, 0.09, 0.10), (i - 1) * 0.46, sill + 1.68, HL - 0.12);
+    // the box body. Skirt and rails OVERLAP: a body floating above its own frame is the most
+    // obvious kind of broken.
+    put('trim', _box(W * 0.98, 0.40, bL * 1.01), 0, bFloor - 0.06, bZ);
+    put('paint', _box(W, bRoof - bFloor, bL), 0, (bFloor + bRoof) / 2, bZ);
+    put('paint', _box(W * 0.92, 0.40, 0.84), 0, bRoof - 0.26, bZ + bL / 2 + 0.42, { rx: 0.16 });
+    for (const sx of [-1, 1]) {
+      put('livery', new THREE.PlaneGeometry(bL * 0.86, 1.62), sx * (hw + 0.03), (bFloor + bRoof) / 2 + 0.14, bZ);
+      put('trim', _box(0.07, bRoof - bFloor, 0.10), sx * (hw + 0.02), (bFloor + bRoof) / 2, bZ + bL / 2 - 0.05);
+      put('trim', _box(0.07, bRoof - bFloor, 0.10), sx * (hw + 0.02), (bFloor + bRoof) / 2, bZ - bL / 2 + 0.05);
+      put('trim', _box(0.06, 0.09, bL * 0.99), sx * (hw + 0.02), bRoof - 0.06, bZ);
+    }
+    put('trim', _box(W * 0.94, bRoof - bFloor - 0.24, 0.08), 0, (bFloor + bRoof) / 2 - 0.10, bZ - bL / 2 - 0.04);
+    for (let i = 0; i < 8; i++) put('steel', _box(W * 0.90, 0.10, 0.06), 0, bFloor + 0.20 + i * 0.245, bZ - bL / 2 - 0.09);
+    put('steel', _box(W * 0.88, 0.11, 0.09), 0, 0.74, -HL - 0.04);
+    wheels([HL - 1.32, -1.62, -2.78], wr, 0.30, 0.055, hw * 0.99);
+  } else {
+    // ---- THE CARS. One chassis: a rounded lower body with a shoulder rail and a raked bonnet and
+    // boot on it, a glass band carried on raked pillars under a roof cap, a dark rocker, arches
+    // the tyres actually fill, and the trim.
+    const { cabZ, cabL, roofW, doors } = S;
+    const cW = W * roofW;
+    const CAP = 0.115;                                  // the roof cap, above the glass band
+    const gH = roofY - CAP - belt;
+    const noseZ = HL, tailZ = -HL;
+    const bodyH = belt - sill;
+    const bF0 = cabZ + cabL / 2, bR0 = cabZ - cabL / 2;
+    if (S.bed) {
+      // A pickup is not one slab: the body drops to the bed floor behind the cab and four walls
+      // stand on it, which is the whole reason its outline is worth having on the kerb.
+      const bedFront = bR0 - 0.10, bedFloor = belt - 0.42;
+      const fL = noseZ - bedFront, rL = bedFront - tailZ;
+      put('paint', _rb(W, bodyH, fL, 0.19), 0, (sill + belt) / 2, (noseZ + bedFront) / 2);
+      put('paint', _rb(W, bedFloor - sill, rL, 0.16), 0, (sill + bedFloor) / 2, (bedFront + tailZ) / 2);
+      put('paint', _rb(W * 0.995, 0.14, fL * 0.94, 0.06), 0, belt + 0.02, (noseZ + bedFront) / 2);
+      put('paint', _box(W * 0.88, 0.09, (noseZ - bF0) * 0.92), 0, belt + 0.07, (noseZ + bF0) / 2, { rx: -0.055 });
+      for (const sx of [-1, 1]) put('paint', _box(0.15, belt - bedFloor, rL), sx * (hw - 0.075), (bedFloor + belt) / 2, (bedFront + tailZ) / 2);
+      put('paint', _box(W * 0.94, belt - bedFloor, 0.13), 0, (bedFloor + belt) / 2, tailZ + 0.07);
+      put('paint', _box(W * 0.94, belt - bedFloor, 0.13), 0, (bedFloor + belt) / 2, bedFront - 0.06);
+      put('trim', _box(W * 0.86, 0.06, rL * 0.95), 0, bedFloor + 0.02, (bedFront + tailZ) / 2);
+      put('steel', _box(W * 0.84, 0.42, 0.52), 0, belt - 0.06, bedFront - 0.42);        // cross-bed toolbox
+    } else {
+      put('paint', _rb(W, bodyH, L, 0.19), 0, (sill + belt) / 2, 0);
+      put('paint', _rb(W * 0.995, 0.15, L * 0.90, 0.06), 0, belt + 0.025, -L * 0.015);
+      put('paint', _box(W * 0.88, 0.09, (noseZ - bF0) * 0.92), 0, belt + 0.075, (noseZ + bF0) / 2, { rx: -0.055 });
+      put('paint', _box(W * 0.86, 0.09, (bR0 - tailZ) * 0.90), 0, belt + 0.075, (bR0 + tailZ) / 2, { rx: 0.045 });
+    }
+    // greenhouse
+    put('glass', _box(cW * 0.99, gH, cabL * 0.99), 0, belt + gH / 2, cabZ);
+    put('paint', _rb(cW, CAP, cabL * 1.05, 0.05), 0, roofY - CAP / 2, cabZ);
+    const cols = doors === 3
+      ? [[0.50, 0.095, 0.26], [0.02, 0.085, 0], [-0.50, 0.13, -0.20]]
+      : [[0.50, 0.105, 0.30], [-0.50, 0.145, -0.24]];
+    for (const sx of [-1, 1]) {
+      for (const [pz, pw, rake] of cols) {
+        put('paint', _box(pw + 0.05, gH * 1.02, pw), sx * (cW / 2 - pw * 0.5), belt + gH / 2, cabZ + pz * cabL, { rx: rake });
+      }
+      put('chrome', _box(0.045, 0.045, cabL * 1.00), sx * (cW / 2 + 0.006), roofY - CAP - 0.03, cabZ);
+      put('trim', _box(0.19, 0.10, 0.07), sx * (cW / 2 + 0.12), belt + 0.10, cabZ + cabL * 0.44);
+      put('trim', _box(0.10, 0.05, 0.05), sx * (cW / 2 + 0.045), belt + 0.09, cabZ + cabL * 0.44);
+      put('chrome', _box(0.03, 0.045, 0.17), sx * (hw + 0.008), belt - 0.14, cabZ + cabL * 0.22);
+      if (doors === 3) put('chrome', _box(0.03, 0.045, 0.17), sx * (hw + 0.008), belt - 0.14, cabZ - cabL * 0.20);
+    }
+    put('paint', _box(cW * 0.99, 0.07, 0.09), 0, belt + 0.038, cabZ + cabL / 2);
+    put('paint', _box(cW * 0.99, 0.07, 0.09), 0, belt + 0.038, cabZ - cabL / 2);
+    // rocker and arches
+    put('trim', _box(W * 1.008, 0.17, L * 0.90), 0, sill + 0.06, 0);
+    if (S.rails) for (const sx of [-1, 1]) put('trim', _box(0.06, 0.055, cabL * 0.84), sx * cW * 0.39, roofY + 0.035, cabZ);
+    if (S.bed && variant % 3 === 2) {
+      // one pickup in three carries a ladder rack: 60 cm of extra outline over the bed, and an
+      // outline legible from the far end of the block
+      const bedFront = bR0 - 0.10;
+      for (const z of [bedFront - 0.30, tailZ + 0.28]) {
+        for (const sx of [-1, 1]) put('steel', _box(0.08, 0.62, 0.08), sx * (hw - 0.12), belt + 0.31, z);
+        put('steel', _box(W * 0.94, 0.08, 0.08), 0, belt + 0.62, z);
+      }
+      for (const sx of [-1, 1]) put('steel', _box(0.07, 0.07, 3.20), sx * 0.30, belt + 0.70, (bedFront + tailZ) / 2);
+      for (let i = 0; i < 8; i++) put('steel', _box(0.56, 0.05, 0.05), 0, belt + 0.70, (bedFront + tailZ) / 2 + 1.40 - i * 0.40);
+      top = belt + 0.74;
+    }
+    face(sill + bodyH * 0.62, noseZ, tailZ);
+    wheels([L * 0.31, -L * 0.31]);
+  }
+
+  // ---- fold to one mesh per material, projecting the paint UVs from the finished body
   const g = new THREE.Group();
-  const type = kind || rng.pick(['sedan', 'sedan', 'suv', 'van', 'pickup']);
-  const L = type === 'van' ? 5.4 : type === 'suv' ? 4.9 : type === 'pickup' ? 5.6 : 4.6;
-  const W = type === 'van' || type === 'suv' ? 2.05 : 1.9;
-  const bodyH = type === 'van' ? 1.35 : type === 'suv' ? 1.05 : 0.85;
-  const wheelR = type === 'suv' || type === 'pickup' ? 0.38 : 0.33;
-  const ride = wheelR * 0.72;
-
-  const paint = mat(cache, `carpaint|${color}`, () => new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color), roughness: 0.30, metalness: 0.55,
-  }));
-  const glassM = mat(cache, 'cargless', () => new THREE.MeshStandardMaterial({
-    color: 0x141a22, roughness: 0.10, metalness: 0.6,
-  }));
-  const tyre = mat(cache, 'tyre', () => new THREE.MeshStandardMaterial({ color: 0x111214, roughness: 0.9 }));
-  const chrome = metalMaterial(cache, '#8d939c');
-
-  const pb = new Batch(paint), gb = new Batch(glassM, { cast: false }), tb = new Batch(tyre), cb = new Batch(chrome);
-  pb.add(roundedBox(W, bodyH, L, 0.22, 1), 0, ride + bodyH / 2, 0);
-  const cabL = type === 'pickup' ? L * 0.42 : L * 0.56;
-  const cabH = type === 'van' ? 0.9 : 0.78;
-  const cabZ = type === 'pickup' ? L * 0.12 : (type === 'van' ? L * 0.05 : -L * 0.02);
-  pb.add(roundedBox(W * 0.90, cabH, cabL, 0.18, 1), 0, ride + bodyH + cabH / 2 - 0.06, cabZ);
-  if (type === 'pickup') {
-    pb.add(_box(W * 0.98, 0.5, L * 0.40), 0, ride + bodyH + 0.16, -L * 0.28);
-    pb.add(_box(W * 0.86, 0.42, L * 0.36), 0, ride + bodyH + 0.10, -L * 0.28, 0, { sx: 0.96 });
+  const z0 = -HL - 0.22, z1 = HL + 0.22;
+  const y0 = sill - 0.13, y1 = top + 0.03;
+  const emit = (material, geos, opts) => {
+    if (!geos.length) return;
+    const b = new Batch(material, opts);
+    for (const geo of geos) b.addRaw(geo);
+    b.into(g);
+  };
+  for (const geo of paintGeos) paintUV(geo, skin.cell, y0, y1, z0, z1);
+  for (const geo of rimGeos) cellUV(geo, K.rim);
+  if (liveryGeos.length) {
+    const SG = K.signs[(variant + (kind === 'box' ? 2 : 0)) % K.signs.length];
+    const cell = K.livery.cell(`${kind}${variant}`, (c, w, h) => liveryCell(c, w, h, {
+      body: skin.color, ink: shadeHex(skin.color, 0.26), text: SG[0], sub: SG[1], seed: variant + kind.length,
+    }));
+    for (const geo of liveryGeos) cellUV(geo, cell);
   }
-  // glass
-  gb.add(new THREE.PlaneGeometry(W * 0.78, cabH * 0.72), 0, ride + bodyH + cabH * 0.52, cabZ + cabL / 2 + 0.01, 0, { rx: -0.2 });
-  gb.add(new THREE.PlaneGeometry(W * 0.78, cabH * 0.72), 0, ride + bodyH + cabH * 0.52, cabZ - cabL / 2 - 0.01, Math.PI, { rx: -0.2 });
-  for (const sx of [-1, 1]) {
-    gb.add(new THREE.PlaneGeometry(cabL * 0.86, cabH * 0.60), sx * (W * 0.452), ride + bodyH + cabH * 0.50, cabZ, sx * Math.PI / 2);
-  }
-  // wheels
-  for (const sx of [-1, 1]) for (const sz of [1, -1]) {
-    const wz = sz * L * 0.33;
-    tb.add(new THREE.CylinderGeometry(wheelR, wheelR, 0.24, 8), sx * (W / 2 - 0.06), wheelR, wz, 0, { rz: Math.PI / 2 });
-    cb.add(new THREE.CylinderGeometry(wheelR * 0.55, wheelR * 0.55, 0.26, 6), sx * (W / 2 - 0.05), wheelR, wz, 0, { rz: Math.PI / 2 });
-  }
-  cb.add(_box(W * 0.92, 0.12, 0.22), 0, ride + 0.20, L / 2 + 0.02);
-  cb.add(_box(W * 0.92, 0.12, 0.22), 0, ride + 0.20, -L / 2 - 0.02);
-  pb.into(g); gb.into(g); tb.into(g); cb.into(g);
+  emit(K.paintMat, paintGeos.concat(rimGeos), { cast: true, receive: true });
+  emit(K.liveryMat, liveryGeos, { cast: false, receive: true });
+  emit(K.glass, bins.get('glass') || [], { cast: false, receive: false });
+  emit(K.tyre, bins.get('tyre') || [], { cast: false, receive: false });
+  emit(K.trim, bins.get('trim') || [], { cast: false, receive: true });
+  emit(K.chrome, bins.get('chrome') || [], { cast: false, receive: true });
+  emit(K.steel, bins.get('steel') || [], { cast: false, receive: true });
+  emit(K.head, bins.get('head') || [], { cast: false, receive: false });
+  emit(K.tail, bins.get('tail') || [], { cast: false, receive: false });
+  emit(K.amber, bins.get('amber') || [], { cast: false, receive: false });
 
-  const tail = new Batch(glowMaterial(cache, '#ff2a20', night ? 1.6 : 0.5), { cast: false });
-  for (const sx of [-1, 1]) tail.add(_box(0.42, 0.16, 0.06), sx * W * 0.32, ride + bodyH * 0.72, -L / 2 - 0.04);
-  tail.into(g);
-  const head = new Batch(glowMaterial(cache, '#dfe8f2', night ? 1.2 : 0.3), { cast: false });
-  for (const sx of [-1, 1]) head.add(_box(0.40, 0.16, 0.06), sx * W * 0.32, ride + bodyH * 0.70, L / 2 + 0.04);
-  head.into(g);
+  // §7 cap 55: no contact shadow and the vehicle hovers. A cast shadow cannot do this job — it
+  // only exists where the key light reaches, and half this fleet is parked in building shade.
+  // Sized to the vehicle and kept SOFT. The first pass ran r = 0.60 L at 0.52 opacity and the
+  // pool read as a black plinth the car was standing on rather than as shade under it — a hard
+  // dark shape with the same value as the tyres. A shadow is a gradient.
+  const cp = contactPatch({
+    r: L * 0.50, opacity: K.night ? 0.40 : 0.34, color: '#1a1420', cache: K.cache, y: 0.014,
+  });
+  cp.scale.x = (W * 1.42) / (L * 1.00);
+  g.add(cp);
   return g;
+}
+
+/**
+ * A parked car at the kerb. Kept as the kit's public single-vehicle entry point; `buildCity()`
+ * parks the fleet through PropBatch instead, which is what a whole kerb should use.
+ */
+export function parkedCar({ cache = null, seed = 1, color = '#b8332f', night = false, kind = null, colors = null } = {}) {
+  const rng = new RNG(seed * 5 + 13);
+  const K = fleetKit(cache, { colors: colors || [color, ...FLEET_COLORS], night });
+  return fleetVehicle(kind || rng.pick(FLEET_ORDER), rng.int(0, 3), K);
 }
 
 /** Timber utility pole with a crossarm — the LA/Miami street signature. */
@@ -4705,26 +5255,79 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
       }
     }
 
-    // parked cars nose-to-tail against the kerb, facing the direction of travel
+    // ---- THE KERB: PARKED TRAFFIC ------------------------------------------------------------
+    //
+    // What was here was a metronome: `track.scatter` dropped a cluster every 34-110 m and stamped
+    // one to three copies of one prototype at exactly 5.6 m centres with 3 degrees of yaw jitter.
+    // Two of §7's caps in one loop — the flat-colour body (50) and the same prop at a visible
+    // regular interval (66).
+    //
+    // The rank is now a STREET. Seven silhouettes share the kerb, the walk down it is METRIC
+    // rather than index-based (every vehicle advances the cursor by its OWN length plus a random
+    // gap), a rank runs one to four vehicles and then the kerb opens up for 40-150 m, no type may
+    // follow either of the previous two, and no 1.9 m-plus body may follow another — so the
+    // roofline is forced to fall between every pair of tall vehicles. Yaw is +/-3 degrees with a
+    // badly-parked tail out to 10, every instance is scaled +/-3.5%, and the kerb offset itself
+    // wanders 60 cm. There is no interval left in it to see.
     if (pdef.parkedCars !== false) {
       const cr = rng.fork(97);
+      const K = fleetKit(cache, { colors: carColors, night, signs: pdef.fleetSigns });
+      const FLEET = [
+        { key: 'sedan', n: 4, w: 3.4 },
+        { key: 'coupe', n: 4, w: 2.7 },
+        { key: 'wagon', n: 3, w: 1.9 },
+        { key: 'suv', n: 3, w: 2.1, tall: true },
+        { key: 'pickup', n: 3, w: 1.5, tall: true },
+        { key: 'van', n: 3, w: 1.4, tall: true },
+        { key: 'box', n: 2, w: 0.6, tall: true },
+      ];
+      for (const t of FLEET) { t.len = FLEET_SPEC[t.key].L; t.make = (v) => fleetVehicle(t.key, v, K); }
+      const WSUM = FLEET.reduce((a, t) => a + t.w, 0);
+      /** Weighted draw with two vetoes: never one of the last two types, never two tall bodies in
+       *  a row. Two vans nose to tail rebuild the very wall this exists to break. */
+      const drawType = (a, b) => {
+        const ok = (t) => t !== a && t !== b && !(t.tall && a && a.tall);
+        for (let tries = 0; tries < 12; tries++) {
+          let r = cr.range(0, WSUM);
+          for (const t of FLEET) { r -= t.w; if (r <= 0) { if (ok(t)) return t; break; } }
+        }
+        return FLEET.find(ok) || FLEET[0];
+      };
+      const FB = new PropBatch(props, { chunk: 340, minInstances: 8 });
+      const LEN = track.length;
+      let seq = 0;
       for (const side of [-1, 1]) {
-        for (const s of track.scatter({
-          side, minGap: 34, maxGap: 110, offset: kerbside + 0.35, offsetJitter: 0.2, rng: rng.fork(side + 71),
-        })) {
-          if (Math.abs(track.turnRate(s.u)) > 0.007) continue;         // not parked in a bend
-          if (isNoBuild(s.u, side)) continue;
-          const n = cr.int(1, 3);
-          for (let k = 0; k < n; k++) {
-            const du = (k * 5.6) / track.length;
-            const sp = track.at(s.u + du * (side > 0 ? 1 : -1));
-            const c = parkedCar({ cache, seed: s.index * 31 + k * 7 + side, color: cr.pick(carColors), night });
-            c.position.copy(sp.pos).addScaledVector(sp.right, side * (HW + kerbside + 0.35)).setY(sp.pos.y + kerbY);
-            c.rotation.y = Math.atan2(sp.tan.x, sp.tan.z) + (side > 0 ? Math.PI : 0) + cr.range(-0.05, 0.05);
-            props.add(c);
+        let m = side > 0 ? 11 : 47;                  // metres along the lap, to the rear bumper
+        let rank = cr.int(1, 4);
+        let pa = null, pb = null;
+        while (m < LEN - 12) {
+          const t = drawType(pa, pb);
+          const uu = (m + t.len / 2) / LEN;
+          if (uu >= 1) break;
+          const s = track.at(uu);
+          // not parked in a bend, not in the surf, not across a landmark's forecourt
+          if (isNoBuild(uu, side) || Math.abs(track.turnRate(uu)) > 0.010) {
+            m += t.len + cr.range(3, 12); pa = pb = null; rank = cr.int(1, 4); continue;
+          }
+          const off = kerbside + 0.35 + cr.range(-0.20, 0.42);
+          const p = s.pos.clone().addScaledVector(s.right, side * (HW + off));
+          const bad = cr.bool(0.14);
+          FB.add(t.key, t.make, {
+            pos: { x: p.x, y: s.pos.y + kerbY, z: p.z },
+            rotY: Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0)
+              + (bad ? cr.range(-0.17, 0.17) : cr.range(-0.055, 0.055)),
+            scale: cr.range(0.965, 1.035),
+            variant: (seq * 3 + (side > 0 ? 1 : 2)) % t.n, variants: t.n,
+          });
+          pb = pa; pa = t; seq++;
+          m += t.len + cr.range(0.7, 2.6);
+          if (--rank <= 0) {                          // the kerb opens up: a driveway, a bus stop
+            m += cr.range(34, 96) + (cr.bool(0.28) ? cr.range(20, 70) : 0);
+            rank = cr.int(1, 4); pa = pb = null;
           }
         }
       }
+      FB.flush();
     }
   }
 
