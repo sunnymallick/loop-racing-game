@@ -1323,7 +1323,20 @@ const PLUME_FRAG = /* glsl */`
           // Held out to the tip. A jet that fades to nothing by two thirds of its own length has
           // thrown away exactly the part where the taper is most legible, and the column then
           // reads as the fat parallel FRONT of a cone with nothing after it.
-          float bodyA  = (0.46 + 0.54 * exp(-t * 1.05)) * puff;
+          // ── (r21) THERE IS NO FLAME ON THE LIP — THAT IS WHAT A THROAT IS ─────────────────
+          // "No throat" has been in three verdicts, and it is not the profile: the class cone
+          // does pinch to 0.50 of maximum at the orifice and flare over the next tenth. What
+          // filled the pinch was the incandescence. The filament ran at full authority from the
+          // very first sample, and a white thread is the one thing in this shader hot enough to
+          // clear the bloom threshold — so ~20 px of fixed-screen-radius halo was welded to each
+          // flank of exactly the station that is supposed to be the narrowest, and the pinch was
+          // photographed as the fattest part of a white bar. Gas leaving a nozzle has not burned
+          // yet; it lights over the first tenth of the column. The density is untouched, so the
+          // root is still gas on the lip (r7's "bare dark road between the bumper and the flame"
+          // was a density hole, not an exposure one) — it is simply class-coloured rather than
+          // white, which is what lets the eye see how narrow it is.
+          float lit = 0.20 + 0.80 * smoothstep(0.006, 0.105, t);
+          float bodyA  = (0.46 + 0.54 * exp(-t * 1.05)) * puff * (0.62 + 0.38 * lit);
           float skirtA = uSkirtI * (0.30 + 0.70 * smoothstep(0.0, 0.22, t)) * exp(-t * 0.50) * puff;
           // (r21) The shear shell. It lights up a little way off the lip (a jet leaving a pipe has
           // no mixing layer AT the lip) and is held out to the tip, because the boundary is the one
@@ -1363,7 +1376,7 @@ const PLUME_FRAG = /* glsl */`
           // / 1.47 / 0.99 — a ladder rather than a cliff, and every rung above the ~0.7 the
           // bloom threshold wants.
           float hb   = exp(-t / uBurn);
-          float hotA = uHot * (0.11 * hb + knot * 1.55 * (0.34 + 0.66 * hb));
+          float hotA = uHot * (0.11 * hb + knot * 1.55 * (0.34 + 0.66 * hb)) * lit;
           // A diamond is a LENS, brightest on the centreline and gone before the skirt — not a
           // rung laid across the jet. A row of rungs is a barcode.
           // (r18) exp(-q2·1.05) was still 0.77 at half the half-width and 0.35 at the full one, so

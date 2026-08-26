@@ -32,7 +32,21 @@ export const blueprint = {
   // Rear track and tail width are set against each other so the rear tyres stand 24 cm outboard of
   // the tail panel on each side — from a straight-on chase view the wheels break the silhouette
   // instead of hiding behind a full-width diffuser (§6.1 round-2 gap).
-  dims: { length: 4.62, width: 2.32, height: 1.25, wheelbase: 2.68, track: 1.820, trackRear: 1.906, rideHeight: 0.11 },
+  /**
+   * ---- WAVE-10: THE WHEELBASE, AND WHY IT MOVED ---------------------------------------------
+   *
+   * The critic: "all four classes share one chassis footprint … a Hummer-inspired SUV and a
+   * supercar should not measure the same", and separately "the supercar is the wrong archetype —
+   * it has front-engine GT proportions". Those are one fault. On a 4.62 m car a 2.68 m wheelbase
+   * leaves 970 mm of overhang at each end, which is a GT's chassis; every mid-engine car of this
+   * shape runs the axles out toward the corners and spends the length between them instead.
+   *
+   * 2.86 m on 4.62 puts the wheelbase at 62 % of the length — the highest in the game against the
+   * truck's 65 % on a much taller body, the muscle car's 59 % and the tuner's 59 % — and drops both
+   * overhangs to 880 mm. The front wheel now sits close under the nose, which is half of what makes
+   * a cab-forward wedge read as one.
+   */
+  dims: { length: 4.62, width: 2.34, height: 1.25, wheelbase: 2.86, track: 1.850, trackRear: 1.938, rideHeight: 0.095 },
   // the glossiest car in the game: show-car clearcoat over metallic red
   paint: { metalness: 0.30, roughness: 0.42, clearcoat: 1.0, clearcoatRoughness: 0.38, flake: 0.58, envIntensity: 0.94 },
   livery: {
@@ -42,10 +56,10 @@ export const blueprint = {
     // unmistakable white racing stripe and it leaves the bloom somewhere to go.
     style: 'gt', stripe: '#d9dde5', accent: '#14171c',
     panels: {
-      doors: [V(0.94), V(-0.52)],
-      hood: [V(1.02), V(2.10)],
-      boot: [V(-2.14), V(-0.80)],
-      arches: [V(1.34), V(-1.34)],
+      doors: [V(1.18), V(-0.28)],
+      hood: [V(1.26), V(2.10)],
+      boot: [V(-2.14), V(-0.56)],
+      arches: [V(1.43), V(-1.43)],
     },
   },
   // see muscle.js — 0.74 made the cabin a §7 black void behind the wraparound screen
@@ -63,23 +77,41 @@ export const blueprint = {
    * up to the bonnet/engine-deck line and the sky reflection SWEEPS across it instead of filling it.
    */
   body: [
+    /**
+     * ---- WAVE-10: RE-CUT AS A MID-ENGINE CAR --------------------------------------------------
+     *
+     * Three things move together, because separately none of them reads:
+     *
+     *  1. the AXLES go out to +/-1.43 (2.86 m wheelbase), so the flare peaks — the widest station
+     *     over each wheel — move with them and the wings sit over the corners of the car;
+     *  2. the COWL moves 260 mm forward, from z 0.94 to z 1.20. That is the single number that
+     *     says front-engine or mid-engine: the base of the screen used to sit 400 mm behind the
+     *     front axle line, which is a bonnet you can put a V8 under. It now sits 230 mm AHEAD of
+     *     it, on top of the front wheel, which is where a 488's or a Ford GT's does;
+     *  3. the bonnet therefore has 1.11 m to fall 208 mm in instead of 1.37 m to fall 168 mm in,
+     *     so the nose is a short steep wedge rather than a long flat deck.
+     *
+     * What is left behind the cabin is 1.50 m of high flat engine deck — 33 % of the car's length,
+     * against the muscle car's 0.9 m boot lid — with the deck line 320 mm ABOVE the bonnet line.
+     * That inversion, over a wheelbase this long, is the mid-engine silhouette.
+     */
     { z: -2.31, w: 0.790, y0: 0.25, floor: 0.58, rocker: 0.95, ySill: 0.36, yBelt: 0.82, belt: 0.96, yDeck: 0.855, deck: 0.93, crown: 0.004 },
     { z: -2.24, w: 0.882, y0: 0.22, floor: 0.62, rocker: 0.94, ySill: 0.33, yBelt: 0.86, belt: 0.955, yDeck: 0.895, deck: 0.90, crown: 0.006 },
-    { z: -2.05, w: 0.930, y0: 0.19, rocker: 0.925, ySill: 0.31, yBelt: 0.90, belt: 0.95, yDeck: 0.945, deck: 0.84, crown: 0.026, flare: 1.01 },
-    { z: -1.70, w: 0.990, y0: 0.17, rocker: 0.915, ySill: 0.295, yBelt: 0.938, belt: 0.945, yDeck: 0.968, deck: 0.80, crown: 0.040, flare: 1.052 },
-    { z: -1.34, w: 1.000, y0: 0.16, rocker: 0.905, ySill: 0.29, yBelt: 0.948, belt: 0.945, yDeck: 0.980, deck: 0.79, crown: 0.044, flare: 1.085 },
-    { z: -1.00, w: 0.994, y0: 0.158, rocker: 0.90, ySill: 0.285, yBelt: 0.938, belt: 0.945, yDeck: 0.968, deck: 0.79, crown: 0.042, flare: 1.032 },
-    { z: -0.86, w: 0.994, y0: 0.158, rocker: 0.900, ySill: 0.285, yBelt: 0.930, belt: 0.945, yDeck: 0.950, deck: 0.80, crown: 0.036 },
-    { z: -0.80, w: 0.992, y0: 0.158, rocker: 0.899, ySill: 0.284, yBelt: 0.926, belt: 0.945, yDeck: 0.672, deck: 0.83, crown: 0.006 },
-    { z: -0.52, w: 0.985, y0: 0.156, rocker: 0.895, ySill: 0.282, yBelt: 0.916, belt: 0.945, yDeck: 0.660, deck: 0.83, crown: 0.006 },
-    { z: -0.20, w: 0.980, y0: 0.154, rocker: 0.89, ySill: 0.278, yBelt: 0.900, belt: 0.945, yDeck: 0.640, deck: 0.83, crown: 0.006 },
-    { z: 0.42, w: 0.976, y0: 0.152, rocker: 0.885, ySill: 0.275, yBelt: 0.876, belt: 0.945, yDeck: 0.640, deck: 0.83, crown: 0.006 },
-    { z: 0.86, w: 0.978, y0: 0.152, rocker: 0.885, ySill: 0.276, yBelt: 0.848, belt: 0.945, yDeck: 0.660, deck: 0.84, crown: 0.006 },
-    { z: 0.94, w: 0.979, y0: 0.152, rocker: 0.885, ySill: 0.276, yBelt: 0.845, belt: 0.945, yDeck: 0.828, deck: 0.86, crown: 0.010 },
-    { z: 1.10, w: 0.983, y0: 0.152, rocker: 0.888, ySill: 0.274, yBelt: 0.822, belt: 0.945, yDeck: 0.790, deck: 0.80, crown: 0.038, flare: 1.026 },
-    { z: 1.34, w: 0.990, y0: 0.154, rocker: 0.892, ySill: 0.272, yBelt: 0.784, belt: 0.945, yDeck: 0.748, deck: 0.79, crown: 0.042, flare: 1.055 },
-    { z: 1.62, w: 0.985, y0: 0.156, rocker: 0.895, ySill: 0.270, yBelt: 0.742, belt: 0.945, yDeck: 0.710, deck: 0.80, crown: 0.040, flare: 1.048 },
-    { z: 1.94, w: 0.966, y0: 0.160, rocker: 0.905, ySill: 0.272, yBelt: 0.692, belt: 0.95, yDeck: 0.666, deck: 0.83, crown: 0.030, flare: 1.012 },
+    { z: -2.10, w: 0.930, y0: 0.19, rocker: 0.925, ySill: 0.31, yBelt: 0.90, belt: 0.95, yDeck: 0.945, deck: 0.84, crown: 0.026, flare: 1.01 },
+    { z: -1.79, w: 0.990, y0: 0.17, rocker: 0.915, ySill: 0.295, yBelt: 0.938, belt: 0.945, yDeck: 0.968, deck: 0.80, crown: 0.040, flare: 1.052 },
+    { z: -1.43, w: 1.004, y0: 0.16, rocker: 0.905, ySill: 0.29, yBelt: 0.948, belt: 0.945, yDeck: 0.980, deck: 0.79, crown: 0.044, flare: 1.088 },
+    { z: -1.06, w: 0.996, y0: 0.158, rocker: 0.90, ySill: 0.285, yBelt: 0.940, belt: 0.945, yDeck: 0.974, deck: 0.79, crown: 0.042, flare: 1.034 },
+    { z: -0.60, w: 0.994, y0: 0.158, rocker: 0.900, ySill: 0.285, yBelt: 0.932, belt: 0.945, yDeck: 0.956, deck: 0.80, crown: 0.036 },
+    { z: -0.54, w: 0.992, y0: 0.158, rocker: 0.899, ySill: 0.284, yBelt: 0.928, belt: 0.945, yDeck: 0.672, deck: 0.83, crown: 0.006 },
+    { z: -0.26, w: 0.986, y0: 0.156, rocker: 0.895, ySill: 0.282, yBelt: 0.918, belt: 0.945, yDeck: 0.660, deck: 0.83, crown: 0.006 },
+    { z: 0.10, w: 0.981, y0: 0.154, rocker: 0.89, ySill: 0.278, yBelt: 0.902, belt: 0.945, yDeck: 0.646, deck: 0.83, crown: 0.006 },
+    { z: 0.66, w: 0.977, y0: 0.152, rocker: 0.885, ySill: 0.275, yBelt: 0.874, belt: 0.945, yDeck: 0.642, deck: 0.83, crown: 0.006 },
+    { z: 1.06, w: 0.979, y0: 0.152, rocker: 0.885, ySill: 0.276, yBelt: 0.852, belt: 0.945, yDeck: 0.652, deck: 0.84, crown: 0.006 },
+    { z: 1.12, w: 0.980, y0: 0.152, rocker: 0.885, ySill: 0.276, yBelt: 0.848, belt: 0.945, yDeck: 0.828, deck: 0.86, crown: 0.010 },
+    { z: 1.20, w: 0.984, y0: 0.152, rocker: 0.888, ySill: 0.274, yBelt: 0.836, belt: 0.945, yDeck: 0.812, deck: 0.82, crown: 0.026, flare: 1.028 },
+    { z: 1.43, w: 0.998, y0: 0.154, rocker: 0.892, ySill: 0.272, yBelt: 0.798, belt: 0.945, yDeck: 0.762, deck: 0.79, crown: 0.044, flare: 1.060 },
+    { z: 1.71, w: 0.990, y0: 0.156, rocker: 0.895, ySill: 0.270, yBelt: 0.750, belt: 0.945, yDeck: 0.716, deck: 0.80, crown: 0.040, flare: 1.048 },
+    { z: 2.00, w: 0.966, y0: 0.160, rocker: 0.905, ySill: 0.272, yBelt: 0.700, belt: 0.95, yDeck: 0.676, deck: 0.83, crown: 0.030, flare: 1.012 },
     /**
      * ---- THE FRONT CLIP, LOFTED (round-1, this piece) --------------------------------------
      *
@@ -92,7 +124,7 @@ export const blueprint = {
      * 0.140 and `floor` at 0.90, so the tub's own undertray is 1.67 m wide and the splitter is a
      * LIP along its leading edge instead of a shelf hanging off nothing.
      */
-    { z: 2.16, w: 0.948, y0: 0.150, floor: 0.72, rocker: 0.925, ySill: 0.262, yBelt: 0.678, belt: 0.955, yDeck: 0.660, deck: 0.89, crown: 0.010 },
+    { z: 2.16, w: 0.948, y0: 0.150, floor: 0.72, rocker: 0.925, ySill: 0.262, yBelt: 0.674, belt: 0.955, yDeck: 0.658, deck: 0.89, crown: 0.010 },
     { z: 2.28, w: 0.938, y0: 0.142, floor: 0.84, rocker: 0.945, ySill: 0.250, yBelt: 0.646, belt: 0.962, yDeck: 0.634, deck: 0.90, crown: 0.006 },
     { z: 2.31, w: 0.930, y0: 0.140, floor: 0.90, rocker: 0.955, ySill: 0.245, yBelt: 0.628, belt: 0.966, yDeck: 0.620, deck: 0.91, crown: 0.005 },
   ],
@@ -134,29 +166,36 @@ export const blueprint = {
   },
 
   cabin: {
+    /**
+     * WAVE-10: the whole glasshouse moves 260 mm forward with the cowl. The A-pillar base now
+     * stands on the front axle line (z 1.18 against an axle at 1.43) instead of 400 mm behind it,
+     * the roof peak sits AHEAD of the wheelbase centre, and the rear bulkhead closes at z -0.54 —
+     * which leaves 1.50 m of engine deck behind it. Same section shapes, same tumblehome, same
+     * roof height: only the station the cabin occupies has changed.
+     */
     stations: [
-      { z: 0.92, hw: 0.900, rw: 0.858, yBelt: 0.842, yRoof: 0.860 },
-      { z: 0.88, hw: 0.904, rw: 0.812, yBelt: 0.845, yRoof: 0.940 },
-      { z: 0.56, hw: 0.914, rw: 0.706, yBelt: 0.864, yRoof: 1.118 },
-      { z: 0.30, hw: 0.920, rw: 0.648, yBelt: 0.876, yRoof: 1.222 },
-      { z: -0.10, hw: 0.924, rw: 0.636, yBelt: 0.892, yRoof: 1.240 },
-      { z: -0.42, hw: 0.926, rw: 0.652, yBelt: 0.906, yRoof: 1.196 },
-      { z: -0.66, hw: 0.928, rw: 0.712, yBelt: 0.916, yRoof: 1.086 },
-      { z: -0.80, hw: 0.928, rw: 0.804, yBelt: 0.921, yRoof: 0.972 },
+      { z: 1.18, hw: 0.900, rw: 0.858, yBelt: 0.842, yRoof: 0.860 },
+      { z: 1.14, hw: 0.904, rw: 0.812, yBelt: 0.845, yRoof: 0.940 },
+      { z: 0.82, hw: 0.914, rw: 0.706, yBelt: 0.864, yRoof: 1.118 },
+      { z: 0.56, hw: 0.920, rw: 0.648, yBelt: 0.876, yRoof: 1.222 },
+      { z: 0.16, hw: 0.924, rw: 0.636, yBelt: 0.892, yRoof: 1.240 },
+      { z: -0.16, hw: 0.926, rw: 0.652, yBelt: 0.906, yRoof: 1.196 },
+      { z: -0.40, hw: 0.928, rw: 0.712, yBelt: 0.916, yRoof: 1.086 },
+      { z: -0.54, hw: 0.928, rw: 0.804, yBelt: 0.921, yRoof: 0.972 },
     ],
     // z1 0.26 → 0.31 closes the 40 mm the roof panel used to stop short of the A-pillar band below,
     // so the header, the pillar and the rail are one continuous piece of bodywork round the screen.
-    roof: { z0: -0.52, z1: 0.31, a: 5, offset: 0.013 },
+    roof: { z0: -0.26, z1: 0.57, a: 5, offset: 0.013 },
     // one blade on a very raked screen; no drip rail — a mid-engine canopy is one smooth shell
-    wipers: { z: 0.845, w: 0.44, x: 0.24, sweep: 0.18 },
+    wipers: { z: 1.105, w: 0.44, x: 0.24, sweep: 0.18 },
     pillars: [
-      { z0: 0.30, z1: 0.92, a: 2, b: 5, mat: 'dark', steps: 5 },      // A-pillar
-      { z0: -0.40, z1: -0.80, a: 2, b: 5, mat: 'paint', steps: 5 },   // buttress root
+      { z0: 0.56, z1: 1.18, a: 2, b: 5, mat: 'dark', steps: 5 },      // A-pillar
+      { z0: -0.14, z1: -0.54, a: 2, b: 5, mat: 'paint', steps: 5 },   // buttress root
     ],
-    beltZ0: -0.44, beltZ1: 0.34, beltMat: 'dark',
+    beltZ0: -0.18, beltZ1: 0.60, beltMat: 'dark',
     // Two seats and an engine bulkhead — no rear shelf humps on a mid-engine car (rearHeads:false),
     // the roll hoops do that job. Alcantara grey with the car's own red on the bolsters.
-    interior: { seat: 0x4a4f5a, trim: 0x33373f, accent: 0xc9202f, floorY: 0.655, headY: 1.095, dashY: 0.875, wheelY: 0.915, shelfY: 0.895, seatZ: 0.04, dashZ: 0.70, dashW: 1.30, seatX: 0.34, shelfZ: 0.60, shelfD: 0.28, rearHeads: false, rollBar: true, clusterColor: '#ffd166' },
+    interior: { seat: 0x4a4f5a, trim: 0x33373f, accent: 0xc9202f, floorY: 0.655, headY: 1.095, dashY: 0.875, wheelY: 0.915, shelfY: 0.895, seatZ: 0.30, dashZ: 0.96, dashW: 1.30, seatX: 0.34, shelfZ: 0.86, shelfD: 0.28, rearHeads: false, rollBar: true, clusterColor: '#ffd166' },
   },
 
   wheels: {
@@ -229,7 +268,7 @@ export const blueprint = {
     { w: 1.585, h: 0.095, d: 0.12, y: 0.296, z: 2.286, slats: 3, mesh: true, frame: 'dark' },
     // side intakes: recessed 20 mm into the real flank (x 1.020 at this station), not buried 28 mm
     // inside it, so the mesh reads as a mouth in the door rather than a shadow under the paint
-    { x: 0.995, w: 0.44, h: 0.26, d: 0.16, y: 0.635, z: -0.98, slats: 4, mesh: true, frame: 'dark', ry: 1.5708, mirror: true },
+    { x: 0.960, w: 0.46, h: 0.28, d: 0.16, y: 0.640, z: -0.80, slats: 4, mesh: true, frame: 'dark', ry: 1.5708, mirror: true },
     /**
      * REAR EXTRACTOR. Round-1: "everything below the taillight bar is one flat featureless
      * near-black rectangle". The grille was there — it was dark mesh in a dark aperture on a black
@@ -264,24 +303,24 @@ export const blueprint = {
      * Set ON the measured surface, the louvre bank stands 18 mm proud and its aperture box is 27 mm
      * under — which is what an extractor is. The supercar gets three vents back for nothing.
      */
-    { x: 0.42, y: 1.034, z: -1.30, w: 0.44, h: 0.30, fins: 5, angle: 0.55, rx: -1.5708 },   // engine cover louvres
+    { x: 0.42, y: 1.038, z: -1.16, w: 0.46, h: 0.32, fins: 5, angle: 0.55, rx: -1.5708 },   // engine cover louvres
     // ROUND-2: a second, smaller louvre pair over the rear deck. The verdict called the rear "a
     // stack of flat rectangular slabs — plank wing, plank engine cover, plank tail panel, plank
     // diffuser"; the engine cover is the largest of those planks and it had one vent in the middle
     // of 0.9 m of flat paint. Two banks of louvres at different sizes break the panel into a
     // vented deck, which is what §1.3 asks for ("a visible engine cover with vents").
-    { x: 0.38, y: 1.012, z: -1.76, w: 0.34, h: 0.20, fins: 4, angle: 0.5, rx: -1.5708 },
+    { x: 0.38, y: 1.032, z: -1.72, w: 0.36, h: 0.22, fins: 4, angle: 0.5, rx: -1.5708 },
     // BONNET EXTRACTORS. They were at y 0.70 with the bonnet crown at ~0.645, so the vent's dark
     // aperture box stood 55 mm PROUD of the panel and the round-5 crop reads exactly what it is:
     // "two plain rounded cuboids" sitting on the hood. Dropped onto the panel and laid flatter, so
     // what shows is the louvre bank in a recess — which is what an extractor is.
-    { x: 0.30, y: 0.671, z: 2.14, w: 0.30, h: 0.14, fins: 3, angle: 0.6, rx: -1.50 },        // bonnet extractors
+    { x: 0.30, y: 0.680, z: 2.14, w: 0.30, h: 0.14, fins: 3, angle: 0.6, rx: -1.50 },        // bonnet extractors
   ],
   // carbon pods, not body colour: at this camera the near mirror is a hand's width across in frame
   // and a saturated red brick beside the screen was the loudest object in the round-5 hero crop
-  mirrors: { x: 0.90, y: 0.90, z: 0.62, painted: false },
+  mirrors: { x: 0.90, y: 0.90, z: 0.88, painted: false },
   // see muscle.js — the flank measures 0.9412 at this station
-  handles: [{ x: 0.950, y: 0.80, z: -0.10, mat: 'paint' }],
+  handles: [{ x: 0.950, y: 0.80, z: 0.14, mat: 'paint' }],
 
   trim: [
     // FRONT LIP. 1.44 m under a 1.67 m undertray, so it is 115 mm inboard of the bodywork on each
@@ -330,9 +369,9 @@ export const blueprint = {
      * of the bodywork; the painted cap and the polished blade move in with it and still bracket it
      * top and bottom, which is what makes the channel read as a channel.
      */
-    { x: 0.912, w: 0.10, h: 0.12, d: 1.90, z: -0.10, y: 0.275, mat: 'carbon', mirror: true, r: 0.03 },  // side sill
-    { x: 0.928, w: 0.055, h: 0.030, d: 1.86, z: -0.10, y: 0.344, mat: 'paint', mirror: true, r: 0.011 },
-    { x: 0.942, w: 0.040, h: 0.026, d: 1.80, z: -0.10, y: 0.207, mat: 'chrome', mirror: true, r: 0.010 },
+    { x: 0.912, w: 0.10, h: 0.12, d: 1.90, z: 0.10, y: 0.275, mat: 'carbon', mirror: true, r: 0.03 },  // side sill
+    { x: 0.928, w: 0.055, h: 0.030, d: 1.86, z: 0.10, y: 0.344, mat: 'paint', mirror: true, r: 0.011 },
+    { x: 0.942, w: 0.040, h: 0.026, d: 1.80, z: 0.10, y: 0.207, mat: 'chrome', mirror: true, r: 0.010 },
     // rear valance blade above the diffuser
     { w: 1.28, h: 0.048, d: 0.09, y: 0.478, z: -2.318, mat: 'chrome', r: 0.016 },
     // (the 1.30 m 'nose blade under the lamps' is gone — that line is the lamp slots' own moulded
@@ -373,19 +412,19 @@ export const blueprint = {
    * the tub cannot tell us where that surface is.
    */
   shadows: [
-    { x: 0.952, y: 0.80, z: -0.10, w: 0.24, d: 0.11, face: 'x' },      // door handle (flank 0.9412)
+    { x: 0.952, y: 0.80, z: 0.14, w: 0.24, d: 0.11, face: 'x' },       // door handle
     { x: 0.60, y: 0.984, z: -1.92, w: 0.16, d: 0.26 },                 // swan-neck pylon feet (deck 0.9799)
     { x: 0.30, y: 0.683, z: 2.14, w: 0.40, d: 0.22 },                  // bonnet extractors (deck 0.6794)
-    { x: 0.325, y: 0.672, z: -0.50, w: 0.13, d: 0.42 },                // roll-hoop feet (deck 0.6681)
+    { x: 0.325, y: 0.672, z: -0.26, w: 0.13, d: 0.42 },                // roll-hoop feet
     // ROUND-8: the side sill. 1.9 m of carbon channel down the middle of the flank, the largest
     // bolt-on on the car after the wing, with no darkening at all where it lands. On the MEASURED
     // flank above the sill's painted cap (0.8973 at z -0.10, y 0.36).
-    { x: 0.8988, y: 0.378, z: -0.10, w: 1.56, d: 0.10, face: 'x' },    // side sill (flank 0.8973)
+    { x: 0.8988, y: 0.378, z: 0.10, w: 1.56, d: 0.10, face: 'x' },     // side sill
   ],
   // …and the sill's fasteners, on its own outer face (x 0.912 + w/2). Five heads, wider-pitched
   // than the tuner's: a carbon channel on a supercar is bonded and bolted at its ends and centre,
   // not riveted down its whole length like a tuner's plastic skirt.
-  fasteners: [{ x: 0.962, y: 0.300, z: -0.10, n: 5, span: 1.52, axis: 'z', r: 0.013, h: 0.010 }],
+  fasteners: [{ x: 0.962, y: 0.300, z: 0.10, n: 5, span: 1.52, axis: 'z', r: 0.013, h: 0.010 }],
   /**
    * ---- MOUNTS (kit.js `mountPad`, wired in assemble.js) -------------------------------------
    *
@@ -394,16 +433,16 @@ export const blueprint = {
    * screws in it, and the panel darkens under it. `y` comes from the loft.
    */
   mounts: [
-    { x: 0.325, z: -0.50, w: 0.088, d: 0.088, h: 0.024, flange: 1.42, bolts: 4, boltR: 0.0092,
+    { x: 0.325, z: -0.26, w: 0.088, d: 0.088, h: 0.024, flange: 1.42, bolts: 4, boltR: 0.0092,
       boltH: 0.009, bead: 0.008, mat: 'dark', spread: 2.0 },
   ],
   extras: [
     // Round 2 stood a 280 mm PAINTED blade on each side of the engine deck: from any side view it
     // read as a red dorsal fin the height of the roof and the rear of the car became a heap of
     // slabs. These are now low carbon deck strakes flanking the louvred engine cover.
-    { type: 'buttress', x: 0.615, y: 0.985, z: -1.14, h: 0.135, d: 0.88, rx: 0.09, painted: false },
+    { type: 'buttress', x: 0.615, y: 0.978, z: -0.92, h: 0.135, d: 0.92, rx: 0.09, painted: false },
     // the hoops used to float 340 mm above the deck they are supposed to be bolted to
-    { type: 'rollhoop', x: 0.325, y: 0.655, z: -0.50, r: 0.165 },
+    { type: 'rollhoop', x: 0.325, y: 0.655, z: -0.26, r: 0.165 },
   ],
 };
 
