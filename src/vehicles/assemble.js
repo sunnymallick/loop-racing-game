@@ -1617,6 +1617,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
     if (!snap) {
       const d = partShadow(sh.w, sh.d, {
         face, sign: face === 'x' ? sx : (sh.sign ?? 1), spread: sh.spread ?? 2.05, strength: sh.strength ?? 1,
+        bound: sh.bound || null,
       });
       d.position.set(sx * (sh.x ?? 0), sh.y, sh.z);
       if (sh.rx) d.rotation.x = sh.rx;
@@ -1628,12 +1629,14 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       const at = [sx * (bodyAt(sh.z, sh.y) + lift), sh.y, sh.z];
       return partShadow(sh.w, sh.d, {
         face, sign: sx, spread: sh.spread ?? 2.05, strength: sh.strength ?? 1, at, seg: 4,
+        bound: sh.bound || null,
         conform: (z, y) => sx * (bodyAt(z, y) + lift),
       });
     }
     const at = [sx * (sh.x ?? 0), deckAt(sh.z, sh.x ?? 0) + lift, sh.z];
     return partShadow(sh.w, sh.d, {
       face, sign: sh.sign ?? 1, spread: sh.spread ?? 2.05, strength: sh.strength ?? 1, at, seg: 4,
+      bound: sh.bound || null,
       conform: (x, z) => deckAt(z, x) + lift,
     });
   };
@@ -2396,8 +2399,29 @@ function buildExtra(x, mats) {
      * a third less hue tint, a third of the bounce) with a tight specular instead of a broad one,
      * so the slats read as a stack of dark blades with a hard edge-light on each — which is what
      * makes the kit legible against the glass in the first place.
+     *
+     * ---- WAVE-12: ANODISED IS A HUE ARGUMENT, AND IT WAS PAID FOR IN VALUE --------------------
+     *
+     * The hue complaint above was right and the material is staying. The numbers it shipped were
+     * not: measured on la-muscle-still.png over the kit (rect 680,585,200,30), the slat faces fell
+     * from 35.3/255 to 15.2 and the recess row between them from 12.9 to 5.5, and a blind A/B judge
+     * ranked the pre-wave build higher for exactly that — "one solid black mass, fins gone".
+     *
+     * Three factors multiplied at once and none of them had a floor: the base went #2e333e -> #1e2127
+     * (0.0155 linear, well under the 0.045-0.07 albedo this file's own lower-body doctrine says a
+     * dark part photographs at); metalness went 0.16 -> 0.66, which deletes 66% of the diffuse
+     * before any light is gathered; and `darkMetalMaterial` had neither the hemisphere floor nor
+     * the ground bounce `darkTrimMaterial` carries. On a face pointing up into a recess all three
+     * land together.
+     *
+     * metalness 0.30 is the honest number for the part anyway. Black anodising is an anodic OXIDE —
+     * a dielectric coating grown on the aluminium — so a black anodised extrusion is a dark
+     * dielectric with a tight sheen, not a bare conductor; 0.66 was modelling raw mill finish. The
+     * base comes up to 0.038 linear, still under half the bumper it was taken off, and the fins
+     * keep the hard edge-light that makes the kit legible. Hue unchanged: no warm bounce, no broad
+     * sky irradiance, so it does not go orange again.
      */
-    const slatMat = darkMetalMaterial({ color: '#1e2127', rough: 0.34, metal: 0.66, env: 0.55 });
+    const slatMat = darkMetalMaterial({ color: '#343a45', rough: 0.36, metal: 0.30, env: 0.55 });
     for (let i = 0; i < n; i++) {
       const f = i / (n - 1) - 0.5;
       // slat chord must be SHORTER than the pitch or the kit closes up into one solid black slab

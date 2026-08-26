@@ -219,6 +219,12 @@ export function setBodyTint(look = {}) {
   UNDER.shadow.copy(tint);
   atLum(UNDER.shadow, 0.055);
 
+  // …and the same hue again, normalised to unit value, is what `shadowFloor` adds at the bottom of
+  // a dark material's range. Renormalised rather than copied so `floor` alone controls how much
+  // light a cavity bottoms out at and the city only ever decides its colour.
+  FLOORU.uFloorTint.value.copy(tint);
+  atLum(FLOORU.uFloorTint.value, 1.0);
+
   // How hard the paint leans on the environment probe in THIS city. A night probe is mostly black
   // with a few small neon sources in it, so the same weighting that reads as glossy metallic paint
   // in LA leaves the car a silhouette in Vegas and NYC (measured: the Vegas hero car sat at a lower
@@ -943,6 +949,53 @@ export function specCeiling(mat, { knee = 0.95, max = 1.60 } = {}) {
   });
 }
 
+/**
+ * SHADOW FLOOR — the same curve as `specCeiling`, at the other end.
+ *
+ * §2.1: "deep shadows are tinted, never #000". `specCeiling` bounds the top of a dark material's
+ * response so a bumper cannot become a bloom source; nothing bounded the BOTTOM, and a car has far
+ * more places that multiply toward zero than places that multiply toward one. Every dark term on a
+ * vehicle is a product — albedo x (1 - metalness) x the hemisphere split x the bounce fill x the
+ * probe weight — and a product of five factors under one has no floor by construction. Put a slat
+ * kit in a recess so all five land small at once and the part stops being a dark tinted material
+ * and becomes the absence of one.
+ *
+ * Measured, on the muscle car's louvre kit at 1600x900: the slat faces read 15.2/255 and the recess
+ * row between them 5.5/255, against 35.3 and 12.9 before the kit was re-materialled. 5.5/255 is
+ * #000 with a rounding error on it, and it is what "one solid black mass, fins gone" looks like in
+ * numbers.
+ *
+ * So: below `knee` the material gains a small amount of the city's own shadow hue, faded in by how
+ * deep the fragment already is. It is ADDITIVE and it is applied to outgoing radiance, which is
+ * what makes it a floor rather than a lift — above the knee nothing changes at all, so a lit fin
+ * face keeps its value and the CONTRAST between the fin and the recess survives. A `max()` would
+ * have hit the floor and flattened everything under it into one value, which is the same crushed
+ * mass measured from the other direction.
+ *
+ * The tint is a shared uniform re-pointed by `setBodyTint`, so the floor a cavity bottoms out at is
+ * LA's dusk violet in LA and Vegas' accent in Vegas — one write per city, no recompile.
+ */
+const FLOORU = { uFloorTint: { value: new THREE.Color(0.30, 0.30, 0.34) } };
+
+export const FLOOR_UNIFORMS = FLOORU;
+
+export function shadowFloor(mat, { floor = 0.006, knee = 0.05 } = {}) {
+  const n = (x) => (Math.round(x * 1e5) / 1e5).toFixed(5);
+  return patchShader(mat, `floor|${n(floor)}|${n(knee)}`, (shader) => {
+    Object.assign(shader.uniforms, FLOORU);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform vec3 uFloorTint;')
+      .replace('#include <opaque_fragment>', `{
+	float floorL = max( outgoingLight.r, max( outgoingLight.g, outgoingLight.b ) );
+	// 1 where the fragment is already black, 0 by the knee. Smooth, so there is no visible
+	// contour line across a panel where the floor stops acting.
+	float floorT = 1.0 - smoothstep( 0.0, ${n(knee)}, floorL );
+	outgoingLight += uFloorTint * ( ${n(floor)} * floorT );
+}
+#include <opaque_fragment>`);
+  });
+}
+
 /** Re-point the mirror probe at a city. Colours only — no recompile, no new draw call. */
 function tuneProbe(look, n) {
   const sk = look.sky || {};
@@ -1372,10 +1425,24 @@ export function housingMaterial() {
  * sees the inside of the hole. Anything seated in a lofted aperture now takes the probe at a third,
  * which leaves it its key light and its diffuse and takes away the picture of the city.
  */
+/**
+ * WAVE-12: THE ONE DARK FAMILY WITH NO FLOOR UNDER IT.
+ *
+ * `trim`, `plastic`, `cavity` and `blackout` all carry a `hemiTint`, whose ground side is a
+ * MULTIPLIER no smaller than 0.74 — i.e. those four cannot fall below three quarters of their
+ * albedo no matter which way a face points. Dark metal carried none, and it is also the only dark
+ * family with a high metalness, which removes (1 - metal) of the diffuse before the light is even
+ * gathered. Both together are why a slat kit moved onto this material lost 57% of its value and
+ * its recess went to 5.5/255 (see `shadowFloor`).
+ *
+ * It keeps its tight specular and its low bounce — that is what makes machined metal read as metal
+ * next to moulded plastic — and gains the tinted bottom end §2.1 asks every deep shadow to have.
+ */
 export function darkMetalMaterial({ color = '#3a3e47', rough = 0.44, metal = 0.60, env = 0.95 } = {}) {
-  return pooled(poolKey('darkmetal', color, rough, metal, env), () => skyReflect(underbody(new THREE.MeshStandardMaterial({
+  return pooled(poolKey('darkmetal', color, rough, metal, env), () => shadowFloor(skyReflect(underbody(new THREE.MeshStandardMaterial({
     color: new THREE.Color(color), roughness: rough, metalness: metal, envMapIntensity: env,
-  }), 'metal'), { gain: 0.44 * clamp(env / 0.95, 0.25, 1), blur: 0.06, f0: 0.30, tint: 0.60, sunPow: 60, amb: 0.34 }));
+  }), 'metal'), { gain: 0.44 * clamp(env / 0.95, 0.25, 1), blur: 0.06, f0: 0.30, tint: 0.60, sunPow: 60, amb: 0.34 }),
+  { floor: 0.014, knee: 0.075 }));
 }
 
 /**
@@ -4429,8 +4496,24 @@ export function partShadowMaterial() {
  * @param spread   how far the soft halo reaches, as a multiple of the part's footprint
  * @param strength scales both rings together, for a part that is only lightly proud of the panel
  */
+/**
+ * ---- WAVE-12: A CONTACT SHADOW STOPS WHERE ITS PANEL STOPS ---------------------------------
+ *
+ * `bound` clamps the decal, in the part's own local frame, to the extent of the panel it is cast
+ * on. Without it a decal is an unbounded plane, and the truck proved what that costs: the spare
+ * wheel's halo is 1.46 m tall, the tailgate it lies on ends 430 mm above the hub, and the high-
+ * mount stop lamp floats above that lip 7 mm BEHIND the decal's plane. So the halo sailed off the
+ * end of the panel and composited itself over the lamp — where it is not occlusion at all, because
+ * nothing is occluding a lamp that stands in front of the wheel.
+ *
+ * Measured on la-suv-still.png: the lens went from a segmented bar with a warm core to a flat red
+ * slab in a black frame, because a 22% wash over the emissive dropped it under the bloom threshold
+ * and took its halo with it. The wash on the PANEL is right and is kept — the yellow still runs
+ * from 106 beside the tyre to 118 a hundred pixels away. It simply is not allowed to leave the
+ * sheetmetal any more.
+ */
 export function partShadow(w, d, {
-  face = 'y', sign = 1, spread = 2.05, strength = 1, at = null, conform = null, seg = 1,
+  face = 'y', sign = 1, spread = 2.05, strength = 1, at = null, conform = null, seg = 1, bound = null,
 } = {}) {
   const geos = [];
   /**
@@ -4469,6 +4552,17 @@ export function partShadow(w, d, {
   ring(w * 1.08 + g0 * 0.5, d * 1.08 + g0 * 0.5, clamp(0.30 * strength, 0, 1));
   ring(w * 0.98, d * 0.98, clamp(0.24 * strength, 0, 1));
   const g = mergeGeometries(geos, false) || geos[0];
+  // …clamped to the panel BEFORE it is placed, so the numbers in a blueprint are measured from the
+  // part's own centre and do not have to be re-derived when the part moves.
+  if (bound) {
+    const P = g.attributes.position;
+    const ax = { x: 'X', y: 'Y', z: 'Z' };
+    for (const k of Object.keys(bound)) {
+      const [lo, hi] = bound[k], A = ax[k];
+      for (let i = 0; i < P.count; i++) P[`set${A}`](i, clamp(P[`get${A}`](i), lo, hi));
+    }
+    P.needsUpdate = true;
+  }
   /**
    * `at` + `conform` bake the decal into CAR SPACE and then pull every vertex down onto the panel
    * the surface sampler reports. A flat quad laid on a bonnet with 40 mm of crown in it is a chord

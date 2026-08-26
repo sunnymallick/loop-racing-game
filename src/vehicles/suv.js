@@ -462,8 +462,15 @@ export const blueprint = {
     // on itself, and it lands on the panel a chase camera looks straight at. Measured after: the
     // yellow now runs 160 at the tyre's edge to 175 a hundred pixels away (suv-rear.png, y 240-278),
     // against a flat 174-176 all the way across before.
-    { x: 0.10, y: 1.035, z: -2.538, w: 0.86, d: 0.86, face: 'z', sign: -1, snap: false,
-      mirror: false, spread: 2.6, strength: 1.0 },
+    // WAVE-12: `d` 0.86 -> 0.79 (the wheel is r 0.395, so it was 70 mm wider than the part it
+    // belongs to) and BOUNDED at the top. Unbounded, its 1.46 m halo reached y 1.765 — 335 mm
+    // clear of the tyre's own crown, 300 mm past the tailgate's top lip, and straight across the
+    // high-mount stop lamp, which floats above that lip 7 mm behind the decal's plane. The lamp
+    // measured as a flat red slab because of it. 0.4275 is the lip's top edge (y 1.435 + h/2),
+    // measured from the decal's own centre; the sideways halo, which is where the falloff on the
+    // tailgate actually lives, is untouched.
+    { x: 0.10, y: 1.035, z: -2.538, w: 0.86, d: 0.79, face: 'z', sign: -1, snap: false,
+      mirror: false, spread: 2.6, strength: 1.0, bound: { y: [-2, 0.4275] } },
     // the bull bar's rail, 48 mm in front of the slat pack. Dropped 60 mm below the tube's centre
     // because the key is above it, so the band reads as cast rather than as a smudge on the tube.
     { x: 0, y: 1.104, z: 2.505, w: 1.00, d: 0.15, face: 'z', sign: 1, snap: false,
