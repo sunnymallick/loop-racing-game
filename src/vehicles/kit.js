@@ -410,7 +410,7 @@ export function paintMaterial({
   // gain/cap up: with the basecoat and the lacquer both sampling the city probe at a blurred mip
   // (see the note in muscle.js) the analytic horizon is now the ONLY sharp reflection on the car,
   // so it has to carry the whole of §1.1's "bright sharp sky reflection … dark ground below".
-  skyReflect(mat, { gain: 1.34, blur: 0.005, f0: 0.050, tint: 0.62, sunPow: 580, amb: 0.23, cap: 0.44 });
+  skyReflect(mat, { gain: 1.34, blur: 0.005, f0: 0.050, tint: 0.62, sunPow: 580, amb: 0.23, cap: 0.44, coatPow: 30, coatGain: 0.34 });
   // …and the highlight shoulder, registered LAST so it sees the finished value (see specCeiling).
   // 1.52 sits under every bloom threshold the engine will run, so painted bodywork can reach white
   // in the frame but can never become a bloom source.
@@ -755,10 +755,10 @@ const SKYU = {
  */
 export function skyReflect(mat, {
   gain = 1.0, blur = 0.012, f0 = 0.045, tint = 0.0, sunPow = 220.0, bumpy = false, amb = 0.0,
-  cap = 0.52,
+  cap = 0.52, coatPow = 0, coatGain = 0,
 } = {}) {
   const n = (x) => (Math.round(x * 1e4) / 1e4).toFixed(4);
-  const key = `sky|${n(gain)}|${n(blur)}|${n(f0)}|${n(tint)}|${n(sunPow)}|${bumpy ? 1 : 0}|${n(amb)}|${n(cap)}`;
+  const key = `sky|${n(gain)}|${n(blur)}|${n(f0)}|${n(tint)}|${n(sunPow)}|${bumpy ? 1 : 0}|${n(amb)}|${n(cap)}|${n(coatPow)}|${n(coatGain)}`;
   return patchShader(mat, key, (shader) => {
     Object.assign(shader.uniforms, SKYU);
     shader.fragmentShader = shader.fragmentShader
@@ -806,6 +806,22 @@ vec3 nitroProbe( vec3 R ) {
 	float gs = sin( R.x * 27.0 + R.z * 14.0 ) * sin( R.z * 21.0 - R.x * 7.0 );
 	col += uSkyHaze * smoothstep( 0.74, 1.0, gs ) * ( 1.0 - sky ) * uSkyP.w * 0.62;
 	col += uSkySun * pow( max( dot( R, uSkySunDir ), 0.0 ), ${n(sunPow)} );
+${coatGain > 0 ? `	/**
+	 * THE CLEARCOAT LOBE — wave-11, "no tight clearcoat highlight riding over the broad env band".
+	 *
+	 * The glare above is a three-degree GLINT (sunPow 580) and the horizon band underneath it is
+	 * seven degrees of sky spread across a whole panel. Between those two there was nothing, and
+	 * "between those two" is exactly where a lacquer's specular lives: a bounded streak, maybe
+	 * fifteen degrees of reflection direction wide, that lies ALONG the crown of a panel and slides
+	 * down it as the car turns. It is the second highlight in every reference frame — the hard
+	 * white line down the shoulder of the teal fastback — and with the flanks finally crowned
+	 * (assemble.js \`flankField\`) there is now a crown for it to ride.
+	 *
+	 * Deliberately fed off the sun direction rather than off a light: it must be the SAME lobe on
+	 * every panel of every car in the frame, including the ones facing away from the key, or the
+	 * cars stop looking like they are standing in one place.
+	 */
+	col += uSkySun * pow( max( dot( R, uSkySunDir ), 0.0 ), ${n(coatPow)} ) * ${n(coatGain)};` : ''}
 	return col * uSkyP.x;
 }`)
       .replace('#include <opaque_fragment>', `{
