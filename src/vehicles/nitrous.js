@@ -8,6 +8,62 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  * no camera response → 65; identical across the four classes → 70.
  * §7 additionally caps "particles as unrotated camera-facing squares with visible hard edges" at 58.
  *
+ * ── ROUND 22: THE TAPER WAS BEING CANCELLED, NOT LOST. AND THE POST CHAIN IS INNOCENT. ─────
+ * Twenty rounds of measurement said the analytic field necks 6:1 over the visible column and
+ * twenty verdicts said "a constant-width bar of soft glowing gas with no throat, no expansion
+ * angle and no defined fringe boundary". Both were true. The join is not the geometry, not bloom
+ * and not the speed pass; it is four things stacked between the density field and the pixel,
+ * every one of them found by measuring RENDERED PIXELS rather than the analytic field. The three
+ * throwaway probes that found them are under tools/ (_n22_flat, _n22_iso, _n22_px, _n22_cmp) and
+ * the one worth keeping in mind is _n22_cmp: it projects the DESIGNED half-width into pixels and
+ * prints it beside the rendered width in the same frame. Until this round nobody had put the two
+ * in the same units, which is why the piece plateaued.
+ *
+ *   0. THE POST CHAIN IS NOT THE FLATTENER, and the header used to say it was. Rendering the same
+ *      boost frame with bloom off, with the speed pass off, and with both off moves the plume's
+ *      apparent width by AT MOST 2 px at every station (tools/_n22_flat.mjs). The fixed-screen-
+ *      radius halo welds nothing onto this plume in this framing, because almost none of the gas
+ *      clears the bloom threshold once the core is not clipped. Stop suspecting it.
+ *   1. THE SHOCK NECK WAS SYMMETRIC, SO IT HAD A BELLY. `1 - uNeck*amp*sin` pinches a node to 0.56
+ *      of the class cone and BELLIES the gas between two nodes out to 1.44 of it. Over the
+ *      stations the eye actually reads, that swing is the same size as the cone's own taper and
+ *      it runs the opposite way. Measured, vegas supercar, rendered width in px:
+ *          t             0.063  0.125  0.188  0.25  0.313  0.375  0.438   0.5
+ *          designed x reach  84    100     88    76     65     56     47    40
+ *          rendered (r21)    83    111    114   125    118    118     88    59
+ *          rendered, neck 0 121    162    147   129    106     89     78    75
+ *      The train was not drawn ON the taper, it was drawn OVER it. Every other modulation in this
+ *      file is one-sided (see the r9 rule); this one never was. It is now, so the class cone is
+ *      the ENVELOPE and nothing can push gas outside it.
+ *   2. THE r21 SHEAR SHELL HAD BECOME THE WHOLE PLUME. Ablating uRimE removes ~90% of the light;
+ *      ablating the body or the skirt changes almost nothing. At rimE 4.0 the shell — a FIXED
+ *      colour outside the temperature ramp, carrying almost no density and therefore absorbing
+ *      almost nothing — painted a flat tube over everything the march computed: no chroma, no
+ *      train, no taper, no fringe, because a shell that fills the column is not an edge. It is a
+ *      LINE again (rimE ~0.5x, rimW ~0.63x, and a per-class rimI).
+ *   3. THE EXPOSURE CURVE WAS BLEACHING THE CLASS COLOUR OUT. em/(1 + em*uSoft) per channel has
+ *      the same asymptote, 1/uSoft, in R, G and B — so every bright region converges on neutral
+ *      whatever colour it started as. With the filament ablated out entirely the GAS still
+ *      arrived at 178,176,238 on the axis, R and G within 1%, where uMid is 138,77,255. The
+ *      shoulder runs on the peak channel now and multiplies all three, so hue survives to the top
+ *      of the range. (And the edge->mid ramp completed at T = 0.40, which the super-gaussian body
+ *      only reaches inside q ~ 0.40 — so three quarters of the visible radius sat at uEdge, which
+ *      is a nearly-black saturated blue/red by design.)
+ *   4. THE FLARE HAD NOWHERE TO HAPPEN. The jet fires AT the chase lens, so world station t lands
+ *      on screen at t(1+p)/(1+p*t) with p ~ -0.45: the first tenth of the column is squeezed into
+ *      the first fiftieth of what you SEE. At peakAt 0.042-0.115 the whole neck-and-flare happened
+ *      inside 3-6% of the drawn length, half of it behind the diffuser — which is "no throat, no
+ *      expansion angle" arriving through the projection rather than through the profile. peakAt is
+ *      roughly doubled on every class and the throat pinch deepened.
+ *
+ * And one §7 defect that had been in the file since the train was first jittered: `ci`, the shock
+ * cell index that keys the per-cell random, was `floor(bp/2pi + 0.5)` — which steps at sin(bp) = 0,
+ * i.e. where the one-sided lobe is at HALF amplitude. A 2.2:1 jump in amp landed on a live cell,
+ * on a plane perpendicular to the axis, which projects to a DEAD STRAIGHT LINE across the column;
+ * and because |cos(bp)| = 1 there, the oblique shock sheet put it exactly on the axis, so the line
+ * cut the incandescent core. Visible at 5x on the SUV with one nozzle soloed. The cell coordinate
+ * is continuous now and the hash is interpolated across it.
+ *
  * ── ROUND 17: THE PLUME IS A 3-D FIELD MARCHED ON THE REAL CAMERA RAY. ──────────────────────
  * READ THE BLOCK COMMENT ABOVE PLUME_FRAG FIRST — that is where the method lives.
  *
@@ -328,10 +384,12 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //                 the exposure (not the geometry) is what keeps the bodywork readable.
 //   fx.rad        the plume's REFERENCE radius: the shader's radial coordinate is in these units,
 //                 and the gas is marched to PLUME_REACH (1.7) local half-widths out from the axis.
-//                 (r14) Up ~35% on every class. The taper has to survive the bloom pass, and bloom
-//                 adds a halo of FIXED SCREEN RADIUS: a throat only 50 px across cannot show a 7:1
-//                 taper once ~20 px of halo is welded to each side of every station, but a throat
-//                 at ~55% of the car's width can. The white FILAMENT inside it is ~0.16 of the
+//                 (r14) Up ~35% on every class. (r22) The r14 reasoning for this — that bloom
+//                 welds ~20 px of fixed-screen-radius halo to each flank and a 50 px throat
+//                 therefore cannot show a taper — is WRONG, and it sent three rounds after the
+//                 wrong suspect: rendering the same frame with bloom disabled moves the measured
+//                 width by at most 2 px (tools/_n22_flat.mjs). The size is still right, for the
+//                 ordinary reason that a jet as wide as the car reads and a pencil does not. The white FILAMENT inside it is ~0.16 of the
 //                 local half-width, i.e. ~0.08 m, so the two hot roots never merge into one blob.
 //   fx.profile    the class cone [neck, peakAt, spread, tip fraction] — see coneW() and halfW().
 //                 `spread` above ~1.1 and a tip fraction under ~0.12 are what make the column
