@@ -216,8 +216,14 @@ export const blueprint = {
     // ROUND-7 (chassis footprint) — see the note in tuner.js. Held where it was: 730/810 mm on a
     // deep 320-series raised white-letter carcass is the one of the four that must not shrink,
     // because the haunch is drawn round it.
-    front: { radius: 0.365, width: 0.30, spokes: 5, tireProfile: 0.320 },
-    rear: { radius: 0.405, width: 0.38, spokes: 5, tireProfile: 0.325 },
+    /**
+     * WAVE-10 (chassis footprint). A pro-street car's rear tyre is the biggest thing on it that
+     * is not the bonnet: 430 mm against a 372 mm front is a 58 mm stagger on a 380 mm-wide rear
+     * slick, which no other class in the game comes near — the tuner runs a 12 mm stagger on
+     * 322/334 and the truck runs none at all on 548s.
+     */
+    front: { radius: 0.372, width: 0.30, spokes: 5, tireProfile: 0.320 },
+    rear: { radius: 0.430, width: 0.39, spokes: 5, tireProfile: 0.335 },
   },
   // The arch is cut into the tub (kit.js `loftTub`). archFlare is wide because the haunch over a
   // Charger's back wheel is a long, slow draw from the door to the widest point of the car — that

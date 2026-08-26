@@ -281,8 +281,10 @@ export const blueprint = {
      * muscle, truck) and the rears 684 / 824 / 810 / 1040, so no two classes share a wheel and the
      * truck is 57 % larger than the smallest car in the game.
      */
-    front: { radius: 0.332, width: 0.275, spokes: 5, tireProfile: 0.240 },
-    rear: { radius: 0.342, width: 0.315, spokes: 5, tireProfile: 0.235 },
+    // WAVE-10 (chassis footprint): the smallest wheels in the game on the shortest wheelbase, so
+    // the compact reads as a compact next to a 548 mm truck tyre and a 430 mm rear slick.
+    front: { radius: 0.322, width: 0.275, spokes: 5, tireProfile: 0.248 },
+    rear: { radius: 0.334, width: 0.315, spokes: 5, tireProfile: 0.242 },
   },
   // Bolt-on over-fenders: satin black, riveted all round. `blackArches` no longer bolts a ring onto
   // the wing — it tells loftTub to hand the flare band of the SHELL to the plastic material, so the

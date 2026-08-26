@@ -38,7 +38,16 @@ export const blueprint = {
    * 100 mm so its corner is under the tyre rather than a hand's width inboard of it, and the flare
    * itself is now a mid-dark satin with a lit crown (kit.js `flareBand`, and `archBlackBand` below).
    */
-  dims: { length: 4.92, width: 2.30, height: 2.08, wheelbase: 3.05, track: 1.855, trackRear: 1.855, rideHeight: 0.36 },
+  /**
+   * ---- WAVE-10: THE FOOTPRINT ---------------------------------------------------------------
+   *
+   * "All four classes share one chassis footprint … identical wheelbase, wheel diameter." Whatever
+   * the numbers said, the read from a chase frame was not far enough apart, so the truck goes
+   * further out in both directions: 3.16 m between the axles (64 % of a 4.92 m body, the longest
+   * relative wheelbase in the game) and 1.09 m tall tyres. The flare peaks move with the axles so
+   * the arches stay over the wheels.
+   */
+  dims: { length: 4.92, width: 2.34, height: 2.14, wheelbase: 3.16, track: 1.870, trackRear: 1.870, rideHeight: 0.42 },
   // the truck stays the least glossy thing in the game — satin utility paint, not a show car —
   // but it still needs enough of the probe in it to read as metal rather than as matt vinyl
   paint: { metalness: 0.20, roughness: 0.52, clearcoat: 0.72, clearcoatRoughness: 0.50, flake: 0.30, envIntensity: 0.86 },
@@ -50,7 +59,7 @@ export const blueprint = {
       doors: [V(0.86), V(-0.30), V(-1.32)],
       hood: [V(1.02), V(2.30)],
       boot: [V(-2.34), V(-1.98)],
-      arches: [V(1.525), V(-1.525)],
+      arches: [V(1.58), V(-1.58)],
       fuelCap: [0.30, V(-1.86)],
     },
   },
@@ -77,17 +86,17 @@ export const blueprint = {
     { z: -2.22, w: 1.048, y0: 0.62, floor: 0.72, rocker: 0.965, ySill: 0.89, yBelt: 1.48, belt: 0.985, yDeck: 1.475, deck: 0.94, crown: 0.008, flare: 1.01 },
     { z: -2.04, w: 1.052, y0: 0.60, floor: 0.72, rocker: 0.96, ySill: 0.88, yBelt: 1.49, belt: 0.985, yDeck: 1.485, deck: 0.94, crown: 0.008, flare: 1.02 },
     { z: -1.98, w: 1.052, y0: 0.60, floor: 0.72, rocker: 0.96, ySill: 0.88, yBelt: 1.49, belt: 0.985, yDeck: 1.265, deck: 0.90, crown: 0.006, flare: 1.022 },
-    { z: -1.72, w: 1.056, y0: 0.60, floor: 0.72, rocker: 0.955, ySill: 0.875, yBelt: 1.50, belt: 0.985, yDeck: 1.265, deck: 0.90, crown: 0.006, flare: 1.055 },
-    { z: -1.525, w: 1.058, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.87, yBelt: 1.50, belt: 0.985, yDeck: 1.265, deck: 0.90, crown: 0.006, flare: 1.078 },
-    { z: -1.30, w: 1.054, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.87, yBelt: 1.50, belt: 0.985, yDeck: 1.262, deck: 0.90, crown: 0.006, flare: 1.040 },
+    { z: -1.775, w: 1.056, y0: 0.60, floor: 0.72, rocker: 0.955, ySill: 0.875, yBelt: 1.50, belt: 0.985, yDeck: 1.265, deck: 0.90, crown: 0.006, flare: 1.055 },
+    { z: -1.58, w: 1.058, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.87, yBelt: 1.50, belt: 0.985, yDeck: 1.265, deck: 0.90, crown: 0.006, flare: 1.078 },
+    { z: -1.355, w: 1.054, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.87, yBelt: 1.50, belt: 0.985, yDeck: 1.262, deck: 0.90, crown: 0.006, flare: 1.040 },
     { z: -0.90, w: 1.046, y0: 0.60, floor: 0.72, rocker: 0.945, ySill: 0.868, yBelt: 1.50, belt: 0.985, yDeck: 1.260, deck: 0.90, crown: 0.006 },
     { z: -0.10, w: 1.044, y0: 0.60, floor: 0.72, rocker: 0.945, ySill: 0.868, yBelt: 1.50, belt: 0.985, yDeck: 1.258, deck: 0.90, crown: 0.006 },
     { z: 0.60, w: 1.046, y0: 0.60, floor: 0.72, rocker: 0.945, ySill: 0.868, yBelt: 1.50, belt: 0.985, yDeck: 1.260, deck: 0.90, crown: 0.006 },
     { z: 0.94, w: 1.048, y0: 0.60, floor: 0.72, rocker: 0.948, ySill: 0.87, yBelt: 1.50, belt: 0.985, yDeck: 1.265, deck: 0.90, crown: 0.006 },
     { z: 1.02, w: 1.048, y0: 0.60, floor: 0.72, rocker: 0.948, ySill: 0.87, yBelt: 1.50, belt: 0.985, yDeck: 1.505, deck: 0.93, crown: 0.010 },
-    { z: 1.30, w: 1.052, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.872, yBelt: 1.50, belt: 0.985, yDeck: 1.505, deck: 0.93, crown: 0.010, flare: 1.038 },
-    { z: 1.525, w: 1.058, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.874, yBelt: 1.50, belt: 0.985, yDeck: 1.505, deck: 0.93, crown: 0.010, flare: 1.078 },
-    { z: 1.80, w: 1.054, y0: 0.605, floor: 0.72, rocker: 0.955, ySill: 0.878, yBelt: 1.495, belt: 0.985, yDeck: 1.50, deck: 0.93, crown: 0.010, flare: 1.048 },
+    { z: 1.355, w: 1.052, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.872, yBelt: 1.50, belt: 0.985, yDeck: 1.505, deck: 0.93, crown: 0.010, flare: 1.038 },
+    { z: 1.58, w: 1.058, y0: 0.60, floor: 0.72, rocker: 0.95, ySill: 0.874, yBelt: 1.50, belt: 0.985, yDeck: 1.505, deck: 0.93, crown: 0.010, flare: 1.078 },
+    { z: 1.855, w: 1.054, y0: 0.605, floor: 0.72, rocker: 0.955, ySill: 0.878, yBelt: 1.495, belt: 0.985, yDeck: 1.50, deck: 0.93, crown: 0.010, flare: 1.048 },
     { z: 2.10, w: 1.048, y0: 0.62, floor: 0.72, rocker: 0.96, ySill: 0.885, yBelt: 1.49, belt: 0.985, yDeck: 1.495, deck: 0.935, crown: 0.008 },
     /**
      * ---- THE FRONT CLIP, LOFTED (round-1, this piece) --------------------------------------
@@ -205,8 +214,8 @@ export const blueprint = {
     // ROUND-7 (chassis footprint) — see the note in tuner.js. 520 mm on a 37-inch-equivalent
     // knobby: 57 % larger than the tuner's front wheel, and the only unstaggered axle pair in the
     // game, which is what a solid-axle truck runs.
-    front: { radius: 0.520, width: 0.40, spokes: 6, tireProfile: 0.345 },
-    rear: { radius: 0.520, width: 0.40, spokes: 6, tireProfile: 0.345 },
+    front: { radius: 0.548, width: 0.42, spokes: 6, tireProfile: 0.352 },
+    rear: { radius: 0.548, width: 0.42, spokes: 6, tireProfile: 0.352 },
   },
   // Square bolt-on flares, riveted round the opening. Cut into the tub (kit.js `loftTub`) rather
   // than bolted onto it: the truck has the flattest slab sides in the game, so a ring standing off
