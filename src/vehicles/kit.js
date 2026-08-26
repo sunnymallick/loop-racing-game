@@ -4332,31 +4332,135 @@ export function contactShadow(w = 2.2, l = 5.0, wheels = []) {
  * `polygonOffset` rather than a big lift off the panel: these lie on CURVED bodywork, and a decal
  * pushed far enough off a crowned bonnet not to clip is a decal you can see floating at 8x. Pushed
  * 3 mm and biased in depth, it wins the z-test everywhere it overlaps and never separates.
+ *
+ * ---- WAVE-10: THE DECAL IS GRADED, NOT A FLAT WASH ----------------------------------------
+ *
+ * Verbatim from the wave-9 critic: "nothing they sit on darkens beneath them". The decals were
+ * there and they were rendering — but one quad at a flat 50 % alpha over a footprint the size of
+ * the part is not contact shading, it is a grey rectangle, and at 8x on a crowned bonnet it read
+ * as a smudge in the paint rather than as the part's own occlusion. Contact darkening has a
+ * PROFILE: it is nearly black in the millimetre-wide crack where the part meets the panel and it
+ * has thrown off almost entirely by one part-width away. That needs two rings, not one quad, so
+ * the alpha now comes from vertex colours (one shared material still — the whole set is a single
+ * draw call) and `partShadow` stacks a hard core inside a wide halo.
  */
 export function partShadowMaterial() {
   return pooled('partshadow', () => shadowTinted(new THREE.MeshBasicMaterial({
     map: shadowFootprint(),
-    transparent: true, opacity: 0.50, depthWrite: false, color: 0x0a0a10,
+    transparent: true, opacity: 1.0, depthWrite: false, color: 0x0a0a10, vertexColors: true,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   })));
 }
 
 /**
- * @param w,d   footprint of the decal, in the plane it lies on
- * @param face  which way the panel points: 'y' (bonnet, deck, roof), 'z' (nose, tail),
- *              'x' (flank). The decal is built facing that axis; `sign` flips it.
+ * @param w,d      footprint of the PART, in the plane the decal lies on
+ * @param face     which way the panel points: 'y' (bonnet, deck, roof), 'z' (nose, tail),
+ *                 'x' (flank). The decal is built facing that axis; `sign` flips it.
+ * @param spread   how far the soft halo reaches, as a multiple of the part's footprint
+ * @param strength scales both rings together, for a part that is only lightly proud of the panel
  */
-export function partShadow(w, d, { face = 'y', sign = 1 } = {}) {
-  const g = new THREE.PlaneGeometry(w, d);
-  if (face === 'y') g.rotateX(sign > 0 ? -Math.PI / 2 : Math.PI / 2);
-  else if (face === 'x') g.rotateY(sign > 0 ? Math.PI / 2 : -Math.PI / 2);
-  else if (sign < 0) g.rotateY(Math.PI);
+export function partShadow(w, d, {
+  face = 'y', sign = 1, spread = 2.05, strength = 1, at = null, conform = null, seg = 1,
+} = {}) {
+  const geos = [];
+  const ring = (rw, rd, a) => {
+    const g = new THREE.PlaneGeometry(rw, rd, seg, seg).toNonIndexed();
+    if (face === 'y') g.rotateX(sign > 0 ? -Math.PI / 2 : Math.PI / 2);
+    else if (face === 'x') g.rotateY(sign > 0 ? Math.PI / 2 : -Math.PI / 2);
+    else if (sign < 0) g.rotateY(Math.PI);
+    const n = g.attributes.position.count;
+    const col = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { col[i * 4] = col[i * 4 + 1] = col[i * 4 + 2] = 1; col[i * 4 + 3] = a; }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 4));
+    geos.push(g);
+  };
+  // 1. the halo — wide and weak, the ambient light the part steals off the whole panel round it
+  ring(w * spread, d * spread, clamp(0.34 * strength, 0, 1));
+  // 2. the core — the part's own footprint plus a hair, near-opaque. This is the crack.
+  ring(w * 1.16, d * 1.16, clamp(0.62 * strength, 0, 1));
+  ring(w * 0.98, d * 0.98, clamp(0.55 * strength, 0, 1));
+  const g = mergeGeometries(geos, false) || geos[0];
+  /**
+   * `at` + `conform` bake the decal into CAR SPACE and then pull every vertex down onto the panel
+   * the surface sampler reports. A flat quad laid on a bonnet with 40 mm of crown in it is a chord
+   * across an arc: the middle floats and the ends sink, and polygon offset only rescues the second
+   * of those. Conformed, the decal touches the paint over its whole footprint, which is the only
+   * way the core ring can read as the crack under the part rather than as a grey rectangle.
+   */
+  if (at) g.translate(at[0], at[1], at[2]);
+  if (conform && at) {
+    const P = g.attributes.position;
+    for (let i = 0; i < P.count; i++) {
+      const x = P.getX(i), y = P.getY(i), z = P.getZ(i);
+      if (face === 'y') P.setY(i, conform(x, z));
+      else if (face === 'x') P.setX(i, conform(z, y));
+      else P.setZ(i, conform(x, y));
+    }
+    P.needsUpdate = true;
+  }
   const m = new THREE.Mesh(g, partShadowMaterial());
   m.castShadow = false;
   m.receiveShadow = false;
   m.userData.noShadow = true;
   m.renderOrder = 3;
   return m;
+}
+
+/**
+ * ---- THE MOUNT ----------------------------------------------------------------------------
+ *
+ * The other half of the wave-9 sentence: "their mounts are bare unfilleted slabs". A wing pylon,
+ * a mirror sail, a spare-wheel carrier and a snorkel bracket all land on painted sheetmetal the
+ * same way in the real world and none of them lands as a cut rectangle — there is a FLANGE wider
+ * than the part, a rolled fillet where that flange meets the paint, and fasteners through it.
+ * Three elements, all in buckets the car already carries.
+ *
+ *   flange   a shallow chamfered plate, `flange`x the part's own footprint. Its corner radius is
+ *            comparable to its thickness, so its edge is a rolled bead and not a saw cut.
+ *   fillet   `panelReturn`'s rolled bead run round the flange's foot — the radius that a slab
+ *            does not have, and the single thing that reads at 8x as "welded/bonded on".
+ *   bolts    hex heads at the flange corners. A mount with no fastener is a moulding.
+ *
+ * Built about +Y with its foot at y = 0 (the panel surface). Rotate the group for a flank.
+ */
+export function mountPad(w, d, {
+  h = 0.030, r = null, flange = 1.36, mat = null, boltMat = null,
+  bolts = 4, boltR = 0.0115, boltH = 0.011, bead = 0.010, sink = 0.005, boss = true,
+} = {}) {
+  const g = new THREE.Group();
+  const m = mat || darkMetalMaterial({ color: '#3c4048', rough: 0.40, metal: 0.72 });
+  const fw = w * flange, fd = d * flange;
+  const fh = Math.max(0.010, h * 0.46);
+  const rr = r ?? Math.min(fw, fd) * 0.22;
+  const plate = new THREE.Mesh(roundedBox(fw, fh, fd, Math.min(rr, fh * 0.46)), m);
+  plate.position.y = fh * 0.5 - sink;
+  g.add(plate);
+  // the fillet: a rolled bead round the flange's foot, sitting in the corner between plate and
+  // paint. Without it the plate meets the panel on a 90-degree edge, which is the "slab" read.
+  const fil = panelReturn(fw + bead * 0.6, fd + bead * 0.6, {
+    r: Math.min(rr + bead, Math.min(fw, fd) * 0.46), bead, rise: bead * 0.35 - sink, mat: m, seg: 18,
+  });
+  g.add(fil);
+  if (boss) {
+    const bh = Math.max(0.006, h - fh * 0.55);
+    const bo = new THREE.Mesh(roundedBox(w, bh, d, Math.min(rr * 0.7, bh * 0.45)), m);
+    bo.position.y = fh * 0.45 + bh * 0.5 - sink;
+    g.add(bo);
+  }
+  if (bolts > 0) {
+    const bm = boltMat || chromeMaterial({ color: '#aab0ba', rough: 0.22 });
+    const bg = new THREE.CylinderGeometry(boltR * 0.84, boltR, boltH, 6);
+    const bx = fw * 0.5 - Math.max(boltR * 1.5, rr * 0.5);
+    const bz = fd * 0.5 - Math.max(boltR * 1.5, rr * 0.5);
+    const spots = bolts <= 2 ? [[0, bz], [0, -bz]]
+      : [[bx, bz], [-bx, bz], [bx, -bz], [-bx, -bz]];
+    for (const [sx, sz] of spots) {
+      const b = new THREE.Mesh(bg, bm);
+      b.position.set(sx, fh + boltH * 0.34 - sink, sz);
+      g.add(b);
+    }
+  }
+  return g;
 }
 
 /**

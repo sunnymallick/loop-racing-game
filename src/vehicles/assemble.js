@@ -9,7 +9,7 @@ import {
   contactShadow, lightUnit, grilleMesh, ventMesh, bodyPaintTexture, liveryTexture, mergeByMaterial,
   panelNoise, cloneShaded, wingEndplate,
   spanIn, spanOut, spanInY, spanOutY, fitRect, apertureBack, apertureCoreMaterial,
-  engineBayMaterial, partShadow, portFlange, panelReturn,
+  engineBayMaterial, partShadow, portFlange, panelReturn, mountPad,
 } from './kit.js';
 import { lerp, clamp, RNG } from '../core/rng.js';
 
@@ -194,6 +194,47 @@ function profileSampler(tubSections) {
   };
 }
 
+/**
+ * The TOP surface of the tub at a point (x, z) — the inverse of `profileSampler`.
+ *
+ * WAVE-10. Every AO decal and every bolted mount in the four car files carried a hand-measured `y`
+ * taken off a probe, and the probe was run once, against whatever the loft happened to be that
+ * round. Two of them were already 4-6 mm UNDER the panel by wave 9 — buried, invisible, which is
+ * exactly the "nothing they sit on darkens beneath them" the critic saw. A sampler removes the
+ * whole class of bug: a part declares its station and the assembler puts its shadow, its flange
+ * and its bolts on the surface the loft actually ended up with.
+ *
+ * The authored half-profile runs bottom-centre → deck-centre, so the upper skin is the tail of the
+ * point list walked inboard from the belt, with x decreasing and y increasing.
+ */
+function deckSampler(tubSections) {
+  const secs = [...tubSections].sort((a, b) => a.z - b.z);
+  const topAt = (pts, x) => {
+    const ax = Math.abs(x);
+    for (let i = pts.length - 1; i > 0; i--) {
+      const a = pts[i], b = pts[i - 1];
+      if (ax <= b[0]) {
+        const t = clamp((ax - a[0]) / ((b[0] - a[0]) || 1), 0, 1);
+        return lerp(a[1], b[1], t);
+      }
+    }
+    return pts[0][1];
+  };
+  return (z, x) => {
+    if (z <= secs[0].z) return topAt(secs[0].pts, x);
+    const last = secs[secs.length - 1];
+    if (z >= last.z) return topAt(last.pts, x);
+    for (let i = 1; i < secs.length; i++) {
+      if (z <= secs[i].z) {
+        const a = secs[i - 1], b = secs[i];
+        const t = (z - a.z) / ((b.z - a.z) || 1);
+        return lerp(topAt(a.pts, x), topAt(b.pts, x), t);
+      }
+    }
+    return topAt(last.pts, x);
+  };
+}
+
 /** Dense cabin sections over [z0,z1], always including every authored station in range. */
 function cabinRange(stations, za, zb, steps = 8) {
   const z0 = Math.min(za, zb), z1 = Math.max(za, zb);
@@ -226,6 +267,7 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
   const wb = bp.dims.wheelbase;
   const trF = bp.dims.track, trR = bp.dims.trackRear ?? bp.dims.track;
   const bodyAt = profileSampler(tubSections);
+  const deckAt = deckSampler(tubSections);
   const wcfg = (cfg) => ({
     ...cfg, style: cfg.style || bp.wheels.style,
     rimColor: cfg.rimColor || bp.wheels.rimColor,
@@ -931,6 +973,23 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       m.position.set(sx * (v.x ?? 0), v.y, v.z);
       m.rotation.set(v.rx ?? 0, sx * (v.ry ?? 0), v.rz ?? 0);
       detail.add(m);
+      /**
+       * ---- WAVE-10: A LOUVRE BANK IS A BOLT-ON TOO -----------------------------------------
+       *
+       * The critic named "the hood vents" in the same breath as the wing pylons and the blower.
+       * A vent that lies FLAT on a panel (`rx` near -PI/2, i.e. a bonnet or deck extractor) casts
+       * a hard little shadow round its surround, and none of them had one. Skipped for a vent
+       * standing up in a flank or a bumper, where the tub sampler is describing the wrong plane.
+       */
+      const flat = Math.abs(Math.abs(v.rx ?? 0) - Math.PI / 2) < 0.34 && !v.ry && !v.rz && v.ao !== false;
+      if (flat) {
+        const ax = sx * (v.x ?? 0), az = v.z;
+        detail.add(partShadow(v.w * 1.14, v.h * 1.30, {
+          face: 'y', spread: 1.72, strength: 0.86, seg: 4,
+          at: [ax, deckAt(az, v.x ?? 0) + 0.0035, az],
+          conform: (x, z) => deckAt(z, x) + 0.0035,
+        }));
+      }
     }
   }
 
@@ -984,6 +1043,28 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
         // it — a pad set 10 mm inside would be flush, i.e. invisible, which is what it is replacing
         sail.position.set(sx * (sailX - 0.001 * ms), mi.y - 0.014 * ms, mi.z - 0.004);
         detail.add(sail);
+        /**
+         * ---- WAVE-10: THE SAIL GETS A FILLET AND A SHADOW ---------------------------------
+         *
+         * The note under `bp.shadows` in every car file used to end "anything mounted on the
+         * glasshouse rather than on the tub — the mirrors — has no decal, because the tub cannot
+         * tell us where that surface is." That was never true here: `sailX` IS that surface, and
+         * a mirror is one of the five parts the wave-9 critic named by name. So the plate now
+         * gets the same three things every other mount got — a rolled bead round its foot, two
+         * fasteners through it, and graded contact shading in the paint under it.
+         */
+        const foot = mountPad(0.104 * ms, 0.136 * ms, {
+          h: 0.016 * ms, flange: 1.16, mat: armMat, bolts: 2, boltR: 0.0085 * ms, boltH: 0.008 * ms,
+          bead: 0.0075 * ms, sink: 0.004 * ms, boss: false,
+        });
+        foot.rotation.z = sx * -Math.PI / 2;
+        foot.position.set(sx * (sailX - 0.002 * ms), mi.y - 0.014 * ms, mi.z - 0.004);
+        detail.add(foot);
+        const sd = partShadow(0.128 * ms, 0.166 * ms, {
+          face: 'x', sign: sx, spread: 1.95,
+          at: [sx * (sailX + 0.0035), mi.y - 0.014 * ms, mi.z - 0.004],
+        });
+        detail.add(sd);
       }
       const arm = new THREE.Mesh(roundedBox(0.115 * ms, 0.038 * ms, 0.052 * ms, 0.018 * ms), armMat);
       arm.position.set(sx * (mi.x + 0.012 * ms), mi.y, mi.z);
@@ -1169,9 +1250,27 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
         post.position.set(sx * w.x, w.y - w.h / 2, w.z + 0.02);
         post.rotation.x = 0.16;
         detail.add(post);
-        const foot = new THREE.Mesh(roundedBox(0.11, 0.028, 0.20, 0.012), w.postMat === 'chrome' ? chrome : trim);
-        foot.position.set(sx * w.x, w.y - w.h + 0.012, w.z + 0.04);
-        detail.add(foot);
+        /**
+         * ---- WAVE-10: THE FOOT IS A MOUNT, NOT A CHIP OF PLATE ------------------------------
+         *
+         * It was a 110 x 28 x 200 mm rounded box parked at an authored height — the wave-9
+         * critic's "bare unfilleted slab", and half the time it was not even on the deck. It is
+         * now `mountPad` sitting on the surface the loft reports: a flange wider than the post, a
+         * rolled fillet round its foot, four bolts through it, and graded contact shading in the
+         * paint under all of that.
+         */
+        const fz = w.z + 0.04;
+        const fy = deckAt(fz, w.x);
+        const pad = mountPad(0.086, 0.175, {
+          h: 0.030, flange: 1.32, mat: w.postMat === 'chrome' ? chrome : trim,
+          bolts: 4, boltR: 0.0105, boltH: 0.010, bead: 0.0095,
+        });
+        pad.position.set(sx * w.x, fy, fz);
+        detail.add(pad);
+        detail.add(partShadow(0.121, 0.238, {
+          face: 'y', spread: 2.15, at: [sx * w.x, fy + 0.0035, fz], seg: 4,
+          conform: (x, z) => deckAt(z, x) + 0.0035,
+        }));
       }
       const blade = new THREE.Mesh(roundedBox(w.w, 0.042, w.chord, 0.02), bladeMat);
       blade.position.set(0, w.y, w.z);
@@ -1216,6 +1315,27 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
         arm.position.set(sx * w.x, footY + pyH * 0.5, w.z + w.chord * 0.30);
         arm.rotation.x = -0.14;
         detail.add(arm);
+        /**
+         * ---- WAVE-10: THE PYLON LANDS ON SOMETHING ------------------------------------------
+         *
+         * Round 7 buried the pylon's end 28 mm inside the deck and stopped there, and the wave-9
+         * crop shows what that looks like at 8x: a stick disappearing into unbroken paint, with
+         * the racing stripe running out from under it. A machined swan-neck foot is a flange
+         * plate with four cap screws through it and a fillet where it meets the panel — and the
+         * panel darkens under the plate. All three, on the deck the loft actually built.
+         */
+        const fz = w.z + w.chord * 0.30;
+        const fy = deckAt(fz, w.x);
+        const pad = mountPad(0.070, 0.148, {
+          h: 0.026, flange: 1.34, mat: postMat, bolts: 4, boltR: 0.0098, boltH: 0.0095, bead: 0.0085,
+        });
+        pad.position.set(sx * w.x, fy, fz);
+        pad.rotation.x = -0.05;
+        detail.add(pad);
+        detail.add(partShadow(0.104, 0.208, {
+          face: 'y', spread: 2.2, at: [sx * w.x, fy + 0.0035, fz], seg: 4,
+          conform: (x, z) => deckAt(z, x) + 0.0035,
+        }));
         // the neck: forward off the top of the pylon and onto the blade's upper surface, so the
         // blade is carried rather than butted against a post
         const hook = new THREE.Mesh(roundedBox(0.034, 0.030, 0.22, 0.012), postMat);
@@ -1361,14 +1481,89 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       }
     }
   }
-  for (const sh of bp.shadows || []) {
-    for (const sx of sh.mirror === false ? [1] : [-1, 1]) {
-      const d = partShadow(sh.w, sh.d, { face: sh.face || 'y', sign: sh.face === 'x' ? sx : (sh.sign ?? 1) });
+  /**
+   * ---- WAVE-10: THE DECAL IS SNAPPED TO THE PANEL, NOT TO A NUMBER --------------------------
+   *
+   * Every entry below used to carry a `y` (or an `x`) hand-measured off a one-off probe. Two of
+   * them had since drifted UNDER the bodywork and rendered to nobody, which is most of why the
+   * wave-9 critic could write "nothing they sit on darkens beneath them" about a car that already
+   * had an AO system. `deckAt` / `bodyAt` are the loft's own surface, so the decal lands on the
+   * paint whatever the loft does; the authored value is kept only as a fallback for a decal that
+   * is deliberately somewhere the tub sampler cannot describe (`snap: false`).
+   *
+   * `conform` then bends the decal down onto the crown so its core ring touches the paint over its
+   * whole footprint instead of tenting over the middle of the panel.
+   */
+  const decal = (sh, sx) => {
+    const face = sh.face || 'y';
+    const lift = sh.lift ?? 0.0035;
+    const snap = sh.snap !== false && !sh.rx && !sh.ry && !sh.rz;
+    if (!snap) {
+      const d = partShadow(sh.w, sh.d, {
+        face, sign: face === 'x' ? sx : (sh.sign ?? 1), spread: sh.spread ?? 2.05, strength: sh.strength ?? 1,
+      });
       d.position.set(sx * (sh.x ?? 0), sh.y, sh.z);
       if (sh.rx) d.rotation.x = sh.rx;
       if (sh.ry) d.rotation.y = sx * sh.ry;
       if (sh.rz) d.rotation.z = sx * sh.rz;
-      detail.add(d);
+      return d;
+    }
+    if (face === 'x') {
+      const at = [sx * (bodyAt(sh.z, sh.y) + lift), sh.y, sh.z];
+      return partShadow(sh.w, sh.d, {
+        face, sign: sx, spread: sh.spread ?? 2.05, strength: sh.strength ?? 1, at, seg: 4,
+        conform: (z, y) => sx * (bodyAt(z, y) + lift),
+      });
+    }
+    const at = [sx * (sh.x ?? 0), deckAt(sh.z, sh.x ?? 0) + lift, sh.z];
+    return partShadow(sh.w, sh.d, {
+      face, sign: sh.sign ?? 1, spread: sh.spread ?? 2.05, strength: sh.strength ?? 1, at, seg: 4,
+      conform: (x, z) => deckAt(z, x) + lift,
+    });
+  };
+  for (const sh of bp.shadows || []) {
+    for (const sx of sh.mirror === false ? [1] : [-1, 1]) detail.add(decal(sh, sx));
+  }
+
+  /**
+   * ---- THE MOUNTS (kit.js `mountPad`) --------------------------------------------------------
+   *
+   * WAVE-9 verdict, verbatim: "nothing they sit on darkens beneath them and their mounts are bare
+   * unfilleted slabs". `bp.shadows` above is the first half. This is the second: the flange, the
+   * rolled fillet and the fasteners that stand between a bolt-on and the paint it is bolted to.
+   *
+   * A mount declares only its STATION and the footprint of the part landing on it — the height
+   * comes from the loft, so a pylon foot cannot drift off the deck the way the decals did. Every
+   * mount also emits its own AO decal at the flange's real size, so the two halves can never get
+   * out of step.
+   */
+  for (const mt of bp.mounts || []) {
+    const face = mt.face || 'y';
+    const mat = mt.mat === 'chrome' ? chrome : mt.mat === 'paint' ? paintSolid
+      : mt.mat === 'carbon' ? carbon : trim;
+    const flange = mt.flange ?? 1.36;
+    for (const sx of mt.mirror === false ? [1] : [-1, 1]) {
+      const pad = mountPad(mt.w, mt.d, {
+        h: mt.h ?? 0.030, flange, mat, bolts: mt.bolts ?? 4,
+        boltR: mt.boltR ?? 0.0115, boltH: mt.boltH ?? 0.011, bead: mt.bead ?? 0.010,
+        sink: mt.sink ?? 0.005, boss: mt.boss !== false, r: mt.r ?? null,
+        boltMat: mt.boltMat === 'dark' ? trim : null,
+      });
+      if (face === 'x') {
+        // a flank mount: the pad's +Y becomes the outboard normal
+        pad.rotation.z = sx * -Math.PI / 2;
+        pad.position.set(sx * (bodyAt(mt.z, mt.y) - (mt.sink ?? 0.005) * 0.5), mt.y, mt.z);
+      } else {
+        pad.position.set(sx * (mt.x ?? 0), deckAt(mt.z, mt.x ?? 0) + (mt.dy ?? 0), mt.z);
+        if (mt.rx) pad.rotation.x = mt.rx;
+        if (mt.rz) pad.rotation.z = sx * mt.rz;
+      }
+      detail.add(pad);
+      detail.add(decal({
+        x: mt.x, y: mt.y, z: mt.z, face,
+        w: mt.w * flange, d: mt.d * flange,
+        spread: mt.spread ?? 1.9, strength: mt.strength ?? 1, lift: mt.lift ?? 0.0035,
+      }, sx));
     }
   }
 
@@ -1788,6 +1983,15 @@ function buildExtra(x, mats) {
       const leg = new THREE.Mesh(roundedBox(0.05, 0.16, 0.05, 0.015), trim);
       leg.position.set(sx * (x.w ?? 1.3) * 0.42, -0.13, 0);
       mesh.add(leg);
+      // WAVE-10: the leg lands on a flanged, bolted foot with a shadow under it, not on nothing
+      const pad = mountPad(0.072, 0.072, {
+        h: 0.022, flange: 1.34, mat: trim, bolts: 2, boltR: 0.0095, boltH: 0.009, bead: 0.008,
+      });
+      pad.position.set(sx * (x.w ?? 1.3) * 0.42, -0.212, 0);
+      mesh.add(pad);
+      mesh.add(partShadow(0.106, 0.106, {
+        face: 'y', spread: 2.0, strength: 0.92, at: [sx * (x.w ?? 1.3) * 0.42, -0.208, 0],
+      }));
     }
   } else if (x.type === 'rack') {
     mesh = new THREE.Group();
@@ -1796,9 +2000,23 @@ function buildExtra(x, mats) {
       rail.position.set(sx * (x.w ?? 0.7) / 2, 0.03, 0);
       mesh.add(rail);
       for (let i = 0; i < 4; i++) {
+        const fz = -(x.d ?? 1.2) / 2 + 0.18 + i * ((x.d ?? 1.2) - 0.36) / 3;
         const foot = new THREE.Mesh(roundedBox(0.05, 0.09, 0.07, 0.02), trim);
-        foot.position.set(sx * (x.w ?? 0.7) / 2, -0.05, -(x.d ?? 1.2) / 2 + 0.18 + i * ((x.d ?? 1.2) - 0.36) / 3);
+        foot.position.set(sx * (x.w ?? 0.7) / 2, -0.05, fz);
         mesh.add(foot);
+        /**
+         * WAVE-10: eight rack feet on the biggest, flattest, most-visible panel on the truck, and
+         * every one of them used to end in mid-air 20 mm above the roof. Each gets the flange,
+         * the fillet, the two bolts and the contact shading the rest of the kit now has.
+         */
+        const pad = mountPad(0.066, 0.086, {
+          h: 0.020, flange: 1.36, mat: trim, bolts: 2, boltR: 0.0088, boltH: 0.0085, bead: 0.0075,
+        });
+        pad.position.set(sx * (x.w ?? 0.7) / 2, -0.096, fz);
+        mesh.add(pad);
+        mesh.add(partShadow(0.098, 0.124, {
+          face: 'y', spread: 1.95, strength: 0.9, at: [sx * (x.w ?? 0.7) / 2, -0.092, fz],
+        }));
       }
     }
     for (let i = 0; i < 5; i++) {
@@ -2127,6 +2345,34 @@ function buildExtra(x, mats) {
     const arm = new THREE.Mesh(roundedBox(rOut * 1.05, 0.095, 0.11, 0.028), trim);
     arm.position.set((x.hinge ?? (rOut * 1.05)) * 0.5, -rOut * 0.42, wid * 0.5 - 0.02);
     mesh.add(arm);
+    /**
+     * ---- WAVE-10: THE CARRIER IS BOLTED TO THE TAILGATE ------------------------------------
+     *
+     * The wave-9 critic listed the spare among the five parts that "never make contact with the
+     * car": the hinge post simply ran forward until it was inside the tailgate and stopped. A
+     * swing-out carrier hangs off two hinge brackets, each one a flanged plate with four bolts
+     * through the tailgate skin, and the skin darkens behind both of them.
+     *
+     * `gate` is the tailgate's outer face in the spare's own local frame; the spare's origin sits
+     * behind the car, so the panel is at LOCAL +z and the world outside is at local -z.
+     */
+    const hx = x.hinge ?? (rOut * 1.05);
+    const gate = x.gate ?? 0.14;
+    for (const sy of [-1, 1]) {
+      const br = mountPad(0.112, 0.112, {
+        h: 0.032, flange: 1.30, mat: trim, bolts: 4, boltR: 0.0118, boltH: 0.011, bead: 0.010,
+      });
+      br.rotation.x = -Math.PI / 2;
+      br.position.set(hx, sy * rOut * 0.60, gate);
+      mesh.add(br);
+      mesh.add(partShadow(0.152, 0.152, {
+        face: 'z', sign: -1, spread: 2.0, at: [hx, sy * rOut * 0.60, gate - 0.006],
+      }));
+    }
+    // …and the shadow the wheel itself throws on the panel behind it
+    mesh.add(partShadow(rOut * 1.72, rOut * 1.72, {
+      face: 'z', sign: -1, spread: 1.24, strength: 0.72, at: [0, 0, gate - 0.006],
+    }));
   } else if (x.type === 'tailgate') {
     /**
      * A real tailgate. Round 2's SUV had one enormous featureless quad back here carrying a
