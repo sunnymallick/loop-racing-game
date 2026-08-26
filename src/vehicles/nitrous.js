@@ -8,6 +8,88 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  * no camera response → 65; identical across the four classes → 70.
  * §7 additionally caps "particles as unrotated camera-facing squares with visible hard edges" at 58.
  *
+ * ── ROUND 23: THE TAPER WAS NOT LOST, IT WAS OUTRUN — AND THE SHOULDER WAS THE "ROD". ──────
+ * Round 22 scored 74. The verdict finally agreed the taper exists ("the segmentation mask draws
+ * an unmistakable teardrop; the half-width falls 97 -> 44 px across the middle third") and then
+ * named exactly what was still wrong with it: "the outline is a LOZENGE, not a cone — 5:1 flare
+ * in the first 72 px, 80 px flat plateau, then taper, then a RE-WIDENING TAIL; across the 34
+ * stations after the flare peak there are 13 up-steps against 16 down-steps"; "BANDING IS AT
+ * ZERO — the axial luminance is a smooth plateau, 189,178,166,161,147,152,148,144,144, i.e. a
+ * rod"; and "chroma is essentially FLAT from axis to edge".
+ *
+ * THE TOOL THAT SETTLED IT is tools/_n23_sil.mjs (throwaway, gitignored): it ablates the gas
+ * quads out of a REAL frame, builds the difference mask, walks the plume's projected axis at 8 px
+ * stations and reports the upper and lower half-width AND the peak luminance at each — then
+ * scores the column after the apex for up-steps, plateau length and worst re-widening. That is
+ * the wave-10 critic's own acceptance test, runnable. Together with tools/_n22_cmp.mjs (which
+ * puts the DESIGNED envelope in the same pixels) it says the taper is not being lost anywhere:
+ * it is being OUTRUN. Rendered width / designed envelope, vegas supercar: 1.33 at the throat,
+ * 1.53 at a fifth, 1.68 at a third, 1.89 at two fifths — a 42% relative inflation of the outer
+ * half, which is precisely enough to turn a designed 2.16:1 taper into a rendered 1.76:1.
+ *
+ * And bloom is STILL innocent (r22 was right and this round re-measured it): rendering the same
+ * frame with `engine.bloom.enabled = false` moves the measured half-width by at most 1 px at
+ * every one of ~110 stations. So is the speed pass. Stop suspecting the post chain.
+ *
+ * The five causes, each fixed at its own cause:
+ *
+ *   1. THE AXIS WANDER HAD AN ABSOLUTE FLOOR AND RAMPED IN DOWNSTREAM. `max(w/uR0, 0.10)` meant
+ *      that past t ~ 0.85 — where the class cone is under a tenth of the throat — the axis swung
+ *      by up to 0.9 of the LOCAL half-width; and smoothstep(0.04, 0.80, t) ramped the whole term
+ *      IN over exactly the span the cone is necking OUT. So the displacement grew relative to the
+ *      envelope all the way down the column, the tail stopped narrowing, and it shed detached
+ *      islands (measured at s = 440-520 and again at s = 664-800, both outside anything the cone
+ *      still occupies; the critic photographed one on the SUV and called it "a detached
+ *      amoeba-shaped wisp"). It is a fixed fraction of the LOCAL half-width now, fully on by a
+ *      quarter of the way down, peak 0.30*uTurb instead of 0.85*uTurb.
+ *   2. AND SO THE ENVELOPE IS NOW A HARD FRACTION OF THE CLASS CONE. PLUME_REACH 1.42 -> 1.26,
+ *      the wisps confined to a band at 0.9 half-widths instead of rising all the way to the cut,
+ *      the shell's radius wobble halved, and the end jitter cut from +-0.20 of the column length
+ *      to +-0.065. The plume's absolute reach is uReach + 0.30*uTurb half-widths at EVERY
+ *      station — 1.45 on the supercar, 1.62 on the SUV — so whatever the cone does, the
+ *      silhouette does. Up-steps in the mean rendered half-width over the ~100 stations after the
+ *      apex: 8 before, 3-6 after; worst re-widening 9.0 px -> 5.0 px on a 60 px peak.
+ *   3. THE PROFILE'S OWN TOP WAS ROUND, AND A ROUND TOP IS THE PLATEAU. `smoothstep(0, peakAt, t)`
+ *      reaches 1 with ZERO SLOPE, so the widest point was not a point: the cone sat within 7% of
+ *      maximum from t = 0.14 to t = 0.28, which is 62 px of this frame. pow(x, 0.78) arrives at
+ *      the same peak with slope 0.78/peakAt against a departure slope of -spread(1-tip)/(1-peakAt)
+ *      — for the supercar +2.06 in and -2.03 out. A throat, an expansion angle you can measure,
+ *      an apex, and then a taper that starts narrowing immediately.
+ *      ...and `lit` and `rimA` were ramping the EMISSION in over a fixed 0.006-0.14 while peakAt
+ *      runs 0.09 (SUV) to 0.22 (supercar), so on three classes the gas was still lighting up
+ *      while the cone was already necking down and the rendered maximum landed downstream of the
+ *      geometric one (designed peak t = 0.19, rendered t = 0.25). Both are keyed to uProf.y now.
+ *   4. THE NECK HAS A CEILING, AND IT IS ARITHMETIC. r22 made the shock neck one-sided so the
+ *      class cone is the outer envelope — correct, and it fixed the belly — but one-sided means
+ *      the column returns to the FULL cone between two nodes. So a node necks the outline down
+ *      and the anti-node after it lets it back up, and the silhouette is monotone only while
+ *          neckAmt * amp  <=  1 - hw(anti-node) / hw(node).
+ *      On the supercar that right-hand side is 0.40 across cell 1 and only 0.26 across cell 2.
+ *      Measured up-steps after the apex: neckAmt 0.00 -> 7, 0.24 -> 3, 0.44 -> 7. Every class is
+ *      under its ceiling now. A deeper waist than this cannot be bought; the banding has to come
+ *      from somewhere else, which is (5).
+ *      Two things were also CANCELLING what neck there was: a node brightened the shear shell by
+ *      56% at exactly the station it necks the column by 20% (a brighter line crosses the eye's
+ *      threshold further out), and the twin nozzles' +-5.5% length difference walked their two
+ *      trains half a cell apart by the tail so each filled the other's waist.
+ *   5. THE EXPOSURE SHOULDER WAS THE ROD. uSoft 1.25 gives em/(1 + em*1.25) an asymptote of 0.80
+ *      in every channel, which compresses a 10:1 emission swing to 1.9:1 BEFORE the tonemap sees
+ *      it. That is what "the axial luminance is a smooth plateau" is made of — the shader was
+ *      computing shock nodes four times the brightness of the gas between them and the shoulder
+ *      was deleting them. It is the luminance twin of the defect r22 found in the per-channel
+ *      form. At uSoft 0.78, with every gasGain re-solved so the body lands in the same place, the
+ *      supercar's measured axial run is 247 -> 36 with FOUR local maxima, the strongest carrying
+ *      47 counts of prominence; the tuner's is 243 -> 61 with four, the strongest 104.
+ *      (And the first pass at this over-corrected: cutting the gains without putting them back
+ *      turned the supercar's column into a dark navy smudge on a neon street. Contrast bought by
+ *      giving up presence is one verdict traded for another. The gains are back up ~40%.)
+ *
+ * Per-class, because "all four share one soft-fog rendering language" was 5 points of the 15:
+ * every class was within 10% of the same reference radius and 30% of the same turbulence. They
+ * now run 0.455 / 0.640 / 0.660 / 0.545 on radius and 0.58 / 1.04 / 1.20 / 0.62 on turbulence,
+ * with a 0.072 shell on the tuner against 0.185 on the muscle — a drawn needle, a fat barrel, a
+ * boiling bell and a long spindle, before colour is considered at all.
+ *
  * ── ROUND 22: THE TAPER WAS BEING CANCELLED, NOT LOST. AND THE POST CHAIN IS INNOCENT. ─────
  * Twenty rounds of measurement said the analytic field necks 6:1 over the visible column and
  * twenty verdicts said "a constant-width bar of soft glowing gas with no throat, no expansion
@@ -511,7 +593,7 @@ export const NITRO = {
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.44, 0.18, 1.98, 0.050],   // slim needle: closes fastest of the four
       bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.25, bandFade: 0.32, flick: 62, turb: 0.58,
-      gasGain: 0.63, hotI: 7.60, burn: 0.30, filW: 0.088, bodyW: 0.45, wisp: 0.32,
+      gasGain: 0.86, hotI: 7.60, burn: 0.30, filW: 0.088, bodyW: 0.45, wisp: 0.32,
       skirtW: 0.72, skirtI: 0.44, bodyD: 1.78, thick: 0.82, occ: 0.94,
       rimR: 0.95, rimW: 0.072, rimI: 1.25, rimE: 2.00,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -528,7 +610,7 @@ export const NITRO = {
       len: 4.00, rad: 0.640, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.72, 0.125, 1.30, 0.095],  // fat barrel, widest right off the bumper
       bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.21, bandFade: 0.34, flick: 28, turb: 1.04,
-      gasGain: 0.54, hotI: 5.40, burn: 0.40, filW: 0.085, bodyW: 0.49, wisp: 0.94,
+      gasGain: 0.74, hotI: 5.40, burn: 0.40, filW: 0.085, bodyW: 0.49, wisp: 0.72,
       skirtW: 0.86, skirtI: 1.00, bodyD: 1.78, thick: 0.86, occ: 0.94,
       rimR: 0.99, rimW: 0.185, rimI: 0.95, rimE: 1.20,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
@@ -553,7 +635,7 @@ export const NITRO = {
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 0.50, hotI: 5.00, burn: 0.44, filW: 0.078, bodyW: 0.54, wisp: 1.05,
+      gasGain: 0.58, hotI: 5.00, burn: 0.44, filW: 0.078, bodyW: 0.54, wisp: 0.82,
       skirtW: 0.96, skirtI: 1.10, bodyD: 1.62, thick: 0.86, occ: 0.94,
       // (r23) the bell gets an EDGE. rimW 0.210 -> 0.165 and rimI/rimE up: a bell's boundary is a
       // band you can watch the gas mixing across, which is still a boundary — the SUV had neither.
@@ -573,7 +655,7 @@ export const NITRO = {
       len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.42, 0.220, 1.70, 0.068],  // long spindle — the slenderest of the four
       bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.26, bandFade: 0.30, flick: 74, turb: 0.62,
-      gasGain: 0.50, hotI: 7.20, burn: 0.28, filW: 0.085, bodyW: 0.43, wisp: 0.30,
+      gasGain: 0.74, hotI: 7.20, burn: 0.28, filW: 0.085, bodyW: 0.43, wisp: 0.30,
       skirtW: 0.70, skirtI: 0.44, bodyD: 1.78, thick: 0.80, occ: 0.94,
       rimR: 0.94, rimW: 0.082, rimI: 1.30, rimE: 1.90,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -1694,7 +1776,7 @@ const PLUME_FRAG = /* glsl */`
           // 167,156,160,157 then a cliff to 3", i.e. no core-to-fringe temperature ramp at all,
           // which is a rod. At 0.24 uMid still owns the lit body but the outer third of the radius
           // is a genuine walk down towards the class edge colour, so there is a ramp to read.
-          vec3 col = mix(uEdge, uMid, smoothstep(0.010, 0.24, T));
+          vec3 col = mix(uEdge, uMid, smoothstep(0.010, 0.19, T));
           // (r20) 0.54/1.32 -> 0.70/1.45. The gas BETWEEN two diamonds sits at T ~ 0.8, and at the
           // old thresholds that was already a third of the way to a colour which is itself 30%
           // white — so the column had a permanent pale wash on it and a diamond had to climb out
@@ -1963,6 +2045,12 @@ function plumeMaterial(fx, phase) {
       // asymptote bleaches the class colour); this is the luminance half of it, and it is what
       // "BANDING IS AT ZERO" is actually made of. At 0.78 the same 10:1 arrives as 3.2:1 with the
       // gains cut so the body still lands in the same place: dim gas 0.81x, a knot 1.24x.
+      // (r23b) ...and then every gain put BACK ~40%, because the first pass at this cut the
+      // supercar's column down to a dark navy smudge on a neon street — §2.5 wants the jet to be
+      // the biggest thing on screen, and an exposure change that buys contrast by giving up
+      // presence has traded one verdict for another. The measured axial range is what matters and
+      // it survives the restore: 247 -> 36 over the supercar's column with four local maxima, the
+      // strongest 47 counts of prominence, against r22's flat 189..144 with none.
       uSoft: { value: fx.soft ?? 0.78 },
       // the knots' own shoulder — gentle, so a shock diamond can still clear the bloom threshold
       uHotSoft: { value: fx.hotSoft ?? 0.16 },
