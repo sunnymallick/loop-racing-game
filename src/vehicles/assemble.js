@@ -2378,16 +2378,33 @@ function buildExtra(x, mats) {
     // rear-window slat kit: kills the flat black quad a fastback backlight otherwise reads as
     mesh = new THREE.Group();
     const n = x.count ?? 7, len = x.d ?? 0.9, pitch = len / (n - 1);
+    /**
+     * WAVE-11: BLACK ANODISED, NOT BUMPER PLASTIC.
+     *
+     * Verbatim: "the muscle's rear-quarter louvres take a wood-brown cast in muscle-rear34.png that
+     * reads like unfinished ply rather than a finished trim part". Measured on that frame the slat
+     * faces come back around rgb(206,132,74). They were built out of the same `darkTrimMaterial` a
+     * bumper is, and that material is deliberately open to the city — a 0.42 hue tint, a warm
+     * ground bounce and a wide 0.44 sky-irradiance term — which is right for a metre-wide moulded
+     * valance and wrong for a set of 16 mm slats whose faces point up into an LA sunset: every one
+     * of those terms lands on the same small upward normal at once and the kit goes orange.
+     *
+     * A real slat kit is anodised aluminium. `darkMetalMaterial` is the same family (role `metal`:
+     * a third less hue tint, a third of the bounce) with a tight specular instead of a broad one,
+     * so the slats read as a stack of dark blades with a hard edge-light on each — which is what
+     * makes the kit legible against the glass in the first place.
+     */
+    const slatMat = darkMetalMaterial({ color: '#1e2127', rough: 0.34, metal: 0.66, env: 0.55 });
     for (let i = 0; i < n; i++) {
       const f = i / (n - 1) - 0.5;
       // slat chord must be SHORTER than the pitch or the kit closes up into one solid black slab
-      const slat = new THREE.Mesh(roundedBox(x.w ?? 1.2, 0.016, pitch * 0.52, 0.006), trim);
+      const slat = new THREE.Mesh(roundedBox(x.w ?? 1.2, 0.016, pitch * 0.52, 0.006), slatMat);
       slat.position.set(0, 0.03 + Math.abs(f) * 0.012, f * len);
       slat.rotation.x = -0.50;
       mesh.add(slat);
     }
     for (const sx of [-1, 1]) {
-      const rail = new THREE.Mesh(roundedBox(0.032, 0.055, len * 1.06, 0.012), trim);
+      const rail = new THREE.Mesh(roundedBox(0.032, 0.055, len * 1.06, 0.012), slatMat);
       rail.position.set(sx * (x.w ?? 1.2) * 0.5, 0.02, 0);
       mesh.add(rail);
     }

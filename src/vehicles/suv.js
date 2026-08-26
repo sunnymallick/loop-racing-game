@@ -431,6 +431,34 @@ export const blueprint = {
     // the game — with the door skin above it reading the same value as the door skin above the
     // wheel. On the MEASURED flank just above the slider's tread edge (0.9997 at z 0, y 0.98).
     { x: 1.0012, y: 0.972, z: 0, w: 1.72, d: 0.13, face: 'x' },        // rock slider (flank 0.9997)
+    /**
+     * ---- WAVE-11: THE TWO BIGGEST BOLT-ONS ON THE TRUCK FINALLY TOUCH IT --------------------
+     *
+     * Verbatim: "it is absent on the SUV's biggest, closest-to-camera furniture. Probing
+     * suv-rear.png along the tailgate away from the spare, the yellow reads L=169 at 2 px from the
+     * tyre and L=174 at 210 px away — no falloff at all; and in c_bullbar.png the rail crossing the
+     * grille throws no shadow on the panel it stands 75 mm in front of."
+     *
+     * Both are `face: 'z'` decals, which is why neither existed: the snapping path in assemble.js
+     * only solves the flank and the deck, so an end-panel decal has to be placed by hand.
+     *
+     * Both z values are MEASURED, not derived. The arithmetic on the tailgate extra (z -2.478,
+     * d 0.07, ry PI) says its skin is at -2.513, and a decal placed there rendered to nobody: a
+     * depth ladder of five test bands at -2.514 / -2.524 / -2.544 / -2.584 / -2.644 put the real
+     * surface between the second and the third. Anything inboard of it is behind the panel and the
+     * depth test eats it silently, which is exactly how the truck ended up as the one car in the
+     * game with no contact shading on its two biggest bolt-ons.
+     */
+    // the full-size spare, 860 mm across on the tailgate skin: the darkest thing this truck throws
+    // on itself, and it lands on the panel a chase camera looks straight at. Measured after: the
+    // yellow now runs 160 at the tyre's edge to 175 a hundred pixels away (suv-rear.png, y 240-278),
+    // against a flat 174-176 all the way across before.
+    { x: 0.10, y: 1.035, z: -2.538, w: 0.86, d: 0.86, face: 'z', sign: -1, snap: false,
+      mirror: false, spread: 2.6, strength: 1.0 },
+    // the bull bar's rail, 48 mm in front of the slat pack. Dropped 60 mm below the tube's centre
+    // because the key is above it, so the band reads as cast rather than as a smudge on the tube.
+    { x: 0, y: 1.104, z: 2.505, w: 1.00, d: 0.15, face: 'z', sign: 1, snap: false,
+      mirror: false, spread: 2.4, strength: 0.95 },
   ],
   // …and the slider's mounting bolts, on its own outer face (x 1.045 + w/2). The same hardware the
   // arch flares already wear (`archBolts: 7`), which is what makes the two read as one fitted kit
