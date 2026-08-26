@@ -4374,11 +4374,19 @@ export function partShadow(w, d, {
     g.setAttribute('color', new THREE.BufferAttribute(col, 4));
     geos.push(g);
   };
-  // 1. the halo — wide and weak, the ambient light the part steals off the whole panel round it
-  ring(w * spread, d * spread, clamp(0.34 * strength, 0, 1));
-  // 2. the core — the part's own footprint plus a hair, near-opaque. This is the crack.
-  ring(w * 1.16, d * 1.16, clamp(0.62 * strength, 0, 1));
-  ring(w * 0.98, d * 0.98, clamp(0.55 * strength, 0, 1));
+  /**
+   * The halo grows by an ABSOLUTE margin, not by a multiple of the footprint. `spread` used to
+   * scale both dimensions, which is fine for a square pad and disastrous for a long one: the
+   * muscle car's 1.30 m side spear came out with a 2.7 m halo, i.e. a black smear the length of
+   * the whole flank. The margin is driven off the part's SHORT dimension, because that is the
+   * scale a real contact shadow throws at.
+   */
+  const g0 = clamp(Math.min(w, d) * (spread - 1) * 1.05, 0.012, 0.30);
+  // 1. the halo — wide and weak, the ambient light the part steals off the panel round it
+  ring(w + g0 * 2, d + g0 * 2, clamp(0.22 * strength, 0, 1));
+  // 2. the core — the part's own footprint plus a hair. This is the crack.
+  ring(w * 1.08 + g0 * 0.5, d * 1.08 + g0 * 0.5, clamp(0.30 * strength, 0, 1));
+  ring(w * 0.98, d * 0.98, clamp(0.24 * strength, 0, 1));
   const g = mergeGeometries(geos, false) || geos[0];
   /**
    * `at` + `conform` bake the decal into CAR SPACE and then pull every vertex down onto the panel

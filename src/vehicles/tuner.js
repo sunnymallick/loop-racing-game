@@ -483,6 +483,18 @@ export const blueprint = {
    * `archBolts` already puts round the arches so the two rows read as one kit.
    */
   fasteners: [{ x: 0.850, y: 0.392, z: -0.06, n: 6, span: 1.68, axis: 'z', r: 0.0145, h: 0.012 }],
+  /**
+   * ---- MOUNTS (kit.js `mountPad`, wired in assemble.js) -------------------------------------
+   *
+   * WAVE-9, verbatim: "their mounts are bare unfilleted slabs". A bonded bonnet scoop wears a
+   * flange a few millimetres proud of the panel with a rolled edge on it and four fasteners
+   * through the corners — that flange is the whole reason a scoop reads as fitted rather than as
+   * a lump resting on the paint. `y` comes from the loft, so it cannot drift off the bonnet.
+   */
+  mounts: [
+    { x: 0, z: 1.42, w: 0.46, d: 0.42, h: 0.015, flange: 1.13, bolts: 4, boltR: 0.0105,
+      boltH: 0.009, bead: 0.0085, boss: false, mat: 'dark', mirror: false, spread: 1.72 },
+  ],
   extras: [{ type: 'scoop', w: 0.44, h: 0.10, d: 0.40, y: 0.948, z: 1.42, painted: true }],
 };
 

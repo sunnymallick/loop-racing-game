@@ -386,6 +386,17 @@ export const blueprint = {
   // than the tuner's: a carbon channel on a supercar is bonded and bolted at its ends and centre,
   // not riveted down its whole length like a tuner's plastic skirt.
   fasteners: [{ x: 0.962, y: 0.300, z: -0.10, n: 5, span: 1.52, axis: 'z', r: 0.013, h: 0.010 }],
+  /**
+   * ---- MOUNTS (kit.js `mountPad`, wired in assemble.js) -------------------------------------
+   *
+   * The roll hoops used to grow straight out of the paint behind the seats. A hoop is bolted to
+   * the bulkhead through a machined foot plate; the plate has a fillet round it and four cap
+   * screws in it, and the panel darkens under it. `y` comes from the loft.
+   */
+  mounts: [
+    { x: 0.325, z: -0.50, w: 0.088, d: 0.088, h: 0.024, flange: 1.42, bolts: 4, boltR: 0.0092,
+      boltH: 0.009, bead: 0.008, mat: 'dark', spread: 2.0 },
+  ],
   extras: [
     // Round 2 stood a 280 mm PAINTED blade on each side of the engine deck: from any side view it
     // read as a red dorsal fin the height of the roof and the rear of the car became a heap of

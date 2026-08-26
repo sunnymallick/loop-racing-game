@@ -508,6 +508,22 @@ export const blueprint = {
      * the quarter and vanish on the depth test.
      */
     { x: 0.9175, y: 0.665, z: -0.06, w: 1.30, d: 0.115, face: 'x' },  // side spear (flank 0.9156)
+    /**
+     * ---- WAVE-10: THE BONNET DARKENS ROUND THE BLOWER ---------------------------------------
+     *
+     * "Nothing they sit on darkens beneath them", and the blower is the largest bolt-on on any of
+     * the four cars. It drops into a real aperture with a real rolled lip, but the PAINT round
+     * that aperture read at exactly the value the rest of the bonnet reads, so a 460 mm supercharger
+     * standing 300 mm out of a hole threw nothing onto the panel it came through.
+     *
+     * Four narrow decals along the four edges of the cut rather than one blob over it: a single
+     * decal spanning the opening is a flat plane across a 160 mm recess, and from a low front
+     * three-quarter it would draw over the bay. `y` is filled in by the loft (assemble.js
+     * `deckSampler`), so these follow the bonnet's crown wherever the aperture ends up.
+     */
+    { x: 0.415, z: 1.58, w: 0.15, d: 0.80, spread: 1.85, strength: 0.95 },   // aperture sides
+    { x: 0, z: 1.985, w: 0.80, d: 0.13, spread: 1.8, strength: 0.9, mirror: false },  // front edge
+    { x: 0, z: 1.175, w: 0.80, d: 0.13, spread: 1.8, strength: 0.9, mirror: false },  // rear edge
   ],
   /**
    * DZUS FASTENERS round the hood cut. The aperture, its rolled lip and its polished bead are all
