@@ -243,9 +243,23 @@ async function main() {
     // viewport purely as a REGRESSION tracker: a sudden drop here means someone added something
     // pathologically expensive. Real frame rate must be measured on the GPU (npm run dev).
     await h.page.evaluate(() => window.__GAME.setSize(640, 360));
-    const fps = await measureFps(h.page, 40);
-    check('software-GL render throughput (regression tracker only)', fps.fps > 1.5,
-      `${fps.fps.toFixed(1)} fps @640x360 swiftshader — NOT the real-GPU number`);
+    // This check used to take its ONLY sample in the 40 frames straight after setSize(), so it was
+    // timing the resize — render-target realloc plus shader recompile — rather than throughput. It
+    // read 0.5 fps in that first window against 1.3-1.9 in steady state, on BOTH sides of a wave
+    // that changed nothing here, and the 1.5 bar sat inside that spread, so it flapped on noise.
+    // Discard a warm-up window, then take the MEDIAN of three: a regression tracker that fires by
+    // luck is worse than no tracker, because every real red line after it gets read as noise too.
+    await measureFps(h.page, 20);                                   // warm-up: absorbs the resize
+    const runs = [];
+    for (let i = 0; i < 3; i++) runs.push((await measureFps(h.page, 40)).fps);
+    runs.sort((a, b) => a - b);
+    const fps = runs[1];
+    // The bar is deliberately well below steady state. It exists to catch someone adding something
+    // pathologically expensive (a 2-3x collapse), not to police the last 20%. The real-GPU 50 fps
+    // bar of §3.5 is measured by tools/perf.mjs and is the number that actually gates the project.
+    check('software-GL render throughput (regression tracker only)', fps > 0.9,
+      `median ${fps.toFixed(1)} fps of [${runs.map((r) => r.toFixed(1)).join(', ')}] @640x360 `
+      + `swiftshader — NOT the real-GPU number, see tools/perf.mjs`);
     await h.page.evaluate(() => window.__GAME.setSize(1280, 720));
 
     // ---------------------------------------------------------------- leaks
