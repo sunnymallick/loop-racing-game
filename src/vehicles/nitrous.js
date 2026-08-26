@@ -411,7 +411,7 @@ export const NITRO = {
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
       bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
-      gasGain: 0.70, hotI: 6.20, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
+      gasGain: 0.86, hotI: 6.90, burn: 0.30, filW: 0.112, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.72, skirtI: 0.68, bodyD: 1.78, thick: 0.82, occ: 0.94,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
@@ -427,7 +427,7 @@ export const NITRO = {
       len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
       bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
-      gasGain: 0.60, hotI: 4.90, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
+      gasGain: 0.74, hotI: 5.50, burn: 0.40, filW: 0.120, bodyW: 0.49, wisp: 0.94,
       skirtW: 0.86, skirtI: 1.00, bodyD: 1.78, thick: 0.86, occ: 0.94,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 13.0, smearWidth: 0.032,
@@ -449,7 +449,7 @@ export const NITRO = {
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
-      gasGain: 0.60, hotI: 5.10, burn: 0.44, filW: 0.152, bodyW: 0.54, wisp: 1.05,
+      gasGain: 0.74, hotI: 5.70, burn: 0.44, filW: 0.116, bodyW: 0.54, wisp: 1.05,
       skirtW: 0.96, skirtI: 1.04, bodyD: 1.62, thick: 0.86, occ: 0.94,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
@@ -466,7 +466,7 @@ export const NITRO = {
       len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
       bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
-      gasGain: 0.55, hotI: 5.50, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
+      gasGain: 0.68, hotI: 6.20, burn: 0.28, filW: 0.105, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.70, skirtI: 0.62, bodyD: 1.78, thick: 0.80, occ: 0.94,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 17.0, smearWidth: 0.042,
@@ -951,7 +951,7 @@ const PLUME_FRAG = /* glsl */`
   uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD;
   uniform float uThick, uOcc, uReach, uFade, uPersp, uSoft, uWisp;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
-  uniform float uRimR, uRimW, uRimI, uRimE, uBleach;
+  uniform float uRimR, uRimW, uRimI, uRimE, uBleach, uHotSoft;
   varying vec3 vWorld;
   ${NOISE_GLSL}
 
@@ -1068,7 +1068,8 @@ const PLUME_FRAG = /* glsl */`
     // resizes it — a longer jet is a bigger jet, not a brighter one
     float dl = du / max(uR0, 0.04);
 
-    vec3  acc = vec3(0.0);
+    vec3  acc = vec3(0.0);      // the gas: body, shear layer, shell, wisps
+    vec3  accH = vec3(0.0);     // the incandescent filament and its knots, alone
     float trans = 1.0;
 
     for (int i = 0; i < STEPS; i++) {
@@ -1477,9 +1478,11 @@ const PLUME_FRAG = /* glsl */`
           // absorbs almost nothing. A ray grazing the shell runs along it for ~2.4x the path a
           // ray through the middle crosses it in, so this term is what puts two converging
           // flank lines on the plume — the taper, drawn instead of implied.
+          // ── (r21) THE GAS AND THE KNOTS GET DIFFERENT SHOULDERS, SO THEY ARE ACCUMULATED
+          //          SEPARATELY. See the note above the two shoulders below.
           vec3 e = (col * (dens * (0.20 + T * 1.05))
-                  + fil * (g1 * hotA * cut)
                   + mix(uEdge, uMid, 0.34) * (g4 * rimA * cut * uRimE)) * glow;
+          vec3 eh = fil * (g1 * hotA * cut * glow);
 
           // ── (r19) INTEGRATE THE STEP, DO NOT SAMPLE IT ──────────────────────────────────
           // The rectangle rule (acc += trans*e*dl; trans *= exp(-sigma*dl)) puts all of a step's
@@ -1492,7 +1495,9 @@ const PLUME_FRAG = /* glsl */`
           // moves where the sample is TAKEN, not how much of the step it is credited with.
           float sig = dens * uThick;
           float ex  = exp(-sig * dl);
-          acc   += trans * e * (sig > 1e-4 ? (1.0 - ex) / sig : dl);
+          float seg = trans * (sig > 1e-4 ? (1.0 - ex) / sig : dl);
+          acc   += e  * seg;
+          accH  += eh * seg;
           trans *= ex;
         }
       }
@@ -1504,7 +1509,22 @@ const PLUME_FRAG = /* glsl */`
       if (trans < 0.03) break;
     }
 
+    // ── (r21) TWO SHOULDERS, BECAUSE ONLY ONE OF THESE IS ALLOWED TO REACH THE TOP ──────────
+    // One shoulder over the sum is a false economy, and the measurement says why. Sweeping the
+    // filament's gain over a factor of three on the vegas supercar moved the saturated run
+    // through the axis by ONE pixel (114 -> 113 -> 114 px at f = 0.10): the white bar down the
+    // near half of the column was never the filament at all, it was the BODY, four to five times
+    // over the clip point across the full width of the throat. A single shoulder cannot fix that
+    // — pulled down far enough to unclip the body it also caps the knots, and a plume that can
+    // never cross the bloom threshold is an emissive with no bloom, which is its own hard tell.
+    // So the gas is accumulated apart from the incandescence and each gets the curve it wants:
+    // the gas rides a hard shoulder (uSoft ~ 0.85, asymptote ~1.2) so it is saturated, bright and
+    // structurally intact but can never arrive as a plateau; the knots ride a gentle one and sit
+    // on top of it, so the only thing in the frame that clips and blooms is a shock diamond.
     vec3 em = acc * uGain;
+    em = em / (1.0 + em * uSoft);
+    vec3 hm = accH * uGain;
+    em += hm / (1.0 + hm * uHotSoft);
     // ── NOTHING MAY ARRIVE AT THE FRAME ON A PLATEAU ──────────────────────────────────────────
     // First: a hot gas gives up its chroma before it gives up its structure, so as the peak
     // channel climbs the colour walks towards neutral — which also stops uEdge (the supercar's
@@ -1528,7 +1548,6 @@ const PLUME_FRAG = /* glsl */`
     // genuinely white.
     float pk = max(max(em.r, em.g), em.b);
     em = mix(em, vec3(pk), clamp((pk - uBleach) * 0.14, 0.0, 0.22));
-    em = em / (1.0 + em * uSoft);
 
     float a = (1.0 - trans) * uOcc;
     // everything fades out inside a couple of metres of the lens, so no layer can be clipped by
@@ -1638,7 +1657,9 @@ function plumeMaterial(fx, phase) {
       // gas either side of it down to 2.6:1 BEFORE the ACES curve got hold of it — i.e. it was
       // deleting the shock train on its way to the frame. With the body exposed to land near 0.7
       // instead of near 1.0 there is room above it for a knot to be genuinely brighter.
-      uSoft: { value: fx.soft ?? 0.20 },
+      uSoft: { value: fx.soft ?? 0.85 },
+      // the knots' own shoulder — gentle, so a shock diamond can still clear the bloom threshold
+      uHotSoft: { value: fx.hotSoft ?? 0.16 },
       // density of the detached wisps outside the column (fl^3 — sparse by construction)
       uWisp: { value: fx.wisp ?? 0.55 },
       // ── (r21) THE SHEAR SHELL — the layer that DRAWS the silhouette ─────────────────────────

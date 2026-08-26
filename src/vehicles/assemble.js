@@ -984,8 +984,8 @@ export function assembleCar(bp, { color = null, rng = new RNG(1), envMap = null 
       const flat = Math.abs(Math.abs(v.rx ?? 0) - Math.PI / 2) < 0.34 && !v.ry && !v.rz && v.ao !== false;
       if (flat) {
         const ax = sx * (v.x ?? 0), az = v.z;
-        detail.add(partShadow(v.w * 1.14, v.h * 1.30, {
-          face: 'y', spread: 1.72, strength: 0.86, seg: 4,
+        detail.add(partShadow(v.w * 1.10, v.h * 1.22, {
+          face: 'y', spread: 1.42, strength: 0.62, seg: 4,
           at: [ax, deckAt(az, v.x ?? 0) + 0.0035, az],
           conform: (x, z) => deckAt(z, x) + 0.0035,
         }));

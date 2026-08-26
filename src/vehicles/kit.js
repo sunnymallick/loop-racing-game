@@ -4147,7 +4147,16 @@ function wellGradient() {
  * geometry that reaches a bucket is given the attribute — zero-filled if it has none — rather than
  * having it stripped. One float per vertex on a car's worth of geometry.
  */
-const _MERGE_ATTRS = ['position', 'normal', 'uv', 'aFlare', 'aWell', 'aCav'];
+/**
+ * WAVE-10: `color` joins the list, and this was a real bug with a visible signature.
+ *
+ * The AO decals and the car's contact shadow carry their alpha in a vertex-colour attribute. Merge
+ * DELETED it — it was not on this list — and a `vertexColors: true` material with no colour
+ * attribute reads WebGL's default generic attribute, which is (0,0,0,1): every decal on the car
+ * came out solid black at full opacity. It is kept now only in buckets whose material actually
+ * reads it (see `visit`), so a bucket's geometries still all carry the same attribute set.
+ */
+const _MERGE_ATTRS = ['position', 'normal', 'uv', 'color', 'aFlare', 'aWell', 'aCav'];
 
 /** Two materials that would render identically get one draw call, even if they are two objects. */
 function materialKey(m) {
@@ -4187,6 +4196,21 @@ export function mergeByMaterial(group) {
     if (g.index) g = g.toNonIndexed();
     if (!g.attributes.normal) g.computeVertexNormals();
     for (const name of Object.keys(g.attributes)) if (!_MERGE_ATTRS.includes(name)) g.deleteAttribute(name);
+    if (o.material.vertexColors) {
+      const ca = g.attributes.color;
+      if (!ca) {
+        g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 4).fill(1), 4));
+      } else if (ca.itemSize !== 4) {
+        // promote RGB to RGBA so every geometry in the bucket has the same item size
+        const n = ca.count, out4 = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) {
+          out4[i * 4] = ca.getX(i); out4[i * 4 + 1] = ca.getY(i); out4[i * 4 + 2] = ca.getZ(i); out4[i * 4 + 3] = 1;
+        }
+        g.setAttribute('color', new THREE.BufferAttribute(out4, 4));
+      }
+    } else if (g.attributes.color) {
+      g.deleteAttribute('color');
+    }
     for (const extra of ['aFlare', 'aWell', 'aCav']) {
       if (!g.attributes[extra]) {
         g.setAttribute(extra, new THREE.BufferAttribute(new Float32Array(g.attributes.position.count), 1));
