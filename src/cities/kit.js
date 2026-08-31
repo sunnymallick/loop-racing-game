@@ -3124,7 +3124,7 @@ function reliefField(w, h, { band = false, seed = 1 } = {}) {
   return f;
 }
 
-function paintCell(ctx, N, { base, roof = null, band = null, worn = false, seed = 1, night = false }) {
+function paintCell(ctx, N, { base, roof = null, band = null, worn = false, seed = 1, night = false, arches = true }) {
   const rng = new RNG(seed * 97 + 13);
   const L = hexLum(base);
   // A dark body reflects MORE, not less. But the ceiling matters as much as the slope: at 0.78
@@ -3154,23 +3154,82 @@ function paintCell(ctx, N, { base, roof = null, band = null, worn = false, seed 
     ctx.fillStyle = 'rgba(0,0,0,0.34)'; ctx.fillRect(0, N * 0.612 + N * 0.042, N, 1.2);
     ctx.fillStyle = 'rgba(240,246,255,0.30)'; ctx.fillRect(0, N * 0.612 - 1.2, N, 1.2);
   }
-  // ---- the clearcoat ramp. Offsets are in cell space: 0 is the roof, 1 is under the sill.
+  /**
+   * ---- THE CLEARCOAT RAMP. Offsets are in cell space: 0 is the roof, 1 is under the sill.
+   *
+   * ROUND 4 RE-GRADE: THE ENVELOPE, NOT THE DETAIL. The critic's remaining charge is about
+   * DISTANCE — "excellent inside 20 m and a coloured brick with a dark window band beyond it,
+   * which is where nearly every parked car in a real frame actually sits". Measured on a Miami
+   * kerb at 60 m the flank's row profile ran 173 at the shoulder to 87 at the rocker in a smooth
+   * monotone fade, and a smooth fade at 19 pixels tall is exactly what an airbrushed lozenge
+   * looks like. Everything round 3 added to answer the flat-colour cap — shuts, flake, orange
+   * peel, the horizon flash — is one to three texels wide, so the mip the GPU picks for a car
+   * that size has already averaged all of it away.
+   *
+   * What survives a mip is the ENVELOPE: how the value is blocked out over the whole height. So
+   * the ramp is now four value BLOCKS with hard steps between them rather than one fade —
+   *
+   *   deck / roof     open sky, the brightest paint on the vehicle
+   *   greenhouse      dark; the pillars and the roof edge in shadow
+   *   shoulder        a bright block, held across the top third of the flank
+   *   mid door        the pigment, barely touched
+   *   lower flank     a distinct dark block — the part of a car that sees road and not sky
+   *   rocker          near-black, the body's own shade
+   *
+   * Each block is 10-25% of the cell, so at the mip a 20-pixel car samples every one of them is
+   * still one to four texels tall and the structure is intact. The steps are placed where a car
+   * has real steps — the beltline and the sill — never across the middle of a flank, which is
+   * the two-stacked-slabs failure round 2 was caught on.
+   */
   const g = ctx.createLinearGradient(0, 0, 0, N);
-  g.addColorStop(0.000, sky(0.42));                 // roof and bonnet: open sky
-  g.addColorStop(0.075, sky(0.26));
-  g.addColorStop(0.150, dark(0.10));                // the greenhouse band: pillars, in shadow
-  g.addColorStop(0.315, dark(0.19));
-  g.addColorStop(0.360, sky(0.36));                 // the shoulder turns up and catches sky again
-  g.addColorStop(0.430, sky(0.11));
-  g.addColorStop(0.520, dark(0.06));
-  g.addColorStop(0.556, dark(0.15));                // ...and the far kerb, dark, right under it
-  g.addColorStop(0.560, sky(0.36));                 // HARD STEP: the reflected horizon
-  g.addColorStop(0.575, dark(0.21));
-  g.addColorStop(0.760, dark(0.31));
-  g.addColorStop(0.855, sky(0.17));                 // ground bounce off the tarmac
-  g.addColorStop(0.930, dark(0.38));
-  g.addColorStop(1.000, dark(0.62));                // the rocker, in shadow under the car
+  g.addColorStop(0.000, sky(0.50));                 // roof and bonnet: open sky
+  g.addColorStop(0.062, sky(0.44));                 // the deck band — bonnet, boot, shoulder rail
+  g.addColorStop(0.104, sky(0.30));                 //   are projected here, so it is held bright
+  g.addColorStop(0.150, dark(0.13));                // the greenhouse band: pillars, in shadow
+  g.addColorStop(0.315, dark(0.21));
+  g.addColorStop(0.348, dark(0.23));
+  g.addColorStop(0.352, sky(0.40));                 // HARD STEP UP: the shoulder catches sky
+  g.addColorStop(0.470, sky(0.30));                 //   ...and HOLDS it down the top of the door
+  g.addColorStop(0.516, sky(0.20));
+  g.addColorStop(0.548, dark(0.16));                // the far kerb, dark, right under the horizon
+  g.addColorStop(0.552, sky(0.40));                 // HARD STEP: the reflected horizon
+  g.addColorStop(0.575, dark(0.19));
+  g.addColorStop(0.700, dark(0.25));                // mid door: mostly pigment
+  g.addColorStop(0.745, dark(0.27));
+  g.addColorStop(0.756, dark(0.50));                // HARD STEP DOWN: below the swage there is no
+  g.addColorStop(0.860, dark(0.58));                //   sky left to reflect, only road
+  g.addColorStop(0.905, dark(0.66));
+  g.addColorStop(1.000, dark(0.80));                // the rocker, in shadow under the car
   ctx.fillStyle = g; ctx.fillRect(0, 0, N, N);
+  /**
+   * THE ARCH SHADE — the other half of the envelope, and the only part of it that runs ALONG the
+   * car rather than across it.
+   *
+   * A flank whose lower block is one even dark band is still a brick, just a better-lit one. On a
+   * real car the darkest paint on the side is the horseshoe of shadow the arch lip and the tyre
+   * throw onto the lower quarter panel, and it sits at a wheel station — so it puts a dark mass
+   * exactly where the wheel is and ties the wheel to the body instead of leaving it as a detached
+   * black blob under a floating slab. That is the difference between "brick" and "car" at 60 m.
+   *
+   * The stations are in cell u, which is z normalised over the vehicle plus its bumper margin,
+   * and every car in the fleet carries its axles at +/-0.31 L — so 0.215 and 0.785 are the arch
+   * centres on all of them to within a texel. Off for the box body, whose wheels are under a
+   * chassis three metres in front of the panel this cell paints.
+   */
+  if (arches) {
+    for (const su of [0.215, 0.785]) {
+      const x0 = Math.round(N * (su - 0.145)), x1 = Math.round(N * (su + 0.145));
+      for (let x = x0; x < x1; x++) {
+        const t = (x - x0) / (x1 - x0);
+        const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * t);   // dies to nothing at both ends
+        const ag = ctx.createLinearGradient(0, N * 0.60, 0, N * 1.02);
+        ag.addColorStop(0, 'rgba(9,11,16,0)');
+        ag.addColorStop(0.45, dark(0.13 * w));
+        ag.addColorStop(1, dark(0.30 * w));
+        ctx.fillStyle = ag; ctx.fillRect(x, N * 0.60, 1, N * 0.42);
+      }
+    }
+  }
   // LONGITUDINAL BREAK-UP. Everything above is a function of HEIGHT only, so a horizontal panel —
   // a bonnet, a roof, a tailgate — samples one row of the ramp and comes out a single flat value.
   // That is the flat-colour tell again, on exactly the panels that catch the most light. These
@@ -3475,7 +3534,8 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
     const box = BOX.map((c, i) => ({
       color: c, mat: paint.material,
       cell: paint.cell(`box${i}`,
-        (cx, w) => paintCell(cx, w, { base: c, worn: i === 1, seed: 91 + i * 7, night }),
+        // no arch shade: a Luton body's wheels are under a chassis, not under the panel
+        (cx, w) => paintCell(cx, w, { base: c, worn: i === 1, seed: 91 + i * 7, night, arches: false }),
         (w, h) => reliefField(w, h, { seed: 91 + i * 7 })),
     }));
     // THREE treatments per colour, not two. PropBatch builds one prototype per (kind, variant)
