@@ -197,6 +197,28 @@ export function smokeAtlas(seed = 5) {
       // worth ten times tearing the interior — a soft radial falloff at the rim is the single
       // strongest cotton-ball cue there is.
       a *= 1 - sstep(0.30, 0.98, q) * clamp((0.74 - f3 * 0.72 - t2 * 0.46) * 1.9, 0, 0.92);
+      // THE SKIRT — and this is the change that stops the plume reading as a chain of tufts.
+      //
+      // Everything above builds one puff with a torn body and a rim cut to ribbons, which is right
+      // for the sprite considered alone and wrong for forty of them at 0.3 alpha: what composites
+      // is LACE. The pixels that clear a legibility threshold are the accidental overlaps and the
+      // holes between them are the road, so the isolated drift plume broke into 12-22 connected
+      // components. Three rounds moved count, size and per-puff alpha and the component count
+      // barely moved, because none of those axes adds the thing that is missing — low-frequency
+      // optical depth in the space BETWEEN the tufts.
+      //
+      // So every sprite now carries its own gap-filler: a wide, very faint halo reaching out past
+      // the torn envelope to the tile's guard. It is ~0.15 of the puff's own density, which is
+      // under the threshold on its own — a lone puff still reads as a torn puff, not as a disc —
+      // but five overlapping skirts is 0.5 and the gap closes. It is also FREE: the fragment
+      // shader already runs over the whole quad, and this is the margin the guard was throwing
+      // away.
+      //
+      // It is modulated by the same tear field as the envelope, and by the head-and-tail taper,
+      // so the halo is not a circle either. "A soft radial falloff at the rim is the strongest
+      // cotton-ball cue there is" — which is why this one is neither radial nor at the rim.
+      const skirt = 0.152 * sstep(1.62, 0.10, q) * (0.34 + 0.66 * clamp(t2 * 1.25 + f3 * 0.45 - 0.18, 0, 1));
+      a = Math.max(a, skirt);
       // hard guard: the sprite must reach zero well inside its own quad (§7 hard-edge tell), and
       // with a few texels to spare so a 2x2 atlas tile cannot bleed into its neighbour at low mips
       a *= sstep(0.485, 0.400, Math.hypot(px, py));

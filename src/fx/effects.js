@@ -1006,6 +1006,58 @@ export class Effects {
         fadeIn: wisp ? 0.16 : 0.22, decay: wisp ? 1.35 : 1.15,
       });
     }
+    // THE BODY OF THE PLUME — the layer this effect was missing, and the reason it kept measuring
+    // as confetti however the other layers were tuned.
+    //
+    // Every layer above is DETAIL: torn, sheared, individually legible sprites at 0.24-1.12 m.
+    // Composite forty of those at ~0.3 alpha and you do not get a cloud, you get lace — the pixels
+    // that clear a legibility threshold are the accidental overlaps, and the holes between them are
+    // the road. Measured on the isolated drift plume: 12-22 connected components with the largest
+    // holding 17-63 % of the visible smoke, i.e. a chain of separately readable tufts. Three
+    // previous rounds moved along the count/size/alpha axes of the SAME detail layer and the blob
+    // count barely moved, because none of those axes adds what is missing.
+    //
+    // What is missing is low-frequency optical depth: a few big, slow, very faint volumes that no
+    // one can point at on their own but which lift the gaps between the tufts above the threshold,
+    // so the eye integrates the whole thing as one mass with structure on it instead of as N
+    // objects. That is how a real plume is built — a body with detail riding on it — and it is why
+    // these are emitted at a THIRD of the detail layer's alpha and twice its size, travel with the
+    // car's wake rather than fanning out of it, and live long enough to bridge consecutive bursts.
+    //
+    // Cheap, deliberately: `maxPx` caps a point sprite at 162 px however near it is, so a 3 m veil
+    // costs the same fill as a 2 m puff at the distance the chase camera actually sits.
+    const veils = amount > 0.34 ? 2 : 1;
+    for (let i = 0; i < veils; i++) {
+      const bk = back();
+      this.smoke.emit({
+        pos: [
+          pos.x + this.rng.range(-0.30, 0.30) - vel.x * bk,
+          py + this.rng.range(0.20, 0.62),
+          pos.z + this.rng.range(-0.30, 0.30) - vel.z * bk,
+        ],
+        // It rides the wake. A veil that fans sideways like the wisps do is just a bigger tuft;
+        // its whole job is to sit where the detail already is and fill in between it.
+        vel: [
+          vel.x * (carry * 0.88) + lx * this.rng.range(-0.55, 0.55),
+          this.rng.range(1.0, 1.9),
+          vel.z * (carry * 0.88) + lz * this.rng.range(-0.55, 0.55),
+        ],
+        life: this.rng.range(1.45, 2.30) * (0.72 + 0.42 * amount),
+        size: this.rng.range(1.30, 1.74) * (0.86 + 0.34 * build),
+        grow: this.rng.range(1.9, 2.5),
+        // fully random orientation and a slow turn: at this size the tile's own tears are
+        // low-frequency, so what the veil contributes is a soft mass, and nothing about it should
+        // be parallel to its neighbour.
+        rot: this.rng.range(-3.14, 3.14), rotV: this.rng.range(-0.35, 0.35),
+        stretch: this.rng.range(0.94, 1.06), align: 0.12,
+        tile: this.rng.int(0, 3),
+        // in the plume's own shadow — the body is what the detail is lit AGAINST
+        color: this._smokeColor(this.rng.range(0.66, 0.94), this.rng.range(0.55, 1.0),
+          dirt ? this._dustAlbedo : null),
+        alpha: (0.140 + 0.155 * amount) * (0.70 + 0.40 * build) * this._pop,
+        fadeIn: 0.28, decay: 1.25,
+      });
+    }
     // The ROOT of the plume. Without a dense source right at the contact patch the sheared wisps
     // above spread out into separate scraps with clear air between them, and a plume made of
     // separate scraps reads as litter rather than smoke. These are small, slow, overlapping and
@@ -1066,11 +1118,15 @@ export class Effects {
         this.smoke.emit({
           pos: [pos.x + this.rng.range(-0.2, 0.2) - vel.x * back(), py + this.rng.range(0.02, 0.18), pos.z + this.rng.range(-0.2, 0.2) - vel.z * back()],
           vel: [
-            vel.x * (carry + 0.16) + lx * side * this.rng.range(1.8, 4.6) * spread,
-            this.rng.range(1.2, 3.4),
-            vel.z * (carry + 0.16) + lz * side * this.rng.range(1.8, 4.6) * spread,
+            // …thrown along the wake, not out of it. At 1.8-4.6 m/s of lateral a filament is two
+            // metres clear of the plume inside half a second, and a 0.3 m chip alone on black
+            // tarmac is one more object for the eye to count. Halved, they stay on the plume's
+            // shoulder where they read as its torn edge.
+            vel.x * (carry + 0.16) + lx * side * this.rng.range(0.9, 2.4) * spread,
+            this.rng.range(1.2, 3.0),
+            vel.z * (carry + 0.16) + lz * side * this.rng.range(0.9, 2.4) * spread,
           ],
-          life: this.rng.range(0.24, 0.52), size: this.rng.range(0.24, 0.44), grow: this.rng.range(1.5, 2.3),
+          life: this.rng.range(0.24, 0.52), size: this.rng.range(0.30, 0.52), grow: this.rng.range(1.5, 2.3),
           rot: this.rng.range(-0.8, 0.8), rotV: this.rng.range(-1.4, 1.4),
           stretch: this.rng.range(1.05, 1.30), align: 0.72, tile: this.rng.int(0, 3),
           // torn straight off the patch and out into the open air: full key light, brightest layer

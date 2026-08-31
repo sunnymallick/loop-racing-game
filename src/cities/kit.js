@@ -3467,6 +3467,56 @@ function liveryCell(ctx, w, h, { body, ink, text, sub, seed }) {
 }
 
 /**
+ * THE RIM'S RELIEF — the other half of the wheel score, and it costs one unused atlas cell.
+ *
+ * The critic's words: "rims read as flat muddy-tan discs rather than metal at 5 m and have no
+ * depth in the barrel". They did, and the reason is that the rim was the one cell on the sheet
+ * built with `relief: false` — the alloy is a beautifully drawn PICTURE of a wheel on a flat
+ * disc, so every fragment on it reflects the same direction and the drawn highlight cannot move
+ * when the light does. A picture of a highlight is not a highlight.
+ *
+ * This is the same five-spoke drawn as a height instead of a colour — windows sunk to the brake
+ * behind them, spokes crowned, the rim lip standing proud of the face, the centre cap domed —
+ * rasterised through a grey canvas so the shapes cannot drift from the ones `rimCell` paints. It
+ * lands in the relief atlas the paint sheet already allocates, so it is zero new textures, zero
+ * geometry and zero draw calls: the rim material simply stops opting out of the normal map.
+ */
+function rimRelief(w, h) {
+  const { c, ctx } = canvas(w, h);
+  const R = Math.min(w, h) / 2, cx = w / 2, cy = h / 2;
+  const disc = (r, g) => { ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r * R, 0, 7); ctx.fill(); };
+  ctx.fillStyle = '#808080'; ctx.fillRect(0, 0, w, h);       // 0.5 grey is flat
+  disc(0.995, '#6e6e6e');                                     // sidewall, a little under the face
+  disc(0.900, '#767676');
+  disc(0.740, '#b4b4b4');                                     // the rim lip: the proudest ring
+  disc(0.675, '#8e8e8e');                                     // and the face steps back down
+  ctx.save(); ctx.translate(cx, cy);
+  for (let k = 0; k < 5; k++) {
+    ctx.save(); ctx.rotate((k * Math.PI * 2) / 5 + 0.31);
+    ctx.fillStyle = '#2c2c2c';                                // the window: down to the brake
+    ctx.beginPath();
+    ctx.moveTo(-R * 0.105, -R * 0.175); ctx.lineTo(R * 0.105, -R * 0.175);
+    ctx.lineTo(R * 0.272, -R * 0.628); ctx.lineTo(-R * 0.272, -R * 0.628);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+  disc(0.180, '#a8a8a8');                                     // the cap, domed
+  disc(0.120, '#9c9c9c');
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const f = new Float32Array(w * h);
+  // the atlas wraps when it differentiates, so the cell border has to be dead flat
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const m = smoothstep(0, 2.5, Math.min(x, w - 1 - x)) * smoothstep(0, 2.5, Math.min(y, h - 1 - y));
+      f[y * w + x] = (d[(y * w + x) * 4] / 255 - 0.5) * m;
+    }
+  }
+  void c;
+  return f;
+}
+
+/**
  * A NUMBER PLATE. The last thing on §6.1's detail list the fleet did not have — the critic's
  * words were "Missing: side mirrors on every vehicle I inspected, exhaust outlets, number plates".
  * It shares the livery sheet, so it is free: no new material, no new draw call, four triangles.
@@ -3685,7 +3735,10 @@ function fleetKit(cache, { colors = null, night = false, signs = null, kerb = nu
     // 0.55 the alloy blew out to the white disc the critic saw at mid range, and the relief atlas
     // has nothing to say about a rim. Its own material, and it costs one draw call per chunk.
     const rimMat = paint.skin('rim', {
-      roughness: 0.34, metalness: 0.66, envMapIntensity: 0.80, relief: false,
+      // ...and it no longer opts out of the relief atlas: `normalScale` 0.62 is deliberately
+      // under the paint's 0.9, because a wheel's spokes are 8 mm proud of the face, not 30, and
+      // at 1.0 the windows read as holes punched through the hub.
+      roughness: 0.34, metalness: 0.66, envMapIntensity: 0.80, normalScale: 0.62,
       emissiveIntensity: night ? 0.16 : 0.02,
     });
     /**
@@ -3833,7 +3886,7 @@ function fleetKit(cache, { colors = null, night = false, signs = null, kerb = nu
       rimMat,
       liveryMat: livery.material,
       livery, cells, box, night, signs: sg,
-      rim: paint.cell('rim', (c, w) => rimCell(c, w)),
+      rim: paint.cell('rim', (c, w) => rimCell(c, w), (w, h) => rimRelief(w, h)),
       // metalness down from 0.88: at 0.88 the map is pure specular tint and the cabin behind the
       // glass never shows at all. 0.44 keeps a sky reflection and lets the seats read.
       glass: mat(cache, `fleetglass|${night ? 1 : 0}`, () => new THREE.MeshStandardMaterial({
