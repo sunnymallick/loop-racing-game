@@ -4229,7 +4229,7 @@ function fleetVehicle(kind, variant, K) {
   // pool read as a black plinth the car was standing on rather than as shade under it — a hard
   // dark shape with the same value as the tyres. A shadow is a gradient.
   const cp = contactPatch({
-    r: L * 0.50, opacity: K.night ? 0.40 : 0.34, color: '#1a1420', cache: K.cache, y: 0.014,
+    r: L * 0.50, opacity: K.night ? 0.48 : 0.42, color: '#1a1420', cache: K.cache, y: 0.014,
   });
   cp.scale.x = (W * 1.42) / (L * 1.00);
   g.add(cp);
