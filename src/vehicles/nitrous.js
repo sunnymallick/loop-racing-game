@@ -1669,7 +1669,19 @@ const PLUME_FRAG = /* glsl */`
     // near 1 across the body and falls off a cliff at the boundary. A knee in an additive field is
     // invisible against a bright ground; a knee in an OPACITY field is a boundary at any
     // background value, which is what §2.5's "class-tinted fringe" has been asking for.
-    float a = (1.0 - pow(trans, uBgP)) * uOcc;
+    // ...and the exponent RAMPS WITH DEPTH rather than being applied flat. A flat power has its
+    // largest proportional effect exactly where the gas is thinnest — d/dtau at tau = 0 is uBgP —
+    // so the outermost skirt, which emits almost nothing, was being given several times the
+    // opacity it had and photographed as a near-black rim around the column against Vegas's lit
+    // wall (measured at 4.5x on vegas-supercar-nitrous-long). A jet does have a dark sooty shear
+    // layer, but a stroke around a shape is a decal, and §7 has cost this file four rounds
+    // already. Letting the exponent run 1 -> uBgP as the ray gets deeper puts the occlusion where
+    // the gas actually is: at tau 0.02 the fringe is left as it was (a 0.021 against 0.020), at
+    // tau 0.22 it is 0.27 rather than 0.49, and by the time the body is half opaque it is 0.74.
+    // That is also a SHARPER knee than the flat power gave — the derivative is largest in the
+    // middle of the profile instead of at its foot, which is what a boundary is.
+    float aP = 1.0 + (uBgP - 1.0) * (1.0 - trans);
+    float a = (1.0 - pow(trans, aP)) * uOcc;
     // everything fades out inside a couple of metres of the lens, so no layer can be clipped by
     // the near plane into a hard-edged wedge across the frame
     float k = uLevel * uFade * smoothstep(uNear0, uNear1, length(vWorld - ro));
