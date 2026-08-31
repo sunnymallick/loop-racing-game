@@ -8,6 +8,110 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  * no camera response → 65; identical across the four classes → 70.
  * §7 additionally caps "particles as unrotated camera-facing squares with visible hard edges" at 58.
  *
+ * ── ROUND 25: A JET'S SILHOUETTE IS DRAWN BY WHAT IT HIDES. READ WAVE 10 FIRST. ─────────────
+ *
+ * The w11 critic scored r24 at 77 and named one gap above all the others: "give the plume's BODY
+ * optical depth so its silhouette is drawn by occlusion rather than by added light — right now the
+ * column only exists where the background is black". Measured on la-supercar-nitrous-long, the
+ * mean luminance INSIDE the column at three stations was 71.1 / 78.7 / 67.1 against 78.1 / 71.2 /
+ * 90.3 for the asphalt right beside it: over most of its length the jet was no brighter than the
+ * road it sat on, and at 5x the road's aggregate speckle read at full contrast straight through
+ * the violet up to the filament.
+ *
+ *   FIRST, THE MEASUREMENT THE PIECE DID NOT HAVE. Nothing in this file could read alpha: the
+ *   composited frame cannot answer it because bloom lays a wide additive halo over the column and
+ *   occludes nothing, and because the grade is not linear. tools/_zn25_alpha.mjs patches
+ *   PLUME_FRAG to emit vec4(vec3(a), 1.0), turns every post pass off, captures a second frame with
+ *   the plume hidden and solves out = a + bg(1 - a) per channel in linear light. That is the real
+ *   alpha field. On r24, LA supercar: the throat reached a = 0.85 but the downstream two thirds of
+ *   the column — most of its screen area — sat at 0.20-0.31, and only 8.7% of the plume's own
+ *   footprint was anywhere above 0.4. (An earlier probe that binned by ADDED LUMINANCE said the
+ *   body was transparent everywhere; it was measuring the bloom halo. If a future round wants this
+ *   number, use the alpha probe, not a luminance-difference mask.)
+ *
+ *   THE OBVIOUS LEVER IS uThick AND IT IS THE WAVE-10 TRADE IN A NEW HAT. The brief handed to this
+ *   round said raising uThick "cannot cost the white core by construction, because the throat is
+ *   already opaque". It is the opposite: acc integrates e*(1 - exp(-sig*dl))/sig, so an optically
+ *   thick sample contributes e/sig — the throat IS already thick, which is exactly why raising its
+ *   extinction divides the light that gets out of it by the same factor it multiplies the opacity.
+ *   Swept from one browser boot (tools/_zn25_sweep.mjs) on vegas-supercar-nitrous-long:
+ *       uThick   x1.0        x1.4        x2.0        x3.0        x4.5        x7.0
+ *       L>=235   3432        2007         612           0           0           0
+ *       maxL    247.2       246.3       242.8       231.2       220.9       220.9
+ *   A x1.4 lands ON the acceptance floor and a x2.0 is through it. THIS IS THE THIRD TIME THIS
+ *   FILE HAS BEEN ASKED TO SPEND THE CORE FOR A SILHOUETTE NUMBER (wave 10's width, r24's uNeck,
+ *   now uThick) AND THE THIRD TIME THE ANSWER WAS A DIFFERENT KNOB.
+ *
+ *   THE KNOB THAT IS FREE, AND WHY IT IS ALSO BETTER PHYSICS. A hot plume is a SCATTERING medium,
+ *   and scattering destroys the background's image far faster than it removes the plume's own
+ *   light: a photon of the jet's glow that scatters forward is still a photon of the jet's glow
+ *   arriving at the lens, while a photon carrying one speckle of asphalt is gone from that speckle
+ *   for good. So the cross-section that applies to the IMAGE behind the gas is several times the
+ *   one that applies to the gas's radiance — and alpha, which is only ever "how much of the
+ *   background survives", had no business being computed from the same one. It is now
+ *       aP = 1.0 + (uBgP - 1.0) * (1.0 - trans);   a = (1.0 - pow(trans, aP)) * uOcc;
+ *   one pow at the END of the shader, nothing inside the march, and the emission path bit-for-bit
+ *   untouched — which is the only reason this was allowed to exist. fx.bgOcc 3.0 supercar / 2.9
+ *   tuner / 2.5 muscle / 1.9 SUV, lowest on the SUV because this is a RATIO and its bell already
+ *   carries the most optical depth of the four.
+ *
+ *   AND THE EXPONENT RAMPS WITH DEPTH. A flat power has its largest proportional effect where the
+ *   gas is THINNEST (d/dtau at tau = 0 is uBgP), so the outermost skirt, which emits almost
+ *   nothing, got three times its opacity and photographed as a near-black rim around the column
+ *   against Vegas's lit wall — a stroke around a shape, i.e. a decal, i.e. §7. Ramping the
+ *   exponent 1 -> uBgP with depth leaves the foot alone (a 0.021 against 0.020 at tau 0.02), puts
+ *   the occlusion in the body, and makes the knee SHARPER, because the derivative is then largest
+ *   in the middle of the profile instead of at its start. Transverse cut at the widest station,
+ *   LA supercar:
+ *       r24          0.16 0.50 0.61 0.77 0.85 0.83 0.75 0.47 0.21    fades forever
+ *       flat power   0.30 0.77 0.98 1.00 1.00 1.00 1.00 1.00 0.76    black rim at the foot
+ *       ramped       0.09 0.54 0.85 0.98 1.00 1.00 1.00 1.00 0.93    a knee, and no rim
+ *   Share of the footprint above a = 0.4  8.7% -> 15.7%; above 0.8  1.9% -> 9.6%; the downstream
+ *   station at y=630 goes from peak 0.31 to 0.83. AND THIS IS THE ANSWER TO THE STILL-OPEN FRINGE
+ *   NOTE TOO, in every city at once: a knee in an ADDITIVE field is invisible against a bright
+ *   ground, a knee in an OPACITY field is a boundary at any background value.
+ *
+ *   THE RAMP HAS A THIRD COLOUR NOW. The same critic: "the supercar's colour ramp is two-stop,
+ *   white -> violet in ~15 px, with none of the yellow/orange/magenta nesting the header claims".
+ *   The header had claimed it since r9 and the shader never drew it — the middle stop was
+ *   mix(uMid, uCore, 0.30), the body colour with 30% white stirred in, which is one hue at two
+ *   exposures and cannot nest against its own end stop. fx.warm is an explicit fourth colour:
+ *   rose #ff8ae4 under the supercar's violet, gold #ffcf3c under the muscle's orange, ice #b6fbe4
+ *   under the tuner's cyan, cream #ffe79a under the SUV's amber; window 0.70/1.45 -> 0.56/1.22,
+ *   which r20 had pushed up only because the stop was a white TINT and reaching for it early laid
+ *   a pale wash on the column. It still ends below the white step at 1.35, so the knots are
+ *   untouched.
+ *
+ *   SUPPORTING FX, which scored 13/20. The ground pool moved the frame by ONE ~50x25 px patch when
+ *   ablated (live opacity 0.114): opacity 0.108 -> 0.156, cap 0.30 -> 0.40, reach 0.30 + 0.34*gL
+ *   -> 0.34 + 0.46*gL, SUV trim 0.40 -> 0.32 to pay for it. It is still broader than it is long
+ *   and still reaches about half the column, so neither r17's "the spill out-sizes the jet" nor
+ *   r2's NYC crosswalk blow-out returns (both checked). The point light's SUSTAINED term goes
+ *   0.40 -> 0.50; its ignition terms, which are what r12 actually cut it for, are untouched.
+ *   Sparks were "sparse and mostly plume-tinted rather than the yellow-white §1.2 names": an ember
+ *   is incandescent soot and its colour is its TEMPERATURE, not the flame's, so the mix goes
+ *   40/30/30 -> 55/30/15 in favour of the yellow-white ember and the rate up ~29% (still a third
+ *   of the round-9 rate that made the shower the effect).
+ *
+ *   ACCEPTANCE FLOOR, vegas-supercar-nitrous-long, 620x330 auto-located at 160,385:
+ *       pixels at L>=235   3432 -> 3032    floor 2000   HELD  (w11's recorded baseline was 2564)
+ *       max luminance      247.2 -> 247.2  floor 244    HELD, not one step
+ *       near-white frac    13.81% -> 13.01% floor 10%   HELD
+ *   Per class, pinned 620x330 over each plume, r24 -> r25: muscle L>=235 1738 -> 1755 / maxL 246.5
+ *   unchanged, tuner 1036 -> 1061 / 246.3 -> 246.1, SUV 2833 -> 2817 / 247.2 unchanged. The
+ *   supercar's 400 lost L>=235 pixels are all in the twin columns' OVERLAP (tools/_zn25_where.mjs
+ *   puts them at 600-800 x 400-600), where the near jet now hides the far one instead of summing
+ *   with it. No core luminance moved anywhere.
+ *
+ *   NOT DONE, and where the remaining points are. §6.3 scores camera/grade (20) and HUD (10), and
+ *   both of the standing deductions there are in files this piece does not own: the boost framing
+ *   puts the plume behind an opponent car in three of the four class shots (main.js camera), and
+ *   the HUD's firing tint is the same amber on all four cars while the jets are violet / orange /
+ *   cyan / amber (ui/hud.js — NITRO exposes `color` per class and it is already used for the grade
+ *   and the speed lines, so the fix is one lookup on the HUD side). SpeedShader's radial blur is
+ *   still turned up far enough to smear the mid-ground and to average this file's axial structure
+ *   away, which is why everything r19 and r24 built runs ACROSS the column (core/post.js).
+ *
  * ── ROUND 24: THE FRINGE GETS AN EDGE. READ THE WAVE 10 BLOCK BELOW FIRST. ──────────────────
  *
  * The two open notes from the critics who scored r23 were (1) the fringe has no defined boundary
