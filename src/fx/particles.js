@@ -2270,21 +2270,39 @@ export class SkidTrails {
           // Soft SHOULDERS. At a 7% fade a 0.55 m mark has a 4 cm edge, which at chase distance is
           // two pixels — i.e. a hard-edged dark quad lying on the tarmac, the §7 tell. A real mark
           // is dense under the contact patch and scuffs out to nothing across the tread, so the
-          // fade now takes a quarter of the width on each side.
-          float edge = smoothstep(0.0,0.26,x)*smoothstep(1.0,0.74,x);
+          // fade takes a fifth of the width on each side. (Wave 11: it used to take a quarter, and
+          // between that and the dust wash below there was nothing left in the middle to be black.)
+          // …and the two edges WANDER. A ribbon whose width is a constant draws a pair of ruled
+          // lines down the road however soft the fade across them is, and at 2x that reads as a
+          // dark quad lying on the tarmac — the §7 tell. The printed width now wobbles along the
+          // mark's length, so the silhouette is torn rather than ruled.
+          float wob = (vnoise(vec2(vUv.y*4.3, 1.7)) - 0.5) * 0.22;
+          float edge = smoothstep(0.0, 0.20 + wob, x) * smoothstep(1.0, 0.80 + wob, x);
           // tread: the tyre lays bands, not a solid slab
           float tread = 0.80 + 0.20*smoothstep(0.42,0.5,abs(fract(x*4.0)-0.5));
           // streaky rubber grain along the length
           float g = vnoise(vec2(x*7.0, vUv.y*2.6)) * 0.55 + vnoise(vec2(x*19.0, vUv.y*11.0)) * 0.45;
           float grain = 0.70 + 0.45*g;
+          // …and it PULSES along its length. A scrubbing tyre grips and lets go; it does not lay
+          // an even slab. Without this the mark is one flat tone from the tyre to the horizon,
+          // which is what makes it read as a decal rather than as rubber.
+          float pulse = 0.62 + 0.38*(vnoise(vec2(vUv.y*2.1, 3.3))*0.62 + vnoise(vec2(vUv.y*7.9, 9.1))*0.38);
           // fade the oldest segments out of the ring buffer instead of popping them
           float age = clamp((uSpan - (uHead - vSeq)) / (uSpan*0.22), 0.0, 1.0);
           // A pure-black mark is invisible on an unlit night road. Real rubber is a dark core with
           // grey scuffed dust along its shoulders: the core darkens bright tarmac, the dust lifts
           // dark tarmac, so the mark reads in both.
-          float shoulder = smoothstep(0.10, 0.66, abs(x-0.5)*2.0);
-          vec3 col = mix(mix(uColor, uWarm, clamp(g*0.9,0.0,1.0)), uDust, shoulder*(0.45+0.55*g));
-          float a = vA * uOpacity * edge * tread * grain * age;
+          //
+          // WAVE 11 — WHERE THE MARK WENT. The dust ramp started at 0.10 of the half-width and was
+          // saturated by 0.66, so 71% of a mark's width was pale grey scuff and the black rubber
+          // core was the middle tenth: on a 0.5 m mark that is a 5 cm line, one pixel at chase
+          // distance, over a road already dark. The ribbon was laying thousands of vertices a
+          // slide and printing nothing you could see. The dust now belongs to the SHOULDER it is
+          // named for — it starts past half the half-width — which leaves a black core about five
+          // times wider, and the mark reads as rubber on both a lit and an unlit road.
+          float shoulder = smoothstep(0.52, 0.99, abs(x-0.5)*2.0);
+          vec3 col = mix(mix(uColor, uWarm, clamp(g*0.55,0.0,1.0)), uDust, shoulder*(0.45+0.55*g));
+          float a = vA * uOpacity * edge * tread * grain * age * pulse;
           gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
         }`,
       transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4,
@@ -2300,7 +2318,10 @@ export class SkidTrails {
   /** Write one vertex into the ring and remember that the frame dirtied it. */
   _push(x, y, z, u, v, a) {
     const i = this.i % this.max;
-    this.pos[i * 3] = x; this.pos[i * 3 + 1] = y + 0.016; this.pos[i * 3 + 2] = z;
+    // 3 cm of lift. LA's road climbs, and `Effects._contactY` can only offer the physics body's
+    // own ground height — which at the wheels on a gradient is a centimetre or two below the
+    // tarmac the tyre is actually on. 1.6 cm put the ribbon UNDER the road there.
+    this.pos[i * 3] = x; this.pos[i * 3 + 1] = y + 0.030; this.pos[i * 3 + 2] = z;
     this.uv[i * 2] = u; this.uv[i * 2 + 1] = v;
     this.alpha[i] = a;
     this.seq[i] = this.i;
@@ -2355,7 +2376,10 @@ export class SkidTrails {
 
   /** Extend one wheel's ribbon to `pos`, ending at alpha `a`. Allocation-free. */
   _segment(e, pos, right, width, a) {
-    const w = Math.max(0.30, width * (1.5 + 0.35 * a));
+    // A tyre at a 50 deg slip angle is travelling mostly sideways, so its contact patch sweeps a
+    // band appreciably wider than its own tread — which is why a drift mark is a broad arc and a
+    // braking mark is a narrow line. `width` arrives as ~0.85 of the wheel radius.
+    const w = Math.max(0.36, width * (1.95 + 0.55 * a));
     const hw = w * 0.5;
     const py = this.groundY ? this.groundY(pos) : pos.y;
     const lx = pos.x - right.x * hw, ly = py - right.y * hw, lz = pos.z - right.z * hw;
