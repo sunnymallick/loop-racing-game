@@ -61,11 +61,32 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  *   is essentially unchanged (supercar 2.9/5.3/2.9/6.0% -> 3.0/4.1/3.1/6.8% at t = 0.12/0.22/
  *   0.34/0.48). That number is dominated by the oblique shock sheets (the X's) that r19 already
  *   put in, and the knee does not add to it: what the knee changes is the SILHOUETTE, not the
- *   interior. If a future round wants more structure across the column, the untried lever is
- *   uNeck (0.36-0.44 now, and r17 ran it at 0.52-0.60) — the shock train's waist-and-belly is a
- *   transverse modulation of the outline, and it is far more legible now that the outline exists
- *   at all than it was against a boundary that faded for 40 px. Raise it one class at a time and
- *   re-measure the floor, because a deep neck also concentrates the core.
+ *   interior.
+ *
+ *   AND DO NOT REACH FOR uNeck. It is the obvious next lever — the shock train's waist-and-belly
+ *   IS a transverse modulation of the outline, r17 ran it at 0.52-0.60 against today's 0.36-0.44,
+ *   and it is far more legible now that the outline exists at all. It was tried this round and
+ *   measured, supercar 0.44 -> 0.58 on vegas-supercar-nitrous-long, and it is the wave-10 trade
+ *   wearing a different hat:
+ *       pixels at L >= 235   3334 -> 2239   (-33%)
+ *       pixels at L >= 244   1088 ->  250   (-77%)
+ *       max luminance        247.2 -> 246.3
+ *       near-white fraction  9.9% -> 8.2%
+ *   A deep waist pinches the column exactly where the filament is hottest, so what the extra
+ *   silhouette modulation is bought with is the white core — the one thing this version has that
+ *   nothing else in the project's history has had. Reverted the same hour it was measured. If a
+ *   later round wants the train to read harder, it has to find a knob that does not run through
+ *   the throat. uXsh is one — the oblique shock sheets are already the only thing carrying the
+ *   transverse number, and a sheet at 0.94 half-widths is nowhere near the filament. Raised this
+ *   round (supercar 0.70 -> 0.92, tuner 0.62 -> 0.80, muscle 0.50 -> 0.64, SUV 0.34 -> 0.42, the
+ *   SUV kept lowest because its bell is wide enough that a sheet at 0.94 half-widths is most of
+ *   the frame). Measured, it moves everything the right way and none of it far:
+ *       L >= 235  3334 -> 3443    L >= 244  1088 -> 1220    any-chan >= 250  10579 -> 10985
+ *       near-white fraction 9.9% -> 10.0%,  max luminance 247.2 unchanged
+ *   The X's are crisper at 6x and the cells do not go hollow. It is a marginal change and it is
+ *   recorded as one — but it is the right SHAPE of change for this piece, which is the point of
+ *   writing it down next to the uNeck result: one knob spent 33% of the white core to buy
+ *   silhouette, the other bought a little of everything and cost nothing.
  *
  * ── ROUND 17: THE PLUME IS A 3-D FIELD MARCHED ON THE REAL CAMERA RAY. ──────────────────────
  * READ THE BLOCK COMMENT ABOVE PLUME_FRAG FIRST — that is where the method lives.
@@ -522,7 +543,7 @@ export const NITRO = {
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
       // half-width the column keeps AT the tip, and the decay now runs the whole length to reach it.
       screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
-      bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
+      bands: 5.0, knot: 0.80, xsh: 0.80, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 1.38, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
       skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97, knee: 0.96,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
@@ -538,7 +559,7 @@ export const NITRO = {
       core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
       len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
-      bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
+      bands: 3.6, knot: 0.42, xsh: 0.64, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
       gasGain: 1.20, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
       skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97, knee: 0.78,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
@@ -555,7 +576,7 @@ export const NITRO = {
       core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
       len: 3.70, rad: 0.555, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.12, profile: [0.80, 0.042, 1.02, 0.110],  // blunt bell — fat off the pipe, stubby
-      bands: 3.4, knot: 0.14, xsh: 0.34, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.36, bandFade: 0.42, flick: 16, turb: 1.28,
+      bands: 3.4, knot: 0.14, xsh: 0.42, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.36, bandFade: 0.42, flick: 16, turb: 1.28,
       // THE ANTI-BLOWOUT SETTING. The SUV's column is the widest in the game, so per unit area it
       // has to be the dimmest: gas gain 0.56 keeps a band trough near the road's own level, and a
       // narrow filament at 0.62 authority means the white core is a thread rather than the whole
@@ -577,7 +598,7 @@ export const NITRO = {
       core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
       len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
-      bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
+      bands: 5.6, knot: 0.92, xsh: 0.92, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
       gasGain: 1.10, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
       skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97, knee: 0.96,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
