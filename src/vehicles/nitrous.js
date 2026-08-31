@@ -8,6 +8,65 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
  * no camera response → 65; identical across the four classes → 70.
  * §7 additionally caps "particles as unrotated camera-facing squares with visible hard edges" at 58.
  *
+ * ── ROUND 24: THE FRINGE GETS AN EDGE. READ THE WAVE 10 BLOCK BELOW FIRST. ──────────────────
+ *
+ * The two open notes from the critics who scored r23 were (1) the fringe has no defined boundary
+ * and (2) structure has to run ACROSS the column because the speed pass averages ~50 px ALONG it.
+ * Both are answered by one change, and the reason it is one change is that a jet's outline is the
+ * only place azimuthal detail is not averaged out by the march's own chord.
+ *
+ *   THE PROBLEM, AS A NUMBER. Every radial term in PLUME_FRAG was a gaussian, and a gaussian
+ *   never reaches zero. tools/_n24_fringe.mjs ablates the gas out of a real capture and reads the
+ *   SHOULDER of the isolated plume's transverse profile — r10/r50, the radius at a tenth of the
+ *   on-axis brightness over the radius at a half. It is dimensionless, so it compares across
+ *   revisions, cars and cities, and it has known landmarks: a pure gaussian is 1.82, a p = 4
+ *   super-gaussian 1.35, a p = 6 super-gaussian 1.22, a hard-edged cylinder 1.00. r23 measured
+ *   1.95 at the supercar's throat and 2.37 at a fifth of its length. That IS the critic's note,
+ *   arriving as two figures: the column fades forever, so there is no radius at which the eye can
+ *   say "it ends here", and §2.5 asks for a class-tinted FRINGE, which is a bounded thing.
+ *
+ *   THE FIX MOVES GAS, IT DOES NOT ADD ANY. The skirt's falloff now blends, in the EXPONENT, from
+ *   the gaussian it was to a p = 6 super-gaussian: exp(-mix(qn2, qn2^3, uKnee)), the same single
+ *   exp() it always was. uKneeR = 0.94 is chosen so the half-density radius AND the integral of
+ *   the density along a ray are unchanged to within ~1% of the gaussian — the fringe holds full
+ *   density out to the knee and is gone a quarter of a half-width later, and the white core
+ *   behind it is attenuated by exactly what it was before. THAT IS THE WHOLE POINT: wave 10 lost
+ *   the round by buying width with unlit gas, and the correct move on this piece is the opposite
+ *   one — take the gas that is already there and give it an edge.
+ *
+ *   AND THE EDGE IS FLUTED, TWICE. The knee's RADIUS is a function of fl (the azimuthal shear
+ *   noise) and again of rib (the five-fold Chebyshev lobe, which turns about three quarters of a
+ *   revolution over the whole column, so it is a set of longitudinal ridges rather than a swirl).
+ *   Five tongues around the boundary, varying in depth from station to station: a boundary the
+ *   eye can find that is still never a circle, never the analytic curve that makes gas read as a
+ *   solid object, and — because it varies ACROSS the column — the one kind of structure
+ *   SpeedShader cannot flatten. The wisps move out to 0.48-1.34 half-widths so what lies outside
+ *   the boundary is detached gas rather than a rim, which is what a real shear layer sheds.
+ *
+ *   PER CLASS, because how defined a fringe is separates four jets as much as its colour does:
+ *   fx.knee 0.96 supercar / 0.92 tuner (electric edges on the two needles), 0.78 muscle, 0.62 SUV
+ *   — a blunt lazy bell with a crisp outline is a balloon.
+ *
+ *   MEASURED, vegas nitrous-long, r23 -> r24, captured back to back from one tree:
+ *     ACCEPTANCE FLOOR (620x330 over the plume, vegas-supercar-nitrous-long)
+ *       pixels at luminance >= 235   3103 -> 3334      floor 2000    HELD
+ *       max luminance                247.2 -> 247.2    floor 244     HELD
+ *       near-white (any chan >= 250) 9765 -> 10579,  and as a fraction of the plume's own
+ *                                    ablation mask (tools/_plume_ms.mjs) 5.03% -> 5.62%
+ *     SHOULDER (r10/r50, median over four stations)
+ *       supercar 2.16 -> 1.82   muscle 2.44 -> 1.48   tuner 1.44 -> 1.53   (gaussian = 1.82)
+ *
+ *   WHAT DID NOT MOVE, and the next round should know it. Transverse modulation depth — the RMS
+ *   of the transverse profile minus a 15 px boxcar of itself, as a fraction of the on-axis peak —
+ *   is essentially unchanged (supercar 2.9/5.3/2.9/6.0% -> 3.0/4.1/3.1/6.8% at t = 0.12/0.22/
+ *   0.34/0.48). That number is dominated by the oblique shock sheets (the X's) that r19 already
+ *   put in, and the knee does not add to it: what the knee changes is the SILHOUETTE, not the
+ *   interior. If a future round wants more structure across the column, the untried lever is
+ *   uNeck (0.36-0.44 now, and r17 ran it at 0.52-0.60) — the shock train's waist-and-belly is a
+ *   transverse modulation of the outline, and it is far more legible now that the outline exists
+ *   at all than it was against a boundary that faded for 40 px. Raise it one class at a time and
+ *   re-measure the floor, because a deep neck also concentrates the core.
+ *
  * ── ROUND 17: THE PLUME IS A 3-D FIELD MARCHED ON THE REAL CAMERA RAY. ──────────────────────
  * READ THE BLOCK COMMENT ABOVE PLUME_FRAG FIRST — that is where the method lives.
  *
@@ -465,7 +524,7 @@ export const NITRO = {
       screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
       bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 1.38, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
-      skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97, knee: 0.92,
+      skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97, knee: 0.96,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
@@ -1313,7 +1372,15 @@ const PLUME_FRAG = /* glsl */`
         // uKneeR = 0.94 is chosen so the half-density radius and the total optical depth along a
         // ray are unchanged to within ~1% of the gaussian this replaces — this must not cost the
         // white core one step of luminance, and measured, it does not.
-        float rk  = uSkirtW * uKneeR * (0.86 + 0.28 * fl);
+        // (r24b) ...and the FLUTES go on the boundary, twice. rib is the five-fold Chebyshev
+        // lobe already in hand (it turns about three quarters of a revolution over the whole
+        // column, so it is a set of LONGITUDINAL ridges, not a fast swirl); it is inside fl
+        // already, and it is added again here on its own because the silhouette is the one place
+        // azimuthal detail is not averaged out by the march's own chord. Five tongues around the
+        // edge, varying in depth from station to station, is a boundary the eye can find AND
+        // structure that runs across the column — measured, the shoulder falls to ~1.5 without
+        // the outline ever becoming the analytic curve that makes gas read as a solid object.
+        float rk  = uSkirtW * uKneeR * (0.84 + 0.32 * fl + 0.11 * rib * uTurb);
         float qn2 = q2 / (rk * rk);
         float qn6 = qn2 * qn2 * qn2;
         float g3  = exp(-mix(qn2, qn6, uKnee));                 // the cool shear layer, bounded
