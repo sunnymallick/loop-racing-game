@@ -531,6 +531,11 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //                 attenuates emission by. 1.0 is the r24 behaviour. Lowest on the SUV, because
 //                 this is a RATIO and the SUV's bell already carries the most optical depth of
 //                 the four: at 2.9 its amber would be a wall across half the road.
+//   fx.warm       (r25) the THIRD colour in the ramp, between the class chroma and the white
+//                 core. It used to be mix(mid, core, 0.30) — a tint of the body colour, which is
+//                 not a stop at all — so the supercar's ramp measured two-stop, white to violet
+//                 in ~15 px, with none of the nesting this header has claimed since r9. Rose
+//                 under violet, hot yellow under orange, ice under cyan, cream under amber.
 //   fx.turb       raggedness of the silhouette and of the wisps the tail dissolves into. 0.5 is a
 //                 tight supercar needle, 1.05 is the SUV's boiling bell.
 //   fx.screen     THE round-4 knob: how much of the FRAME HEIGHT the lit column should occupy for
@@ -545,7 +550,7 @@ export const NITRO = {
     thrust: 0.92, duration: 1.8, drain: 1.0, refill: 0.62, topSpeedMul: 1.50,
     ramp: 0.13, curve: 0.52, surge: 0.88, surgeTime: 0.22, color: '#3ce0ff',
     fx: {
-      core: '#f4ffff', mid: '#1ecfff', edge: '#0a30f5', spark: '#cdf4ff',
+      core: '#f4ffff', mid: '#1ecfff', edge: '#0a30f5', warm: '#b6fbe4', spark: '#cdf4ff',
       len: 3.60, rad: 0.505, merge: 0.0, standoff: 0.10, flameRise: 0.045,
       // profile = [throat fraction, station of the widest point, decay exponent, TAIL fraction].
       // (r17) the last number is no longer a filament width that closes to zero at t = 1; it is the
@@ -564,7 +569,7 @@ export const NITRO = {
     thrust: 1.10, duration: 3.4, drain: 1.0, refill: 0.34, topSpeedMul: 1.26,
     ramp: 0.52, curve: 1.20, surge: 0.62, surgeTime: 0.44, color: '#ff7a1e',
     fx: {
-      core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', spark: '#ffc477',
+      core: '#fffaf2', mid: '#ff6a10', edge: '#b41403', warm: '#ffcf3c', spark: '#ffc477',
       len: 4.00, rad: 0.545, merge: 0.062, standoff: 0.12, flameRise: 0.15,
       screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
       bands: 3.6, knot: 0.42, xsh: 0.64, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
@@ -581,7 +586,7 @@ export const NITRO = {
     thrust: 1.26, duration: 4.6, drain: 1.0, refill: 0.28, topSpeedMul: 1.29,
     ramp: 0.78, curve: 1.55, surge: 0.34, surgeTime: 0.62, color: '#ffc21f',
     fx: {
-      core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', spark: '#ffd487',
+      core: '#fff3d6', mid: '#ffc21f', edge: '#ff6a08', warm: '#ffe79a', spark: '#ffd487',
       len: 3.70, rad: 0.555, merge: 0.050, standoff: 0.13, flameRise: 0.26,
       screen: 1.12, profile: [0.80, 0.042, 1.02, 0.110],  // blunt bell — fat off the pipe, stubby
       bands: 3.4, knot: 0.14, xsh: 0.42, bandSpeed: 7, bandAmt: 1.00, neckAmt: 0.36, bandFade: 0.42, flick: 16, turb: 1.28,
@@ -603,7 +608,7 @@ export const NITRO = {
     thrust: 1.08, duration: 2.3, drain: 1.0, refill: 0.46, topSpeedMul: 1.56,
     ramp: 0.08, curve: 0.32, surge: 1.00, surgeTime: 0.30, color: '#8f6bff',
     fx: {
-      core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', spark: '#ded2ff',
+      core: '#ffffff', mid: '#8a4dff', edge: '#2a10ff', warm: '#ff8ae4', spark: '#ded2ff',
       len: 4.60, rad: 0.545, merge: 0.085, standoff: 0.10, flameRise: 0.035,
       screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
       bands: 5.6, knot: 0.92, xsh: 0.92, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
@@ -1083,7 +1088,7 @@ const PLUME_VERT = /* glsl */`
 `;
 
 const PLUME_FRAG = /* glsl */`
-  uniform vec3 uCore, uMid, uEdge;
+  uniform vec3 uCore, uMid, uEdge, uWarm;
   uniform vec3 uOrigin, uAxis, uU, uV;
   uniform vec4 uProf;                 // neck, peakAt, spread, tip fraction — the class silhouette
   uniform float uLen, uR0, uRmax;
@@ -1538,14 +1543,34 @@ const PLUME_FRAG = /* glsl */`
           // that is already 42% white — so the throat of every class photographed as pale steam and
           // the four palettes only really separated out in the fringe. The class chroma now owns
           // the column and only the knots leave it.
-          vec3 warm = mix(uMid, uCore, 0.30);
+          // ── (r25) THE RAMP IS FOUR COLOURS, NOT A TINT OF THE BODY ────────────────────────
+          // The w11 critic, on the class the piece is judged from: "the supercar's colour ramp is
+          // two-stop, white -> violet in ~15 px, with none of the yellow/orange/magenta nesting
+          // the header claims", and named the SUV (white -> cream -> amber -> deep orange) as
+          // what the supercar is missing. The header did claim it and the shader never drew it:
+          // this stop was mix(uMid, uCore, 0.30), i.e. the body colour with 30% white stirred in,
+          // which for #8a4dff is a paler violet and for #ff6a10 is a paler orange. A ramp whose
+          // middle stop is a tint of its own end stop has no middle stop — it is one hue at two
+          // exposures, and no amount of contrast will make it nest.
+          // uWarm is now an explicit fourth colour, the one a real flame passes through on its way
+          // from the class chroma to white: rose-magenta under the supercar's violet, hot yellow
+          // under the muscle's orange, pale ice under the tuner's cyan, cream under the SUV's
+          // amber. Nested contours are what say "this is a temperature field" rather than "this is
+          // a gradient with a highlight", and they cost nothing but a uniform.
+          vec3 warm = uWarm;
           vec3 col = mix(uEdge, uMid, smoothstep(0.04, 0.40, T));
           // (r20) 0.54/1.32 -> 0.70/1.45. The gas BETWEEN two diamonds sits at T ~ 0.8, and at the
           // old thresholds that was already a third of the way to a colour which is itself 30%
           // white — so the column had a permanent pale wash on it and a diamond had to climb out
           // of that before it could read. The gaps are now uMid at full chroma and the whole of
           // the warm ramp is spent on the knots.
-          col = mix(col, warm, smoothstep(0.70, 1.45, T));
+          // (r25) 0.70/1.45 -> 0.56/1.22. r20 pushed this window UP because warm was a 30%-white
+          // tint of uMid and reaching for it early laid a pale wash over the whole column. With
+          // warm a saturated colour of its own that failure mode is gone — what the window now
+          // controls is how WIDE the third contour is, and at 0.70/1.45 it was a few pixels
+          // wedged between the violet and the white step at 1.35. It ends before the white step
+          // begins, so the knots are untouched.
+          col = mix(col, warm, smoothstep(0.56, 1.22, T));
           col = mix(col, uCore, smoothstep(1.35, 2.45, T));
           vec3 fil = mix(uMid, uCore, clamp(hotA * 0.60, 0.0, 1.0));
           // ── LIGHT AND GAS ARE NOT THE SAME CURVE ─────────────────────────────────────────
@@ -1682,6 +1707,7 @@ function plumeMaterial(fx, phase) {
       uCore: { value: new THREE.Color(fx.core) },
       uMid: { value: new THREE.Color(fx.mid) },
       uEdge: { value: new THREE.Color(fx.edge) },
+      uWarm: { value: new THREE.Color(fx.warm ?? fx.core) },
       uProf: { value: new THREE.Vector4(pf[0], pf[1], pf[2], pf[3]) },
       // ── the plume's frame in WORLD space — the march happens here, not on the quad ─────────
       uOrigin: { value: new THREE.Vector3() },   // the orifice
