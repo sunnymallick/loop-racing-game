@@ -523,6 +523,14 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //   fx.thick      optical thickness: how completely the middle of the jet HIDES the road behind it.
 //   fx.occ        ceiling on that occlusion — a plume you cannot see through at all is a painted
 //                 shape, so the wisps at the silhouette stay translucent.
+//   fx.bgOcc      (r25) how many times faster the IMAGE BEHIND the gas is extinguished than the
+//                 gas's own light. A hot plume forward-scatters: a photon of the jet's own glow
+//                 that scatters is still a photon of the jet's own glow, while a photon carrying
+//                 one speckle of asphalt is gone from that speckle for good — so the alpha the
+//                 frame composites with is a much larger cross-section than the one the march
+//                 attenuates emission by. 1.0 is the r24 behaviour. Lowest on the SUV, because
+//                 this is a RATIO and the SUV's bell already carries the most optical depth of
+//                 the four: at 2.9 its amber would be a wall across half the road.
 //   fx.turb       raggedness of the silhouette and of the wisps the tail dissolves into. 0.5 is a
 //                 tight supercar needle, 1.05 is the SUV's boiling bell.
 //   fx.screen     THE round-4 knob: how much of the FRAME HEIGHT the lit column should occupy for
@@ -545,7 +553,7 @@ export const NITRO = {
       screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
       bands: 5.0, knot: 0.80, xsh: 0.80, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 1.38, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
-      skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97, knee: 0.96,
+      skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97, knee: 0.96, bgOcc: 2.90,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
@@ -561,7 +569,7 @@ export const NITRO = {
       screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
       bands: 3.6, knot: 0.42, xsh: 0.64, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
       gasGain: 1.20, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
-      skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97, knee: 0.78,
+      skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97, knee: 0.78, bgOcc: 2.50,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 13.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
@@ -583,7 +591,7 @@ export const NITRO = {
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
       gasGain: 1.18, hotI: 4.50, burn: 0.44, filW: 0.152, bodyW: 0.54, wisp: 1.05,
-      skirtW: 1.10, skirtI: 1.04, bodyD: 1.62, thick: 1.25, occ: 0.97, knee: 0.62,
+      skirtW: 1.10, skirtI: 1.04, bodyD: 1.62, thick: 1.25, occ: 0.97, knee: 0.62, bgOcc: 1.90,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
@@ -600,7 +608,7 @@ export const NITRO = {
       screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
       bands: 5.6, knot: 0.92, xsh: 0.92, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
       gasGain: 1.10, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
-      skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97, knee: 0.96,
+      skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97, knee: 0.96, bgOcc: 3.00,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 17.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
@@ -1082,7 +1090,7 @@ const PLUME_FRAG = /* glsl */`
   uniform float uTime, uLevel, uPhase, uTurb, uFlick;
   uniform float uBands, uBandSpeed, uBandAmt, uNeck, uKnot, uBandDrift, uXsh, uBandFade;
   uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD, uKnee, uKneeR;
-  uniform float uThick, uOcc, uReach, uFade, uPersp, uSoft, uWisp;
+  uniform float uThick, uOcc, uReach, uFade, uPersp, uSoft, uWisp, uBgP;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
   varying vec3 vWorld;
   ${NOISE_GLSL}
@@ -1595,7 +1603,48 @@ const PLUME_FRAG = /* glsl */`
     em = mix(em, vec3(pk), clamp((pk - 1.70) * 0.34, 0.0, 0.34));
     em = em / (1.0 + em * uSoft);
 
-    float a = (1.0 - trans) * uOcc;
+    // ── (r25) THE IMAGE BEHIND THE GAS IS EXTINGUISHED FASTER THAN THE GAS'S OWN LIGHT ──────
+    // The w11 critic's biggest note: "the column only exists where the background is black — the
+    // road's aggregate speckle reads at full contrast straight through the violet right up to the
+    // filament", with mean luminance INSIDE the LA column measuring 71/79/67 against 78/71/90 for
+    // the asphalt beside it. Measured here with tools/_zn25_alpha.mjs (which patches this shader
+    // to emit vec4(vec3(a), 1.0) and solves out = a + bg(1-a) against a plume-hidden capture, so
+    // it is the real alpha field and not the bloom halo): the throat reaches a = 0.85, but the
+    // downstream two thirds of the column — most of its screen area — sits at 0.20-0.31, and only
+    // 8.7% of the plume's footprint is anywhere above 0.4. On a black Vegas road that is
+    // invisible; on LA asphalt it is the whole verdict.
+    //
+    // The obvious lever is uThick, and it is a trap of exactly the wave-10 shape. acc integrates
+    // e·(1 - exp(-sig·dl))/sig, so an optically thick sample contributes e/sig: the throat is
+    // ALREADY thick, so raising the extinction there divides the light that gets out of it by the
+    // same factor it multiplies the opacity. Swept on vegas-supercar-nitrous-long (all six
+    // captures from one boot, tools/_zn25_sweep.mjs), pixels at L>=235 / max luminance:
+    //     uThick x1.0  3432 / 247.2      x1.4  2007 / 246.3      x2.0   612 / 242.8
+    //     uThick x3.0     0 / 231.2      x4.5     0 / 220.9      x7.0     0 / 220.9
+    // i.e. a x1.4 lands exactly ON the acceptance floor and a x2.0 is through it. Buying opacity
+    // out of the extinction coefficient spends the white core, and it is not free "by
+    // construction" — the emission integral divides by sigma.
+    //
+    // What is free, and is also better physics: A HOT PLUME IS A SCATTERING MEDIUM, AND
+    // SCATTERING DESTROYS THE BACKGROUND'S IMAGE MUCH FASTER THAN IT REMOVES THE PLUME'S OWN
+    // LIGHT. A photon of the jet's own glow that scatters forward is still a photon of the jet's
+    // own glow arriving at the lens; a photon carrying one speckle of asphalt that scatters is
+    // gone from that speckle forever. So the extinction that applies to the IMAGE behind the gas
+    // is several times the one that applies to the gas's radiance, and a — which is only ever
+    // "how much of the background survives" — has no business being computed from the same one.
+    //   a = 1 - trans^uBgP   is exactly  1 - exp(-uBgP·tau):  the same optical depth the march
+    // already accumulated, read at the larger cross-section, for one pow at the end of the shader
+    // and not one instruction inside the loop. The emission path is untouched BY CONSTRUCTION,
+    // which is the only reason this is allowed to exist at all — the floor cannot move.
+    //
+    // And it is the same change the still-open fringe note wanted. 1 - trans^p is concave: it
+    // lifts the middle of the column hard and the thinnest gas barely at all, so the ALPHA field
+    // gains a shoulder where the additive field never could. Measured (supercar, transverse cut
+    // at the widest station) 0.16/0.50/0.61/0.77/0.85/0.83/0.75/0.47/0.21 -> a profile that holds
+    // near 1 across the body and falls off a cliff at the boundary. A knee in an additive field is
+    // invisible against a bright ground; a knee in an OPACITY field is a boundary at any
+    // background value, which is what §2.5's "class-tinted fringe" has been asking for.
+    float a = (1.0 - pow(trans, uBgP)) * uOcc;
     // everything fades out inside a couple of metres of the lens, so no layer can be clipped by
     // the near plane into a hard-edged wedge across the frame
     float k = uLevel * uFade * smoothstep(uNear0, uNear1, length(vWorld - ro));
@@ -1693,6 +1742,12 @@ function plumeMaterial(fx, phase) {
       // has no hard boundary — (1 - trans) goes to zero smoothly at every edge — it is just fully
       // opaque where it is genuinely thick.
       uOcc: { value: fx.occ ?? 0.92 },
+      // (r25) How much faster the IMAGE behind the gas is extinguished than the gas's own light —
+      // the forward-scattering ratio, applied once at the end of the march (see the block above
+      // the alpha line). 1.0 restores the r24 behaviour exactly. Per class because how solid a
+      // jet's body reads separates four of them as much as colour does, and because the SUV's
+      // bell is already most of the frame: a wall of amber over half the road is a painted shape.
+      uBgP: { value: fx.bgOcc ?? 2.6 },
       uReach: { value: PLUME_REACH },
       // (r17) 0.82/1.10 -> 0.90/1.18. Cutting the gas at 0.82 threw away the LAST SIXTH of the
       // column, which is the sixth where the taper is most visible: the measured plume died at
