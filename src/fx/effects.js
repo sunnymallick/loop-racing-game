@@ -2412,7 +2412,11 @@ export class Effects {
     }
 
     for (const s of this.pools) s.update(dt, wind);
-    this.skid.flush();           // one upload of what the wheels actually wrote this frame
+    // The skid ribbon's dirty window is widened here every sim step and cleared only when the GPU
+    // really takes it (SkidTrails hangs an onUploadCallback for that). Resetting it here instead —
+    // which is what this line used to do — put 1.5% of the mark on screen in every capture, because
+    // the harness runs hundreds of sim steps per render. See SkidTrails.flush.
+    this.skid.flush();
     this.chunks.update(dt);
     this.world.update(dt);       // toppling / tumbling street furniture
     this.decals.update(dt);

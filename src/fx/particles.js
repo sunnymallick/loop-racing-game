@@ -2312,6 +2312,11 @@ export class SkidTrails {
     this.mesh = new THREE.Mesh(geo, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 1;
+    // THE DIRTY WINDOW IS CLEARED BY THE UPLOAD, NOT BY THE SIM STEP. `flush()` runs per sim step
+    // and keeps widening one range; three.js consumes it on the next real render and tells us so
+    // here. See flush() for the bug this fixes. (onBeforeRender is too late — three uploads
+    // attributes in projectObject, while it is still building the render list.)
+    for (const k of SKID_ATTRS) geo.attributes[k].onUploadCallback = () => { this._lo = this.max; this._hi = 0; };
     this._last = new Map();
   }
 
@@ -2405,19 +2410,41 @@ export class SkidTrails {
   }
 
   /**
-   * Upload only the vertices this frame actually wrote. Called once a frame by the FX director.
+   * Mark for upload every vertex written since the GPU last actually took one. Called once per
+   * sim step by the FX director; the window it describes is only cleared when three.js reports a
+   * real upload through `onUploadCallback`, so it accumulates across however many sim steps happen
+   * between two renders.
    *
-   * The old code flagged all four attributes `needsUpdate` inside `add()`, so every frame in which
-   * ANY wheel laid a segment re-uploaded the whole 27 000-vertex ring — 756 kB of `bufferSubData`
-   * per frame to write six vertices per wheel. That is invisible in a mean frame time and very
-   * visible in the tail.
+   * THIS IS WHERE THE SKID MARKS WENT (wave 12). Two rounds of tuning the rubber shader while the
+   * ribbon was never actually reaching the GPU:
+   *
+   *   - `add()` used to flag all four attributes `needsUpdate` with no update range, so any frame
+   *     in which a wheel laid a segment re-uploaded the whole ring — 756 kB of `bufferSubData` to
+   *     write 24 vertices. That was fixed by tracking a dirty window and uploading only that.
+   *   - …but the window was RESET here, once per *Effects.update()*, i.e. once per SIM STEP —
+   *     while the renderer only uploads on render. `tools/shot.mjs` runs a scenario of 100-460 sim
+   *     steps and then renders ONCE, so 459 windows were overwritten unread and the GPU got the
+   *     last step's six quads. Measured on the drift capture: 98 magenta pixels of ribbon in a
+   *     top-down isolation against 6432 for the identical CPU buffer force-uploaded — 1.5% of the
+   *     mark on screen, which is why every canonical drift frame came back with two 25x15 px
+   *     patches under the wheels instead of a pair of arcs.
+   *
+   * So the window now survives until three.js says it consumed it. In the live game that is still
+   * one upload of ~24 vertices per frame; in the harness it is one upload of the whole slide.
+   * `mesh.onBeforeRender` would NOT work for this: three uploads geometry attributes inside
+   * `projectObject`, while it is still building the render list, which is before onBeforeRender.
+   *
+   * Ring wrap is safe: `_push` folds the write index modulo `max`, so a wrap widens the window to
+   * a superset of what changed rather than missing anything, and writing more than `max` vertices
+   * between two renders dirties the whole buffer anyway.
    */
   flush() {
-    if (this._hi <= this._lo) return;
-    const lo = this._lo, hi = this._hi;
-    this._lo = this.max; this._hi = 0;
+    // uHead and the draw range must track `i` on every render even when nothing new was written,
+    // or the tail of the ring keeps fading against a stale head.
     this.material.uniforms.uHead.value = this.i;
     this.geometry.setDrawRange(0, Math.min(this.i, this.max));
+    if (this._hi <= this._lo) return;
+    const lo = this._lo, hi = this._hi;
     const at = this.geometry.attributes;
     for (let k = 0; k < SKID_ATTRS.length; k++) {
       const a = at[SKID_ATTRS[k]];
