@@ -428,7 +428,7 @@ export function paintMaterial({
   skyReflect(mat, {
     gain: 1.34, blur: 0.005, f0: 0.050, tint: 0.62, sunPow: 580, amb: 0.23, cap: 0.44,
     coatPow: 30, coatGain: 0.34, mirror: 1.00, mirrorRough: 0.048, mirrorBroad: 0.45,
-    mirrorTint: 0.28, mirrorFloor: 0.34,
+    mirrorTint: 0.28, mirrorFloor: 0.34, core: 1.00, coreWidth: 0.026,
   });
   // …and the highlight shoulder, registered LAST so it sees the finished value (see specCeiling).
   // 1.52 sits under every bloom threshold the engine will run, so painted bodywork can reach white
@@ -795,10 +795,10 @@ const SKYU = {
 export function skyReflect(mat, {
   gain = 1.0, blur = 0.012, f0 = 0.045, tint = 0.0, sunPow = 220.0, bumpy = false, amb = 0.0,
   cap = 0.52, coatPow = 0, coatGain = 0, mirror = 0, mirrorRough = 0.05, mirrorBroad = 0.45,
-  mirrorTint = 0, mirrorFloor = 0.30,
+  mirrorTint = 0, mirrorFloor = 0.30, core = 0, coreWidth = 0.030,
 } = {}) {
   const n = (x) => (Math.round(x * 1e4) / 1e4).toFixed(4);
-  const key = `sky|${n(gain)}|${n(blur)}|${n(f0)}|${n(tint)}|${n(sunPow)}|${bumpy ? 1 : 0}|${n(amb)}|${n(cap)}|${n(coatPow)}|${n(coatGain)}|${n(mirror)}|${n(mirrorRough)}|${n(mirrorBroad)}|${n(mirrorTint)}|${n(mirrorFloor)}`;
+  const key = `sky|${n(gain)}|${n(blur)}|${n(f0)}|${n(tint)}|${n(sunPow)}|${bumpy ? 1 : 0}|${n(amb)}|${n(cap)}|${n(coatPow)}|${n(coatGain)}|${n(mirror)}|${n(mirrorRough)}|${n(mirrorBroad)}|${n(mirrorTint)}|${n(mirrorFloor)}|${n(core)}|${n(coreWidth)}`;
   return patchShader(mat, key, (shader) => {
     Object.assign(shader.uniforms, SKYU);
     shader.fragmentShader = shader.fragmentShader
@@ -820,6 +820,29 @@ vec3 nitroProbe( vec3 R ) {
 	col *= mix( 1.0, 0.68, smoothstep( 0.10, 0.95, h ) );          // sky deepens toward the zenith
 	float bw = uSkyP.z + ${n(blur * 1.6)};
 	col = mix( col, uSkyHaze, exp( -( h * h ) / ( bw * bw ) ) * 0.94 );   // the hot horizon band
+${core > 0 ? `	/**
+	 * ------------------------------------------- THE TIGHT HIGHLIGHT THAT RIDES OVER THE BAND
+	 *
+	 * §2.3 wants clearcoat over metallic flake, and a lacquer's signature is TWO highlights of very
+	 * different width in the same reflection: a broad soft one from the coat's microfacet spread,
+	 * and inside it a narrow blazing one where the surface mirrors the brightest strip of the sky.
+	 * We had the broad band (7 degrees, above) and a three-degree sun GLINT that only fires when a
+	 * panel happens to mirror the sun — which in a chase frame, with the key in front of the car and
+	 * the camera behind it, is almost never. Between them there was nothing, so a shoulder crossing
+	 * the horizon brightened gradually and read as a soft gradient rather than as a coated edge.
+	 *
+	 * This is the missing one, and it is put where it is always available: on the horizon itself,
+	 * which every rolled panel on every car sweeps through no matter where the sun is. About a
+	 * degree and a half of reflection direction — narrow enough to be a LINE on a shoulder and wide
+	 * enough not to alias into a crawling dotted edge at 1600x900 — added over the band rather than
+	 * mixed into it, so the band keeps its own value and this sits on top of it.
+	 *
+	 * It goes through the same Fresnel cap and the same specCeiling shoulder as everything else, so
+	 * it can reach white in the frame and still cannot become a bloom source (§7: "bloom with no
+	 * emissive source").
+	 */
+	float cw = ${n(coreWidth)} + ${n(blur * 0.8)};
+	col += uSkyHaze * exp( -( h * h ) / ( cw * cw ) ) * ${n(core)};` : ''}
 	/**
 	 * CUMULUS BREAK-UP — and the round-1 verdict "the env reflection is an enormous soft
 	 * low-frequency smear … a milky white bloom wash across the front fender and door that erases
