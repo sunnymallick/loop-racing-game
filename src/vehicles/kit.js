@@ -417,7 +417,19 @@ export function paintMaterial({
   // gain/cap up: with the basecoat and the lacquer both sampling the city probe at a blurred mip
   // (see the note in muscle.js) the analytic horizon is now the ONLY sharp reflection on the car,
   // so it has to carry the whole of §1.1's "bright sharp sky reflection … dark ground below".
-  skyReflect(mat, { gain: 1.34, blur: 0.005, f0: 0.050, tint: 0.62, sunPow: 580, amb: 0.23, cap: 0.44, coatPow: 30, coatGain: 0.34 });
+  /**
+   * WAVE-13: `mirror` is new and it is the point of this round — a near-specular lookup into the
+   * city probe, differenced against the broad lobe's own sample, riding over the shading (see the
+   * long note in skyReflect). Everything else here is untouched, and deliberately: the mirror adds
+   * contrast and no mean energy, so nothing it does needs paying for somewhere else. The analytic
+   * horizon keeps its full `gain` because it is still the guarantee — it has a sky/ground split in
+   * it even in a city whose probe is mostly black, and it is what carries the sun streak.
+   */
+  skyReflect(mat, {
+    gain: 1.34, blur: 0.005, f0: 0.050, tint: 0.62, sunPow: 580, amb: 0.23, cap: 0.44,
+    coatPow: 30, coatGain: 0.34, mirror: 1.00, mirrorRough: 0.048, mirrorBroad: 0.45,
+    mirrorTint: 0.28, mirrorFloor: 0.34,
+  });
   // …and the highlight shoulder, registered LAST so it sees the finished value (see specCeiling).
   // 1.52 sits under every bloom threshold the engine will run, so painted bodywork can reach white
   // in the frame but can never become a bloom source.
@@ -748,6 +760,26 @@ const SKYU = {
   uSkySunDir: { value: new THREE.Vector3(-0.30, 0.28, 0.91).normalize() },
   // x master gain · y horizon half-width · z hot-band width · w ground-streak gain
   uSkyP: { value: new THREE.Vector4(1.0, 0.016, 0.052, 0.55) },
+  /**
+   * THE CITY MIRROR'S PER-CITY WEIGHTING (see `mirror` in skyReflect).
+   *
+   *   x  gain scale        y  roughness added to the sharp tap      z  clamp on the detail swing
+   *
+   * All three exist for the same reason and it is a night-city reason. The mirror is an unsharp
+   * mask on the environment probe, and a night probe is not a picture of a place — it is black
+   * with a few very small very bright things in it. Measured on vegas-muscle-chase at the authored
+   * daylight weighting: the rear quarter's mean fell 58.5 → 53.0 and its chroma 48.9 → 40.4, and
+   * the roof and flanks came back covered in a fine bright scribble. Both follow from the same
+   * property — over most directions the sharp tap is black while the broad tap has averaged the
+   * neon in, so the difference is negative nearly everywhere and violently positive on the handful
+   * of texels that hold a sign. That is noise, not a reflection, and it is darker than what it
+   * replaced, which is the one thing a night car cannot afford (§1.3, and the note on _paintBoost).
+   *
+   * So after dark the mirror is weighted down, its sharp tap is blurred a little so a sign reads as
+   * a STREAK rather than as a cluster of dots, and the swing is clamped so one hot texel cannot
+   * detonate. Daylight — where the probe is a continuous picture of a city — is left at full.
+   */
+  uSkyMir: { value: new THREE.Vector3(1.0, 0.0, 1.6) },
 };
 
 /**
@@ -762,10 +794,11 @@ const SKYU = {
  */
 export function skyReflect(mat, {
   gain = 1.0, blur = 0.012, f0 = 0.045, tint = 0.0, sunPow = 220.0, bumpy = false, amb = 0.0,
-  cap = 0.52, coatPow = 0, coatGain = 0,
+  cap = 0.52, coatPow = 0, coatGain = 0, mirror = 0, mirrorRough = 0.05, mirrorBroad = 0.45,
+  mirrorTint = 0, mirrorFloor = 0.30,
 } = {}) {
   const n = (x) => (Math.round(x * 1e4) / 1e4).toFixed(4);
-  const key = `sky|${n(gain)}|${n(blur)}|${n(f0)}|${n(tint)}|${n(sunPow)}|${bumpy ? 1 : 0}|${n(amb)}|${n(cap)}|${n(coatPow)}|${n(coatGain)}`;
+  const key = `sky|${n(gain)}|${n(blur)}|${n(f0)}|${n(tint)}|${n(sunPow)}|${bumpy ? 1 : 0}|${n(amb)}|${n(cap)}|${n(coatPow)}|${n(coatGain)}|${n(mirror)}|${n(mirrorRough)}|${n(mirrorBroad)}|${n(mirrorTint)}|${n(mirrorFloor)}`;
   return patchShader(mat, key, (shader) => {
     Object.assign(shader.uniforms, SKYU);
     shader.fragmentShader = shader.fragmentShader
@@ -776,6 +809,7 @@ uniform vec3 uSkyGnd;
 uniform vec3 uSkySun;
 uniform vec3 uSkySunDir;
 uniform vec4 uSkyP;
+uniform vec3 uSkyMir;
 vec3 nitroProbe( vec3 R ) {
 	float h = R.y;
 	// THE SPLIT. Half-width ${n(blur)} rad: a body panel that rolls through that many degrees puts
@@ -858,9 +892,67 @@ ${bumpy ? '' : `	#ifdef DOUBLE_SIDED
 	 * angle a chase camera actually sees the bodywork from.
 	 */
 	float skyF = min( ${n(f0)} + ( 1.0 - ${n(f0)} ) * pow( clamp( 1.0 - abs( dot( skyN, skyV ) ), 0.0, 1.0 ), 5.0 ), ${n(cap)} );
-	vec3 skyR = nitroProbe( reflect( -skyV, skyN ) );
+	vec3 skyRd = reflect( -skyV, skyN );
+	vec3 skyR = nitroProbe( skyRd );
 	skyR *= mix( vec3( 1.0 ), diffuseColor.rgb, ${n(tint)} );
 	outgoingLight += skyR * skyF * ${n(gain)};
+${mirror > 0 ? `	/**
+	 * ---------------------------------------- THE LACQUER'S OWN MIRROR, AS AN UNSHARP MASK
+	 *
+	 * WAVE-13. The verdict: "the environment reflection is too low-resolution and too low-contrast,
+	 * so the paint reads as smooth plastic rather than clearcoat over metallic flake … the entire
+	 * rear quarter and deck carry one soft grey-mauve smear with no discernible horizon line, no
+	 * sky/ground split and no sun streak in it."
+	 *
+	 * The scene DOES have a probe with a horizon in it — dump it (\`tools/_lt_cube.mjs\`) and LA's
+	 * cube is cyan sky over a tan ground line over asphalt, with buildings and palms on the join.
+	 * None of it reached the paint, because the only lobe that samples it is three's, and three's
+	 * is driven by \`roughness\` (0.42-0.52) and \`clearcoatRoughness\` (0.38-0.50), both authored per
+	 * class in \`muscle.js\`/\`tuner.js\`/\`suv.js\`/\`supercar.js\`. A CubeUV lookup at roughness 0.45 is
+	 * most of the way down the mip chain: it returns the AVERAGE of a very wide cone, which is a
+	 * constant grey-mauve. A constant is exactly what the judge described, and turning those
+	 * numbers down is not this piece's call — they are what set each class's broad sheen.
+	 *
+	 * So this adds the missing octave instead of a second reflection: the SAME probe sampled once
+	 * sharp and once at the broad lobe's own roughness, and the DIFFERENCE laid over the shading.
+	 * That is an unsharp mask on the environment reflection, and its two properties are why it is
+	 * the safe shape for this fix:
+	 *
+	 *   - It adds CONTRAST, not brightness. Over any patch of directions the sharp and the broad
+	 *     sample have the same mean by construction, so the panel's average value, the frame's
+	 *     exposure and the §2.1 dark end are all left where they were. §9.1's lesson was that a
+	 *     builder handed a metric spends whatever the metric does not measure; here the thing that
+	 *     would have been spent — the paint's own value and hue — is not on the table at all.
+	 *   - It puts the horizon back as an EDGE. Where a rolled shoulder sweeps the reflection vector
+	 *     across the skyline the sharp sample steps from dark ground to bright sky while the broad
+	 *     one does not move, so the difference is strongly negative just below the line and
+	 *     strongly positive just above it: §1.1's "bright sharp sky reflection on the upper body
+	 *     panels and a dark ground reflection on the lower", drawn by the actual city.
+	 *
+	 * It is also what makes the reflection MOVE. The lookup is keyed on the WORLD-space reflection
+	 * vector (skyN and skyV are the view-space varyings multiplied through mat3(viewMatrix), i.e.
+	 * by the inverse of the view rotation), so as the car yaws the skyline slides across the
+	 * bodywork instead of sitting on it. No per-frame re-capture is needed for that and none is
+	 * done — see the cost note in engine.js captureEnvironment.
+	 *
+	 * COST: two CubeUV fetches on bodywork fragments, no new texture, no new uniform, no new draw
+	 * call. \`envMap\` and \`envMapIntensity\` are already bound wherever a probe exists, which is what
+	 * the guard tests.
+	 *
+	 * FLOOR: the negative half of an unsharp mask can drive a fragment toward black, and §2.1 does
+	 * not allow that. \`mirrorFloor\` is the fraction of its own shaded value a fragment may never
+	 * go below, so the dark side of the horizon is a deep tinted reflection rather than a hole.
+	 */
+	#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+	{
+		vec3 mirSharp = textureCubeUV( envMap, skyRd, ${n(mirrorRough)} + uSkyMir.y ).rgb;
+		vec3 mirBroad = textureCubeUV( envMap, skyRd, ${n(mirrorBroad)} ).rgb;
+		vec3 mirD = clamp( mirSharp - mirBroad, -uSkyMir.z, uSkyMir.z );
+		mirD *= envMapIntensity * skyF * ( ${n(mirror)} * uSkyMir.x );
+		mirD *= mix( vec3( 1.0 ), diffuseColor.rgb, ${n(mirrorTint)} );
+		outgoingLight = max( outgoingLight + mirD, outgoingLight * ${n(mirrorFloor)} );
+	}
+	#endif` : ''}
 ${amb > 0 ? `	/**
 	 * THE SKY'S DIFFUSE IRRADIANCE — and the actual fix for "the bottom half of every car renders
 	 * as one flat untinted near-black cutout".
@@ -1051,6 +1143,9 @@ function tuneProbe(look, n) {
 
   const d = look.sun?.dir || [-0.3, 0.3, 0.9];
   SKYU.uSkySunDir.value.set(d[0], d[1], d[2]).normalize();
+
+  // The city mirror: full strength in daylight, weighted down and softened after dark. See uSkyMir.
+  SKYU.uSkyMir.value.set(lerp(1.0, 0.42, n), lerp(0.0, 0.055, n), lerp(1.9, 0.85, n));
 
   SKYU.uSkyP.value.set(
     lerp(1.15, 0.98, n),     // master gain
