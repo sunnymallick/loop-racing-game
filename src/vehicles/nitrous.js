@@ -405,6 +405,16 @@ import { clamp, lerp, smoothstep, RNG } from '../core/rng.js';
 //                 exactly where the cells crowded together, which gave a cliff at the head of the
 //                 train and a row of equal ripples at the tail — measured, only diamond ONE was
 //                 ever drawn (see the r20 note in PLUME_FRAG).
+//   fx.knee       (r24) HOW DEFINED THE CLASS-TINTED FRINGE IS. Every radial term in the plume
+//                 was a gaussian and a gaussian never reaches zero, so the column had no radius
+//                 at which the eye could say "it ends here" — it faded for ~40 px and §2.5's
+//                 "class-tinted fringe" had no fringe to tint. This blends the skirt's falloff
+//                 from that gaussian (0) to a p = 6 super-gaussian (1): full density out to the
+//                 knee, then gone inside a quarter of a half-width. It moves gas INWARD rather
+//                 than adding any, so it costs the white core nothing (see the r24 block above
+//                 PLUME_FRAG's g3). 0.96 supercar / 0.92 tuner — an electric, defined edge on the
+//                 two needles; 0.62 SUV — a soft bell that still fades, because a blunt lazy
+//                 plume with a crisp outline is a balloon.
 //   fx.gasGain    master exposure of the marched integral. The BODY has to land near 1.0-1.4 in
 //                 its strongest channel at the throat: saturated, still on the tonemap's slope,
 //                 never a posterised plateau with a rim around it. Verify it with
@@ -455,7 +465,7 @@ export const NITRO = {
       screen: 1.00, profile: [0.50, 0.10, 1.55, 0.070],   // slim needle: closes fastest of the four
       bands: 5.0, knot: 0.80, xsh: 0.62, bandSpeed: 30, bandAmt: 1.00, neckAmt: 0.41, bandFade: 0.32, flick: 62, turb: 0.84,
       gasGain: 1.38, hotI: 5.60, burn: 0.30, filW: 0.148, bodyW: 0.45, wisp: 0.58,
-      skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97,
+      skirtW: 0.88, skirtI: 0.68, bodyD: 1.78, thick: 1.15, occ: 0.97, knee: 0.92,
       sparkRate: 132, sparkSpeed: [3.5, 11], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.16, cone: 0.22, smearRate: 15.0, smearWidth: 0.030,
       poolWidth: 1.4, poolLen: 3.6, lightI: 11, shake: 0.30, heat: 1.00,
@@ -471,7 +481,7 @@ export const NITRO = {
       screen: 1.10, profile: [0.79, 0.045, 1.15, 0.095],  // fat barrel, widest right off the bumper
       bands: 3.6, knot: 0.42, xsh: 0.50, bandSpeed: 12, bandAmt: 1.00, neckAmt: 0.40, bandFade: 0.34, flick: 28, turb: 1.12,
       gasGain: 1.20, hotI: 4.30, burn: 0.40, filW: 0.158, bodyW: 0.49, wisp: 0.94,
-      skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97,
+      skirtW: 1.00, skirtI: 1.00, bodyD: 1.78, thick: 1.25, occ: 0.97, knee: 0.78,
       sparkRate: 122, sparkSpeed: [2.5, 9], sparkWidth: 0.050, sparkLife: [0.20, 0.38],
       wake: 0.21, cone: 0.28, smearRate: 13.0, smearWidth: 0.032,
       poolWidth: 1.7, poolLen: 4.4, lightI: 13, shake: 0.46, heat: 1.15,
@@ -493,7 +503,7 @@ export const NITRO = {
       // column. Round 2 clipped "large flat regions to featureless yellow-white across the lower
       // half of the frame" — this is the number that fixes that, not the post chain.
       gasGain: 1.18, hotI: 4.50, burn: 0.44, filW: 0.152, bodyW: 0.54, wisp: 1.05,
-      skirtW: 1.10, skirtI: 1.04, bodyD: 1.62, thick: 1.25, occ: 0.97,
+      skirtW: 1.10, skirtI: 1.04, bodyD: 1.62, thick: 1.25, occ: 0.97, knee: 0.62,
       sparkRate: 112, sparkSpeed: [2, 8], sparkWidth: 0.056, sparkLife: [0.22, 0.42],
       wake: 0.25, cone: 0.32, smearRate: 11.0, smearWidth: 0.050,
       poolWidth: 1.9, poolLen: 4.2, poolI: 0.40, lightI: 6, shake: 0.54, heat: 1.15,
@@ -510,7 +520,7 @@ export const NITRO = {
       screen: 1.25, profile: [0.50, 0.115, 1.52, 0.068],  // long spindle — the slenderest of the four
       bands: 5.6, knot: 0.92, xsh: 0.70, bandSpeed: 34, bandAmt: 1.00, neckAmt: 0.44, bandFade: 0.30, flick: 74, turb: 0.76,
       gasGain: 1.10, hotI: 4.90, burn: 0.28, filW: 0.142, bodyW: 0.43, wisp: 0.52,
-      skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97,
+      skirtW: 0.84, skirtI: 0.62, bodyD: 1.78, thick: 1.12, occ: 0.97, knee: 0.96,
       sparkRate: 132, sparkSpeed: [4, 14], sparkWidth: 0.034, sparkLife: [0.16, 0.30],
       wake: 0.14, cone: 0.20, smearRate: 17.0, smearWidth: 0.042,
       poolWidth: 1.5, poolLen: 4.6, lightI: 14, shake: 0.62, heat: 1.10,
@@ -991,7 +1001,7 @@ const PLUME_FRAG = /* glsl */`
   uniform float uLen, uR0, uRmax;
   uniform float uTime, uLevel, uPhase, uTurb, uFlick;
   uniform float uBands, uBandSpeed, uBandAmt, uNeck, uKnot, uBandDrift, uXsh, uBandFade;
-  uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD;
+  uniform float uGain, uHot, uBurn, uFilW, uBodyW, uSkirtW, uSkirtI, uBodyD, uKnee, uKneeR;
   uniform float uThick, uOcc, uReach, uFade, uPersp, uSoft, uWisp;
   uniform float uNear0, uNear1, uEnd0, uEnd1, uGroundY;
   varying vec3 vWorld;
@@ -1280,12 +1290,41 @@ const PLUME_FRAG = /* glsl */`
         float kc = uFilW * (1.0 + knot * 1.45);
         float g1 = exp(-q2 / (kc * kc));                        // incandescent filament
         float g2 = exp(-q2 * q / (uBodyW * uBodyW * uBodyW));   // super-gaussian body: flat middle
-        float g3 = exp(-q2 / (uSkirtW * uSkirtW));              // the cool shear layer
+        // ── (r24) THE FRINGE HAS AN EDGE: A DENSITY KNEE, NOT AN INFINITE FALLOFF ───────────
+        // Every radial term in this shader was a gaussian, and a gaussian never reaches zero:
+        // measured on the r23 vegas supercar, the skirt still carries 37% of its peak density at
+        // one half-width, 19% at 1.3 and 8% at 1.6, so the class colour thins out over ~40 px of
+        // screen and there is no radius at which the eye can say "the jet ends here". §2.5 asks
+        // for a "class-tinted FRINGE", and a fringe is a bounded thing; what this drew was a
+        // haze. The floor-priced way to fix it is NOT to add gas (wave 10 bought width with
+        // unlit gas and lost the round for it) but to REDISTRIBUTE the gas it already has: a
+        // super-gaussian holds the fringe near full density out to the knee and then drops it
+        // over ~0.25 half-widths, and the exponent is blended in the EXPONENT so it costs the
+        // same single exp() the gaussian did.
+        //
+        //   uKnee = 0   plain gaussian, exactly what r23 drew (the SUV keeps most of this)
+        //   uKnee = 1   p = 6 super-gaussian: ~0.99 at 0.4 rk, 0.5 at 0.89 rk, 0.02 at 1.25 rk
+        //
+        // The RADIUS of the knee is fluted by fl, the same azimuthal noise that ribs the shear
+        // layer, which already carries the five Chebyshev flutes — so the boundary is defined but
+        // is never a circle, never the analytic curve, and different on the two sides of the
+        // column. That is also the only kind of structure SpeedShader's radial blur cannot touch:
+        // the blur averages ~50 px ALONG the axis, and a fluted silhouette varies ACROSS it.
+        // uKneeR = 0.94 is chosen so the half-density radius and the total optical depth along a
+        // ray are unchanged to within ~1% of the gaussian this replaces — this must not cost the
+        // white core one step of luminance, and measured, it does not.
+        float rk  = uSkirtW * uKneeR * (0.86 + 0.28 * fl);
+        float qn2 = q2 / (rk * rk);
+        float qn6 = qn2 * qn2 * qn2;
+        float g3  = exp(-mix(qn2, qn6, uKnee));                 // the cool shear layer, bounded
         // Detached gas: fl CUBED is mostly zero and occasionally a real blob, well outside the
         // column. That is what tears the outline up — softness is not irregularity, and a smooth
         // analytic falloff reads as the edge of an OBJECT however gradual it is.
+        // (r24) 0.34/1.20 -> 0.48/1.34, i.e. the wisps now live mostly OUTSIDE the knee. With the
+        // skirt bounded, this is the layer that keeps the §7 rule: detached blobs beyond a defined
+        // edge, which is what a real shear layer sheds and what stops the boundary being a rim.
         float wsp = fl * fl * fl * uWisp * exp(-q2 / 1.30)
-                  * smoothstep(0.34, 1.20, q) * smoothstep(0.05, 0.44, t);
+                  * smoothstep(0.48, 1.34, q) * smoothstep(0.05, 0.44, t);
 
         // Nothing may be non-zero where the march stops. Everything is taken to exactly zero,
         // with zero slope, before uReach, so the analytic cut cannot draw a step.
@@ -1547,6 +1586,14 @@ function plumeMaterial(fx, phase) {
       uFilW: { value: fx.filW ?? 0.20 },
       uBodyW: { value: fx.bodyW ?? 0.46 },
       uSkirtW: { value: fx.skirtW ?? 0.88 },
+      // (r24) THE FRINGE'S BOUNDARY. uKnee blends the skirt's radial falloff from a plain gaussian
+      // (0 — no boundary at any radius, which is what r23 drew) to a p = 6 super-gaussian (1 —
+      // full density to ~0.7 of the knee radius, then gone inside a quarter of a half-width). It
+      // is the per-class knob for how DEFINED the class-tinted fringe is: the supercar's violet
+      // needle has a hard electric edge, the SUV's amber bell keeps a soft one. uKneeR normalises
+      // the knee radius so the half-density radius is where the gaussian's was.
+      uKnee: { value: fx.knee ?? 0.85 },
+      uKneeR: { value: fx.kneeR ?? 0.94 },
       uSkirtI: { value: fx.skirtI ?? 0.36 },
       // how much of the jet's own body ABSORBS — what decides whether the lane line behind the
       // plume goes away, and how strongly the near side of the column shades the far side.
