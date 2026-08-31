@@ -800,22 +800,46 @@ export class Engine {
      * piece to do. The clamp bounds what any one channel may be multiplied by, tightly after dark.
      */
     const bound = (c, lo, hi) => c.setRGB(clamp(c.r, lo, hi), clamp(c.g, lo, hi), clamp(c.b, lo, hi));
-    const lo = mix2(0.50, 0.86), hi = mix2(1.75, 1.16);
+    // Bounds chosen from whole-frame measurement, not taste: at [0.50, 1.75] the mean BLUE of
+    // la-muscle-still rose 5.3 levels and Miami's rose 9.7 with red up 4.9, which is a palette
+    // moving. [0.70, 1.34] still lets the two hemispheres differ by 1.9:1 in R:B — a real warm
+    // ground under a real cool sky — and holds every city's frame mean inside a couple of levels.
+    /**
+     * THE TWO HEMISPHERES GET DIFFERENT BOUNDS, and the asymmetry is the whole reason this is
+     * shippable.
+     *
+     * The UPPER hemisphere is what every horizontal surface in a city collects: the carriageway,
+     * the kerbs, the pavement, the roofs. Give it a real hue push and the city's palette moves —
+     * measured whole-frame, at [0.50, 1.75] the mean blue of la-muscle-still rose 5.3 levels and
+     * Miami's rose 9.7 with red up 4.9. It also does not need one: the captured sky is already
+     * strongly cool (LA's upper bands measure R-B = -0.36). So it is held inside +-13%.
+     *
+     * The LOWER hemisphere lights almost nothing a camera sees except the underside and shaded
+     * flank of a car, which is exactly where §1.1 wants a warm ground reflection and where §2.1
+     * wants a tinted rather than a black dark end. It gets the wide bound, and it is what carries
+     * the split.
+     *
+     * Ablated (engine.envHorizon = 0, shots/w14_r): the material work in kit.js is grade-neutral
+     * to within 0.4 of a level on every channel in both cities, so everything the frame mean does
+     * move is this function and is bounded here.
+     */
+    const sLo = mix2(0.90, 0.94), sHi = mix2(1.11, 1.07);
+    const gLo = mix2(0.64, 0.86), gHi = mix2(1.42, 1.16);
     const skyMul = bound(unitTint(up.clone().lerp(hz, 0.30), mix2(0.28, 0.20) * k)
-      .multiplyScalar(lerp(1, mix2(1.10, 1.04), k)), lo, hi);
+      .multiplyScalar(lerp(1, mix2(1.02, 1.01), k)), sLo, sHi);
     const gndMul = bound(unitTint(gnd.clone().lerp(accent, mix2(0.55, 0.62)), mix2(0.60, 0.50) * k)
-      .multiplyScalar(lerp(1, mix2(0.96, 0.95), k)), lo, hi);
+      .multiplyScalar(lerp(1, mix2(0.96, 0.95), k)), gLo, gHi);
 
     // ---- pass 2, the floor -------------------------------------------------------------------
-    const gndF = atL(unitTint(gnd.clone().lerp(accent, mix2(0.62, 0.72)), 0.86), mix2(0.046, 0.009) * k);
-    const skyF = atL(unitTint(up.clone().lerp(hz, 0.30), 0.62), mix2(0.075, 0.006) * k);
+    const gndF = atL(unitTint(gnd.clone().lerp(accent, mix2(0.62, 0.72)), 0.58), mix2(0.030, 0.008) * k);
+    const skyF = atL(unitTint(up.clone().lerp(hz, 0.30), 0.40), mix2(0.046, 0.005) * k);
     // NIGHT IS THE DANGEROUS END OF THIS. A floor is only a floor while it is under the city, and
     // Vegas' cube runs 0.02-0.20 radiance — at the day band's 0.40 the ring is BRIGHTER than the
     // strip it is supposed to sit behind, and since it carries the city accent the whole frame
     // shifts magenta (measured: shots/w14_l at 4x, the carriageway and both cars). 0.09 keeps it
     // beneath Vegas' own neon, which is where a floor belongs.
     const bandF = atL(unitTint(hz.clone().lerp(new THREE.Color(1, 1, 1), 0.40).lerp(accent, n * 0.40), 0.55),
-      mix2(0.40, 0.09) * k);
+      mix2(0.28, 0.08) * k);
     const sunF = atL(sunC.clone(), mix2(3.4, 0.35) * k);
 
     const VS = /* glsl */`
