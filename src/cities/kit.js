@@ -3541,7 +3541,7 @@ function litTint(hex, gain, sat = 0.55) {
 }
 
 /** Used only by the `parkedCar` export, which has no city `look` to read a rig out of. */
-const KERB_DEFAULT = { dir: [-0.72, 0.18, 0.66], key: '#ffd9ae', sky: '#8fa8d8', road: '#6a6070' };
+const KERB_DEFAULT = { dir: [-0.72, 0.18, 0.66], key: '#ffd9ae', keyI: 1.15, sky: '#8fa8d8', road: '#6a6070' };
 
 function kerbLight(m, cue) {
   const u = {
@@ -3549,8 +3549,12 @@ function kerbLight(m, cue) {
     uKerbKey: { value: litTint(cue.key, cue.gKey, 0.45) },
     uKerbSky: { value: litTint(cue.sky, cue.gSky, 0.60) },
     uKerbRoad: { value: litTint(cue.road, cue.gRoad, 0.50) },
+    // A UNIFORM, not a literal in the source, for one reason: `customProgramCacheKey` splits the
+    // program cache, and five paint materials with five baked exponents were five programs where
+    // one will do. Measured, that was +10 compiled programs per city (Vegas 180 -> 190); as a
+    // uniform the five share a single source and it is +2.
+    uKerbTight: { value: cue.tight },
   };
-  const tight = cue.tight.toFixed(1);
   /**
    * TWO LOBES PER CATCH, and this is the difference between a cue that works on a coupe and one
    * that works on the whole fleet. `CAR_SECTION` tucks its sill 50 degrees under; `UTE_SECTION`,
@@ -3574,6 +3578,7 @@ function kerbLight(m, cue) {
         'uniform vec3 uKerbKey;',
         'uniform vec3 uKerbSky;',
         'uniform vec3 uKerbRoad;',
+        'uniform float uKerbTight;',
         'void main() {',
       ].join('\n'))
       .replace(src, [
@@ -3596,7 +3601,7 @@ function kerbLight(m, cue) {
         `           * ( 1.0 - 0.45 * ${ss([0.58, 0.90], 'kN.y')} );`,
         `  float kDn = ${W1} * ${ss(dn, '-kN.y')} + ${W2} * ${ss(dn2, '-kN.y')};`,
         '  vec3 kH = normalize( uKerbDir + kV );',
-        `  float kSp = pow( max( dot( kN, kH ), 0.0 ), ${tight} );`,
+        '  float kSp = pow( max( dot( kN, kH ), 0.0 ), uKerbTight );',
         // ...and the two hemispheric terms carry a share of the PIGMENT, because a sky catch on a
         // red car is red. Only a share: multiplied by albedo outright, a charcoal body gets
         // nothing again and the dark half of the rank is back where round 5 left it. At 45% the
@@ -3611,7 +3616,7 @@ function kerbLight(m, cue) {
   // Three keys its program cache on the shader source it thinks a material has, which is the
   // UNPATCHED source: without this, two fleet materials that differ only in these uniforms — or a
   // fleet material and any other MeshStandardMaterial with the same feature set — share a program.
-  m.customProgramCacheKey = () => `kerb|${tight}|${up.join()}|${dn.join()}|${up2.join()}|${dn2.join()}`;
+  m.customProgramCacheKey = () => `kerb|${up.join()}|${dn.join()}|${up2.join()}|${dn2.join()}`;
   // the live uniform objects, so a tuning probe can sweep the three gains inside one browser boot
   // instead of one boot per candidate
   m.userData.kerbCue = u;
@@ -3627,7 +3632,7 @@ function fleetKit(cache, { colors = null, night = false, signs = null, kerb = nu
   const sg = (signs && signs.length ? signs : FLEET_SIGNS).slice(0, 4);
   const cue = { ...KERB_DEFAULT, ...(kerb || {}) };
   const key = `fleet|${cols.join(',')}|${sg.map((s) => s[0]).join(',')}|${night ? 1 : 0}`
-    + `|k:${cue.dir.map((v) => v.toFixed(2)).join()},${cue.key},${cue.sky},${cue.road}`;
+    + `|k:${cue.dir.map((v) => v.toFixed(2)).join()},${cue.key},${cue.sky},${cue.road},${cue.keyI}`;
   return mat(cache, key, () => {
     const paint = new Sheet({
       // 8 x 4 cells of 256: up to eight body colours in THREE treatments each, two neutral box
@@ -3694,7 +3699,21 @@ function fleetKit(cache, { colors = null, night = false, signs = null, kerb = nu
      * is that those two numbers do not move down, so what a lit city gets from this is a shoulder
      * and a rocker that the key is not reaching, not a second key light.
      */
-    const gN = night ? 1 : 0.30;
+    /**
+     * HOW MUCH OF IT A CITY GETS — and this is the second §9.1 trap in the same feature.
+     *
+     * The catch is a stand-in for the light that is not reaching a parked flank. Vegas has none
+     * to speak of (a 0.24 moon and a 1.15 lateral fill), so it gets all of it. Miami is a 2.35
+     * dusk sun raking a flank at y = 0.33: at full strength the same catch measured a fleet-wide
+     * flank chroma of 0.50 against 0.60 with it off — a 17% desaturation of every body in the
+     * city, bought with numbers that were already the best in the build. The lift has to scale
+     * INVERSELY with the key the rig already delivers, or the cities that need it least pay the
+     * most for it. 1.15 is Vegas' own key, so Vegas is the unit and every brighter city steps
+     * down from there: Miami 0.49, New York 0.53, Los Angeles floored at 0.40 and then a further
+     * 0.30 for being broad daylight.
+     */
+    const gCity = clamp(1.15 / Math.max(0.4, cue.keyI || 1.15), 0.40, 1.0);
+    const gN = (night ? 1 : 0.30) * gCity;
     kerbLight(paint.material, { ...cue, gKey: 0.34 * gN, gSky: 0.30 * gN, gRoad: 0.17 * gN, tight: 14 });
     kerbLight(gloss, { ...cue, gKey: 0.50 * gN, gSky: 0.34 * gN, gRoad: 0.20 * gN, tight: 26 });
     kerbLight(rimMat, { ...cue, gKey: 0.62 * gN, gSky: 0.07 * gN, gRoad: 0.07 * gN, tight: 34 });
@@ -6313,7 +6332,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
       const K = fleetKit(cache, {
         colors: carColors, night, signs: pdef.fleetSigns,
         kerb: {
-          dir: kl.dir, key: kl.color,
+          dir: kl.dir, key: kl.color, keyI: kl.intensity,
           sky: (L.ambient && L.ambient.sky) || KERB_DEFAULT.sky,
           road: L.groundGlowColor || (L.ambient && L.ambient.ground) || KERB_DEFAULT.road,
         },
