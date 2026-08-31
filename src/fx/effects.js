@@ -71,6 +71,13 @@ const FIRELIT = new THREE.Color('#c99a72');
 const LIGHT_REF_KEY = 3.35;
 const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
+// The two bands `_slipAt` ramps over, for the two different scales its two callers hand it.
+// SMOKE_GATE is race.js's tyre-smoke `amount` (peaks near 0.5 for a car genuinely sideways);
+// SKID_GATE is race.js's skid strength, which is `clamp(slide * 1.5, 0, 1)` and therefore
+// saturates at slide 0.667. Neither is the player — the player is read off the physics body.
+const SMOKE_GATE = [0.36, 0.50];
+const SKID_GATE = [0.92, 1.00];
+
 /**
  * FX director. Owns every particle pool, the world decals, the impact lights and the camera-shake
  * state, and exposes one call per game event. Systems that need FX ask this — nothing else
@@ -136,13 +143,25 @@ export class Effects {
       max: 380, blending: THREE.NormalBlending, gravity: -24, drag: 0.22, renderOrder: 5,
       ground: 0.06, bounce: 0.34, groundFriction: 0.55, maxPx: 140,
     });
-    this.skid = new SkidTrails({});
+    this.skid = new SkidTrails({ max: 60000 });
     // Skid marks are laid by exactly the same broken signal the tyre smoke was (see `_slipAt`), so
-    // they get exactly the same gate. main.js asks for `clamp(slide·0.62·1.6)` and race.js for
-    // `clamp(slide·1.5)`, i.e. roughly `slide` and `1.5·slide` — dividing by three puts an
-    // opponent's number back on the same scale as the `amount` its tyre smoke arrives with, and
-    // the player's branch ignores it entirely and reads the body.
-    this.skid.gate = (pos, strength) => this._slipAt(pos, strength / 3);
+    // they get the same gate — but NOT the same numbers, and that is what had killed them for
+    // every car except the player.
+    //
+    // The gate used to be `_slipAt(pos, strength / 3)`. For anything that is not the player's own
+    // body `_slipAt` ramps over 0.36 → 0.50, and race.js hands the skid `clamp(slide * 1.5, 0, 1)`
+    // — which cannot exceed 1, so `strength / 3` cannot exceed 0.333, which is below the bottom of
+    // the ramp. Instrumenting one LA chase: 1746 opponent calls to `skid.add`, gate returned 0 on
+    // every single one. No opponent has ever laid a millimetre of rubber, in any city, ever.
+    //
+    // The division was trying to put race.js's number on the same scale as the `amount` its tyre
+    // smoke arrives with, and it cannot: race.js's skid signal SATURATES at slide 0.667 (a quarter
+    // of those 1746 calls came in at exactly 1.0), so the top of the smoke's useful range simply
+    // is not in it. The gate therefore reads the range the signal actually has — 0.92 → 1.00 of a
+    // clamped 1.5x slide, i.e. a car past slide 0.61 and full past 0.667. That is still a car
+    // genuinely sideways: the straight-line-at-full-throttle case this gate exists to reject sits
+    // at slide 0.38-0.60, which lands at 0.90 and below and stays off.
+    this.skid.gate = (pos, strength) => this._slipAt(pos, strength, SKID_GATE);
     // …and laid on the surface the tyre is actually on, not on the constant y = 0.04 main.js
     // flattens every contact point to. See `_contactY`.
     this.skid.groundY = (pos) => this._contactY(pos);
@@ -810,7 +829,7 @@ export class Effects {
    * by race.js, which passes no body — for those the only signal available here is `amount`, and it
    * is read conservatively (see the caller note in the class docs).
    */
-  _slipAt(pos, amount) {
+  _slipAt(pos, amount, curve = SMOKE_GATE) {
     const b = this._car;
     // the player's four contact patches are all inside ~2.6 m of the body origin; anything further
     // out is an opponent and has to fall back on `amount`
@@ -835,7 +854,11 @@ export class Effects {
     // straight-line car at full throttle lands at 0.19–0.30 and a car genuinely sideways at
     // 0.40–0.50. Ramping across the top of that band is the sharpest cut available without the
     // body. It is a bridge until race.js can pass its drivers' real slip — see the report.
-    return smoothstep(0.36, 0.50, amount);
+    //
+    // `curve` is which band: the two callers hand this function numbers on different scales, and
+    // assuming they were the same is what silently deleted every opponent's skid mark. See the
+    // gate installed in the constructor.
+    return smoothstep(curve[0], curve[1], amount);
   }
 
   /**
