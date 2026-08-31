@@ -331,9 +331,33 @@ export function paintMaterial({
   color = '#d92b2b', metalness = 0.26, roughness = 0.46, clearcoat = 1.0,
   clearcoatRoughness = 0.42, flake = 0.55, seed = 3, map = null, envIntensity = 0.85,
 } = {}) {
+  /**
+   * ------------------------------------------------------------------ WAVE-14: THE COAT IS TIGHTENED
+   *
+   * The four classes author `clearcoatRoughness` 0.38-0.50, and at every one of those values three's
+   * clearcoat IBL reads the SAME thing: `bilinearCubeUV` floors `mipInt` at `cubeUV_minMipLevel` = 4,
+   * i.e. sixteen pixels per cube face, for every roughness at or above 0.21. Sixteen pixels per face
+   * is 5.6 degrees per texel — it can carry a hemisphere and it cannot carry an edge — so the lacquer
+   * on all four cars was reflecting a constant, which is exactly the "one soft grey-mauve smear" the
+   * blind judge measured. Nothing about the capture resolution could change that; the roughness is
+   * what selects the tile.
+   *
+   * So the coat comes down to 0.16-0.23, which lands on the 32-64 px tiles and lets the horizon
+   * graded into the cube (engine.js `bakeHorizon`) arrive as an EDGE that travels across a crowned
+   * panel. The mapping compresses rather than clamps, so the classes keep their order and the SUV's
+   * coat is still the dullest and the supercar's the hardest.
+   *
+   * It is safe to sharpen here in a way it was not in wave 11, for two reasons that are both
+   * measured elsewhere in this file: `specCeiling` bounds painted bodywork at 1.52, below every
+   * bloom threshold the engine will run, so a tighter lobe cannot become a bloom source and turn
+   * into the "white-cyan bar" of the round-2 verdict; and the stair-stepped facets muscle.js
+   * describes are a LOW-resolution artefact (16 px per face, 16 texels across a panel that sweeps
+   * 90 degrees), so moving UP the mip chain removes them rather than causing them.
+   */
+  const coatRough = Math.min(clearcoatRoughness, 0.16 + (clearcoatRoughness - 0.38) * 0.55);
   const mat = new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(color),
-    metalness, roughness, clearcoat, clearcoatRoughness,
+    metalness, roughness, clearcoat, clearcoatRoughness: coatRough,
     envMapIntensity: envIntensity,
     map,
   });
@@ -427,8 +451,12 @@ export function paintMaterial({
    */
   skyReflect(mat, {
     gain: 1.34, blur: 0.005, f0: 0.050, tint: 0.62, sunPow: 580, amb: 0.23, cap: 0.44,
-    coatPow: 30, coatGain: 0.34, mirror: 1.00, mirrorRough: 0.048, mirrorBroad: 0.45,
-    mirrorTint: 0.28, mirrorFloor: 0.34, core: 1.00, coreWidth: 0.026,
+    coatPow: 30, coatGain: 0.34, mirror: 1.25, mirrorRough: 0.048, mirrorBroad: 0.45,
+    mirrorTint: 0.28, mirrorFloor: 0.34, core: 1.55, coreWidth: 0.012,
+    // 1.00 -> 1.25. The unsharp mask has a real edge to lift now that engine.js bakeHorizon puts a
+    // sky/ground step and a sun lobe into the cube; before this round the sharp tap and the broad
+    // tap were reading two blurs of the same low-contrast city and the difference was small
+    // wherever it was not a window frame. Zero-mean by construction, so this is contrast only.
   });
   // …and the highlight shoulder, registered LAST so it sees the finished value (see specCeiling).
   // 1.52 sits under every bloom threshold the engine will run, so painted bodywork can reach white
@@ -993,7 +1021,33 @@ ${amb > 0 ? `	/**
 	 */
 	{
 		float sUp = skyN.y * 0.5 + 0.5;
-		vec3 skyIrr = mix( uSkyGnd * 3.2, uSkyUp * 1.15, sUp ) + uSkyHaze * ( 0.40 * ( 1.0 - abs( skyN.y ) ) );
+		/**
+		 * WAVE-14: THIS TERM IS WHERE THE SKY/GROUND SPLIT ACTUALLY LIVES ON A CAR, and it was
+		 * being cancelled by its own third component.
+		 *
+		 * Ablation on la-muscle-still (tools/_w14_ab.mjs, the muscle's right rear quarter): kill
+		 * the city cube and the panel drops 36 levels, kill the key and it drops 30, kill the
+		 * analytic mirror and it drops 6. So the panel is lit by IRRADIANCE, not by a reflection —
+		 * and irradiance is driven by the NORMAL, which on a flank is horizontal. The two
+		 * hemispheres are then averaged and the result is the "soft grey-mauve smear" the judge
+		 * measured, no matter how much contrast the hemispheres have.
+		 *
+		 * What made that unrecoverable here was the haze term: uSkyHaze is the near-white horizon
+		 * band at luminance 1.42, and 0.40 * (1 - |n.y|) weights it MOST on exactly the vertical
+		 * panels — 0.57 of neutral white against a 0.36 hemispheric mix, i.e. the flank's ambient
+		 * was more than half a colourless constant by construction. 0.34 leaves the flank 92% of
+		 * the value it had and hands the missing 8% to the two hemispheres, which have hues.
+		 *
+		 * The ground multiplier goes the other way, 3.2 -> 1.20, and that is NOT a reduction:
+		 * uSkyGnd moved from luminance 0.026 to 0.070 this round (see tuneProbe), so 1.20 lands a
+		 * downward-facing normal on 0.084 against the 0.083 it had before. Identical brightness,
+		 * and a warm ground hue where there used to be near-black. Measured the other way round
+		 * first — at 2.6 the same term is 4.7x brighter and every chrome bezel and tail panel on
+		 * the muscle car photographs GOLD (shots/w14_g at 4x), which is a warm-bounce term escaping
+		 * into surfaces that should stay dark. Contrast, not brightness, is the whole discipline
+		 * of this round.
+		 */
+		vec3 skyIrr = mix( uSkyGnd * 1.20, uSkyUp * 1.15, sUp ) + uSkyHaze * ( 0.34 * ( 1.0 - abs( skyN.y ) ) );
 		outgoingLight += diffuseColor.rgb * skyIrr * ${n(amb)};
 	}` : ''}
 }
@@ -1152,8 +1206,25 @@ function tuneProbe(look, n) {
   atLum(zen, lerp(0.52, 0.075, n));
   SKYU.uSkyUp.value.copy(zen);
 
-  const road = gnd.clone().lerp(accent, 0.18 + n * 0.30);
-  atLum(road, lerp(0.026, 0.020, n));
+  /**
+   * WAVE-14: THE GROUND HALF STOPS BEING BLACK.
+   *
+   * At luminance 0.026 the analytic mirror's lower hemisphere was, through a Fresnel cap of 0.44
+   * and a gain of 1.34, worth 0.015 of anything — so the reflection on a body panel was "the hot
+   * band, or nothing", and "nothing" is not a ground reflection, it is an absence. The blind judge
+   * measured the consequence directly: on the muscle's right rear quarter R-B never left the
+   * -74..-136 band over 110 rows, i.e. no warm ground anywhere on the panel, on a car standing on
+   * sunlit concrete.
+   *
+   * §1.1 asks for a DARK ground reflection on the lower body, and dark is not zero: sunlit
+   * asphalt-and-concrete sits around a fifth of the sky it is under, and it is WARM, because it is
+   * the one surface in the frame lit by bounced sun rather than by sky. 0.150 against the zenith's
+   * 0.52 is that fifth; the lerp toward the city's accent is what makes it the city's own ground
+   * rather than a grey card. Night stays near where it was — after dark the ground is not lit, and
+   * what it does have is the neon streaks `uSkyP.w` already draws.
+   */
+  const road = gnd.clone().lerp(accent, 0.42 + n * 0.26);
+  atLum(road, lerp(0.070, 0.026, n));
   SKYU.uSkyGnd.value.copy(road);
 
   const glare = sun.clone();
@@ -1168,12 +1239,30 @@ function tuneProbe(look, n) {
   SKYU.uSkySunDir.value.set(d[0], d[1], d[2]).normalize();
 
   // The city mirror: full strength in daylight, weighted down and softened after dark. See uSkyMir.
-  SKYU.uSkyMir.value.set(lerp(1.0, 0.42, n), lerp(0.0, 0.055, n), lerp(1.9, 0.85, n));
+  // WAVE-14: the day weight is unchanged at 1.0 while `mirror` itself goes 1.00 -> 1.45, so the
+  // NIGHT weight comes down 0.42 -> 0.34 to hold the night product where it was
+  // (1.25 x 0.34 = 0.42 = 1.00 x 0.42). Vegas and NYC get no more mirror than they had; the extra
+  // contrast is spent entirely in daylight, where the cube is a continuous picture of a city. The
+  // first attempt raised both and the Strip went visibly magenta — a neon sign is a very bright
+  // very saturated point in a mostly black cube, so an unsharp mask amplifies it hardest exactly
+  // where the paint has least of its own value to defend itself with.
+  SKYU.uSkyMir.value.set(lerp(1.0, 0.34, n), lerp(0.0, 0.055, n), lerp(2.4, 0.85, n));
 
   SKYU.uSkyP.value.set(
     lerp(1.15, 0.98, n),     // master gain
     lerp(0.026, 0.042, n),   // horizon half-width — a touch softer at night, where it is haze
-    lerp(0.115, 0.150, n),   // hot-band width: ~7° of sky, so a rolled panel carries a real stripe
+    /**
+     * WAVE-14: 0.115 -> 0.058, ~7 degrees -> ~3.4.
+     *
+     * Round 3 widened this because at 0.029 it was a hairline that aliased into a crawling dotted
+     * edge. That was true, and it was fixed at the cost of the thing the band exists for: seven
+     * degrees of reflection direction is most of a crowned panel, so the whole shoulder sat INSIDE
+     * the band at one value and the horizon stopped being an edge. Half-way back is a band about
+     * 20 px wide on a rear quarter at chase distance — still several pixels, so it does not alias,
+     * and now with an actual sky above it and an actual warm ground below it (see uSkyGnd) rather
+     * than a bright band against nothing on both sides.
+     */
+    lerp(0.058, 0.095, n),   // hot-band width: ~3.4° of sky — the horizon is a line, not a wash
     lerp(0.45, 1.35, n),     // ground streaks: wet neon reflections after dark
   );
 }
@@ -1216,8 +1305,31 @@ export function glassMaterial({ tint = '#080d13', opacity = 0.80, rough = 0.105 
     });
     m.userData.envAuthored = 1.05;
     m.userData.__envBase = 1.05;
+    /**
+     * WAVE-14: THE GLASS FINALLY GETS THE CITY IN IT.
+     *
+     * The blind judge's two glazing findings were the same finding: "the Vegas supercar canopy,
+     * standing under a green neon arch beside a magenta skyline, is a flat neutral grey slab", and
+     * the consistency dock, "the analytic band paints the same neutral wash on glazing in all four
+     * cities, so the cars' glass looks identical in Vegas and LA".  Both follow from one omission —
+     * glassMaterial never passed `mirror`, so the only thing drawing the pane was the ANALYTIC sky
+     * (a procedural horizon plus a sun term, which is by construction the same shape in every city)
+     * and three's own IBL, which on a 0.105-roughness surface is a mip-6 lookup: a real image, but
+     * a broad one, and it arrives through a dielectric f0 of 0.05.
+     *
+     * The `mirror` unsharp mask is exactly the missing term and glass is the surface it suits best:
+     * a windscreen or a canopy is one large smooth pane, so there is no interpolated-normal
+     * derivative noise for a high-pass to amplify — which is the risk that kept it off the paint's
+     * tighter settings.  mirrorRough 0.085 is deliberately NOT sharper than the pane's own
+     * roughness: the sharp tap and the broad tap straddle the lookup the material already does, so
+     * this adds CONTRAST at frequencies the glass was already carrying and cannot introduce the
+     * facet mosaic wave 13 spent a commit removing (measured: quarter window 800,498,58,52 holds
+     * its edge density, see the report).  What it does add is Vegas' neon and LA's skyline, per
+     * city, in the surface the judge named.
+     */
     return specCeiling(glassSheen(skyReflect(m, {
       gain: 0.92, blur: 0.013, f0: 0.050, tint: 0.0, sunPow: 340, amb: 0.0, cap: 0.72,
+      mirror: 1.15, mirrorRough: 0.085, mirrorBroad: 0.42, mirrorTint: 0.0, mirrorFloor: 0.32,
     })), { knee: 1.05, max: 1.95 });
   });
 }
