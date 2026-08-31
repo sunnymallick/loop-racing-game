@@ -3490,13 +3490,144 @@ function plateCell(ctx, w, h, { seed = 1, rear = false }) {
 }
 
 /**
+ * THE KERBSIDE LIGHT CATCH — the fleet's value blocking carried by LIGHT instead of by albedo.
+ *
+ * Round 5 made the tonal envelope survive distance by BAKING it: the paint cell steps through six
+ * value blocks up the car's height, and because the paint projection is planar in car space, that
+ * envelope lives in the albedo at a fixed car-local v. The critic's remaining charge is the bill
+ * for that. It does not respond to light direction, it is identical on both flanks, and — the
+ * number that decides it — it has no headroom at all where there is no light. Seven of fourteen
+ * sampled Vegas spots measured a flank sd under 20, and the ones that did are the ones whose
+ * flank MEAN is 11 to 20: a painted ramp on a body that nothing is lighting multiplies to
+ * nothing. More paint there does not separate, it clips.
+ *
+ * You cannot paint your way out of an unlit body. What is missing is LIGHT, and there are exactly
+ * two places a parked car catches some without a shopfront having to be next to it:
+ *
+ *   THE SHOULDER and the roof edge, which turn up toward the sky and toward the sign-glow that
+ *   hangs over a street after dark, and
+ *   THE ROCKER — the tuck under the sill, the only part of a body that faces the road, which at
+ *   night is the lit surface (§2.2 makes a wet, lit road mandatory after dark).
+ *
+ * `sectionSolid` already builds both. A fleet flank's normal sweeps from about 50 degrees below
+ * horizontal at the sill tuck, through square-on at mid-door, to 25 degrees above it at the
+ * shoulder — and nothing was converting that sweep into value, because a near-horizontal key
+ * gives a near-constant N·L across it (cos 25 deg = 0.91) and the specular lobe of a
+ * roughness-0.13 finish is a fraction of a pixel wide at 60 m. So this is a SHARPENED
+ * HEMISPHERIC: a sky term on what turns up, a road term on what turns down, with hard-ish
+ * smoothstep edges instead of the rig hemisphere's cosine, plus one broad specular off the city's
+ * own key so that the two flanks of a car are not the same flank.
+ *
+ * WHY IT SURVIVES MINIFICATION, which is the entire point of the round: it is not a texture. It
+ * is computed per fragment from the interpolated normal, so there is no mip level that can
+ * average it away — at 60 m the two catches are still exactly where the sheet metal turns, about
+ * two pixels each out of an eleven-pixel flank. And because it keys off geometry it bends around
+ * the arch flare and the haunch instead of running straight through them the way the painted
+ * beltline does, and at 5 m the relief atlas modulates it, so each door skin catches its own
+ * edge of sky.
+ *
+ * COST: no geometry, no draw call, no texture, no material. Three uniforms and a dozen ALU ops in
+ * the fragment shader of the three paint materials the fleet already had.
+ */
+function litTint(hex, gain, sat = 0.55) {
+  const c = new THREE.Color(hex);
+  // The light colours in a city `look` are LIGHT VALUES — Vegas' sky term is #33304c, which is
+  // 3% linear. Tinting with it directly would multiply the cue away to nothing, so the hue is
+  // taken and the value is not: normalise to a unit peak, pull most of the chroma out (a catch
+  // light is nearly the colour of the source but never a gel), then scale by the gain.
+  const m = Math.max(c.r, c.g, c.b, 1e-4);
+  c.multiplyScalar(1 / m).lerp(new THREE.Color(1, 1, 1), 1 - sat);
+  return c.multiplyScalar(gain);
+}
+
+/** Used only by the `parkedCar` export, which has no city `look` to read a rig out of. */
+const KERB_DEFAULT = { dir: [-0.72, 0.18, 0.66], key: '#ffd9ae', sky: '#8fa8d8', road: '#6a6070' };
+
+function kerbLight(m, cue) {
+  const u = {
+    uKerbDir: { value: new THREE.Vector3(...cue.dir).normalize() },
+    uKerbKey: { value: litTint(cue.key, cue.gKey, 0.45) },
+    uKerbSky: { value: litTint(cue.sky, cue.gSky, 0.60) },
+    uKerbRoad: { value: litTint(cue.road, cue.gRoad, 0.50) },
+  };
+  const tight = cue.tight.toFixed(1);
+  /**
+   * TWO LOBES PER CATCH, and this is the difference between a cue that works on a coupe and one
+   * that works on the whole fleet. `CAR_SECTION` tucks its sill 50 degrees under; `UTE_SECTION`,
+   * which the van and the truck cab wear, tucks 20; `BOXBODY_SECTION` is a box and turns 0.7
+   * degrees over two metres. A single smoothstep placed to catch a car's rocker measured 0.03 on
+   * a van and moved its flank sd by 1.0 — the tall bodies got nothing. So each catch is a steep
+   * lobe for the cars plus a shallow one that answers any inclination at all, weighted so the
+   * mid-door of a car, which is genuinely vertical, still gets nothing.
+   */
+  const W1 = 0.62, W2 = (1 - W1).toFixed(2);
+  const up = cue.up || [0.16, 0.62], dn = cue.dn || [0.26, 0.74];
+  const up2 = cue.up2 || [0.04, 0.30], dn2 = cue.dn2 || [0.04, 0.34];
+  const ss = (r, e) => `smoothstep( ${r[0].toFixed(3)}, ${r[1].toFixed(3)}, ${e} )`;
+  const src = '#include <emissivemap_fragment>';
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
+    if (!shader.fragmentShader.includes(src)) return;
+    shader.fragmentShader = shader.fragmentShader
+      .replace('void main() {', [
+        'uniform vec3 uKerbDir;',
+        'uniform vec3 uKerbKey;',
+        'uniform vec3 uKerbSky;',
+        'uniform vec3 uKerbRoad;',
+        'void main() {',
+      ].join('\n'))
+      .replace(src, [
+        src,
+        '{',
+        // `normal` here is the view-space, normal-mapped shading normal: it carries the section
+        // roll, the arch flare AND the relief atlas's door skins, which is why the catch lands on
+        // sheet metal rather than on a texture coordinate.
+        '  vec3 kN = inverseTransformDirection( normal, viewMatrix );',
+        '  vec3 kV = inverseTransformDirection( normalize( vViewPosition ), viewMatrix );',
+        // A ROOF IS NOT A SHOULDER. Taken flat, the sky catch lands hardest on the panels with
+        // the most area — bonnet, roof, boot — and the first capture of this pass was a kerb of
+        // pale lavender bodies with the pigment washed out of every horizontal surface, which is
+        // §9.1's mistake exactly: buying the measurement with the thing being measured. What the
+        // brief asks for is a CATCH on the roof edge and the shoulder, so the fully-up-facing
+        // panels are pulled back to 58% and the 15-40 degree roll keeps the full value. The
+        // shoulder is then the brightest line on the body, which is what a lateral street light
+        // actually does to a car.
+        `  float kUp = ( ${W1} * ${ss(up, 'kN.y')} + ${W2} * ${ss(up2, 'kN.y')} )`,
+        `           * ( 1.0 - 0.42 * ${ss([0.66, 0.93], 'kN.y')} );`,
+        `  float kDn = ${W1} * ${ss(dn, '-kN.y')} + ${W2} * ${ss(dn2, '-kN.y')};`,
+        '  vec3 kH = normalize( uKerbDir + kV );',
+        `  float kSp = pow( max( dot( kN, kH ), 0.0 ), ${tight} );`,
+        // ...and the two hemispheric terms carry a share of the PIGMENT, because a sky catch on a
+        // red car is red. Only a share: multiplied by albedo outright, a charcoal body gets
+        // nothing again and the dark half of the rank is back where round 5 left it. At 45% the
+        // spread between the darkest and lightest body in the fleet is about 2:1 instead of 20:1,
+        // which keeps a blue coupe blue without letting a black one fall back into the road.
+        // The specular is NOT tinted: a highlight is the colour of the light, not of the paint.
+        '  vec3 kT = mix( vec3( 1.0 ), diffuseColor.rgb * 2.2, 0.45 );',
+        '  totalEmissiveRadiance += ( uKerbSky * kUp + uKerbRoad * kDn ) * kT + uKerbKey * kSp;',
+        '}',
+      ].join('\n'));
+  };
+  // Three keys its program cache on the shader source it thinks a material has, which is the
+  // UNPATCHED source: without this, two fleet materials that differ only in these uniforms — or a
+  // fleet material and any other MeshStandardMaterial with the same feature set — share a program.
+  m.customProgramCacheKey = () => `kerb|${tight}|${up.join()}|${dn.join()}|${up2.join()}|${dn2.join()}`;
+  // the live uniform objects, so a tuning probe can sweep the three gains inside one browser boot
+  // instead of one boot per candidate
+  m.userData.kerbCue = u;
+  return m;
+}
+
+/**
  * Everything the fleet shares, built once per city. Eight materials and two canvases, whatever
  * the city and however many vehicles it parks.
  */
-function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
+function fleetKit(cache, { colors = null, night = false, signs = null, kerb = null } = {}) {
   const cols = (colors && colors.length ? colors : FLEET_COLORS).slice(0, 8);
   const sg = (signs && signs.length ? signs : FLEET_SIGNS).slice(0, 4);
-  const key = `fleet|${cols.join(',')}|${sg.map((s) => s[0]).join(',')}|${night ? 1 : 0}`;
+  const cue = { ...KERB_DEFAULT, ...(kerb || {}) };
+  const key = `fleet|${cols.join(',')}|${sg.map((s) => s[0]).join(',')}|${night ? 1 : 0}`
+    + `|k:${cue.dir.map((v) => v.toFixed(2)).join()},${cue.key},${cue.sky},${cue.road}`;
   return mat(cache, key, () => {
     const paint = new Sheet({
       // 8 x 4 cells of 256: up to eight body colours in THREE treatments each, two neutral box
@@ -3552,6 +3683,32 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
       roughness: 0.34, metalness: 0.66, envMapIntensity: 0.80, relief: false,
       emissiveIntensity: night ? 0.16 : 0.02,
     });
+    /**
+     * ...and all three paint finishes carry the kerbside catch. The gains split the way the
+     * finishes do: the satin bodies are the worn ones and a matte panel scatters its catch wide
+     * and dim, the gloss ones hold a tighter, brighter one, and the rim is metal — almost no
+     * diffuse hemisphere in it, all specular.
+     *
+     * A DAY CITY GETS A THIRD OF IT. Miami is a dusk rig with a 2.35 key on the flank and it
+     * already measures flank sd 42.7 at 6 m / 32.7 at 60 m; the acceptance floor for this round
+     * is that those two numbers do not move down, so what a lit city gets from this is a shoulder
+     * and a rocker that the key is not reaching, not a second key light.
+     */
+    const gN = night ? 1 : 0.30;
+    kerbLight(paint.material, { ...cue, gKey: 0.34 * gN, gSky: 0.30 * gN, gRoad: 0.17 * gN, tight: 14 });
+    kerbLight(gloss, { ...cue, gKey: 0.50 * gN, gSky: 0.34 * gN, gRoad: 0.20 * gN, tight: 26 });
+    kerbLight(rimMat, { ...cue, gKey: 0.62 * gN, gSky: 0.07 * gN, gRoad: 0.07 * gN, tight: 34 });
+    /**
+     * AND THE DARK TRIM, weakly. The box truck is the one body the paint catch cannot reach —
+     * `BOXBODY_SECTION` turns 0.7 degrees over two metres, so nothing on a cargo side is
+     * inclined enough to catch anything — and what stands in the measured band on a truck is not
+     * paint at all: it is the chassis rail, the bumpers and the window surrounds. Matte black
+     * trim with a lit top edge and a dark face is how you read those as separate parts rather
+     * than as one shadow, and it is the only thing that moves the truck's number.
+     */
+    const trimMat = kerbLight(mat(cache, `fleettrim|${night ? 1 : 0}`, () => new THREE.MeshStandardMaterial({
+      color: 0x1a1e24, roughness: 0.70, metalness: 0.18,
+    })), { ...cue, gKey: 0.20 * gN, gSky: 0.17 * gN, gRoad: 0.11 * gN, tight: 20 });
     const livery = new Sheet({
       // 2 x 8: up to twelve trade liveries plus the plates, which ride the same sheet.
       cw: 256, ch: 64, cols: 2, rows: 8,
@@ -3656,9 +3813,7 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
         map: mat(cache, 'fleettread', () => treadTexture()),
         color: 0xb9bec6, roughness: 0.92, metalness: 0.03,
       })),
-      trim: mat(cache, 'fleettrim', () => new THREE.MeshStandardMaterial({
-        color: 0x1a1e24, roughness: 0.70, metalness: 0.18,
-      })),
+      trim: trimMat,
       // Chrome, not white. At env 1.4 the bumpers took the whole sunset and read as painted
       // slabs brighter than the sky behind them.
       chrome: mat(cache, 'fleetchrome', () => new THREE.MeshStandardMaterial({
@@ -6139,7 +6294,21 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     // wanders 60 cm. There is no interval left in it to see.
     if (pdef.parkedCars !== false) {
       const cr = rng.fork(97);
-      const K = fleetKit(cache, { colors: carColors, night, signs: pdef.fleetSigns });
+      // WHICH LIGHT THE KERB CATCHES. Every city look carries a low lateral `fill` for exactly the
+      // surfaces this cue is about — flanks and parapets — and in Vegas it is 1.15 against a 0.24
+      // moon, i.e. it IS the key on a parked car. In Miami the 2.35 dusk sun is. Take whichever
+      // of the two actually lights a body side; the sky and road tints come off the same rig, so
+      // the catch is always the city's own light and never a fifth colour introduced here.
+      const kf = L.ambient && L.ambient.fill;
+      const kl = kf && kf.intensity > (L.sun ? L.sun.intensity : 0) ? kf : L.sun;
+      const K = fleetKit(cache, {
+        colors: carColors, night, signs: pdef.fleetSigns,
+        kerb: {
+          dir: kl.dir, key: kl.color,
+          sky: (L.ambient && L.ambient.sky) || KERB_DEFAULT.sky,
+          road: L.groundGlowColor || (L.ambient && L.ambient.ground) || KERB_DEFAULT.road,
+        },
+      });
       /**
        * `n` is how many differently-painted prototypes PropBatch builds for a kind, and it is the
        * hard ceiling on how different two neighbouring wagons can be. Round 2 ran three on four of
