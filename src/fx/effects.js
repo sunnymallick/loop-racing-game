@@ -93,7 +93,13 @@ export class Effects {
     this.smoke = new ParticleSystem({
       texture: smokeAtlas(5), tiles: 2,
       max: 2800, blending: THREE.NormalBlending, gravity: 0.7, drag: 1.0, renderOrder: 4,
-      turbulence: 0.55, ground: 0.05, maxPx: 148, depthBias: 0.34, depthBiasMax: 1.5,
+      // maxPx was 148 and that cap was BREAKING THE PLUME rather than protecting the frame rate.
+      // The puffs nearest the lens are the ones that have grown to 2–3 m, and at the 3–5 m the
+      // chase camera sits behind a drifting car they want 300+ px; clamping them to 148 shrank
+      // exactly the sprites whose job is to close the gaps between the others, so the cap was
+      // buying its fill saving out of the plume's continuity. 224 lets the near puffs cover, and
+      // the emitter gives back more than the difference by running fewer of them.
+      turbulence: 0.55, ground: 0.05, maxPx: 162, depthBias: 0.34, depthBiasMax: 1.5,
       // Smoke is SHEARED by the air it is thrown into: a fast puff is a long thin wisp and only
       // rounds off as it slows. Without this every puff is a camera-facing cotton ball — but
       // round 2 ran the gain to 1+1.7, round 3 to 1+1.22, and BOTH captures came back as a fan of
@@ -941,12 +947,12 @@ export class Effects {
         vel: [
           vel.x * carry + lx * side * fan + this.rng.range(-0.75, 0.75),
           // it has to climb clear of the sill inside ~0.15 s or the car's own body hides the cloud
-          this.rng.range(2.1, 3.3) + amount * 1.7,
+          (this.rng.range(2.1, 3.3) + amount * 1.7) * (wisp ? 0.80 : 1),
           vel.z * carry + lz * side * fan + this.rng.range(-0.75, 0.75),
         ],
         life: (wisp ? this.rng.range(0.46, 0.86) : this.rng.range(0.86, 1.42))
           * (0.68 + 0.5 * amount + 0.3 * build),
-        size: (wisp ? this.rng.range(0.52, 0.86) : this.rng.range(0.82, 1.22)) * (0.85 + 0.45 * build),
+        size: (wisp ? this.rng.range(0.48, 0.79) : this.rng.range(0.75, 1.12)) * (0.85 + 0.45 * build),
         grow: wisp ? this.rng.range(1.3, 1.9) : this.rng.range(1.6, 2.3),
         // aRot is a per-particle BIAS on the shear axis now, so it must stay small or the cloud
         // stops following the airflow. rotV keeps the slow billow turning over.
@@ -981,7 +987,7 @@ export class Effects {
     // above spread out into separate scraps with clear air between them, and a plume made of
     // separate scraps reads as litter rather than smoke. These are small, slow, overlapping and
     // short-lived: they pile up under the tyre and hand off to the wisps as those pull away.
-    for (let i = 0; i < (amount > 0.18 ? 6 : 4); i++) {
+    for (let i = 0; i < (amount > 0.18 ? 5 : 4); i++) {
       this.smoke.emit({
         pos: [
           pos.x + this.rng.range(-0.22, 0.22) - vel.x * back(),
@@ -994,7 +1000,7 @@ export class Effects {
           vel.z * (carry * 0.55) + lz * this.rng.range(-0.9, 0.9),
         ],
         life: this.rng.range(0.40, 0.76) * (0.8 + 0.5 * amount),
-        size: this.rng.range(0.58, 0.96), grow: this.rng.range(1.1, 1.6),
+        size: this.rng.range(0.53, 0.88), grow: this.rng.range(1.1, 1.6),
         rot: this.rng.range(-1.6, 1.6), rotV: this.rng.range(-1.2, 1.2),
         stretch: this.rng.range(0.86, 1.00), align: 0.18,
         tile: this.rng.int(0, 3),
@@ -1017,7 +1023,7 @@ export class Effects {
         pos: [pos.x + this.rng.range(-0.4, 0.4) - vel.x * back(), py + 0.05, pos.z + this.rng.range(-0.4, 0.4) - vel.z * back()],
         vel: [Math.cos(a) * this.rng.range(1.5, 4.0) * spread + vel.x * 0.48, this.rng.range(0.5, 1.6), Math.sin(a) * this.rng.range(1.5, 4.0) * spread + vel.z * 0.48],
         life: this.rng.range(0.95, 1.65) * (0.7 + 0.4 * build),
-        size: this.rng.range(0.70, 1.14), grow: this.rng.range(1.6, 2.2),
+        size: this.rng.range(0.64, 1.05), grow: this.rng.range(1.6, 2.2),
         rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-0.5, 0.5),
         stretch: this.rng.range(0.92, 1.06), align: 0.40,
         tile: this.rng.int(0, 3),
