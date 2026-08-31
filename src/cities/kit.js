@@ -3561,8 +3561,8 @@ function kerbLight(m, cue) {
    * mid-door of a car, which is genuinely vertical, still gets nothing.
    */
   const W1 = 0.62, W2 = (1 - W1).toFixed(2);
-  const up = cue.up || [0.16, 0.62], dn = cue.dn || [0.26, 0.74];
-  const up2 = cue.up2 || [0.04, 0.30], dn2 = cue.dn2 || [0.04, 0.34];
+  const up = cue.up || [0.18, 0.50], dn = cue.dn || [0.26, 0.74];
+  const up2 = cue.up2 || [0.05, 0.26], dn2 = cue.dn2 || [0.04, 0.34];
   const ss = (r, e) => `smoothstep( ${r[0].toFixed(3)}, ${r[1].toFixed(3)}, ${e} )`;
   const src = '#include <emissivemap_fragment>';
   m.onBeforeCompile = (shader) => {
@@ -3593,7 +3593,7 @@ function kerbLight(m, cue) {
         // shoulder is then the brightest line on the body, which is what a lateral street light
         // actually does to a car.
         `  float kUp = ( ${W1} * ${ss(up, 'kN.y')} + ${W2} * ${ss(up2, 'kN.y')} )`,
-        `           * ( 1.0 - 0.42 * ${ss([0.66, 0.93], 'kN.y')} );`,
+        `           * ( 1.0 - 0.45 * ${ss([0.58, 0.90], 'kN.y')} );`,
         `  float kDn = ${W1} * ${ss(dn, '-kN.y')} + ${W2} * ${ss(dn2, '-kN.y')};`,
         '  vec3 kH = normalize( uKerbDir + kV );',
         `  float kSp = pow( max( dot( kN, kH ), 0.0 ), ${tight} );`,
@@ -3709,6 +3709,18 @@ function fleetKit(cache, { colors = null, night = false, signs = null, kerb = nu
     const trimMat = kerbLight(mat(cache, `fleettrim|${night ? 1 : 0}`, () => new THREE.MeshStandardMaterial({
       color: 0x1a1e24, roughness: 0.70, metalness: 0.18,
     })), { ...cue, gKey: 0.20 * gN, gSky: 0.17 * gN, gRoad: 0.11 * gN, tight: 20 });
+    /**
+     * ...and the tyre, weakest of all. §6.1 scores wheels on their own and the brief for this
+     * round names "value contrast between panel and glass and WHEEL" — but a tyre is the one
+     * surface where being too generous is instantly a tell, so this is a sixth of the paint's
+     * gain and it lands where a tyre really does catch a street light: the top of the shoulder
+     * radius, which on a 16-segment tyre is two facets wide. It is what stops the wheel being
+     * one black hole with an alloy in the middle of it.
+     */
+    const tyreMat = kerbLight(mat(cache, `fleettyre|${night ? 1 : 0}`, () => new THREE.MeshStandardMaterial({
+      map: mat(cache, 'fleettread', () => treadTexture()),
+      color: 0xb9bec6, roughness: 0.92, metalness: 0.03,
+    })), { ...cue, gKey: 0.06 * gN, gSky: 0.055 * gN, gRoad: 0.035 * gN, tight: 10 });
     const livery = new Sheet({
       // 2 x 8: up to twelve trade liveries plus the plates, which ride the same sheet.
       cw: 256, ch: 64, cols: 2, rows: 8,
@@ -3809,10 +3821,7 @@ function fleetKit(cache, { colors = null, night = false, signs = null, kerb = nu
         map: glassTex, roughness: 0.09, metalness: 0.44, envMapIntensity: 1.6,
         emissive: new THREE.Color(0x16283f), emissiveIntensity: night ? 0.40 : 0.09,
       })),
-      tyre: mat(cache, 'fleettyre', () => new THREE.MeshStandardMaterial({
-        map: mat(cache, 'fleettread', () => treadTexture()),
-        color: 0xb9bec6, roughness: 0.92, metalness: 0.03,
-      })),
+      tyre: tyreMat,
       trim: trimMat,
       // Chrome, not white. At env 1.4 the bumpers took the whole sunset and read as painted
       // slabs brighter than the sky behind them.
