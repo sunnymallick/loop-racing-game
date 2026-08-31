@@ -3130,13 +3130,35 @@ function paintCell(ctx, N, { base, roof = null, band = null, worn = false, seed 
   // A dark body reflects MORE, not less. But the ceiling matters as much as the slope: at 0.78
   // alpha the sky band stopped being a reflection and became a pale blue slab with no pigment
   // left in it, which is what the first night capture of this pass showed on every bonnet.
-  const refl = lerp(1.55, 0.80, clamp(L * 1.5, 0, 1)) * (night ? 0.46 : 1);
+  const refl = lerp(1.55, 0.80, clamp(L * 1.5, 0, 1)) * (night ? 0.62 : 1);
+  /**
+   * AND THE DARK END IS NIGHT-SCALED TOO — round 4, and it is the first thing the new envelope
+   * broke. Deepening the lower blocks lifted the Miami kerb at 60 m from sd 28.9 to 36.1 and
+   * pushed the VEGAS kerb the other way, 19.4 to 18.4, because a night rank has no reserve of
+   * light to spend: the paint's mean flank luminance there is 38, so another 20% of black buys
+   * no contrast, it just crushes the whole body toward the black silhouette round 2 was caught
+   * on. What raises variance at night is the LIT end — a shoulder catching the shopfronts — so
+   * the reflected blocks go up and the shaded ones come back in, and the block structure is
+   * carried by the bright half of the ramp instead of the dark half.
+   */
   const shade = lerp(0.34, 1.0, clamp(L * 1.7, 0, 1));
   // and under a night rig there is no blue sky to reflect: what a parked car has over it is
   // sodium, neon and a black sky, so the band goes warm and dim rather than bright and blue.
   const SKY = night ? '188,176,196' : '206,228,255';
   const sky = (a) => `rgba(${SKY},${clamp(a * refl, 0, 0.62).toFixed(3)})`;
-  const dark = (a) => `rgba(9,11,16,${clamp(a * shade, 0, 0.92).toFixed(3)})`;
+  /**
+   * ...and at night the shadow end COMPRESSES rather than scaling. A night rank has no black in
+   * it to spend: the paint's mean flank luminance on the Vegas Strip is 24 close up, so the deep
+   * end of the ramp is already sitting on the floor and every extra point of alpha clips instead
+   * of separating. A flat night multiplier fixes the clipping and flattens the shallow blocks
+   * with it, which is the Miami dusk rank's whole tonal structure. This bends only the deep end:
+   * 0.13 stays 0.12 and 0.80 becomes 0.53, so the mid-door and shoulder blocks are untouched and
+   * the rocker stops bottoming out.
+   */
+  const dark = (a) => {
+    const b = night ? a * (1 - 0.42 * clamp(a, 0, 1)) : a;
+    return `rgba(9,11,16,${clamp(b * shade, 0, 0.92).toFixed(3)})`;
+  };
   ctx.fillStyle = base; ctx.fillRect(0, 0, N, N);
   // A CONTRAST ROOF. The top of the cell is the roof cap and nothing else, so this lands on the
   // one panel a two-tone belongs on and never crosses a flank. It also happens to be the panel
@@ -3197,8 +3219,16 @@ function paintCell(ctx, N, { base, roof = null, band = null, worn = false, seed 
   g.addColorStop(0.700, dark(0.25));                // mid door: mostly pigment
   g.addColorStop(0.745, dark(0.27));
   g.addColorStop(0.756, dark(0.50));                // HARD STEP DOWN: below the swage there is no
-  g.addColorStop(0.860, dark(0.58));                //   sky left to reflect, only road
-  g.addColorStop(0.905, dark(0.66));
+  g.addColorStop(0.855, dark(0.58));                //   sky left to reflect, only road
+  if (night) {
+    // ...except that at night the ROAD is the light source. §2.2 makes wet reflection mandatory
+    // after dark, and what a kerbside car actually has under it is a lit tarmac throwing neon
+    // back up at the rocker. A bright line inside the dark block is still a step, so it costs the
+    // envelope nothing — and it is the one place a night body has any light to spare.
+    g.addColorStop(0.882, sky(0.30));
+    g.addColorStop(0.916, dark(0.42));
+  }
+  g.addColorStop(0.940, dark(0.66));
   g.addColorStop(1.000, dark(0.80));                // the rocker, in shadow under the car
   ctx.fillStyle = g; ctx.fillRect(0, 0, N, N);
   /**
@@ -3487,7 +3517,7 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
       // is a row of holes in the frame with lit grilles floating in them. This is the city spill
       // a parked car actually catches off neon and shopfronts, and at 0.34 it is still well under
       // the ~0.6 bloom threshold, so nothing here haloes.
-      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.34 : 0.03,
+      emissiveColor: 0xffffff, emissiveIntensity: night ? 0.45 : 0.03,
     });
     paint.material.name = 'fleetpaint';
     /**
@@ -3513,7 +3543,7 @@ function fleetKit(cache, { colors = null, night = false, signs = null } = {}) {
       // term, and under a night rig that is the whole of a parked car's lighting. Round 2's fault
       // that the critic explicitly credits us for fixing — a kerb rank of black silhouettes — is
       // one careless number away from coming back.
-      emissiveIntensity: night ? 0.50 : 0.045,
+      emissiveIntensity: night ? 0.64 : 0.045,
     });
     // The wheel faces come off the same sheet but must NOT wear either paint finish: at metalness
     // 0.55 the alloy blew out to the white disc the critic saw at mid range, and the relief atlas
