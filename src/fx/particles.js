@@ -87,9 +87,27 @@ const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t 
  *   · fbm erosion with holes punched through the interior, so overlapping puffs interlock into a
  *     mass instead of stacking as discrete beads.
  * RGB still carries baked self-shading (lit side / shadow side) so the cloud has form.
+ *
+ * WAVE 11 — THE PUFF NOW FILLS ITS TILE. This is the single change that turned the plume from
+ * confetti into a body, and it is a measurement, not an opinion: the drift frame rendered with
+ * every other object hidden broke into 89–94 separate connected blobs of visible smoke, with the
+ * largest holding only 22–28 % of it. Ninety separate objects is the definition of confetti.
+ *
+ * The cause was that the drawn puff only reached radius ~0.30 of a tile whose guard sits at 0.49 —
+ * so roughly 60 % of every sprite's quad was transparent margin. The quad is what costs fill (the
+ * fragment shader runs over the whole point sprite either way; `discard` only skips the blend), so
+ * that margin was paid for and thrown away, and it is also exactly the gap between neighbouring
+ * puffs that let the eye separate them. Growing the lobes, the filaments and the torn envelope by
+ * ~1.45x reaches radius ~0.43 — 2.0x the covered area per sprite for no extra quad — which lets
+ * the emitter run FEWER, DENSER sprites (see `Effects.tyreSmoke`) that overlap into one mass.
+ *
+ * The margin is not removed entirely: the guard fades to zero by 0.485 and the envelope tops out
+ * near 0.45, which leaves ~3 texels of transparent border at 256 px. That border is what keeps the
+ * mip chain honest — this is a 2x2 atlas, so a tile whose alpha ran to its own edge would bleed
+ * into its neighbour at the low mips a 30 px sprite actually samples.
  */
 export function smokeAtlas(seed = 5) {
-  return atlas(`smoke3_${seed}`, 2, 256, (ctx, i, s, rng) => {
+  return atlas(`smoke4_${seed}`, 2, 256, (ctx, i, s, rng) => {
     // Round 3: the tile's long axis is now within ~10° of +x on EVERY tile. The shader shears the
     // sprite along its screen-space motion, which is its own +x — so a tile whose elongation ran at
     // 35° or 64° (as three of the four did) had its baked shape fighting the shear, and the result
@@ -108,21 +126,21 @@ export function smokeAtlas(seed = 5) {
     const lobes = [];
     for (let k = 0; k < 6; k++) {
       const t = k / 5 - 0.5;
-      lobes.push([t * 0.34, Math.sin(t * 3.1 + i * 1.7) * 0.070 + rng.range(-0.035, 0.035),
-        rng.range(0.110, 0.175), 1.0]);
+      lobes.push([t * 0.49, Math.sin(t * 3.1 + i * 1.7) * 0.101 + rng.range(-0.050, 0.050),
+        rng.range(0.159, 0.254), 1.0]);
     }
-    for (let k = 0; k < 9; k++) {
-      const a2 = rng.range(0, Math.PI * 2), d2 = rng.range(0.10, 0.27);
-      lobes.push([Math.cos(a2) * d2, Math.sin(a2) * d2 * 0.72, rng.range(0.050, 0.105), 0.9]);
+    for (let k = 0; k < 11; k++) {
+      const a2 = rng.range(0, Math.PI * 2), d2 = rng.range(0.14, 0.39);
+      lobes.push([Math.cos(a2) * d2, Math.sin(a2) * d2 * 0.72, rng.range(0.072, 0.152), 0.9]);
     }
     // filaments: tapering streamers that pull off the body, mostly down-wind along the long axis
     const fils = [];
     for (let k = 0; k < 6; k++) {
       const sgn = k % 2 ? 1 : -1;
       fils.push({
-        x: rng.range(-0.08, 0.08), y: rng.range(-0.12, 0.12),
-        dx: sgn * rng.range(0.24, 0.40), dy: rng.range(-0.16, 0.16),
-        w: rng.range(0.030, 0.062), amp: rng.range(0.75, 1.25),
+        x: rng.range(-0.115, 0.115), y: rng.range(-0.17, 0.17),
+        dx: sgn * rng.range(0.20, 0.34), dy: rng.range(-0.14, 0.14),
+        w: rng.range(0.043, 0.090), amp: rng.range(0.75, 1.25),
       });
     }
     const light = [0.42, -0.30];                          // key direction in tile space
@@ -168,7 +186,7 @@ export function smokeAtlas(seed = 5) {
       // the cause visible at 2.6x was that every puff's OUTLINE was near-circular even where its
       // interior was not, and a near-circle at 12% alpha is exactly a cotton ball. Widening the
       // swing means the outline bulges and bites within a single sprite.
-      const rr = 0.415 * (0.44 + 0.56 * t2) * (0.84 + 0.32 * f3);
+      const rr = 0.575 * (0.52 + 0.48 * t2) * (0.86 + 0.28 * f3);
       // …plus a head-and-tail taper along the shear axis, so the puff is fatter at one end and
       // pulls to a point at the other rather than being symmetric about its centre.
       const taper = 1 - 0.34 * clamp(ex / 0.45, -1, 1) * (i % 2 ? 1 : -1);
@@ -179,8 +197,9 @@ export function smokeAtlas(seed = 5) {
       // worth ten times tearing the interior — a soft radial falloff at the rim is the single
       // strongest cotton-ball cue there is.
       a *= 1 - sstep(0.30, 0.98, q) * clamp((0.74 - f3 * 0.72 - t2 * 0.46) * 1.9, 0, 0.92);
-      // hard guard: the sprite must reach zero well inside its own quad (§7 hard-edge tell)
-      a *= sstep(0.492, 0.425, Math.hypot(px, py));
+      // hard guard: the sprite must reach zero well inside its own quad (§7 hard-edge tell), and
+      // with a few texels to spare so a 2x2 atlas tile cannot bleed into its neighbour at low mips
+      a *= sstep(0.485, 0.400, Math.hypot(px, py));
       // Volumetric shading — a lit shoulder toward the key, shadow on the far underside. Kept
       // SHALLOW on purpose: the sprite is rotated per particle, so a strongly shaded tile has its
       // light coming from a different direction in every puff, and a pile of puffs lit from

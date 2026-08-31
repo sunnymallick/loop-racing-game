@@ -234,6 +234,15 @@ export class Effects {
     this._fogKey = -1;
 
     this._smokeBuild = 0;
+    // How long the gap between two tyre-smoke emissions actually is, measured (see `update`).
+    // main.js rate-limits the rear wheels to one burst every third frame, so at 100 mph the car
+    // has moved 2.3 m between bursts — and a burst dropped at one point is a CLUMP. Three clumps
+    // with two car-lengths of clear night between them is what the plume measured as. Each burst
+    // is now smeared back along the path the car covered since the last one, which is where the
+    // smoke would actually have been laid, and the clumps join into one body.
+    this._tyreGap = 0.05;
+    this._tyreSince = 0;
+    this._tyreFired = false;
     this._scrapeT = 0;
     this._scrapeAcc = 0;
     this._scrapeJudder = 0;
@@ -864,20 +873,22 @@ export class Effects {
     amount = clamp(amount * (0.30 + 0.70 * scrub), 0, 1);
     if (amount < 0.06) return;
     this._smokeBuild = Math.min(1, this._smokeBuild + amount * 0.055);
+    this._tyreFired = true;
     const build = this._smokeBuild;
     const dirt = surface === 'dirt';
-    // Round 3: more, smaller. The whole-game contact sheet flagged this plume as "large soft
-    // cotton-ball blobs" in three cities, and at 2.2x the cause was legible — 8 puffs of 0.7–1.15 m
-    // growing 4x are eight separate 4 m discs with clear air between them, and separate discs are
-    // exactly what a cotton ball is. Fourteen puffs at 0.30–0.62 m growing 2.5x occupy the same
-    // volume, cost LESS fill (area goes as size squared), overlap into one torn mass, and each one
-    // is small enough that the shader's shear actually turns it into a wisp.
-    // Round 5: fewer puffs, each carrying more optical depth. The plume was reading as a field of
-    // individually legible pale scraps strewn over twenty metres of road — "falling confetti" — and
-    // the cure for that is NOT more sprites, it is fewer sprites that overlap. Sixteen puffs at
-    // alpha 0.18 spread over a 6 m fan are sixteen objects; eleven at alpha 0.24 inside a 3 m fan
-    // are one cloud. It also buys back the fill rate the crash work below spends.
-    const n = amount > 0.55 ? 11 : 8;
+    // WAVE 11. Rounds 3 and 5 both moved along the count/alpha axis (more-smaller, then
+    // fewer-denser) and the plume still measured as confetti: rendering the drift frame with every
+    // other object hidden and running connected components over the visible smoke gave 89–94
+    // separate blobs with the largest holding 22–28 % of it. Ninety objects is not a plume.
+    //
+    // Count was never the variable. SPRITE COVERAGE was. Each puff's drawn content only reached
+    // ~0.30 of its tile radius (see `smokeAtlas`) and was emitted at 0.3–0.7 m, so it arrived on
+    // screen as a ~25 px flake — smaller than the gaps between flakes, which is the geometric
+    // definition of confetti. The atlas now fills its tile (~2.0x the covered area per sprite for
+    // the same quad) and the puffs leave bigger, so a sprite is ~50 px and the neighbours it was
+    // thrown with actually touch. That buys the count back down: 7 where there were 11, which is a
+    // NET FILL-RATE SAVING because the quad — not the drawn puff inside it — is what costs.
+    const n = amount > 0.55 ? 9 : 6;
     const spd = Math.hypot(vel.x, vel.z);
     // At 100 mph a puff left standing at the contact patch is 40 m behind the car by the time it
     // has grown. Real tyre smoke is entrained in the car's wake, so each puff is launched with a
@@ -890,6 +901,13 @@ export class Effects {
     // chase camera only ever sees the bodywork that is hiding it
     const inv = 1 / Math.max(0.001, spd);
     const lx = -vel.z * inv, lz = vel.x * inv;
+    // METRES OF ROAD THIS BURST HAS TO COVER. See `_tyreGap`. Each puff is dropped at a random
+    // point on the segment the tyre swept since the last burst instead of all of them at the
+    // instantaneous contact point, so consecutive bursts butt up against each other rather than
+    // landing as beads on a string. `back` is fed the puff's own carry velocity too, so a puff
+    // placed half a segment back is also half a segment behind in its trajectory.
+    const seg = this._tyreGap;
+    const back = () => this.rng.range(0, 1) * seg;
     // Multi-scale, and every puff is SHEARED along its own motion (align/stretch). The contact
     // sheet caught this smoke rendering as "large soft cotton-ball blobs": that is what you get
     // from one size of round, slow, camera-facing puff. Real tyre smoke is a torn ribbon that is
@@ -904,28 +922,32 @@ export class Effects {
     // one second, so the plume was a set of individually legible scraps with night road between
     // them. Tyre smoke boils UP out of a contact patch and is dragged back by the car; it does not
     // spray sideways like a garden sprinkler.
-    const spread = 0.30 + 0.46 * amount;
+    // …and the scatter comes down with it. A puff thrown with +/-1.6 m/s of pure noise on each
+    // horizontal axis is 1.6 m away from its neighbour after one second, and two 1 m puffs 3 m
+    // apart are two objects however soft their edges are. The noise is now smaller than the puff.
+    const spread = 0.26 + 0.40 * amount;
     for (let i = 0; i < n; i++) {
       const side = this.rng.sign();
       const off = this.rng.range(0.05, 0.58) * spread;
       const fan = this.rng.range(0.9, 2.9) * spread;
-      const wisp = this.rng.bool(0.60);
+      const wisp = this.rng.bool(0.40);
+      const bk = back();
       this.smoke.emit({
         pos: [
-          pos.x + lx * side * off + this.rng.range(-0.28, 0.28),
+          pos.x + lx * side * off + this.rng.range(-0.24, 0.24) - vel.x * bk,
           py + this.rng.range(0.02, 0.26),
-          pos.z + lz * side * off + this.rng.range(-0.28, 0.28),
+          pos.z + lz * side * off + this.rng.range(-0.24, 0.24) - vel.z * bk,
         ],
         vel: [
-          vel.x * carry + lx * side * fan + this.rng.range(-1.6, 1.6),
+          vel.x * carry + lx * side * fan + this.rng.range(-0.75, 0.75),
           // it has to climb clear of the sill inside ~0.15 s or the car's own body hides the cloud
-          this.rng.range(1.7, 3.8) + amount * 1.7,
-          vel.z * carry + lz * side * fan + this.rng.range(-1.6, 1.6),
+          this.rng.range(2.1, 3.3) + amount * 1.7,
+          vel.z * carry + lz * side * fan + this.rng.range(-0.75, 0.75),
         ],
-        life: (wisp ? this.rng.range(0.34, 0.72) : this.rng.range(0.70, 1.22))
+        life: (wisp ? this.rng.range(0.46, 0.86) : this.rng.range(0.86, 1.42))
           * (0.68 + 0.5 * amount + 0.3 * build),
-        size: (wisp ? this.rng.range(0.30, 0.52) : this.rng.range(0.46, 0.72)) * (0.85 + 0.45 * build),
-        grow: wisp ? this.rng.range(1.9, 2.8) : this.rng.range(2.4, 3.4),
+        size: (wisp ? this.rng.range(0.52, 0.86) : this.rng.range(0.82, 1.22)) * (0.85 + 0.45 * build),
+        grow: wisp ? this.rng.range(1.3, 1.9) : this.rng.range(1.6, 2.3),
         // aRot is a per-particle BIAS on the shear axis now, so it must stay small or the cloud
         // stops following the airflow. rotV keeps the slow billow turning over.
         // aRot is a per-particle bias on the shear axis, and round 4 widens it a long way. Every
@@ -946,32 +968,41 @@ export class Effects {
         ),
         // thinner per puff, more puffs: the same optical depth built out of overlapping sprites
         // instead of individually readable ones
-        alpha: (wisp ? 0.215 + 0.255 * amount : 0.290 + 0.320 * amount)
+        alpha: (wisp ? 0.235 + 0.280 * amount : 0.315 + 0.350 * amount)
           * (0.75 + 0.40 * build) * this._pop,
-        fadeIn: 0.012, decay: wisp ? 1.35 : 1.15,
+        // A puff is SMALLEST at birth and biggest at death, so a puff that arrives at full opacity
+        // is a small bright dot that then dissolves — which is the confetti read, one sprite at a
+        // time. Opening over the first fifth of its life means a sprite only reaches full density
+        // once it has grown into its neighbours. `decay` still takes it out from the far end.
+        fadeIn: wisp ? 0.16 : 0.22, decay: wisp ? 1.35 : 1.15,
       });
     }
     // The ROOT of the plume. Without a dense source right at the contact patch the sheared wisps
     // above spread out into separate scraps with clear air between them, and a plume made of
     // separate scraps reads as litter rather than smoke. These are small, slow, overlapping and
     // short-lived: they pile up under the tyre and hand off to the wisps as those pull away.
-    for (let i = 0; i < (amount > 0.18 ? 5 : 3); i++) {
+    for (let i = 0; i < (amount > 0.18 ? 6 : 4); i++) {
       this.smoke.emit({
-        pos: [pos.x + this.rng.range(-0.30, 0.30), py + this.rng.range(0.02, 0.16), pos.z + this.rng.range(-0.30, 0.30)],
-        vel: [
-          vel.x * (carry * 0.55) + lx * this.rng.range(-1.6, 1.6),
-          this.rng.range(0.8, 2.2),
-          vel.z * (carry * 0.55) + lz * this.rng.range(-1.6, 1.6),
+        pos: [
+          pos.x + this.rng.range(-0.22, 0.22) - vel.x * back(),
+          py + this.rng.range(0.02, 0.16),
+          pos.z + this.rng.range(-0.22, 0.22) - vel.z * back(),
         ],
-        life: this.rng.range(0.30, 0.62) * (0.8 + 0.5 * amount),
-        size: this.rng.range(0.30, 0.54), grow: this.rng.range(1.5, 2.3),
+        vel: [
+          vel.x * (carry * 0.55) + lx * this.rng.range(-0.9, 0.9),
+          this.rng.range(0.8, 2.2),
+          vel.z * (carry * 0.55) + lz * this.rng.range(-0.9, 0.9),
+        ],
+        life: this.rng.range(0.40, 0.76) * (0.8 + 0.5 * amount),
+        size: this.rng.range(0.58, 0.96), grow: this.rng.range(1.1, 1.6),
         rot: this.rng.range(-1.6, 1.6), rotV: this.rng.range(-1.2, 1.2),
         stretch: this.rng.range(0.86, 1.00), align: 0.18,
         tile: this.rng.int(0, 3),
         color: this._smokeColor(this.rng.range(0.82, 1.0), this.rng.range(0.55, 1.0),
           dirt ? this._dustAlbedo : null),
-        alpha: (0.290 + 0.300 * amount) * this._pop,
-        fadeIn: 0.01, decay: 1.0,
+        // the root is the densest part of the plume — this is the bit that has to read as opaque
+        alpha: (0.355 + 0.365 * amount) * this._pop,
+        fadeIn: 0.14, decay: 1.0,
       });
     }
     // a wide, low sheet spreading away from the contact patch — this is what makes it read as a
@@ -983,10 +1014,10 @@ export class Effects {
     for (let q = 0; q < sheets; q++) {
       const a = this.rng.range(0, Math.PI * 2);
       this.smoke.emit({
-        pos: [pos.x + this.rng.range(-0.4, 0.4), py + 0.05, pos.z + this.rng.range(-0.4, 0.4)],
+        pos: [pos.x + this.rng.range(-0.4, 0.4) - vel.x * back(), py + 0.05, pos.z + this.rng.range(-0.4, 0.4) - vel.z * back()],
         vel: [Math.cos(a) * this.rng.range(1.5, 4.0) * spread + vel.x * 0.48, this.rng.range(0.5, 1.6), Math.sin(a) * this.rng.range(1.5, 4.0) * spread + vel.z * 0.48],
-        life: this.rng.range(0.85, 1.5) * (0.7 + 0.4 * build),
-        size: this.rng.range(0.40, 0.66), grow: this.rng.range(2.4, 3.4),
+        life: this.rng.range(0.95, 1.65) * (0.7 + 0.4 * build),
+        size: this.rng.range(0.70, 1.14), grow: this.rng.range(1.6, 2.2),
         rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-0.5, 0.5),
         stretch: this.rng.range(0.92, 1.06), align: 0.40,
         tile: this.rng.int(0, 3),
@@ -994,30 +1025,30 @@ export class Effects {
         color: this._smokeColor(this.rng.range(0.62, 0.80), this.rng.range(0.72, 1.0),
           dirt ? this._dustAlbedo : null),
         alpha: (0.185 + 0.215 * amount) * (0.65 + 0.45 * build) * this._pop,
-        fadeIn: 0.02, decay: 1.4,
+        fadeIn: 0.20, decay: 1.4,
       });
     }
     // fine shredded filaments torn straight off the contact patch — the high-frequency layer that
     // stops the plume being "one size of blob"
     if (amount > 0.25) {
-      const nf = amount > 0.6 ? 5 : 3;
+      const nf = amount > 0.6 ? 3 : 2;
       for (let i = 0; i < nf; i++) {
         const side = this.rng.sign();
         this.smoke.emit({
-          pos: [pos.x + this.rng.range(-0.2, 0.2), py + this.rng.range(0.02, 0.18), pos.z + this.rng.range(-0.2, 0.2)],
+          pos: [pos.x + this.rng.range(-0.2, 0.2) - vel.x * back(), py + this.rng.range(0.02, 0.18), pos.z + this.rng.range(-0.2, 0.2) - vel.z * back()],
           vel: [
-            vel.x * (carry + 0.16) + lx * side * this.rng.range(2.6, 7.0) * spread,
+            vel.x * (carry + 0.16) + lx * side * this.rng.range(1.8, 4.6) * spread,
             this.rng.range(1.2, 3.4),
-            vel.z * (carry + 0.16) + lz * side * this.rng.range(2.6, 7.0) * spread,
+            vel.z * (carry + 0.16) + lz * side * this.rng.range(1.8, 4.6) * spread,
           ],
-          life: this.rng.range(0.20, 0.46), size: this.rng.range(0.16, 0.32), grow: this.rng.range(1.8, 2.8),
+          life: this.rng.range(0.24, 0.52), size: this.rng.range(0.24, 0.44), grow: this.rng.range(1.5, 2.3),
           rot: this.rng.range(-0.8, 0.8), rotV: this.rng.range(-1.4, 1.4),
           stretch: this.rng.range(1.05, 1.30), align: 0.72, tile: this.rng.int(0, 3),
           // torn straight off the patch and out into the open air: full key light, brightest layer
           color: this._smokeColor(this.rng.range(0.98, 1.18), this.rng.range(0, 0.28),
             dirt ? this._dustAlbedo : null),
           alpha: (0.13 + 0.15 * amount) * (0.72 + 0.28 * this._pop),
-          fadeIn: 0.008, decay: 1.7,
+          fadeIn: 0.12, decay: 1.7,
         });
       }
     }
@@ -1026,7 +1057,7 @@ export class Effects {
       this.smoke.emit({
         pos: [pos.x + this.rng.range(-0.14, 0.14), py + 0.02, pos.z + this.rng.range(-0.14, 0.14)],
         vel: [vel.x * 0.30 + this.rng.range(-0.9, 0.9), this.rng.range(0.4, 1.3), vel.z * 0.30 + this.rng.range(-0.9, 0.9)],
-        life: this.rng.range(0.35, 0.75), size: this.rng.range(0.20, 0.38), grow: 2.2,
+        life: this.rng.range(0.35, 0.75), size: this.rng.range(0.28, 0.52), grow: 1.8,
         rot: this.rng.range(-1.4, 1.4), rotV: this.rng.range(-2, 2), tile: this.rng.int(0, 3),
         stretch: this.rng.range(1.0, 1.24), align: 0.44,
         // burnt rubber: dark, and lit by whatever the scene's light is like everything else
@@ -1903,6 +1934,13 @@ export class Effects {
     const spd = Math.hypot(vel.x, vel.z);
     const inv = 1 / Math.max(0.001, spd);
     const lx = -vel.z * inv, lz = vel.x * inv;
+    // METRES OF ROAD THIS BURST HAS TO COVER. See `_tyreGap`. Each puff is dropped at a random
+    // point on the segment the tyre swept since the last burst instead of all of them at the
+    // instantaneous contact point, so consecutive bursts butt up against each other rather than
+    // landing as beads on a string. `back` is fed the puff's own carry velocity too, so a puff
+    // placed half a segment back is also half a segment behind in its trajectory.
+    const seg = this._tyreGap;
+    const back = () => this.rng.range(0, 1) * seg;
     const carry = 0.55 + 0.22 * clamp(spd / 45, 0, 1);
     // How hard the tyre is actually scrubbing. §2.5 asks for smoke off the LOADED WHEELS in a
     // drift, and the §8 drift capture puts the car on the shoulder in seven of the eight
@@ -2371,6 +2409,13 @@ export class Effects {
     }
 
     this._smokeBuild = Math.max(0, this._smokeBuild - dt * 0.55);
+    this._tyreSince += dt;
+    if (this._tyreFired) {
+      // low-passed, and capped: a caller on a slow cadence (the front wheels are every seventh
+      // frame) must not smear its burst over half a car length of road
+      this._tyreGap = clamp(this._tyreGap * 0.5 + this._tyreSince * 0.5, 1 / 240, 0.085);
+      this._tyreSince = 0; this._tyreFired = false;
+    }
 
     // time dilation: snap down on the hit, ease back out. This one *is* on the real clock — the
     // dilation's own duration must not be dilated by itself or it never lets go.
