@@ -116,7 +116,23 @@ generator for evenly placing props; `track.curvature(u)` is signed.
 
 ## Conventions
 
-- +Z is forward, +X right, +Y up. Vehicle origin is the centre of the wheelbase on the ground.
+- +Z is forward, +Y is up, and **+X is the driver's LEFT** — not the right. Vehicle origin is the
+  centre of the wheelbase on the ground.
+
+  This line used to read "+X right". It is worth knowing why it was wrong, because the mistake
+  cost a real bug. In a right-handed Y-up scene the driver's right is `forward × up`, and
+  `Z × Y = −X`. So +X renders on the LEFT of the screen, positive yaw is a LEFT turn, and
+  `physics.js`'s `get right()` in fact returns the driver's left. Measured three ways that agree:
+  the chase camera's `matrixWorld` column 0 (screen right) dotted with `forward × up` is +1, and
+  dotted with `body.right` is −1.
+
+  **The convention stays as it is.** 157 uses across 11 files — `body.right`, `track.right`, the
+  FL/FR wheel names, the signed track lateral — are all consistent with it, and they are consistent
+  with each other, which is why nothing ever visibly disagreed. Renaming it would be a large,
+  risky, zero-benefit change. What matters is that exactly one boundary reconciles the engine's
+  sign with a human's: the keyboard and gamepad mapping in `core/input.js`, where RIGHT produces
+  `steer < 0`. See the STEERING SIGN note there before touching anything steering-related, and
+  note that `Input.steer` is in ENGINE sign — scripted input from `tools/` is too.
 - Colour maps get `THREE.SRGBColorSpace`; normal/roughness/metalness maps get `NoColorSpace`.
 - Seed every generator from `RNG` so screenshots stay reproducible between runs.
 - Emissive materials + `UnrealBloomPass` is how anything glows. Bloom threshold is ~0.6–0.75, so an

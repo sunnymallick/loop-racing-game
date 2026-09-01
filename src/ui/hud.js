@@ -154,23 +154,41 @@ const SS_MAX_EDGE = 4096;   // …never wider than the common GPU texture limit:
 const SS_MAX_PX = 9.2e6;    //    4096 px falls off the accelerated path, and past ~9 Mpx it is
                             //    simply a lot of VRAM to clear every frame. At 1600×900 → 2.5×.
 
-// Gauge scale. 320 mph over a 220° sweep, numerals every 40, majors every 20, minors every 10.
+// Gauge scale. The dial measures RPM, and every car brings its own top of scale: the smallest whole
+// thousand at least 8% above THAT car's redline, over the same 220° sweep. Numerals and majors every
+// 1000, minors every 200 — five to the thousand, which is the tach convention, and what lets the
+// unit be a caption reading ×1000 instead of a row of three-figure numerals.
 //
-// (coherence pass) 240 -> 320, and the redline 190 -> 200. The old scale was solved against the
-// four cars' DRY top speeds (`handling.js`: 151/157/167/188 mph) and never against what nitrous
-// does to them. Measured on the real build (tools/_coh4_vmax.mjs), a held boost reaches
-// suv 195 / muscle 210 / tuner 234 / SUPERCAR 293 mph — so on the fastest car in the game the
-// needle sat pinned at the `1.02` clamp and the digital readout ran 53 mph past the highest
-// numeral on the face for the whole of every boost (shots/coh2-loop/06-nitro.png reads 256 MPH on
-// a dial that stops at 240). An instrument the game drives off the end of is not an instrument.
+// (tach pass) the face used to read 0-320 MPH, which the digital readout in the middle of it already
+// prints to the mile an hour. Two instruments for one signal, and the analogue one was the redundant
+// half: a needle cannot be read to a mile an hour, and a redline on a SPEED dial is a fiction — the
+// engine has a real one, per car, in `vehicles/audio_tuning.js` (tuner 8600 / muscle 6200 / suv 4400
+// / supercar 9000, and that file's own header already calls it "also drives the HUD tacho scale").
+// The readout keeps the mph. The dial now measures the thing the driver actually shifts on.
 //
-// 320 is chosen so the tick hierarchy is unchanged and the numeral row lands on 0,40,…,320 — NINE
-// numerals, which is also what §1.1's reference dial carries ("radial tick marks numbered 0-8").
-// The redline moves to 200 because that is the number it was always meant to mean: just above the
-// fastest car's un-boosted top speed, i.e. a band you only ever enter on nitrous. It now covers
-// 297°-380° of the sweep, which is §1.1's "red danger arc across the top-right of the dial".
-const MPH_MAX = 320;
-const MPH_RED = 200;
+// The 8% headroom is solved against the limiter, not guessed. `physics.js` clamps normalised rpm at
+// 1.02, so a pull with the throttle pinned measurably peaks at redline × 1.011-1.018 — 8743 / 6311 /
+// 4450 / 9128 rpm on the four cars, bouncing off the limiter. A face whose top WAS the redline would
+// pin the needle against the stop in every gear; rounding 1.08× up to a whole thousand leaves the
+// needle stopping at 87.4 / 89.1 / 90.2 / 91.4% of the sweep, always short of the end of the face.
+//
+// It is also what makes four faces read as one instrument. Scales 10000 / 7000 / 5000 / 10000 put
+// the redline at 86.0 / 88.6 / 88.0 / 90.0% of the sweep — the red band starts within 9° of the same
+// place on all four and runs 22-31° across the top-right, which is §1.1's "red danger arc"; the idle
+// marks line up too, at 9.4-11.6%. The obvious alternative, ceil(redline/1000)+1, agrees on the
+// tuner and the supercar but sends the muscle to 8000 and the suv to 6000: 36.7° of spread in
+// where the band begins (321.3° against 358.0°), and a truck wearing a 26.7%-of-sweep redline
+// against the supercar's 10%.
+// Every redline lands exactly on a minor tick as well (8600, 6200, 4400 and 9000 all divide by 200),
+// so the band is built into the tick hierarchy rather than pasted over it.
+const TACH_MINOR   = 200;    // rpm per minor tick — five to the thousand
+const TACH_NUMERAL = 1000;   // …and a major plus a numeral on every thousand
+const TACH_HEAD    = 1.08;   // headroom over the redline, before rounding up to a whole thousand
+
+/** Top of the dial: the smallest whole thousand at least TACH_HEAD above this car's redline. */
+function tachScale(redline) {
+  return Math.max(1000, Math.ceil((redline || 8000) * TACH_HEAD / 1000) * 1000);
+}
 
 /**
  * Angled parallelogram plate — the signature HUD shape. (x, y) is the plate's BOTTOM-left corner
@@ -692,6 +710,10 @@ export class HUD {
     this.w = 0; this.h = 0;
     this.needle = 0;
     this.needleV = 0;
+    // Latched, never read straight from the frame state: hudState() sends redline NULL whenever
+    // `body` is null, which is every frame of a city or car load. See _tick(). 8000 is only the
+    // value the dial wears before the first car is ever loaded.
+    this.redline = 8000;
     this.posFlash = 0;
     this.posDelta = 0;
     this.lastPos = 1;
@@ -1302,10 +1324,35 @@ export class HUD {
       ? Math.min(1, this.boostPulse + d * 7)
       : Math.max(0, this.boostPulse - d * 3.5);
 
-    // needle: a real spring, so it overshoots into a corner and settles
-    const target = clamp((s.mph || 0) / MPH_MAX, 0, 1.04);
+    // needle: a real spring, so it overshoots into a corner and settles.
+    //
+    // The redline is LATCHED here and the face reads the same latched value, so the scale the needle
+    // is measured against and the scale printed on the dial can never disagree by a frame — which
+    // matters because they are computed in two different methods. Holding the last real redline also
+    // stops a load frame (main.js sends `redline: null` while `body` is null) from flipping MAX for
+    // two frames and re-baking a 60-cut knurl, a 96-line hatch and a glowing arc for nothing. That
+    // is why main.js sends null and not a placeholder number: this guard is a truthiness test, and
+    // a numeric fallback would pass it and be latched like a real redline.
+    //
+    // Damping goes 13 -> 20 (ζ 0.36 -> 0.55, ωn unchanged at 2.89 Hz) because rpm is not mph. mph is
+    // an integral of acceleration: it has no step, which is why this spring was never tested by it.
+    // rpm falls by a third to a half of the face in the ~0.15 s of an upshift, four to eight times
+    // per pull. A/B'd on the recorded rpm of a real full-throttle pull in each car, the old ζ dived
+    // 8.2-10.6% of the sweep BELOW the lowest rpm the engine actually reached on every one of those
+    // shifts and then sprang back — a swing the signal never made, five to seven times a straight.
+    // At ζ=0.55 that is 1.2-3.2%, i.e. gone at a glance. What it does NOT cost is the needle's
+    // weight: the worst lag on the falling edge is 24.0-24.5% of the sweep against the old 22.6-23.9,
+    // so the needle is if anything heavier, just no longer bouncy. (The peak barely moves either —
+    // supercar 91.7% -> 91.4% — so this is not a change that flattens the top of the pull.) K stays
+    // at 330: 2.89 Hz is already fast against a 0.15 s shift, and raising it does nothing the damping
+    // does not do better.
+    if (s.redline) this.redline = s.redline;
+    // clamped at 1, not 1.04: tachScale() is by construction above the limiter, so nothing the engine
+    // can legitimately do reads past the top of the face — measured peak needle across the four cars
+    // is 87.4 / 89.1 / 90.2 / 91.4% of the sweep, on a limiter bounce, with the throttle pinned.
+    const target = clamp((s.rpm || 0) / tachScale(this.redline), 0, 1);
     this.needleV += (target - this.needle) * 330 * d;
-    this.needleV *= Math.exp(-d * 13);
+    this.needleV *= Math.exp(-d * 20);
     this.needle += this.needleV * d;
     if (this.needle < -0.02) { this.needle = -0.02; this.needleV = 0; }
 
@@ -1985,11 +2032,13 @@ export class HUD {
   }
 
   _drawSpeedo(ctx, s, cx, cy, R) {
-    const mph = Math.max(0, s.mph || 0);
-    const MAX = MPH_MAX, RED0 = MPH_RED;
-    // 220° sweep with a 140° gap at the bottom. The gap is sized so the two end numerals (0 and
-    // 320) sit above the shoulders of the digital readout rather than beside it — the readout
-    // owns the bottom of the face outright.
+    const mph = Math.max(0, s.mph || 0);   // the DIGITAL readout — still miles per hour
+    const rpm = Math.max(0, s.rpm || 0);   // …and what the DIAL itself now measures
+    const RED0 = this.redline;             // latched in _tick(), so the face and the needle cannot
+    const MAX = tachScale(RED0);           //   disagree about the scale for even one frame
+    // 220° sweep with a 140° gap at the bottom. The gap is sized so the two end numerals (0 and the
+    // top of the scale) sit above the shoulders of the digital readout rather than beside it — the
+    // readout owns the bottom of the face outright.
     const a0 = Math.PI * (160 / 180), a1 = Math.PI * (380 / 180);
     const angOf = (v) => a0 + (a1 - a0) * clamp(v / MAX, 0, 1.02);
     const boost = this.boostPulse;
@@ -2001,9 +2050,15 @@ export class HUD {
     ctx.translate(cx, cy);
 
     // ---- the dial as a manufactured object: scrim, bezel, knurling, face, hatch, gloss and the
-    // two fixed arcs. None of it has ever changed between frames; it is the single largest run of
-    // static art in the HUD (a 60-cut knurl, a 96-line brushed hatch and a glowing redline arc).
-    this._patch(ctx, 'dialFace', -R * 1.6, -R * 1.6, R * 3.2, R * 3.2, `${R}`, (c) => {
+    // two fixed arcs. None of it changes between frames WITHIN a car; it is the single largest run
+    // of static art in the HUD (a 60-cut knurl, a 96-line brushed hatch and a glowing redline arc).
+    //
+    // The key carries MAX and RED0 because the redline arc below is baked into this patch, and the
+    // HUD is constructed once (main.js) — setCar() never touches it and the cache is only flushed on
+    // a resolution change. Keyed on `${R}` alone, a garage swap from the suv to the supercar would
+    // leave the supercar wearing the truck's redline band for the rest of the session, and no
+    // screenshot of a single car could ever show it.
+    this._patch(ctx, 'dialFace', -R * 1.6, -R * 1.6, R * 3.2, R * 3.2, `${R}|${MAX}|${RED0}`, (c) => {
       scrim(c, 0, 0, R * 1.55, 0.55);
 
       // bezel: metal annulus with a light source top-left
@@ -2108,15 +2163,26 @@ export class HUD {
       }, O);
     }
 
-    // ---- tick hierarchy: minor every 10, major every 20, numeral every 40.
-    // The numeral row sits at NUM_R, chosen so even a three-figure numeral's corner stays inside
-    // TICK_R: NUM_R + halfDiagonal(numeral) < TICK_R. No stroke can cross a figure at any angle.
+    // ---- tick hierarchy: minor every 200 rpm, major + numeral every 1000.
+    // The numeral row sits at NUM_R, chosen so the widest numeral on any of the four faces clears
+    // the tick it shares an angle with. No stroke can cross a figure at any angle.
     // The speed fill's halo washes inward across the tick band, and the original draws the ticks
     // over it — so this patch has to be blitted after the live arc above, not folded into the face.
-    // (coherence pass) the numeral row went from seven figures to nine when MPH_MAX moved to 320,
-    // so the arc length each one gets fell from 36.7° to 27.5°. Size 0.098 → 0.088 and the row
-    // pushed 0.018 R further out together restore the gap between "120" and "160" at the apex,
-    // where the row is most crowded, without breaking NUM_R + halfDiagonal(numeral) < TICK_R.
+    // (tach pass) the row is now single digits — the thousands — so it can GROW: 0.088 → 0.098 R,
+    // and the row comes IN from 0.600 to 0.580 R to pay for it. Both numbers are solved, not picked:
+    // the binding case is the two-figure "10" that ends the tuner's and the supercar's face, which
+    // shares its angle with the last major tick, and the measurement that matters is the gap between
+    // the numeral's inked box (font.measure() at R=148, plus the weight-0.205 pen) and that tick's
+    // 0.700-0.795 R segment, not a half-diagonal against a radius. Measured:
+    //
+    //   old mph face  0.088 R @ 0.600 R → "280" touches its tick, 0.00 px, inner edge 0.478 R
+    //   0.105 @ 0.600 → "10" 0.54 px — a merged "10—" at 6x, worse than what it replaced
+    //   0.098 @ 0.580 → "10" 4.22 px, sparsest face 7.9 px, inner edge 0.482 R
+    //
+    // so this is the first version of this dial whose numerals actually clear their own ticks. The
+    // row still clears the pointer, which is the other constraint: 0.482 R against a 0.470 R tip,
+    // and better than the 0.478 R the mph face ran. Crowding is easier than it was: 11 numerals at
+    // 22° of pitch, and the tightest pair on any face (9 against 10) leaves 13.8 px of clear gap.
     // ---- …AND THE NEEDLE DOES NOT CROSS THE NUMERALS. The critic, at 5x: "the needle is drawn
     // over the numerals: c_speedo.png cuts through '160', n_speedo.png cuts through the 0 of '120'."
     // It is a geometry problem, not a draw-order one: a pointer that runs from the hub to the tick
@@ -2127,16 +2193,18 @@ export class HUD {
     // that ran out. The fine reading was never the needle's job anyway: the value arc at the rim
     // resolves to a mile an hour and the readout in the middle prints the number.
     //
-    //   hub 0.105 · pointer 0.470 · numerals 0.512-0.688 · ticks 0.700-0.795 · arc 0.814-0.876
+    //   hub 0.105 · pointer 0.470 · numerals 0.482-0.678 · ticks 0.700-0.795 · arc 0.814-0.876
     //
-    // …which is also why the numeral row moves out 0.570 -> 0.600: with the pointer no longer
-    // running through it, the row can sit where the tick band wants it rather than where the
-    // needle allowed it.
-    const TICK_R = R * 0.700, NUM_R = R * 0.600, NUM_S = R * 0.082;
-    this._patch(ctx, 'dialTicks', -R, -R, R * 2, R * 2, `${R}`, (c) => {
-      for (let v = 0; v <= MAX; v += 10) {
+    // …which is also why the row sits where it does: with the pointer no longer running through it,
+    // the row is free to sit where the TICK band wants it — outboard enough to belong to the ticks,
+    // inboard enough that the widest numeral on any face clears them.
+    const TICK_R = R * 0.700, NUM_R = R * 0.580, NUM_S = R * 0.098;
+    // keyed on the scale as well as R: the tick bounds, the `hot` test and every numeral in the row
+    // are functions of MAX and RED0, so this patch has to re-bake on a car swap. See 'dialFace'.
+    this._patch(ctx, 'dialTicks', -R, -R, R * 2, R * 2, `${R}|${MAX}|${RED0}`, (c) => {
+      for (let v = 0; v <= MAX; v += TACH_MINOR) {
         const a = angOf(v);
-        const major = v % 20 === 0;
+        const major = v % TACH_NUMERAL === 0;
         const hot = v >= RED0;
         const r1 = R * 0.795, r0 = major ? TICK_R : R * 0.742;
         c.beginPath();
@@ -2148,9 +2216,9 @@ export class HUD {
         c.lineWidth = major ? R * 0.026 : R * 0.012;
         c.stroke();
       }
-      for (let v = 0; v <= MAX; v += 40) {
+      for (let v = 0; v <= MAX; v += TACH_NUMERAL) {
         const a = angOf(v), hot = v >= RED0;
-        drawText(c, String(v), {
+        drawText(c, String(v / 1000), {
           x: Math.cos(a) * NUM_R, y: Math.sin(a) * NUM_R + NUM_S * 0.46, size: NUM_S, weight: 0.205,
           align: 'center', color: hot ? 'rgba(255,158,146,0.95)' : 'rgba(222,238,250,0.90)',
           tracking: 0.02, shadow: { color: 'rgba(0,0,0,0.75)', dy: NUM_S * 0.10, blur: 4 },
@@ -2213,7 +2281,7 @@ export class HUD {
       c.beginPath(); c.arc(0, 0, R * 0.042, 0, TAU);
       c.fillStyle = '#1a2129'; c.fill();
 
-      // readout backing: it owns the open bottom of the dial, dropped clear of the 0 / 320 numerals
+      // readout backing: it owns the open bottom of the dial, clear of the 0 / top-of-scale numerals
       c.save();
       c.beginPath();
       c.ellipse(0, R * 0.46, R * 0.62, R * 0.36, 0, 0, TAU);
@@ -2257,11 +2325,43 @@ export class HUD {
       label(c, 'MPH', 0, R * 0.700, R * 0.098, 'rgba(190,214,236,0.95)', { align: 'center', tracking: 0.38 });
     }, O);
 
-    // Redline warning: the whole rim flushes when the engine is in the red — which under nitrous is
-    // most of the lap, so this would otherwise be a blurred op on every frame perf.mjs measures.
-    // Fixed art at a pulsing opacity: halo sprite and ink sprite, each blitted at the pulse. See
-    // `glowOnly` for why one sprite would not have been the same picture.
-    if (mph >= RED0) {
+    // The DIAL's own unit, on the two shoulders of the readout — the one part of the face that no
+    // tick, numeral, needle or number reaches. The pointer's deepest reach below the hub is
+    // sin(20°)·0.470 R = 0.16 R, so everything under y = 0.16 R is needle-free, and the sweep's 140°
+    // gap means there is no tick and no arc anywhere below 20°. `MPH` under the number stays the
+    // READOUT's caption; this is the DIAL's, which is why it is smaller, dimmer and set outboard
+    // rather than stacked under it — a second unit line under `MPH` would read as contradicting it.
+    //
+    // The two are anchored by their INNER edges, not by a shared centre. The readout is monospaced
+    // and always three figures at speed, so its ink stops at a fixed 0.384 R (108.3 px wide at
+    // weight 0.215, plus the pen), and hanging both captions 0.050 R off that puts the same 7.4 px
+    // of air on each side of the number. Centring them instead — which is the obvious thing to try —
+    // gives the left shoulder 10.7 px and the right 2.2 px, because `×1000` is half again as wide as
+    // `RPM`: at 1:1 the readout and the × run together into `174x1000`, which is what the first
+    // capture of this showed. The baseline is at 0.405 R rather than down on the readout's own
+    // (0.520 R) for the same reason: it optically centres the caption on the digits, AND the face is
+    // 0.804 R wide there against 0.774 R at 0.46 R, which is the 30 thousandths that let the caption
+    // keep its size instead of shrinking under 0.070 R, where it stops being legible over a bright
+    // moving scene. Outer edge lands at 0.754 R, i.e. 0.050 R off the face's rim — the same gap
+    // again, and 0.856 R of radius at 28°, well inside the bezel and well outside the sweep.
+    //
+    // In a `_patch` because label()'s drop shadow is a blurred op, and blurred ops on the backbuffer
+    // are budgeted (BLUR_BUDGET) and cost ~107 us each there against ~13 us inside a layer.
+    this._patch(ctx, 'dialTach', -R * 0.72, R * 0.28, R * 1.56, R * 0.20, `${R}`, (c) => {
+      const CS = R * 0.070, CC = 'rgba(176,204,228,0.82)', CY = R * 0.405, CX = R * 0.434;
+      label(c, 'RPM', -CX, CY, CS, CC, { align: 'right', tracking: 0.26 });
+      label(c, '×1000', CX, CY, CS, CC, { align: 'left', tracking: 0.26 });
+    }, O);
+
+    // Redline warning: the whole rim flushes when the engine is in the red. On the mph face that
+    // needed 200 mph, i.e. nitrous, so most cars never saw it at all; on a tach it fires at the top
+    // of a gear — measured over a 10 s pull with the throttle pinned, 1.5-10.0% of the time in one
+    // to three runs of 0.03-0.77 s, longest on the muscle, which sits on its limiter. It has become
+    // a shift light, which is what a redline is for, and it stays a rare, short event rather than
+    // the near-permanent nitrous glow it used to be. Still no blurred op per frame: fixed art at a
+    // pulsing opacity, a halo sprite and an ink sprite each blitted at the pulse. See `glowOnly` for
+    // why one sprite would not have been the same picture.
+    if (rpm >= RED0) {
       const p = 0.45 + 0.55 * Math.sin(this.beat * 13);
       const A = 0.14 + 0.30 * p;
       const RB = R * 0.945 + R * 0.014 + 26;
@@ -3446,6 +3546,26 @@ export class HUD {
           bc.beginPath(); bc.arc(x, cy, 22, 0, TAU);
           bc.strokeStyle = 'rgba(210,228,242,0.45)'; bc.lineWidth = 2.2; bc.stroke();
         }
+        // The way out, printed where a player is already looking and only while they can still act
+        // on it without cost. main.js now takes `cancel` in the racing states too, and a door
+        // nothing announces is a door nobody finds — the garage flow prints its own controls along
+        // the bottom bar for exactly this reason. It rides the lamps' own patch (same rect, same
+        // key), so it costs no extra bake and it leaves with the countdown.
+        //
+        // It carries its own plate rather than sitting on a shadow: the countdown is composed over
+        // whatever the grid happens to be looking at, and over Vegas at night a 13 px grey caption
+        // on a drop shadow is invisible against the neon. The plate is the HUD's own shape, cut on
+        // the same shear as everything else, so it reads as part of the cluster and not a label
+        // dropped on top of it.
+        const HINT = 'ESC  GARAGE';
+        const hw = measure(HINT, { size: 13, tracking: 0.34, face: 'geo' }).width;
+        const ph = 24, pw = hw + 34, py = cy - h / 2 - 15 - ph + 7;
+        panel(bc, cx - pw / 2, py, pw, ph, {
+          fill: ['rgba(10,13,19,0.86)', 'rgba(3,5,9,0.9)'],
+          edge: 'rgba(180,204,226,0.22)', accent: 'rgba(120,146,172,0.55)',
+        });
+        label(bc, HINT, cx + ph * SKEW * 0.5, py + ph - 8, 13, 'rgba(198,216,234,0.92)',
+          { align: 'center', tracking: 0.34 });
       });
 
     // the seconds themselves, punched large under the lamps

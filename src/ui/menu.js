@@ -2360,7 +2360,22 @@ export class Menu {
     this.carIndex = 0;
     this.colorIndex = 0;
     this.cityIndex = 0;
-    this.focus = 'car';            // car | city
+    /**
+     * WHICH SCREEN IS UP — and the whole of round 6.
+     *
+     * This replaces `focus` ('car' | 'city'), which was a MODAL flag on a single screen: LEFT and
+     * RIGHT meant "change vehicle" or "change destination" depending on an invisible variable, and
+     * the only things on screen that said which were a 16 px caption in the far top-right corner
+     * and a border colour. Nothing anywhere stated the rule; the bottom bar's `▲▼ CAR / CITY` named
+     * the two nouns and never the verb, so it read as "up and down pick a car or a city", which is
+     * the opposite of what it did. ESC — the one key a player presses to get OUT of a mode —
+     * toggled the mode as well, so the screen had no back and its escape hatch was a third way to
+     * change the thing you were already lost in.
+     *
+     * Three explicit screens fix it by removing the mode entirely: one meaning per key, and every
+     * screen prints its own browse / confirm / back along the bottom bar (see `hints`).
+     */
+    this.screen = 'vehicle';       // title | map | vehicle
     this.t = 0;
     this.open_ = false;
     this.stage = null;
@@ -2369,7 +2384,8 @@ export class Menu {
     this.spinKick = 0;
     this.swapT = 1;
     this.intro = 0;
-    this.focusT = 1;
+    this.screenT = 1;              // 0 → 1 arrival clock for a screen change (this is `focusT`)
+    this.screenAge = 0;            // seconds the current screen has been up
     this.colorFlash = 0;
     this.statShown = [0, 0, 0];
     this._statWant = [0, 0, 0];
@@ -2383,6 +2399,7 @@ export class Menu {
     this.navDir = 0;               // which way the last NAVIGATE went; drives the fan's flick
     this.navT = 1;                 // 0 → 1 as that flick decays
     this._cityTimer = 0;
+    this._afterCity = null;        // what to run once a queued destination build completes
 
     this.thumbs = {};              // vehicle id → { canvas, color }
     this.thumbQueue = [];
@@ -2460,9 +2477,18 @@ export class Menu {
 
   // ---------------------------------------------------------------- open / close
 
-  open() {
+  /**
+   * `screen` is where the garage opens. Boot lands on 'title'; race → garage lands on 'vehicle', so
+   * a change-the-car-and-go replay is one keypress and ESC still walks back to MAP and TITLE; and
+   * `scenario('menu')` keeps 'vehicle' as its default because every visual baseline of this screen
+   * is the car-select frame.
+   */
+  open(screen = 'vehicle') {
     const g = this.game;
     this.open_ = true;
+    this.screen = screen;
+    this.screenT = 0;
+    this.screenAge = 0;
     this.carIndex = Math.max(0, VEHICLE_IDS.indexOf(g.carId));
     this.cityIndex = Math.max(0, CITY_IDS.indexOf(g.cityId));
     this.colorIndex = Math.max(0, getVehicle(VEHICLE_IDS[this.carIndex]).spec.colors.indexOf(g.carColor));
@@ -2487,12 +2513,15 @@ export class Menu {
   close() {
     if (!this.open_) return;
     /**
-     * A destination change queued by `_move` runs 32 ms from now, and closing before it does used
-     * to leave the race on the OLD city while the panel said the new one — then the queued build
-     * fired mid-race, tore the track out from under the player and re-applied the garage look on
-     * top. That is the worst dead end on this screen because it is on the one path a player in a
-     * hurry actually takes: DOWN, RIGHT, ENTER. Forcing the swap to completion here costs the
-     * build's own latency, exactly as if they had waited, and races the city they picked.
+     * A destination change queued by `_confirmMap` runs 32 ms from now, and closing before it does
+     * used to leave the race on the OLD city while the panel said the new one — then the queued
+     * build fired mid-race, tore the track out from under the player and re-applied the garage look
+     * on top. Forcing the swap to completion here costs the build's own latency, exactly as if they
+     * had waited, and races the city they picked.
+     *
+     * Since round 6 the player's own path can no longer reach this: a queued build is armed by
+     * CONFIRM on the map screen, and the only way off that screen is the build completing. It
+     * stays as the safety net for `__GAME` callers, which can close the menu from anywhere.
      *
      * Before `open_` goes false, so `_flushCity`'s completion still knows the garage was open —
      * and before `_exitStage`, which is what hands the (now correct) city back to the renderer.
@@ -2922,18 +2951,26 @@ export class Menu {
     this.t += dt;
     this.intro = clamp(this.intro + dt / 0.55, 0, 1);
     this.swapT = clamp(this.swapT + dt / 0.62, 0, 1);
-    this.focusT = clamp(this.focusT + dt / 0.22, 0, 1);
+    this.screenT = clamp(this.screenT + dt / 0.22, 0, 1);
+    this.screenAge += dt;
     this.colorFlash = Math.max(0, this.colorFlash - dt / 0.35);
     this.cityFade = clamp(this.cityFade + dt / 0.42, 0, 1);
     this.navT = clamp(this.navT + dt / 0.30, 0, 1);
     if (this.cityBusy) this.busyT += dt;
+    // Clamped, and not as decoration: these are 0..1 selection weights that the fan and the
+    // destination filmstrip feed straight into plate COORDINATES, so a single bad frame used to be
+    // permanent — one negative timestep sent `1 − e^(−11·dt)` to a large negative number, `lerp`
+    // threw the selected lane hundreds of thousands of units past 1, and the tile it drives was
+    // laid out off-screen from then on. main.js `frame` no longer emits a negative dt (see the note
+    // there), and clamping here means no future caller can reintroduce it.
+    const chase = clamp(1 - Math.exp(-11 * Math.max(0, dt)), 0, 1);
     for (let i = 0; i < this.tileT.length; i++) {
       const want = i === this.carIndex ? 1 : 0;
-      this.tileT[i] = lerp(this.tileT[i], want, 1 - Math.exp(-11 * dt));
+      this.tileT[i] = clamp(lerp(this.tileT[i], want, chase), 0, 1);
     }
     for (let i = 0; i < this.cityT.length; i++) {
       const want = i === this.cityIndex ? 1 : 0;
-      this.cityT[i] = lerp(this.cityT[i], want, 1 - Math.exp(-11 * dt));
+      this.cityT[i] = clamp(lerp(this.cityT[i], want, chase), 0, 1);
     }
 
     // stat bars chase their target so a car swap is a MOVE, not a cut
@@ -2955,7 +2992,13 @@ export class Menu {
     // FOV punch (which reads `1 − ease`) inherits the same settle for free.
     const ease = this.swapT >= 1 ? 1 : 1 - Math.exp(-5.2 * this.swapT) * Math.cos(this.swapT * 5.4);
     const breathe = Math.sin(this.t * 0.34) * 0.245;
-    this.spin = HERO_YAW + breathe + this.spinKick * (1 - ease);
+    // TITLE runs the deck as a slow continuous turntable — attract mode. One line, and it lives in
+    // the 3D layer, which redraws every frame regardless. That is what pays for the title's 2D art
+    // being completely static: the screen is visibly alive (deck turning, dust, the bad ballast in
+    // tube 2, the extractor fan) without a single timer-driven repaint of the cached panel.
+    this.spin = this.screen === 'title'
+      ? HERO_YAW + this.screenAge * 0.16
+      : HERO_YAW + breathe + this.spinKick * (1 - ease);
 
     if (this.stage) this.stage.update(this.t);
     this._pumpThumbs();
@@ -2987,7 +3030,12 @@ export class Menu {
     // ran into the selector tiles. Distance, eye height and aim height are all derived from the
     // blueprint's own dimensions and eased, so a swap dollies rather than cuts.
     const dims = getVehicle(VEHICLE_IDS[this.carIndex]).blueprint.dims;
-    const fitR = CAM.r * clamp((0.58 * dims.length + 1.35 * dims.height) / 4.91, 0.86, 1.24);
+    // Each screen frames the room differently, and because the pull-back rides the same `_fitR`
+    // exponential ease a car swap already uses, a SCREEN change dollies rather than cuts. VEHICLE
+    // is the hero framing; MAP stands back so the postcard and the filmstrip sit in a room rather
+    // than on a bonnet; TITLE sits between them, whole car in frame under the wordmark.
+    const zoom = this.screen === 'map' ? 1.28 : this.screen === 'title' ? 1.16 : 1;
+    const fitR = CAM.r * zoom * clamp((0.58 * dims.length + 1.35 * dims.height) / 4.91, 0.86, 1.24);
     // Eye height up ~0.22 m on round 3. Two reasons, both about the bodywork rather than the room:
     // from 2.02 m the lens sat level with the beltline, which is the one elevation that looks
     // straight INTO the recess under the door and along the underside of the front bumper — the two
@@ -3024,64 +3072,177 @@ export class Menu {
     g.effects.update(dt);
 
     // ---- input -------------------------------------------------------------------------------
-    if (input.pressed('left')) this._move(-1);
-    if (input.pressed('right')) this._move(1);
-    if (input.pressed('throttle')) this._setFocus('car');
-    if (input.pressed('brake')) this._setFocus('city');
-    if (input.pressed('cancel')) this._setFocus(this.focus === 'car' ? 'city' : 'car');
-    if (input.pressed('camera') || input.pressed('nitro')) this._cycleColor();
-    if (input.pressed('confirm') || input.pressed('handbrake')) this._start();
+    /**
+     * One meaning per key, per screen. See `screen` in the constructor for the modal flag this
+     * replaced and why it had to go.
+     *
+     * ▲▼ are ALIASED onto ◄► on every screen rather than left dead. They used to be the two keys
+     * that switched the invisible mode, so they are exactly the keys a returning player's fingers
+     * will reach for by accident — pointing them at the same harmless, obvious action as the arrows
+     * beside them means that muscle memory cannot misfire.
+     */
+    if (this.screen === 'title') {
+      if (input.pressed('confirm') || input.pressed('handbrake')) {
+        g.audio.init(); g.audio.ui('confirm');
+        this._setScreen('map', null);
+      }
+    } else if (this.screen === 'map') {
+      if (input.pressed('left') || input.pressed('throttle')) this._moveCity(-1);
+      if (input.pressed('right') || input.pressed('brake')) this._moveCity(1);
+      if (input.pressed('confirm') || input.pressed('handbrake')) this._confirmMap();
+      if (input.pressed('cancel')) this._setScreen('title', 'back');
+    } else {
+      if (input.pressed('left') || input.pressed('throttle')) this._moveCar(-1);
+      if (input.pressed('right') || input.pressed('brake')) this._moveCar(1);
+      if (input.pressed('camera') || input.pressed('nitro')) this._cycleColor();
+      if (input.pressed('confirm') || input.pressed('handbrake')) this._start();
+      if (input.pressed('cancel')) this._setScreen('map', 'back');
+    }
   }
 
-  _setFocus(f) {
-    if (this.focus === f) return;
-    this.focus = f;
-    this.focusT = 0;
-    this.game.audio.init();
-    this.game.audio.ui('move');
+  // ---------------------------------------------------------------- screens
+
+  /**
+   * The control hints each screen prints along the bottom bar.
+   *
+   * `_drawHintBar` consumes exactly this array, so what the bar promises and what the keys do
+   * cannot drift apart: delete a row here and the bar loses it too. `role` is the stable token the
+   * functest asserts on — every screen below the root must publish a browse, a confirm AND a back,
+   * which is the user's actual complaint ("I have trouble changing the map and vehicle") turned
+   * into a gate. TITLE is the root of the flow: it has a forward and no back, because there is
+   * nowhere behind it.
+   */
+  hints(screen = this.screen) {
+    if (screen === 'title') {
+      return [{ keys: ['ENTER'], label: 'START', role: 'confirm', hot: true }];
+    }
+    if (screen === 'map') {
+      // While the circuit is building, `_moveCity`, `_confirmMap` and `_setScreen` all early-return
+      // on `cityBusy` — so the bar must stop advertising browse, confirm and back, all three of
+      // which are refused for the length of the build. A bar that promises keys the screen is
+      // ignoring is the same failure as the old invisible focus mode, just louder: the player
+      // presses the thing it told them to press and nothing happens. `_sig` already carries
+      // `cityBusy`, so the bar repaints on both edges of the build.
+      if (screen === this.screen && this.cityBusy) {
+        return [{ keys: [], label: 'BUILDING THE CIRCUIT', role: 'busy' }];
+      }
+      return [
+        { keys: ['◄', '►'], label: 'BROWSE', role: 'browse' },
+        { keys: ['ENTER'], label: 'CONFIRM', role: 'confirm', hot: true },
+        { keys: ['ESC'], label: 'BACK', role: 'back' },
+      ];
+    }
+    return [
+      { keys: ['◄', '►'], label: 'BROWSE', role: 'browse' },
+      { keys: ['V'], label: 'COLOUR', role: 'colour' },
+      { keys: ['ENTER'], label: 'RACE', role: 'confirm', hot: true },
+      { keys: ['ESC'], label: 'BACK', role: 'back' },
+    ];
   }
 
-  _move(d) {
+  /**
+   * What the pickers are currently on. A read-only contract for tools and the functest: a check
+   * written against this cannot drift from what the screen would actually race, the way a check
+   * written against `carIndex` and a hard-coded id list can.
+   */
+  selection() {
+    return {
+      screen: this.screen,
+      car: VEHICLE_IDS[this.carIndex],
+      city: CITY_IDS[this.cityIndex],
+      color: getVehicle(VEHICLE_IDS[this.carIndex]).spec.colors[this.colorIndex],
+    };
+  }
+
+  /**
+   * Change screen.
+   *
+   * Refuses while a destination build is in flight. `setCity` is synchronous, so no key can
+   * actually arrive mid-build — but a screen change racing `_flushCity`'s completion would strand
+   * the garage outside the scene, and the guard costs nothing.
+   */
+  _setScreen(s, sound = 'move') {
+    if (this.screen === s || this.cityBusy) return;
+    this.screen = s;
+    this.screenT = 0;
+    this.screenAge = 0;
+    this._sig = null;              // open()'s idiom: force the arriving screen's first repaint
+    // the hero whips round on arrival at the vehicle screen, on the same spring as a car swap
+    if (s === 'vehicle') { this.swapT = 0; this.spinKick = -Math.PI * 1.45; }
+    if (sound) { this.game.audio.init(); this.game.audio.ui(sound); }
+  }
+
+  _moveCar(d) {
     const g = this.game;
     g.audio.init(); g.audio.ui('move');
-    // The flick is the FAN's, so only a vehicle move arms it; a destination move parks it.
-    this.navDir = this.focus === 'car' ? d : 0;
+    this.navDir = d;               // the flick is the FAN's, so only a vehicle move arms it
     this.navT = 0;
-    if (this.focus === 'car') {
-      this.carIndex = (this.carIndex + d + VEHICLE_IDS.length) % VEHICLE_IDS.length;
-      this.colorIndex = 0;
-      g.setCar(VEHICLE_IDS[this.carIndex]);
-      this.swapT = 0;
-      this.spinKick = -Math.PI * 1.45 * d;
-      this._stageCar();
-      // reshoot the newly-selected tile from the car that is now on the turntable, so the tile and
-      // the stage always agree about which paint this car is wearing
-      this._queueThumbs();
-    } else {
-      if (this.cityBusy) return;
-      this.cityPrev = this.cityIndex;
-      this.cityIndex = (this.cityIndex + d + CITY_IDS.length) % CITY_IDS.length;
-      this.cityFade = 0;
-      this.cityBusy = true;
-      this.busyT = 0;
-      /**
-       * Build on the NEXT task, not this one, and leave the panel TWO FRAMES to say so.
-       *
-       * Tearing down a city and building the next one is the single heaviest thing this game does.
-       * Run in the same task as the teardown, the browser never gets to retire the WebGL deletes
-       * the teardown just queued before the build starts asking for the replacements, and on the
-       * software rasteriser the harness uses that is reliably fatal — the renderer process dies
-       * inside setCity and the menu never returns.
-       *
-       * ROUND 5 makes the delay 32 ms rather than 0 for a second reason, and it is the whole of
-       * §6.8's "no dead ends" on this control: `setCity` is synchronous inside, so from the frame
-       * you press the key the tab is BLOCKED until the new city exists — a second and a half in
-       * which the screen showed the new row already highlighted and nothing else. Two frames of
-       * head-start is enough for the compositor to put the SPOOLING state on screen first, so the
-       * freeze reads as the machine working rather than as the input having been dropped.
-       */
-      this._cityTimer = setTimeout(() => this._flushCity(), 32);
-    }
+    this.carIndex = (this.carIndex + d + VEHICLE_IDS.length) % VEHICLE_IDS.length;
+    this.colorIndex = 0;
+    g.setCar(VEHICLE_IDS[this.carIndex]);
+    this.swapT = 0;
+    this.spinKick = -Math.PI * 1.45 * d;
+    this._stageCar();
+    // reshoot the newly-selected tile from the car that is now on the turntable, so the tile and
+    // the stage always agree about which paint this car is wearing
+    this._queueThumbs();
+  }
+
+  /**
+   * Move the destination SELECTOR. It no longer builds anything, and that is a measured decision.
+   *
+   * Browsing used to fire a full `game.setCity()` on every keypress — a second and a half of frozen
+   * tab on the real GPU, and 25-44 s under the harness's software rasteriser. It bought the player
+   * nothing: `_enterStage()` hides the city group, re-applies the garage look and puts the stage's
+   * own env back on the scene the moment the build lands, and every pixel of this screen's
+   * destination art is canvas painted from `getCity(id).def` — a static module export — never from
+   * `game.city`. Two captures of the same frame with the animation clock frozen, one with the
+   * selector moved and one after actually running the build, differ by 2.03% of pixels: dust
+   * sprites and one frame of reflector jitter. Walking the four-city list cost four builds for four
+   * identical frames.
+   *
+   * So the build moved to CONFIRM, where the player has committed, where the SPOOLING bar is
+   * already on screen and honest, and where arriving on the next screen is the "done" signal the
+   * freeze never had. It is cost-neutral overall — one build, which they were always going to pay.
+   */
+  _moveCity(d) {
+    if (this.cityBusy) return;
+    const g = this.game;
+    g.audio.init(); g.audio.ui('move');
+    this.navDir = 0;
+    this.navT = 0;
+    this.cityPrev = this.cityIndex;
+    this.cityIndex = (this.cityIndex + d + CITY_IDS.length) % CITY_IDS.length;
+    this.cityFade = 0;
+  }
+
+  /**
+   * CONFIRM on the map screen: build the chosen city, then walk on to the vehicle screen.
+   *
+   * Build on the NEXT task, not this one, and leave the panel TWO FRAMES to say so.
+   *
+   * Tearing down a city and building the next one is the single heaviest thing this game does. Run
+   * in the same task as the teardown, the browser never gets to retire the WebGL deletes the
+   * teardown just queued before the build starts asking for the replacements, and on the software
+   * rasteriser the harness uses that is reliably fatal — the renderer process dies inside setCity
+   * and the menu never returns.
+   *
+   * The delay is 32 ms rather than 0 for a second reason, and it is the whole of §6.8's "no dead
+   * ends" on this control: `setCity` is synchronous inside, so from the frame the key is pressed
+   * the tab is BLOCKED until the new city exists. Two frames of head-start is enough for the
+   * compositor to put the SPOOLING state on screen first, so the freeze reads as the machine
+   * working rather than as the input having been dropped.
+   */
+  _confirmMap() {
+    const g = this.game;
+    if (this.cityBusy) return;
+    g.audio.init(); g.audio.ui('confirm');
+    // already standing on this city — nothing to build, walk straight on
+    if (CITY_IDS[this.cityIndex] === g.cityId) { this._setScreen('vehicle', null); return; }
+    this.cityBusy = true;
+    this.busyT = 0;
+    this._afterCity = () => this._setScreen('vehicle', null);
+    this._cityTimer = setTimeout(() => this._flushCity(), 32);
   }
 
   /**
@@ -3113,12 +3274,19 @@ export class Menu {
     const done = () => {
       if (st && !st.group.parent) g.engine.scene.add(st.group);
       this.cityBusy = false;
-      // If ENTER forced the flush the garage is already closing and the race is about to own the
+      // Taken before the early return so a forced close can never leave a stale continuation armed
+      // to fire on the next visit.
+      const after = this._afterCity;
+      this._afterCity = null;
+      // If close() forced the flush the garage is already closing and the race is about to own the
       // scene; do not re-light a stage nobody is standing on. `close()` sets this before it calls
       // us, and `_exitStage` restores the (now correct) city itself.
       if (this._closing || !this.open_) return;
       this._enterStage();
       this._stageCar();
+      // …and only now, with cityBusy already false, is `_setScreen` allowed to run (it refuses
+      // mid-build). Arriving on the vehicle screen IS the signal that the build finished.
+      if (after) after();
     };
     let p = null;
     try { p = g.setCity(CITY_IDS[this.cityIndex]); } catch (e) { console.warn('city swap failed', e); }
@@ -3196,21 +3364,32 @@ export class Menu {
      * The three metronome animations this layer used to run — a scan sweep down the whole frame, a
      * sheen crawling across the selected tile, a pulsing confirm hint — are gone, and not only for
      * the cost. Each was a full-screen repaint at 60 Hz to animate something nothing had triggered.
-     * They are now driven by `focusT` / `tileT` / `intro`, so the sweep happens when the menu opens,
-     * the sheen crosses the tile you just selected, and the confirm hint brightens when focus lands
-     * on it. Motion that answers an input reads as responsiveness; motion on a timer reads as a
+     * They are now driven by `screenT` / `tileT` / `intro`, so the sweep happens when the menu opens,
+     * the sheen crosses the tile you just selected, and the confirm hint brightens as a screen
+     * arrives. Motion that answers an input reads as responsiveness; motion on a timer reads as a
      * screensaver, and the room behind the panel already carries the idle life (turntable sweep,
-     * dust, the bad ballast in tube 2, the extractor fan).
+     * dust, the bad ballast in tube 2, the extractor fan). The TITLE screen added in round 6 obeys
+     * the same rule: its wordmark and its PRESS ENTER prompt are painted once and never animated,
+     * and the attract-mode motion is the 3D turntable, which costs this layer nothing.
+     *
+     * `this.canvas.width/height` is in the key for a reason that is not about content at all.
+     * `HUD.resize()` assigns the shared #ui canvas's width and height unconditionally, and
+     * ASSIGNING a canvas's dimensions clears it — even to the same value — while `W`/`H` here are
+     * `hud.w/h`, the LOGICAL size, which does not move. A fully settled screen therefore repainted
+     * nothing after a resize and photographed as an empty room: reproduced at 0 ink after
+     * `setSize(1600,900)` on a settled menu. TITLE is the screen most likely to be genuinely
+     * settled, so the bug went from latent to reachable in the same change that fixes it.
      */
-    const moving = this.intro < 1 || this.swapT < 1 || this.focusT < 1 || this.colorFlash > 0
+    const moving = this.intro < 1 || this.swapT < 1 || this.screenT < 1 || this.colorFlash > 0
       || this.cityFade < 1 || this.navT < 1 || this.cityBusy
       || this.tileT.some((v, i) => Math.abs(v - (i === this.carIndex ? 1 : 0)) > 0.002)
       || this.cityT.some((v, i) => Math.abs(v - (i === this.cityIndex ? 1 : 0)) > 0.002)
       || this.statShown.some((v, i) => Math.abs(v - this._statWant[i]) > 0.002);
     const sig = [
-      W, H, moving ? 0 : 1, this.carIndex, this.cityIndex, this.colorIndex, this.focus,
+      W, H, this.canvas.width, this.canvas.height,
+      moving ? 0 : 1, this.carIndex, this.cityIndex, this.colorIndex, this.screen,
       this.cityBusy ? 1 : 0, this.cityPrev, this._thumbGen || 0,
-      this.intro.toFixed(3), this.swapT.toFixed(3), this.focusT.toFixed(3), this.colorFlash.toFixed(3),
+      this.intro.toFixed(3), this.swapT.toFixed(3), this.screenT.toFixed(3), this.colorFlash.toFixed(3),
       this.cityFade.toFixed(3), this.navT.toFixed(3), this.cityBusy ? this.busyT.toFixed(2) : 0,
       this.tileT.map((v) => v.toFixed(3)).join(), this.cityT.map((v) => v.toFixed(3)).join(),
       this.statShown.map((v) => v.toFixed(3)).join(),
@@ -3232,14 +3411,42 @@ export class Menu {
     const spec = getVehicle(VEHICLE_IDS[this.carIndex]).spec;
     const io = smoothstep(0, 1, this.intro);
 
+    // Each screen draws its own middle and then the SAME bottom bar, fed from `hints()`. That is
+    // the contract: whatever screen is up, its browse / confirm / back are printed along the
+    // bottom, and the thing you have selected is named at the far end of it.
     this._drawScrims(ctx, VW, VH, io);
-    this._drawTopBar(ctx, VW, io);
-    this._drawFan(ctx, VW, VH, io);
-    this._drawIdentity(ctx, spec, VW, VH, io);
-    this._drawStats(ctx, spec, VH, io);
-    this._drawDestinations(ctx, VW, io);
-    this._drawSpecs(ctx, spec, VW, io);
-    this._drawControls(ctx, VW, VH, io);
+    if (this.screen === 'title') {
+      this._drawTitle(ctx, VW, VH, io);
+      this._drawHintBar(ctx, VW, VH, io, { hints: this.hints() });
+    } else if (this.screen === 'map') {
+      const cityDef = getCity(CITY_IDS[this.cityIndex]).def;
+      const prevDef = getCity(CITY_IDS[this.cityPrev]).def;
+      this._drawTopBar(ctx, VW, io);
+      this._drawMap(ctx, VW, VH, io);
+      this._drawHintBar(ctx, VW, VH, io, {
+        hints: this.hints(),
+        over: `DESTINATION  0${this.cityIndex + 1} / 0${CITY_IDS.length}`,
+        prevOver: `DESTINATION  0${this.cityPrev + 1} / 0${CITY_IDS.length}`,
+        name: cityDef.name,
+        prevName: prevDef.name,
+        fade: smoothstep(0, 1, this.cityFade),
+        swap: smoothstep(0, 1, this.cityFade),
+        accent: cityDef.look?.accent || CYAN,
+      });
+    } else {
+      this._drawTopBar(ctx, VW, io);
+      this._drawFan(ctx, VW, VH, io);
+      this._drawIdentity(ctx, spec, VW, VH, io);
+      this._drawStats(ctx, spec, VH, io);
+      this._drawCityCard(ctx, VW, io);
+      this._drawSpecs(ctx, spec, VW, io);
+      this._drawHintBar(ctx, VW, VH, io, {
+        hints: this.hints(),
+        over: spec.klass,
+        name: spec.full,
+        swap: smoothstep(0, 1, this.swapT),
+      });
+    }
 
     ctx.restore();
 
@@ -3271,12 +3478,14 @@ export class Menu {
     // A dedicated ground for the identity + stat column. The turntable deck is the brightest
     // surface in the room and it runs straight under this block; without its own plate the labels
     // sat on a moving specular and the smallest type stopped being readable at all.
-    ctx.save();
-    ctx.globalAlpha = io;
-    fillPlate(ctx, IDENT_X - 26, VH - BAR_H - 186, 700, 176, 'rgba(4,8,14,0.68)', 0.13, PANEL_CUT);
-    strokePlate(ctx, IDENT_X - 26, VH - BAR_H - 186, 700, 176, 'rgba(130,160,190,0.30)', 1.3, 0.13, 0, PANEL_CUT);
-    rail(ctx, IDENT_X - 26, VH - BAR_H - 186, 176, 'rgba(255,194,58,0.55)', 3, 0.13);
-    ctx.restore();
+    if (this.screen === 'vehicle') {
+      ctx.save();
+      ctx.globalAlpha = io;
+      fillPlate(ctx, IDENT_X - 26, VH - BAR_H - 186, 700, 176, 'rgba(4,8,14,0.68)', 0.13, PANEL_CUT);
+      strokePlate(ctx, IDENT_X - 26, VH - BAR_H - 186, 700, 176, 'rgba(130,160,190,0.30)', 1.3, 0.13, 0, PANEL_CUT);
+      rail(ctx, IDENT_X - 26, VH - BAR_H - 186, 176, 'rgba(255,194,58,0.55)', 3, 0.13);
+      ctx.restore();
+    }
     ctx.fillStyle = hgrad(ctx, 0, 560, [[0, 'rgba(3,6,12,0.80)'], [1, 'rgba(3,6,12,0)']]);
     ctx.fillRect(0, 0, 560, VH);
     ctx.fillStyle = hgrad(ctx, VW - 480, VW, [[0, 'rgba(3,6,12,0)'], [1, 'rgba(3,6,12,0.70)']]);
@@ -3323,12 +3532,13 @@ export class Menu {
     drawText(ctx, 'GARAGE', {
       x: rx, y: y + 22, size: 19, weight: 0.16, tracking: 0.26, align: 'right', color: LABEL, face: 'geo',
     });
-    // brightens as focus lands on this column and holds — an answer to an input, not a blink
-    const blink = 0.62 + 0.38 * smoothstep(0, 1, this.focusT);
+    // brightens as the screen arrives and holds — an answer to an input, not a blink
+    const onMap = this.screen === 'map';
+    const blink = 0.62 + 0.38 * smoothstep(0, 1, this.screenT);
     ctx.globalAlpha = blink;
-    drawText(ctx, this.focus === 'car' ? 'SELECT VEHICLE' : 'SELECT DESTINATION', {
+    drawText(ctx, onMap ? 'SELECT DESTINATION' : 'SELECT VEHICLE', {
       x: rx, y: y + 44, size: 16, weight: 0.15, tracking: 0.18, align: 'right',
-      color: this.focus === 'car' ? GOLD : CYAN, face: 'geo',
+      color: onMap ? CYAN : GOLD, face: 'geo',
     });
     ctx.globalAlpha = 1;
 
@@ -3347,7 +3557,9 @@ export class Menu {
     // the column, which is what makes the word "fan" true.
     const CX = -196, CY = 438, R = 470, SPREAD = 0.302;
     const TW = 246, TH = 126;
-    const carFocus = this.focus === 'car';
+    // Always true where this is drawn — the fan only exists on the vehicle screen now. Kept as a
+    // name so every cyan/gold focus treatment below reads as an affirmation rather than a mode.
+    const carFocus = this.screen === 'vehicle';
 
     /**
      * ---- ROUND 5: THE FAN MOVES WHEN YOU MOVE IT -----------------------------------------------
@@ -3758,210 +3970,323 @@ export class Menu {
     ctx.restore();
   }
 
-  // ---- destinations ------------------------------------------------------------------------
+  // ---- destination art ---------------------------------------------------------------------
 
-  _drawDestinations(ctx, VW, io) {
-    const w = 344;
-    const x = VW - w - 34 - PANEL_LEAN;
-    const y = 150;
-    const rowH = 44;
-    const cityFocus = this.focus === 'city';
-    const slide = (1 - io) * 90;
-    const bodyH = 46 + CITY_IDS.length * rowH + 222;
-    const S = PANEL_LEAN / bodyH;
-    const L = (ry) => shearAt(x, y, bodyH, ry, S);
-    const R = (ry) => shearAt(x + w, y, bodyH, ry, S);
-
-    ctx.save();
-    ctx.translate(slide, 0);
-    ctx.globalAlpha = io;
-
-    // Near-opaque. At 0.80 the red oil drum behind the panel bled up through the rows and the
-    // list lost its black ground — a menu panel has to be a surface, not a filter.
-    fillPlate(ctx, x, y, w, bodyH, 'rgba(4,8,13,0.93)', S, PANEL_CUT);
-    strokePlate(ctx, x, y, w, bodyH, cityFocus ? CYAN : 'rgba(140,172,200,0.40)', cityFocus ? 2.4 : 1.5, S,
-      cityFocus ? 16 : 0, PANEL_CUT);
-    rail(ctx, x, y, bodyH, cityFocus ? CYAN : 'rgba(120,150,180,0.5)', 4, S);
-
-    drawText(ctx, 'DESTINATION', {
-      x: L(y + 22) + 20, y: y + 30, size: 18, weight: 0.16, tracking: 0.26,
-      color: cityFocus ? CYAN : LABEL, face: 'geo',
-    });
-    ctx.strokeStyle = 'rgba(150,190,220,0.24)'; ctx.lineWidth = 1.1;
-    ctx.beginPath(); ctx.moveTo(L(y + 44) + 16, y + 44); ctx.lineTo(R(y + 44) - 12, y + 44); ctx.stroke();
-
-    CITY_IDS.forEach((id, i) => {
-      const def = getCity(id).def;
-      const sel = this.cityT[i];
-      const ry = y + 52 + i * rowH;
-      const accent = def.look?.accent || CYAN;
-      const rl = L(ry + rowH - 6);
-      const rr = R(ry + 18);
-      if (sel > 0.01) {
-        ctx.globalAlpha = io * sel;
-        fillPlate(ctx, rl + 10, ry, w - 26, rowH - 6, hgrad(ctx, x, x + w,
-          [[0, cityFocus ? 'rgba(57,215,242,0.30)' : `${accent}3a`], [1, 'rgba(57,215,242,0)']]), S);
-        rail(ctx, rl + 10, ry, rowH - 6, cityFocus ? CYAN : accent, 4, S);
-        ctx.globalAlpha = io;
-      }
-      // Two-tone chip: the city's accent beside its own sky. Vegas and New York publish the SAME
-      // gold accent, so an accent-only bullet made two of the four rows identical.
-      const sky2 = def.look?.sky?.top || def.look?.fog?.color || '#8899aa';
-      ctx.shadowBlur = 8 + sel * 12; ctx.shadowColor = accent;
-      ctx.fillStyle = accent;
-      plate(ctx, rl + 24, ry + 12, 8, 14, 0.4); ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = sky2;
-      plate(ctx, rl + 32, ry + 12, 8, 14, 0.4); ctx.fill();
-
-      // shrink-to-fit: NEW YORK CITY is half again as long as MIAMI and must not run into the laps
-      // tracking 0.08 was too tight for an 18% italic — the two Ms of MIAMI overlapped into a
-      // single blot. 0.13 clears the lean at every name length.
-      const avail = w - 158;
-      let ns = 21;
-      while (ns > 14 && measure(def.name, { size: ns, tracking: 0.13 }).width > avail) ns -= 0.5;
-      drawText(ctx, def.name, {
-        x: rl + 56, y: ry + 26, size: ns, weight: 0.17, italic: 0.18, tracking: 0.13,
-        color: sel > 0.5 ? '#ffffff' : 'rgba(178,199,220,0.92)',
-      });
-      drawText(ctx, `${def.laps} LAPS`, {
-        x: rr - 24, y: ry + 25, size: 13, weight: 0.14, tracking: 0.16, align: 'right',
-        color: sel > 0.5 ? 'rgba(255,255,255,0.8)' : 'rgba(150,175,200,0.6)', face: 'geo',
-      });
-    });
-
-    // Selected-city footer. The skyline glyph is the part that makes this a DESTINATION list
-    // rather than four words: a one-second read of where you are about to drive.
+  /**
+   * The destination PICTURE: sky gradient, sun disc, three depth bands of skyline, ground strip —
+   * a one-second read of where you are about to drive. Painted entirely from `getCity(id).def`, a
+   * static module export, which is why browsing destinations needs no city build at all (see
+   * `_moveCity`).
+   *
+   * Everything is expressed as a fraction of the rect it is given, so the same drawing serves the
+   * map screen's 1044 x 404 hero postcard and the vehicle screen's 294 x 190 confirmed card.
+   *
+   * It CROSS-DISSOLVES. Changing city used to swap the picture between two frames with nothing in
+   * between, which is the one place on this screen where a hard cut did real damage: the strip is
+   * the only element whose whole job is "where am I about to drive", and a cut reads as a redraw
+   * rather than as a change of place. The outgoing city stays under the incoming one and is wiped
+   * off left-to-right behind a bright edge in the NEW city's accent — sky, sun and all three
+   * silhouette bands travel together, so it reads as one place sliding over another.
+   */
+  _drawCityPreview(ctx, px, py, pw, ph, io) {
     const def = getCity(CITY_IDS[this.cityIndex]).def;
+    const prev = getCity(CITY_IDS[this.cityPrev]).def;
     const accent = def.look?.accent || CYAN;
-    const fy = y + 52 + CITY_IDS.length * rowH + 8;
-    const fl = L(fy + 170), fr = R(fy - 4);
-    ctx.strokeStyle = 'rgba(150,190,220,0.2)'; ctx.lineWidth = 1.1;
-    ctx.beginPath(); ctx.moveTo(L(fy - 4) + 16, fy - 4); ctx.lineTo(fr - 12, fy - 4); ctx.stroke();
+    const fade = smoothstep(0, 1, this.cityFade);
+    const wiping = fade < 1 && prev !== def;
 
-    // Sky + skyline preview, in the destination's OWN palette. Three depth bands, not one flat
-    // stencil: a far range at 22% over the sky, a mid band at 55%, the hero silhouette solid. That
-    // is the difference between "a row of black rectangles" and a one-second read of a place.
-    //
-    // ROUND 5: it is painted through a helper so a destination change can CROSS-DISSOLVE. Changing
-    // city used to swap 344 × 166 px of picture between two frames with nothing in between, which
-    // is the one place on this screen where a hard cut was doing real damage: the strip is the only
-    // element whose whole job is "where am I about to drive", and a cut reads as a redraw rather
-    // than as a change of place. The outgoing city stays under the incoming one and is wiped off
-    // left-to-right behind a bright edge in the NEW city's accent — the sky, the sun and all three
-    // silhouette bands travel together, so it reads as one place sliding over another.
-    const paintPreview = (d2, clip) => {
+    const paint = (d2, clipW) => {
       const sky = d2.look?.sky || {};
       const skyTop = sky.top || '#10222e';
       const skyHz = sky.horizon || d2.look?.accent || CYAN;
+      const sun = sky.sunColor || '#ffe0b0';
       ctx.save();
-      ctx.beginPath(); ctx.rect(clip[0], clip[1], clip[2], clip[3]); ctx.clip();
-      ctx.fillStyle = vgrad(ctx, fy + 2, fy + 168, [[0, skyTop], [0.50, skyHz], [1, sky.haze || skyHz]]);
-      ctx.fillRect(fl + 18, fy + 2, w - 44, 166);
-      // sun/moon disc, placed off-centre so the strip is composed
-      const sg = ctx.createRadialGradient(fl + w * 0.70, fy + 92, 1, fl + w * 0.70, fy + 92, 74);
-      sg.addColorStop(0, sky.sunColor || '#ffe0b0');
-      sg.addColorStop(0.28, `${(sky.sunColor || '#ffe0b0')}88`);
+      ctx.beginPath(); ctx.rect(px, py, clipW, ph); ctx.clip();
+      ctx.fillStyle = vgrad(ctx, py, py + ph, [[0, skyTop], [0.50, skyHz], [1, sky.haze || skyHz]]);
+      ctx.fillRect(px, py, pw, ph);
+      // sun/moon disc, placed off-centre so the picture is composed
+      const sx = px + pw * 0.72, sy = py + ph * 0.54, sr = ph * 0.45;
+      const sg = ctx.createRadialGradient(sx, sy, 1, sx, sy, sr);
+      sg.addColorStop(0, sun);
+      sg.addColorStop(0.28, `${sun}88`);
       sg.addColorStop(1, 'rgba(255,224,176,0)');
-      ctx.fillStyle = sg; ctx.fillRect(fl + 18, fy + 2, w - 44, 166);
+      ctx.fillStyle = sg; ctx.fillRect(px, py, pw, ph);
+      // three depth bands, not one flat stencil: a far range at 22% over the sky, a mid band at
+      // 55%, the hero silhouette solid. That is the difference between "a row of black rectangles"
+      // and a place.
       ctx.globalAlpha = io * 0.22;
-      drawSkyline(ctx, d2.id, fl + 8, fy + 146, w - 24, 80, '#000000');
+      drawSkyline(ctx, d2.id, px - pw * 0.033, py + ph * 0.867, pw * 1.067, ph * 0.482, '#000000');
       ctx.globalAlpha = io * 0.55;
-      drawSkyline(ctx, d2.id, fl + 56, fy + 156, w - 84, 66, '#000000');
+      drawSkyline(ctx, d2.id, px + pw * 0.127, py + ph * 0.928, pw * 0.867, ph * 0.398, '#000000');
       ctx.globalAlpha = io;
-      drawSkyline(ctx, d2.id, fl + 26, fy + 168, w - 60, 96, 'rgba(4,7,12,0.97)');
+      drawSkyline(ctx, d2.id, px + pw * 0.027, py + ph, pw * 0.947, ph * 0.578, 'rgba(4,7,12,0.97)');
       // ground strip so the silhouettes stand on something
       ctx.fillStyle = 'rgba(4,7,12,0.97)';
-      ctx.fillRect(fl + 18, fy + 162, w - 44, 8);
+      ctx.fillRect(px, py + ph * 0.964, pw, ph * 0.048);
       ctx.restore();
     };
 
-    /**
-     * The place NAMED on its own picture, the way §1.2's frame banners YELLOWSTONE. The strip had
-     * the skyline, and the list twenty rows above had the word, and neither on its own is a
-     * one-second read of where you are about to drive.
-     *
-     * It CROSS-FADES where the picture WIPES, and that is not a stylistic preference: run through
-     * the same left-to-right clip as the skyline, LOS ANGELES sliding under LAS VEGAS spends a
-     * third of a second reading `LAS ANGELES` — a wipe is fine on a picture and never on a word.
-     * Outgoing goes fast (square law), incoming waits until the wipe is a third across, so at no
-     * point are both legible.
-     */
-    const nameAt = (d2, a) => {
-      if (a <= 0.004) return;
-      let dn = 20;
-      while (dn > 13 && measure(d2.name, { size: dn, tracking: 0.10 }).width > w - 82) dn -= 0.5;
+    if (wiping) paint(prev, pw);
+    paint(def, wiping ? pw * fade : pw);
+    if (wiping) {
+      const ew = 26 + ph * 0.06;
+      const ex = px + pw * fade;
       ctx.save();
-      ctx.globalAlpha = io * a;
-      drawText(ctx, d2.name, {
-        x: fl + 26, y: fy + 152, size: dn, weight: 0.18, italic: 0.20, tracking: 0.10,
-        color: '#ffffff', shadow: { color: 'rgba(0,0,0,0.92)', dy: 2, blur: 6 },
-      });
-      ctx.restore();
-    };
-    const cx0 = fl + 18, cw0 = w - 44;
-    const fade = smoothstep(0, 1, this.cityFade);
-    const prev = getCity(CITY_IDS[this.cityPrev]).def;
-    if (fade < 1 && prev !== def) paintPreview(prev, [cx0, fy + 2, cw0, 166]);
-    paintPreview(def, [cx0, fy + 2, cw0 * (fade < 1 && prev !== def ? fade : 1), 166]);
-    if (fade < 1 && prev !== def) {
-      // the wipe's own leading edge, in the incoming city's accent
-      const ex = cx0 + cw0 * fade;
+      ctx.beginPath(); ctx.rect(px, py, pw, ph); ctx.clip();
       ctx.globalAlpha = io * (1 - fade);
-      ctx.fillStyle = hgrad(ctx, ex - 26, ex + 4,
+      ctx.fillStyle = hgrad(ctx, ex - ew, ex + 4,
         [[0, 'rgba(255,255,255,0)'], [0.72, `${accent}cc`], [1, '#ffffff']]);
-      ctx.fillRect(ex - 26, fy + 2, 30, 166);
-      ctx.globalAlpha = io;
+      ctx.fillRect(ex - ew, py, ew + 4, ph);
+      ctx.restore();
     }
-    if (fade < 1 && prev !== def) nameAt(prev, (1 - fade) * (1 - fade));
-    nameAt(def, fade < 1 && prev !== def ? smoothstep(0.34, 1, fade) : 1);
+    ctx.globalAlpha = io;
+  }
+
+  /** The city's accent beside its own sky. Vegas and New York publish the SAME gold accent, so an
+   *  accent-only bullet made two of the four entries identical. */
+  _cityChip(ctx, def, x, y, w = 8, h = 14, glow = 8) {
+    const accent = def.look?.accent || CYAN;
+    const sky = def.look?.sky?.top || def.look?.fog?.color || '#8899aa';
+    ctx.shadowBlur = glow; ctx.shadowColor = accent;
+    ctx.fillStyle = accent;
+    plate(ctx, x, y, w, h, 0.4); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = sky;
+    plate(ctx, x + w, y, w, h, 0.4); ctx.fill();
+  }
+
+  /**
+   * The destination filmstrip along the bottom of the map screen. Four cards, each carrying its own
+   * sky and its own skyline, so the list is four PLACES rather than four words — and the selected
+   * one lifts, warms and takes a cyan caret, which is a mark at the point of action rather than a
+   * caption in the corner of the frame.
+   */
+  _drawCityCards(ctx, x0, y, totalW, h, io) {
+    const n = CITY_IDS.length;
+    const gap = 34;
+    const cw = (totalW - gap * (n - 1)) / n;
+    for (let i = 0; i < n; i++) {
+      const id = CITY_IDS[i];
+      const def = getCity(id).def;
+      const sel = this.cityT[i];
+      const accent = def.look?.accent || CYAN;
+      const sky = def.look?.sky || {};
+      const stagger = clamp((this.intro - i * 0.06) / 0.44, 0, 1);
+      const ap = smoothstep(0, 1, stagger) * io;
+      const cx = x0 + i * (cw + gap);
+      const cy = y - sel * 12;
+      const s = h * SHEAR;
+
+      ctx.save();
+      ctx.globalAlpha = ap;
+      ctx.translate((1 - smoothstep(0, 1, stagger)) * -40, 0);
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.62)'; ctx.shadowBlur = 14 + sel * 14; ctx.shadowOffsetY = 6;
+      fillPlate(ctx, cx, cy, cw, h, 'rgba(4,7,12,0.96)');
+      ctx.restore();
+
+      ctx.save();
+      plate(ctx, cx, cy, cw, h); ctx.clip();
+      ctx.fillStyle = vgrad(ctx, cy, cy + h,
+        [[0, sky.top || '#10222e'], [1, sky.horizon || accent]]);
+      ctx.fillRect(cx - 40, cy, cw + 80, h);
+      ctx.globalAlpha = ap * 0.30;
+      drawSkyline(ctx, id, cx + s * 0.5, cy + h - 26, cw - 10, h * 0.50, '#000000');
+      ctx.globalAlpha = ap;
+      drawSkyline(ctx, id, cx + s * 0.5 + 14, cy + h - 20, cw - 40, h * 0.40, 'rgba(4,7,12,0.95)');
+      // unselected cards are cooled so the pick is unmistakable
+      if (sel < 0.99) {
+        ctx.globalAlpha = ap * (1 - sel) * 0.58;
+        ctx.fillStyle = '#08131f';
+        ctx.fillRect(cx - 40, cy, cw + 80, h);
+        ctx.globalAlpha = ap;
+      }
+      if (sel > 0.01) {
+        ctx.globalAlpha = ap * sel;
+        ctx.fillStyle = hgrad(ctx, cx, cx + cw * 0.66,
+          [[0, 'rgba(57,215,242,0.26)'], [1, 'rgba(57,215,242,0)']]);
+        ctx.fillRect(cx - 40, cy, cw + 80, h);
+        ctx.globalAlpha = ap;
+      }
+      // scrims: type never fights the picture
+      ctx.fillStyle = vgrad(ctx, cy, cy + 30, [[0, 'rgba(3,6,11,0.86)'], [1, 'rgba(3,6,11,0)']]);
+      ctx.fillRect(cx - 40, cy, cw + 80, 30);
+      ctx.fillStyle = vgrad(ctx, cy + h - 56, cy + h,
+        [[0, 'rgba(4,7,12,0)'], [0.46, 'rgba(4,7,12,0.76)'], [1, 'rgba(3,5,10,0.96)']]);
+      ctx.fillRect(cx - 40, cy + h - 56, cw + 80, 56);
+      ctx.restore();
+
+      rail(ctx, cx, cy, h, sel > 0.5 ? CYAN : 'rgba(120,160,190,0.55)', 3 + sel * 1.8);
+      strokePlate(ctx, cx, cy, cw, h,
+        sel > 0.02 ? `rgba(57,215,242,${0.35 + 0.65 * sel})` : 'rgba(150,175,200,0.34)',
+        1.3 + sel * 1.8, SHEAR, sel * 22);
+
+      drawText(ctx, `0${i + 1}`, {
+        x: cx + cw - 12, y: cy + 22, size: 15, weight: 0.15, tracking: 0.06, align: 'right',
+        color: sel > 0.5 ? 'rgba(190,242,255,0.95)' : 'rgba(150,175,200,0.55)', face: 'geo',
+        shadow: { color: 'rgba(0,0,0,0.8)', dy: 1.5, blur: 3 },
+      });
+      drawText(ctx, `${def.laps} LAPS`, {
+        x: cx + 16 + s, y: cy + 22, size: 12.5, weight: 0.14, tracking: 0.18,
+        color: sel > 0.5 ? CYAN : 'rgba(160,185,208,0.75)', face: 'geo',
+        shadow: { color: 'rgba(0,0,0,0.8)', dy: 1.5, blur: 3 },
+      });
+
+      this._cityChip(ctx, def, cx + 16, cy + h - 40, 7, 13, 6 + sel * 10);
+
+      let ns = 24;
+      while (ns > 15 && measure(def.name, { size: ns, tracking: 0.13 }).width > cw - 54) ns -= 0.5;
+      drawText(ctx, def.name, {
+        x: cx + 40, y: cy + h - 16, size: ns, weight: 0.19, italic: 0.20, tracking: 0.13,
+        color: sel > 0.5 ? '#ffffff' : 'rgba(178,199,220,0.92)',
+        shadow: { color: 'rgba(0,0,0,0.85)', dy: 2, blur: 4 },
+      });
+
+      // the caret: a mark that says "this slot is the one being read", independent of colour
+      if (sel > 0.02) {
+        ctx.globalAlpha = ap * sel;
+        ctx.fillStyle = CYAN;
+        ctx.shadowBlur = 12; ctx.shadowColor = CYAN;
+        ctx.beginPath();
+        ctx.moveTo(cx + cw * 0.5 - 11, cy - 20);
+        ctx.lineTo(cx + cw * 0.5 + 11, cy - 20);
+        ctx.lineTo(cx + cw * 0.5, cy - 7);
+        ctx.closePath(); ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = ap;
+      }
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- the MAP screen ----------------------------------------------------------------------
+
+  /**
+   * SELECT DESTINATION. A hero postcard of the place, a spec panel for it, and the four-city
+   * filmstrip — with BROWSE / CONFIRM / BACK printed along the bottom bar. Nothing here is modal:
+   * ◄ ► always means "another destination", ENTER always means "this one", ESC always goes back.
+   */
+  _drawMap(ctx, VW, VH, io) {
+    const arrive = smoothstep(0, 1, this.screenT);
+    const def = getCity(CITY_IDS[this.cityIndex]).def;
+    const accent = def.look?.accent || CYAN;
+    const n = CITY_IDS.length;
+
+    // ---- the hero postcard --------------------------------------------------------------------
+    const px = 96, py = 160, pw = 1044, ph = 404;
+    const PS = PANEL_LEAN / ph;      // the same ABSOLUTE lean as the right-hand column, so the two
+    ctx.save();                      // panels' top edges and bottom edges each line up as one
+    ctx.globalAlpha = io;            // vertical (see shearAt)
+    ctx.translate(0, (1 - arrive) * -26);
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.60)'; ctx.shadowBlur = 22; ctx.shadowOffsetY = 8;
+    fillPlate(ctx, px, py, pw, ph, 'rgba(4,7,12,0.96)', PS, PANEL_CUT);
+    ctx.restore();
+    ctx.save();
+    plate(ctx, px, py, pw, ph, PS, PANEL_CUT); ctx.clip();
+    this._drawCityPreview(ctx, px, py, pw + PANEL_LEAN, ph, io);
+    // a scrim along the bottom of the picture so the caption always has a ground
+    ctx.globalAlpha = io;
+    ctx.fillStyle = vgrad(ctx, py + ph - 76, py + ph,
+      [[0, 'rgba(3,6,12,0)'], [0.5, 'rgba(3,6,12,0.55)'], [1, 'rgba(2,4,9,0.90)']]);
+    ctx.fillRect(px, py + ph - 76, pw + PANEL_LEAN, 76);
+    ctx.restore();
+    strokePlate(ctx, px, py, pw, ph, 'rgba(150,188,216,0.50)', 1.6, PS, 0, PANEL_CUT);
+    rail(ctx, px, py, ph, CYAN, 4, PS);
+
+    // caption: the place's character, not its name — the name is set large in the bottom bar, and
+    // saying it twice in one frame is a redundancy, not an emphasis
+    this._cityChip(ctx, def, px + 30, py + ph - 44, 9, 16, 10);
+    drawText(ctx, `${def.night ? 'NIGHT' : 'DAY'} CIRCUIT`, {
+      x: px + 58, y: py + ph - 31, size: 17, weight: 0.15, tracking: 0.26,
+      color: accent, face: 'geo', shadow: { color: 'rgba(0,0,0,0.9)', dy: 2, blur: 5 },
+    });
+    drawText(ctx, `0${this.cityIndex + 1} / 0${n}`, {
+      x: px + pw + PANEL_LEAN - 26, y: py + 36, size: 16, weight: 0.15, tracking: 0.20,
+      align: 'right', color: 'rgba(226,240,250,0.85)', face: 'geo',
+      shadow: { color: 'rgba(0,0,0,0.9)', dy: 2, blur: 5 },
+    });
+    ctx.restore();
+
+    // ---- the spec panel -----------------------------------------------------------------------
+    const dx = VW - 344 - 34 - PANEL_LEAN, dw = 344, dy = 160, dh = 404;
+    const DS = PANEL_LEAN / dh;
+    const L = (ry) => shearAt(dx, dy, dh, ry, DS);
+    const R = (ry) => shearAt(dx + dw, dy, dh, ry, DS);
+    ctx.save();
+    ctx.globalAlpha = io;
+    ctx.translate((1 - arrive) * 70, 0);
+    fillPlate(ctx, dx, dy, dw, dh, 'rgba(4,8,13,0.93)', DS, PANEL_CUT);
+    strokePlate(ctx, dx, dy, dw, dh, CYAN, 2.4, DS, 16, PANEL_CUT);
+    rail(ctx, dx, dy, dh, CYAN, 4, DS);
+
+    drawText(ctx, 'DESTINATION', {
+      x: L(dy + 24) + 20, y: dy + 32, size: 18, weight: 0.16, tracking: 0.26, color: CYAN, face: 'geo',
+    });
+    drawText(ctx, `0${this.cityIndex + 1} / 0${n}`, {
+      x: R(dy + 24) - 20, y: dy + 32, size: 15, weight: 0.14, tracking: 0.20, align: 'right',
+      color: LABEL, face: 'geo',
+    });
+    ctx.strokeStyle = 'rgba(150,190,220,0.24)'; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.moveTo(L(dy + 46) + 16, dy + 46); ctx.lineTo(R(dy + 46) - 12, dy + 46); ctx.stroke();
+
+    this._cityChip(ctx, def, L(dy + 84) + 22, dy + 66, 9, 17, 10);
+    let nn = 27;
+    while (nn > 17 && measure(def.name, { size: nn, tracking: 0.13 }).width > dw - 90) nn -= 0.5;
+    drawText(ctx, def.name, {
+      x: L(dy + 84) + 52, y: dy + 82, size: nn, weight: 0.19, italic: 0.20, tracking: 0.13,
+      color: '#ffffff', shadow: { color: 'rgba(0,0,0,0.8)', dy: 2, blur: 4 },
+    });
     ctx.fillStyle = accent;
     ctx.globalAlpha = io * 0.9;
-    ctx.fillRect(fl + 18, fy + 170, w - 44, 1.8);
+    fillPlate(ctx, L(dy + 98) + 20, dy + 96, dw - 46, 2.4, accent, DS);
     ctx.globalAlpha = io;
 
+    const rows = [
+      ['LAPS', String(def.laps ?? 3), GOLD],
+      ['RECORD', def.record || '--:--', GOLD],
+      ['CONDITIONS', def.night ? 'NIGHT' : 'DAY', CYAN],
+    ];
+    rows.forEach(([label, val, col], i) => {
+      const ry = dy + 118 + i * 46;
+      if (i % 2 === 0) fillPlate(ctx, L(ry + 38) + 14, ry, dw - 34, 36, 'rgba(255,255,255,0.045)', DS);
+      drawText(ctx, label, {
+        x: L(ry + 22) + 24, y: ry + 26, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
+      });
+      drawText(ctx, val, {
+        x: R(ry + 22) - 24, y: ry + 27, size: 24, weight: 0.20, italic: 0.20, align: 'right',
+        color: gradientFill([[0, '#ffffff'], [0.6, '#e8f1fa'], [1, col]]),
+        shadow: { color: 'rgba(0,0,0,0.7)', dy: 2, blur: 3 },
+      });
+    });
 
-    // The RECORD line and the SPOOLING bar occupy the same slot — a record for a city that does not
-    // exist yet is not a fact, and overlaying them left the outgoing city's time reading through
-    // the plate.
-    if (!this.cityBusy) {
-      drawText(ctx, 'RECORD', {
-        x: L(fy + 200) + 24, y: fy + 200, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
-      });
-      drawText(ctx, def.record || '--:--', {
-        x: R(fy + 202) - 24, y: fy + 202, size: 22, weight: 0.19, italic: 0.20, align: 'right', color: GOLD,
-      });
-    }
+    ctx.strokeStyle = 'rgba(150,190,220,0.20)'; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.moveTo(L(dy + 272) + 16, dy + 272); ctx.lineTo(R(dy + 272) - 12, dy + 272); ctx.stroke();
 
     /**
-     * ---- SPOOLING — the state this control never had -------------------------------------------
+     * ---- SPOOLING, and the sentence above it --------------------------------------------------
      *
-     * `setCity` is synchronous inside: from the frame the key is pressed the tab is BLOCKED until a
+     * `setCity` is synchronous inside: from the frame CONFIRM is pressed the tab is BLOCKED until a
      * whole city's geometry, textures, shadow maps and cube probe exist. On the software rasteriser
-     * that is well over a second, and until now the only thing on screen for the whole of it was
-     * the new row already highlighted — indistinguishable from the input having been dropped, which
-     * is exactly what §6.8's "no dead ends" is about. `_move` now leaves 32 ms of head-start so the
-     * compositor puts THIS on screen before the freeze starts, and the freeze reads as work.
-     *
-     * A barber-pole rather than a percentage: there is no progress to report from inside a
-     * synchronous build, and a fake percentage that jumps 0 → 100 is worse than an honest "busy".
+     * that is well over a second. A barber-pole rather than a percentage: there is no progress to
+     * report from inside a synchronous build, and a fake percentage that jumps 0 → 100 is worse
+     * than an honest "busy". The line above it is the other half — the player is TOLD the wait is
+     * coming, at the key that causes it, before they press it.
      */
     if (this.cityBusy) {
-      // Sits in the RECORD slot, which is the last line INSIDE the panel: at fy + 186 the bar fell
-      // on the plate's own bottom edge.
-      const by = fy + 172;
-      const bx0 = L(by + 22) + 22, bx1 = R(by + 22) - 22;
-      ctx.save();
+      const bx0 = L(dy + 322) + 22, bx1 = R(dy + 322) - 22;
       drawText(ctx, 'SPOOLING UP', {
-        x: bx0, y: by + 14, size: 13, weight: 0.15, tracking: 0.24, color: CYAN, face: 'geo',
+        x: bx0, y: dy + 306, size: 14, weight: 0.15, tracking: 0.24, color: CYAN, face: 'geo',
       });
-      const bw2 = bx1 - bx0, bh2 = 8, byy = by + 20;
+      const bw2 = bx1 - bx0, bh2 = 10, byy = dy + 316;
       ctx.fillStyle = 'rgba(8,14,22,0.92)';
       ctx.fillRect(bx0, byy, bw2, bh2);
       ctx.save();
       ctx.beginPath(); ctx.rect(bx0, byy, bw2, bh2); ctx.clip();
-      const ph = (this.busyT * 96) % 26;
-      for (let cx3 = bx0 - 26 + ph; cx3 < bx1 + 26; cx3 += 26) {
+      const phz = (this.busyT * 96) % 26;
+      for (let cx3 = bx0 - 26 + phz; cx3 < bx1 + 26; cx3 += 26) {
         ctx.fillStyle = 'rgba(57,215,242,0.55)';
         ctx.beginPath();
         ctx.moveTo(cx3, byy + bh2); ctx.lineTo(cx3 + 11, byy + bh2);
@@ -3971,24 +4296,241 @@ export class Menu {
       ctx.restore();
       ctx.strokeStyle = 'rgba(57,215,242,0.75)'; ctx.lineWidth = 1.2;
       ctx.strokeRect(bx0 + 0.5, byy + 0.5, bw2 - 1, bh2 - 1);
-      ctx.restore();
+      drawText(ctx, 'BUILDING THE CIRCUIT', {
+        x: bx0, y: dy + 352, size: 12, weight: 0.14, tracking: 0.22,
+        color: 'rgba(150,175,200,0.80)', face: 'geo',
+      });
+    } else {
+      drawText(ctx, 'TRACK LOADS ON CONFIRM', {
+        x: L(dy + 300) + 24, y: dy + 300, size: 12, weight: 0.14, tracking: 0.22,
+        color: 'rgba(150,175,200,0.80)', face: 'geo',
+      });
+      // the control named at the point of action, which is the whole of what this screen was
+      // missing: the old one put its only mode indicator in the far corner of the frame
+      const kx = L(dy + 344) + 24;
+      const kw = keycap(ctx, kx, dy + 344, 'ENTER', 30);
+      drawText(ctx, 'CONFIRM DESTINATION', {
+        x: kx + kw + 14, y: dy + 336, size: 15, weight: 0.15, tracking: 0.18, color: CYAN, face: 'geo',
+      });
     }
     ctx.restore();
+
+    // ---- the filmstrip ------------------------------------------------------------------------
+    this._drawCityCards(ctx, 96, 612, VW - 96 - 34 - 150 * SHEAR, 150, io);
+    void VH;
+  }
+
+  // ---- the vehicle screen's confirmed destination -------------------------------------------
+
+  /**
+   * The destination you have already chosen, read-only, in the slot the four-row picker used to
+   * occupy. It is here so the vehicle screen can still answer "where am I racing?" without the
+   * player having to remember — and so the way BACK to change it is stated on the panel itself,
+   * next to the thing it changes, rather than only in the bottom bar.
+   */
+  _drawCityCard(ctx, VW, io) {
+    const w = 344;
+    const x = VW - w - 34 - PANEL_LEAN;
+    const y = 150;
+    const bodyH = 444;
+    const S = PANEL_LEAN / bodyH;
+    const L = (ry) => shearAt(x, y, bodyH, ry, S);
+    const R = (ry) => shearAt(x + w, y, bodyH, ry, S);
+    const def = getCity(CITY_IDS[this.cityIndex]).def;
+    const accent = def.look?.accent || CYAN;
+
+    ctx.save();
+    ctx.translate((1 - io) * 90, 0);
+    ctx.globalAlpha = io;
+
+    // Near-opaque. At 0.80 the red oil drum behind the panel bled up through it and the block lost
+    // its black ground — a menu panel has to be a surface, not a filter.
+    fillPlate(ctx, x, y, w, bodyH, 'rgba(4,8,13,0.93)', S, PANEL_CUT);
+    strokePlate(ctx, x, y, w, bodyH, 'rgba(140,172,200,0.44)', 1.5, S, 0, PANEL_CUT);
+    rail(ctx, x, y, bodyH, CYAN, 4, S);
+
+    drawText(ctx, 'DESTINATION', {
+      x: L(y + 22) + 20, y: y + 30, size: 18, weight: 0.16, tracking: 0.26, color: CYAN, face: 'geo',
+    });
+    drawText(ctx, 'LOCKED', {
+      x: R(y + 22) - 20, y: y + 30, size: 13, weight: 0.14, tracking: 0.22, align: 'right',
+      color: 'rgba(150,175,200,0.72)', face: 'geo',
+    });
+    ctx.strokeStyle = 'rgba(150,190,220,0.24)'; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.moveTo(L(y + 44) + 16, y + 44); ctx.lineTo(R(y + 44) - 12, y + 44); ctx.stroke();
+
+    this._cityChip(ctx, def, L(y + 84) + 22, y + 62, 8, 16, 10);
+    let nn = 25;
+    while (nn > 16 && measure(def.name, { size: nn, tracking: 0.13 }).width > w - 150) nn -= 0.5;
+    drawText(ctx, def.name, {
+      x: L(y + 84) + 50, y: y + 78, size: nn, weight: 0.19, italic: 0.20, tracking: 0.13,
+      color: '#ffffff', shadow: { color: 'rgba(0,0,0,0.8)', dy: 2, blur: 4 },
+    });
+    drawText(ctx, `${def.laps} LAPS`, {
+      x: R(y + 78) - 24, y: y + 78, size: 13, weight: 0.14, tracking: 0.16, align: 'right',
+      color: 'rgba(198,218,236,0.88)', face: 'geo',
+    });
+
+    // the picture, inset so it never pokes out of the leaning plate at either end
+    const ix = L(y + 104) + 16, iw = R(y + 294) - 16 - ix;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(ix, y + 104, iw, 190); ctx.clip();
+    this._drawCityPreview(ctx, ix, y + 104, iw, 190, io);
+    ctx.restore();
+    ctx.globalAlpha = io * 0.9;
+    ctx.fillStyle = accent;
+    ctx.fillRect(ix, y + 296, iw, 2);
+    ctx.globalAlpha = io;
+
+    [['RECORD', def.record || '--:--', GOLD], ['CONDITIONS', def.night ? 'NIGHT' : 'DAY', CYAN]]
+      .forEach(([label, val, col], i) => {
+        const ry = y + 318 + i * 40;
+        drawText(ctx, label, {
+          x: L(ry + 20) + 24, y: ry + 22, size: 13, weight: 0.14, tracking: 0.20, color: LABEL, face: 'geo',
+        });
+        drawText(ctx, val, {
+          x: R(ry + 20) - 24, y: ry + 23, size: 22, weight: 0.19, italic: 0.20, align: 'right',
+          color: gradientFill([[0, '#ffffff'], [0.6, '#e8f1fa'], [1, col]]),
+          shadow: { color: 'rgba(0,0,0,0.7)', dy: 2, blur: 3 },
+        });
+      });
+
+    const kx = L(y + 418) + 24;
+    const kw = keycap(ctx, kx, y + 418, 'ESC', 30);
+    drawText(ctx, 'CHANGE DESTINATION', {
+      x: kx + kw + 14, y: y + 410, size: 14, weight: 0.15, tracking: 0.18, color: CYAN, face: 'geo',
+    });
+    ctx.restore();
+  }
+
+  // ---- the TITLE screen --------------------------------------------------------------------
+
+  /**
+   * The front door. Everything here is drawn from `font.js` glyphs through the local drawText —
+   * `ctx.font` is never touched (§3.4) — and nothing on it is animated: the wordmark and the prompt
+   * are painted once and cached, and the life on this screen is the 3D room behind it (the deck
+   * turning under the hero car, the dust, the failing tube, the extractor fan). That is deliberate.
+   * `_sig` is the only reason this layer holds 60 fps, and a blinking 2D prompt would repaint a
+   * full-screen canvas on a timer to animate something nobody triggered — the exact class of
+   * motion this file removed in round 5.
+   */
+  _drawTitle(ctx, VW, VH, io) {
+    const arrive = smoothstep(0, 1, this.screenT);
+    const cx = VW * 0.5;
+    ctx.save();
+    ctx.globalAlpha = io;
+
+    // ---- the lockup ---------------------------------------------------------------------------
+    const py = 228, ph = 274, plw = 1260;
+    const TS = 30 / ph;
+    ctx.save();
+    ctx.translate(0, (1 - arrive) * -34);
+    fillPlate(ctx, cx - plw / 2, py, plw, ph, 'rgba(3,6,12,0.74)', TS, PANEL_CUT);
+    strokePlate(ctx, cx - plw / 2, py, plw, ph, 'rgba(150,190,220,0.30)', 1.5, TS, 0, PANEL_CUT);
+    rail(ctx, cx - plw / 2, py, ph, GOLD, 4, TS);
+
+    // `measure` reports the ADVANCE, which does not include the italic overhang: at 24% lean and
+    // 124 px the O of NITRO leans ~30 px right of where the metrics say it ends, and at the top-bar
+    // lockup's 6 px gap the two words collided. The gap is written as a fraction of the lean so it
+    // stays correct if either size moves.
+    const nSize = 124, cSize = 86;
+    const gap = nSize * 0.24 * 0.62 + 26;
+    const nw = measure('NITRO', { size: nSize, tracking: 0.10 }).width;
+    const cw = measure('CIRCUIT', { size: cSize, tracking: 0.30, face: 'geo' }).width;
+    const total = nw + gap + cw;
+    const lx = cx - total / 2;
+    const by = py + 176;
+    drawText(ctx, 'NITRO', {
+      x: lx, y: by, size: nSize, weight: 0.21, italic: 0.24, tracking: 0.10,
+      color: gradientFill([[0, '#ffffff'], [0.55, '#ffd9a2'], [1, ORANGE]]),
+      bevel: true, glow: { color: ORANGE, blur: 16 },
+    });
+    drawText(ctx, 'CIRCUIT', {
+      x: lx + nw + gap, y: by, size: cSize, weight: 0.14, tracking: 0.30, color: CYAN, face: 'geo',
+    });
+
+    // hazard chevrons above and below — the workshop's own graphic language, and the rule that
+    // keeps a 124 px wordmark from floating in the middle of an empty plate
+    const chevrons = (ry, ch) => {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(lx - 46, ry, total + 92, ch); ctx.clip();
+      ctx.globalAlpha = io * 0.34;
+      for (let x2 = lx - 66; x2 < lx + total + 60; x2 += 26) {
+        ctx.fillStyle = GOLD;
+        ctx.beginPath();
+        ctx.moveTo(x2, ry + ch); ctx.lineTo(x2 + 11, ry + ch);
+        ctx.lineTo(x2 + 11 + ch, ry); ctx.lineTo(x2 + ch, ry);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+    };
+    chevrons(py + 44, 8);
+    chevrons(py + 202, 8);
+
+    drawText(ctx, 'ARCADE STREET RACING', {
+      x: cx, y: py + 244, size: 17, weight: 0.15, tracking: 0.46, align: 'center',
+      color: 'rgba(186,208,228,0.90)', face: 'geo',
+    });
+    ctx.restore();
+
+    // ---- the prompt ---------------------------------------------------------------------------
+    ctx.save();
+    ctx.globalAlpha = io * (0.72 + 0.28 * arrive);
+    ctx.translate(0, (1 - arrive) * 30);
+    const pre = 'PRESS', post = 'TO START';
+    const preW = measure(pre, { size: 21, tracking: 0.20, face: 'geo' }).width;
+    const postW = measure(post, { size: 21, tracking: 0.20, face: 'geo' }).width;
+    const capW = Math.max(30, measure('ENTER', { size: 15, tracking: 0.10, face: 'geo' }).width + 20);
+    const runW = preW + 16 + capW + 16 + postW;
+    const bx = cx - runW / 2;
+    const boxY = 596, boxH = 66;
+    fillPlate(ctx, bx - 40, boxY, runW + 80, boxH, 'rgba(4,8,14,0.80)', 14 / boxH);
+    strokePlate(ctx, bx - 40, boxY, runW + 80, boxH, `rgba(255,201,66,${0.55 + 0.35 * arrive})`,
+      1.8, 14 / boxH, 14 * arrive);
+    rail(ctx, bx - 40, boxY, boxH, GOLD, 3, 14 / boxH);
+    drawText(ctx, pre, {
+      x: bx, y: boxY + 43, size: 21, weight: 0.15, tracking: 0.20, color: PAPER, face: 'geo',
+    });
+    keycap(ctx, bx + preW + 16, boxY + 49, 'ENTER', 30);
+    drawText(ctx, post, {
+      x: bx + preW + 16 + capW + 16, y: boxY + 43, size: 21, weight: 0.15, tracking: 0.20,
+      color: GOLD_HOT, face: 'geo', glow: { color: ORANGE, blur: 14 },
+    });
+    ctx.restore();
+
+    ctx.globalAlpha = io * 0.8;
+    // font.js has no middle dot; an unknown glyph draws NOTDEF, which is a hollow box
+    drawText(ctx, `0${VEHICLE_IDS.length} VEHICLES   /   0${CITY_IDS.length} DESTINATIONS`, {
+      x: cx, y: 706, size: 15, weight: 0.14, tracking: 0.38, align: 'center',
+      color: LABEL, face: 'geo',
+    });
+    ctx.restore();
+    void VH;
   }
 
   // ---- control bar -------------------------------------------------------------------------
 
   /**
-   * The bottom bar. §1.4: black, control glyphs and their labels along it, and the car's full name
-   * set large in beveled metallic italic capitals at the far end. Both live on one baseline, which
-   * is why the hint labels are terse — NAVIGATE / CAR·CITY / COLOUR / RACE leaves the right 730 px
-   * clear for the longest name in the roster.
+   * The bottom bar, on EVERY screen. §1.4: black, control glyphs and their labels along it, and the
+   * name of the thing you have selected set large in bevelled metallic italic capitals at the far
+   * end.
+   *
+   * It used to be `_drawControls`, which hard-coded the vehicle screen's four hints and the car's
+   * name. It now takes the array `hints()` publishes, so what the bar promises and what the keys do
+   * cannot drift apart — and every screen states its own browse, confirm and back at the place a
+   * player looks for them. That is the fix for the actual complaint; the old bar's one navigation
+   * line, `▲▼ CAR / CITY`, named the two nouns and never the verb.
+   *
+   * The name CROSS-FADES rather than wiping, and that is not a stylistic preference: run through a
+   * left-to-right wipe, LOS ANGELES sliding under LAS VEGAS spends a third of a second reading
+   * `LAS ANGELES`. Outgoing goes fast (square law), incoming waits until the change is a third
+   * done, so at no point are both legible.
    */
-  _drawControls(ctx, VW, VH, io) {
+  _drawHintBar(ctx, VW, VH, io, o = {}) {
     const h = BAR_H;
     const y = VH - h;
-    const spec = getVehicle(VEHICLE_IDS[this.carIndex]).spec;
-    const swap = smoothstep(0, 1, this.swapT);
+    const hints = o.hints || [];
+    const accent = o.accent || null;
     ctx.save();
     ctx.globalAlpha = io;
     ctx.fillStyle = vgrad(ctx, y, VH, [[0, 'rgba(4,7,13,0.94)'], [1, 'rgba(2,3,8,0.99)']]);
@@ -4009,61 +4551,79 @@ export class Menu {
     ctx.restore();
     ctx.globalAlpha = io;
 
-    const hints = [
-      [['◄', '►'], 'NAVIGATE'],
-      [['▲', '▼'], 'CAR / CITY'],
-      [['V'], 'COLOUR'],
-      [['ENTER'], 'RACE'],
-    ];
     const hy = y + h - 30;
     let hx = 40;
-    for (let i = 0; i < hints.length; i++) {
-      const [keys, label] = hints[i];
-      for (const kk of keys) { hx += keycap(ctx, hx, hy + 13, kk, 30) + 5; }
+    for (const hint of hints) {
+      for (const kk of hint.keys) { hx += keycap(ctx, hx, hy + 13, kk, 30) + 5; }
       hx += 5;
-      const last = i === hints.length - 1;
-      if (last) {
-        // the confirm hint pulses — the one action the screen actually wants
-        ctx.globalAlpha = io * (0.74 + 0.26 * smoothstep(0, 1, this.focusT));
-      }
-      drawText(ctx, label, {
+      // the confirm hint brightens as the screen arrives — the one action the screen wants
+      if (hint.hot) ctx.globalAlpha = io * (0.74 + 0.26 * smoothstep(0, 1, this.screenT));
+      drawText(ctx, hint.label, {
         x: hx, y: hy + 5, size: 15, weight: 0.15, tracking: 0.16,
-        color: last ? GOLD_HOT : 'rgba(196,214,232,0.95)', face: 'geo',
-        glow: last ? { color: ORANGE, blur: 14 } : null,
+        color: hint.hot ? GOLD_HOT : 'rgba(196,214,232,0.95)', face: 'geo',
+        glow: hint.hot ? { color: ORANGE, blur: 14 } : null,
       });
-      hx += measure(label, { size: 15, tracking: 0.16, face: 'geo' }).width + 40;
+      hx += measure(hint.label, { size: 15, tracking: 0.16, face: 'geo' }).width + 40;
       ctx.globalAlpha = io;
     }
 
     // ---- the name -----------------------------------------------------------------------------
-    const MAXW = VW - 40 - Math.max(hx + 26, 830);
-    let ns = 52;
-    while (ns > 26 && measure(spec.full, { size: ns, tracking: 0.078 }).width > MAXW) ns -= 1;
-    const nw = measure(spec.full, { size: ns, tracking: 0.078 }).width;
-    const nx = VW - 40;
-    const ny = y + h - 26;
-    // a gold underscore that draws itself in as the car swaps
-    ctx.fillStyle = hgrad(ctx, nx - nw, nx, [[0, 'rgba(255,201,66,0)'], [1, 'rgba(255,201,66,0.9)']]);
-    ctx.fillRect(nx - nw * swap, ny + 12, nw * swap, 3);
-    drawText(ctx, spec.klass, {
-      x: nx, y: ny - ns - 8, size: 13, weight: 0.14, tracking: 0.30, align: 'right',
-      color: GOLD, face: 'geo',
-    });
-    ctx.globalAlpha = io * (0.35 + 0.65 * swap);
-    ctx.save();
-    ctx.translate((1 - swap) * 40, 0);
-    drawText(ctx, spec.full, {
-      // 0.215 closed the M's counter — the pen expands every stem by (weight − base)·size on each
-      // side and the M's inner vertex is only a couple of those apart, so "DOMINATOR" set solid and
-      // read DOMlNATOR. 0.188 keeps the face heavy and leaves the notch open.
-      x: nx, y: ny, size: ns, weight: 0.188, italic: 0.24, tracking: 0.078, align: 'right',
-      color: gradientFill([
-        [0, '#ffffff'], [0.30, '#e9f2fb'], [0.50, '#8fa3ba'], [0.56, '#c9d8e8'], [1, '#f4f8fc'],
-      ]),
-      bevel: true, sheen: true,
-      shadow: { color: 'rgba(0,0,0,0.8)', dy: 4, blur: 7 },
-    });
-    ctx.restore();
+    if (o.name) {
+      const swap = o.swap ?? 1;
+      const fade = o.fade ?? 1;
+      const cross = !!o.prevName && o.prevName !== o.name && fade < 1;
+      const MAXW = VW - 40 - Math.max(hx + 26, 830);
+      const fit = (t) => {
+        let s2 = 52;
+        while (s2 > 26 && measure(t, { size: s2, tracking: 0.078 }).width > MAXW) s2 -= 1;
+        return s2;
+      };
+      const ns = fit(o.name);
+      const nw = measure(o.name, { size: ns, tracking: 0.078 }).width;
+      const nx = VW - 40;
+      const ny = y + h - 26;
+      // an accent underscore that draws itself in as the selection changes
+      ctx.fillStyle = hgrad(ctx, nx - nw, nx,
+        [[0, 'rgba(255,201,66,0)'], [1, accent ? `${accent}e6` : 'rgba(255,201,66,0.9)']]);
+      ctx.fillRect(nx - nw * swap, ny + 12, nw * swap, 3);
+      // The index rides the SAME cross-dissolve as the name under it. Switched instantly, it read
+      // "DESTINATION 03 / 04" over the word LAS VEGAS for the length of the fade — a caption
+      // disagreeing with the thing it captions, on the one screen whose whole job is telling the
+      // player what they have got selected.
+      const paintOver = (t, a) => {
+        if (!t || a <= 0.004) return;
+        ctx.save();
+        ctx.globalAlpha = io * a;
+        drawText(ctx, t, {
+          x: nx, y: ny - ns - 8, size: 13, weight: 0.14, tracking: 0.30, align: 'right',
+          color: accent || GOLD, face: 'geo',
+        });
+        ctx.restore();
+      };
+      const overCross = !!o.prevOver && o.prevOver !== o.over && fade < 1;
+      if (overCross) paintOver(o.prevOver, (1 - fade) * (1 - fade));
+      paintOver(o.over, overCross ? smoothstep(0.34, 1, fade) : 1);
+      const paintName = (t, a) => {
+        if (a <= 0.004) return;
+        ctx.save();
+        ctx.globalAlpha = io * a * (0.35 + 0.65 * swap);
+        ctx.translate((1 - swap) * 40, 0);
+        drawText(ctx, t, {
+          // 0.215 closed the M's counter — the pen expands every stem by (weight − base)·size on
+          // each side and the M's inner vertex is only a couple of those apart, so "DOMINATOR" set
+          // solid and read DOMlNATOR. 0.188 keeps the face heavy and leaves the notch open.
+          x: nx, y: ny, size: fit(t), weight: 0.188, italic: 0.24, tracking: 0.078, align: 'right',
+          color: gradientFill([
+            [0, '#ffffff'], [0.30, '#e9f2fb'], [0.50, '#8fa3ba'], [0.56, '#c9d8e8'], [1, '#f4f8fc'],
+          ]),
+          bevel: true, sheen: true,
+          shadow: { color: 'rgba(0,0,0,0.8)', dy: 4, blur: 7 },
+        });
+        ctx.restore();
+      };
+      if (cross) paintName(o.prevName, (1 - fade) * (1 - fade));
+      paintName(o.name, cross ? smoothstep(0.34, 1, fade) : 1);
+    }
     ctx.restore();
   }
 }

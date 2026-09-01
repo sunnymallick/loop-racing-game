@@ -583,7 +583,9 @@ class Game {
     this.effects.clear();
     this.hud.msg = null;
     this.hud.msgQueue = [];
-    this.menu.open();
+    // Land on the VEHICLE screen, not the title: coming back from a race the thing a player wants
+    // is another car or another run, both one keypress away. ESC still walks back to MAP and TITLE.
+    this.menu.open('vehicle');
   }
 
   // ---------------------------------------------------------------- simulation
@@ -598,6 +600,21 @@ class Game {
       this.menu.update(dt, this.input);
       return;
     }
+
+    /**
+     * MID-RACE EXIT. Until now `cancel` was handled in exactly one place — inside the results
+     * block below, gated on `_finishT > 1.0` — so the only door out of a race was three finished
+     * laps. Pick the wrong destination and confirm it and you were committed to the whole race
+     * before you could pick another, which is the same complaint the garage flow was rebuilt for:
+     * a choice you cannot take back is a choice you cannot make confidently.
+     *
+     * It is deliberately not a pause menu. ESC leaves, and `toGarage()` is already the exact
+     * inverse of `startRace()`'s teardown, so this reuses the path the results screen has always
+     * used rather than opening a second one that could drift from it. Guarded on the racing states
+     * only — once `state` is 'finished' the results screen owns both keys (retry / garage) and
+     * must keep them.
+     */
+    if (this.state !== 'finished' && this.input.pressed('cancel')) { this.toGarage(); return; }
 
     const scaled = dt * this.effects.timeScale;
     const racing = this.race && this.race.state === 'racing';
@@ -1902,6 +1919,15 @@ class Game {
       standings: r?.standings ?? [],
       mph: this.body ? Math.abs(this.body.speedMph) : 0,
       gear: this.body?.gear ?? 1,
+      // Tachometer feed. The dial is scaled per car — a diesel SUV redlines at 4400 and the
+      // supercar at 9000 (vehicles/audio_tuning.js) — so the HUD gets the limits, not just a value.
+      //
+      // `redline` is NULL, not a number, while there is no body: the HUD latches the last real one
+      // (ui/hud.js `_tick`) and its guard is a truthiness test, which a numeric fallback would sail
+      // straight through — it would latch the placeholder and re-bake the whole dial face for it.
+      // A missing value has to be missing.
+      rpm: this.body?.rpm ?? 0,
+      redline: this.body?.spec?.audio?.redline ?? null,
       nitroCharge: this.nitro?.charge ?? 0,
       nitroTanks: this.nitro?.tanks ?? 0,
       nitroActive: (this.nitro?.ramp ?? 0) > 0.1,
@@ -1929,7 +1955,23 @@ class Game {
   }
 
   frame = (now) => {
-    const dt = Math.min(0.05, (now - (this._last || now)) / 1000);
+    /**
+     * CLAMP the timestep, do not merely cap it.
+     *
+     * `now` on the first rAF after a long blocking boot can land tens of seconds BEFORE the
+     * `performance.now()` that `start()` recorded — measured here at dt ≈ −65 s on a cold LA build
+     * under the software rasteriser. A negative dt is poison to every exponential ease in the game:
+     * `1 − e^(−11·dt)` evaluates to a huge negative number (or −Infinity past dt ≈ −64.5 s), `lerp`
+     * then throws the value hundreds of thousands of units past its target, and any lane whose
+     * target already equals its current value comes back NaN and stays NaN for the life of the page.
+     *
+     * That is not hypothetical: it is why a REAL first boot into the garage drew no selector tiles
+     * at all (menu.js `tileT` / `cityT` parked off-screen or NaN) while every harness run looked
+     * perfect — the harness boots with `?shot=1`, which never calls `start()` and so never runs a
+     * single rAF frame. No consumer of dt anywhere in this game has a meaning for a negative one.
+     */
+    const raw = (now - (this._last ?? now)) / 1000;
+    const dt = Number.isFinite(raw) ? Math.min(0.05, Math.max(0, raw)) : FIXED_DT;
     this._last = now;
     this.update(dt || FIXED_DT);
     this.render(dt || FIXED_DT);
@@ -1955,7 +1997,7 @@ const ready = (async () => {
     if (game.race && params.get('go') !== '0') { game.race.state = 'racing'; game.race.countdown = 0; }
   } else {
     game.state = 'menu';
-    game.menu.open();
+    game.menu.open('title');
   }
   if (!params.has('shot')) game.start();
   return game;
@@ -2394,7 +2436,11 @@ window.__GAME = {
         break;
       case 'menu':
         game.state = 'menu';
-        game.menu.open();
+        // The DEFAULT must stay 'vehicle'. `tools/shot.mjs --shots menu` and every visual critic's
+        // baseline for this screen is the garage/car-select frame; defaulting to 'title' would
+        // silently rebase all of them while every check stayed green. `opts.screen` is how the
+        // harness reaches the title and map screens.
+        game.menu.open(opts.screen || 'vehicle');
         run(60, {});
         break;
       default:

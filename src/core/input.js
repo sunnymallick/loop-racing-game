@@ -4,6 +4,10 @@
 // Contract — every consumer reads only these normalized fields:
 //   throttle 0..1, brake 0..1, steer -1..1, nitro bool, handbrake bool, lookBack bool
 //   plus edge-triggered: menuUp/menuDown/menuLeft/menuRight/confirm/cancel/restart
+//
+// `steer` is in ENGINE sign, not screen sign: positive steer yaws the car toward +X, which is the
+// driver's LEFT. See the STEERING SIGN note above the keyboard accumulation for why the world is
+// mirrored and why the hardware mapping — not the physics — is what reconciles it.
 
 const KEYMAP = {
   throttle: ['KeyW', 'ArrowUp'],
@@ -83,8 +87,30 @@ export class Input {
     const pad = this._gamepad();
     let rawSteer = 0, thr = 0, brk = 0, nit = false, hb = false;
 
-    if (this.any(KEYMAP.left)) rawSteer -= 1;
-    if (this.any(KEYMAP.right)) rawSteer += 1;
+    // STEERING SIGN. The world is mirrored, and this is the one place allowed to know it.
+    //
+    // ARCHITECTURE.md's "+Z is forward, +X right, +Y up" cannot be true as stated: in a
+    // right-handed Y-up scene the driver's right is `forward x up`, and Z x Y = -X. +X is the
+    // driver's LEFT and renders on the LEFT of the screen. Measured three ways that agree
+    // exactly — the chase camera's matrixWorld column 0 (screen right) dotted with `forward x up`
+    // is +1, and dotted with the body's own `get right()` (physics.js) is -1.
+    //
+    // Everything downstream is consistent with the mistake: body.right, track.right, the FL/FR
+    // wheel names, the signed track lateral, race.js's "track right is the mirror of the car's".
+    // 157 uses across 11 files, so the convention stays. Positive yaw is a LEFT turn, and
+    // `steerVisual > 0` points the front wheels LEFT (applyPose in physics.js).
+    //
+    // That leaves exactly one boundary where a human-meaningful "right" meets the engine's sign,
+    // and it is here: RIGHT must produce steer < 0. The wheel angle and the yaw moment come off
+    // the same number, so this single sign turns the car and its front wheels together rather
+    // than fixing one and leaving the other mirrored. The model has no absolute-sign term (the
+    // gate measures L/R symmetry at ratio 1.00), so mirroring the input is exactly feel-neutral.
+    //
+    // Do not "correct" these two lines back. Do not swap the KEYMAP arrays instead, either —
+    // menu.js drives the garage carousel off pressed('left')/pressed('right') and would silently
+    // reverse, and the menu gate check passes either way so nothing would catch it.
+    if (this.any(KEYMAP.left)) rawSteer += 1;
+    if (this.any(KEYMAP.right)) rawSteer -= 1;
     if (this.any(KEYMAP.throttle)) thr = 1;
     if (this.any(KEYMAP.brake)) brk = 1;
     if (this.any(KEYMAP.nitro)) nit = true;
@@ -92,7 +118,9 @@ export class Input {
 
     if (pad) {
       const ax = pad.axes[0] || 0;
-      if (Math.abs(ax) > 0.12) rawSteer = ax;
+      // Axis 0 positive = stick pushed right — a hardware fact, so it takes the same negation the
+      // arrow keys take above. Leaving it unnegated would make the pad steer opposite to the keys.
+      if (Math.abs(ax) > 0.12) rawSteer = -ax;
       thr = Math.max(thr, pad.buttons[7]?.value || 0);
       brk = Math.max(brk, pad.buttons[6]?.value || 0);
       nit = nit || !!pad.buttons[0]?.pressed;

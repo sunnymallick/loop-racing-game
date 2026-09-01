@@ -92,8 +92,16 @@ async function main() {
       const leftTurn = steerTest.left;
       const symmetry = Math.min(Math.abs(rightTurn), Math.abs(leftTurn)) /
                        Math.max(Math.abs(rightTurn), Math.abs(leftTurn), 1e-6);
-      check(`${car}: steers right`, rightTurn > 0.05, `Δyaw ${rightTurn.toFixed(3)}`);
-      check(`${car}: steers left`, leftTurn < -0.05, `Δyaw ${leftTurn.toFixed(3)}`);
+      // NAMED IN ENGINE SIGN, deliberately. `G.step` writes straight into Input's SCRIPTED branch,
+      // which bypasses the keyboard/gamepad mapping — so `steer: +1` here is the raw physics input,
+      // and it yaws the car toward +X. +X is the driver's LEFT on screen (see the STEERING SIGN
+      // note in src/core/input.js: `forward x up` = Z x Y = -X, so ARCHITECTURE.md's "+X right" is
+      // the wrong way round and the whole world is consistent with the mistake). These two checks
+      // were called "steers right" / "steers left" and meant the opposite on screen. What they
+      // actually test — that the model responds to both signs and responds symmetrically — is
+      // unchanged and still exactly what is wanted here; only the names were lying.
+      check(`${car}: scripted steer +1 yaws toward +X`, rightTurn > 0.05, `Δyaw ${rightTurn.toFixed(3)}`);
+      check(`${car}: scripted steer -1 yaws toward -X`, leftTurn < -0.05, `Δyaw ${leftTurn.toFixed(3)}`);
       check(`${car}: steering is symmetric`, symmetry > 0.6,
         `L ${leftTurn.toFixed(3)} vs R ${rightTurn.toFixed(3)} — ratio ${symmetry.toFixed(2)}`);
 
@@ -200,10 +208,17 @@ async function main() {
     // Input.pressed() — and Input.pressed() was broken such that it could NEVER return true, so the
     // garage did not respond to the keyboard at all. Every check here passed while the screen was
     // completely dead to a player. A test that bypasses the input layer cannot detect input bugs.
+    //
+    // Round 6 replaced the garage's modal `focus` flag with three explicit screens — TITLE → MAP →
+    // VEHICLE → race, ESC all the way back — because the old screen used one pair of keys for two
+    // meanings selected by an invisible variable, and the only thing on screen that said which was
+    // a caption in the far corner of the frame. So the walk below is the whole flow, forwards AND
+    // backwards, through dispatched keys only: if any transition stops working, or any screen
+    // becomes a dead end, one of these goes red and names the screen it is stuck on.
     const menu = await h.page.evaluate(async () => {
       const G = window.__GAME;
-      await G.scenario('menu');
-      const opened = G.game.state === 'menu' && G.game.menu.open_;
+      const M = () => G.game.menu;
+      const out = { stuckAt: null };
 
       // synthesise a real keydown/keyup pair and let the game consume it through Input
       // game.update() calls input.update() itself, so do NOT also call it here — an extra call
@@ -215,23 +230,131 @@ async function main() {
         window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true }));
         G.game.update(1 / 60);
       };
+      // MAP's ENTER arms the city build on a 32 ms setTimeout, which a synchronous key() can never
+      // flush. Yield to the event loop until the screen actually changes. The timeout IS the
+      // dead-end detector: a screen that stops advancing fails here and reports where it stopped.
+      const waitFor = async (fn, ms = 90000) => {
+        const t0 = Date.now();
+        while (!fn()) {
+          if (Date.now() - t0 > ms) { out.stuckAt = M().screen; return false; }
+          G.game.update(1 / 60);
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        return true;
+      };
 
-      const beforeCar = G.game.menu.carIndex;
-      key('ArrowRight');
-      const movedByKey = G.game.menu.carIndex !== beforeCar;
+      // The DEFAULT screen for scenario('menu') is the one every visual baseline of this game is
+      // calibrated against. Assert it before anything else touches the menu.
+      await G.scenario('menu');
+      out.defaultIsVehicle = M().screen === 'vehicle' && G.game.state === 'menu' && M().open_;
 
-      const beforeCity = G.game.menu.cityIndex;
-      key('ArrowDown');
-      key('ArrowRight');
-      const cityByKey = G.game.menu.cityIndex !== beforeCity;
+      // ---- TITLE
+      await G.scenario('menu', { screen: 'title' });
+      out.opensOnTitle = M().screen === 'title' && G.game.state === 'menu' && M().open_;
+
+      // A FULLY SETTLED screen must still repaint after a resize.
+      //
+      // menu.js caches the whole 2D layer and returns early when nothing on it has changed, which
+      // is what holds this screen at 60 fps. But HUD.resize() assigns the shared #ui canvas's
+      // width/height unconditionally, and assigning a canvas's dimensions CLEARS it — while the
+      // cache key only saw the logical size, which does not move. A settled screen therefore
+      // photographed as an empty room: measured at 0 ink. Nothing caught it because the menu
+      // scenario runs 60 frames, which is not long enough for this screen to settle. TITLE is the
+      // one screen a player will genuinely leave standing, so settle it properly and prove it.
+      for (let i = 0; i < 400; i++) G.game.update(1 / 60);
+      G.render();
+      out.settledCached = M()._sig !== null;
+      G.setSize(1600, 900);
+      G.render(); G.render();
+      const cv = M().canvas;
+      const px = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+      let ink = 0;
+      for (let p = 3; p < px.length; p += 4 * 97) if (px[p] > 8) ink++;
+      out.settledInk = ink;
+      out.settledRepaint = ink > 200;
+      G.setSize(1280, 720);
+      G.render();
 
       key('Enter');
-      const startedByKey = G.game.state === 'racing';
-      return { opened, movedByKey, cityByKey, startedByKey };
+      out.titleToMap = M().screen === 'map';
+
+      // ---- MAP: browsing moves the selector and must NOT build a city
+      const city0 = M().cityIndex;
+      const id0 = G.game.cityId;
+      key('ArrowRight');
+      out.cityByKey = M().cityIndex !== city0;
+      out.browseBuildsNothing = !M().cityBusy && G.game.cityId === id0;
+      out.browseDetail = `selector ${city0} → ${M().cityIndex}, cityId ${id0} → ${G.game.cityId}`;
+
+      // ---- MAP: ESC goes back to TITLE, and forward again
+      key('Escape');
+      out.mapToTitle = M().screen === 'title';
+      key('Enter');
+      out.titleToMapAgain = M().screen === 'map';
+
+      // ---- MAP: ENTER confirms, builds the chosen city and lands on VEHICLE
+      const want = M().selection().city;
+      const t0 = Date.now();
+      key('Enter');
+      out.mapConfirms = await waitFor(() => M().screen === 'vehicle');
+      out.confirmMs = Date.now() - t0;
+      out.confirmLoadedCity = G.game.cityId === want;
+      out.confirmDetail = `wanted ${want}, game.cityId ${G.game.cityId}, ${out.confirmMs} ms`;
+
+      // ---- VEHICLE
+      const car0 = M().carIndex;
+      key('ArrowRight');
+      out.movedByKey = M().carIndex !== car0;
+      const col0 = M().colorIndex;
+      key('KeyV');
+      out.colorByKey = M().colorIndex !== col0;
+
+      // ---- VEHICLE: ESC goes back to MAP, and forward again (same city — no rebuild)
+      key('Escape');
+      out.vehicleToMap = M().screen === 'map';
+      key('Enter');
+      out.mapToVehicleAgain = await waitFor(() => M().screen === 'vehicle', 20000);
+
+      // ---- every screen publishes its own controls, and the bar draws exactly this array
+      out.hints = {};
+      for (const s of ['title', 'map', 'vehicle']) {
+        const rows = M().hints(s);
+        out.hints[s] = Array.isArray(rows) && rows.length
+          ? rows.map((r) => r.role) : null;
+      }
+
+      // ---- VEHICLE: ENTER starts the race
+      key('Enter');
+      out.startedByKey = G.game.state === 'racing' && !M().open_;
+      return out;
     });
-    check('menu opens', menu.opened);
-    check('menu navigates between cars VIA KEYBOARD', menu.movedByKey);
-    check('menu changes destination VIA KEYBOARD', menu.cityByKey);
+    const roles = menu.hints || {};
+    const hasAll = (s, want) => Array.isArray(roles[s]) && want.every((r) => roles[s].includes(r));
+    check('scenario("menu") still opens the VEHICLE screen', menu.defaultIsVehicle,
+      'every visual baseline of this screen is the car-select frame');
+    check('menu opens on the TITLE screen', menu.opensOnTitle);
+    check('a settled menu screen still repaints after a resize', menu.settledRepaint,
+      `${menu.settledInk} inked samples after setSize on a fully settled TITLE screen `
+      + '(0 = the cached layer was cleared and never redrawn)');
+    check('TITLE: ENTER advances to MAP (no dead end)', menu.titleToMap,
+      menu.stuckAt ? `stuck on "${menu.stuckAt}"` : '');
+    check('MAP: changes destination VIA KEYBOARD', menu.cityByKey, menu.browseDetail);
+    check('MAP: browsing does not build a city', menu.browseBuildsNothing, menu.browseDetail);
+    check('MAP: ESC goes back to TITLE', menu.mapToTitle);
+    check('TITLE: ENTER advances to MAP again', menu.titleToMapAgain);
+    check('MAP: ENTER confirms and advances to VEHICLE (no dead end)', menu.mapConfirms,
+      menu.stuckAt ? `stuck on "${menu.stuckAt}"` : `${menu.confirmMs} ms`);
+    check('MAP: confirm loads the chosen city', menu.confirmLoadedCity, menu.confirmDetail);
+    check('VEHICLE: navigates between cars VIA KEYBOARD', menu.movedByKey);
+    check('VEHICLE: V cycles paint VIA KEYBOARD', menu.colorByKey);
+    check('VEHICLE: ESC goes back to MAP', menu.vehicleToMap);
+    check('MAP: ENTER returns to VEHICLE (no dead end)', menu.mapToVehicleAgain,
+      menu.stuckAt ? `stuck on "${menu.stuckAt}"` : '');
+    check('every menu screen publishes its own control hints',
+      hasAll('title', ['confirm'])
+      && hasAll('map', ['browse', 'confirm', 'back'])
+      && hasAll('vehicle', ['browse', 'confirm', 'back']),
+      Object.entries(roles).map(([s, r]) => `${s}:[${(r || ['NONE']).join(',')}]`).join('  '));
     check('menu starts a race VIA KEYBOARD (no dead end)', menu.startedByKey);
 
     // ---------------------------------------------------------------- performance
