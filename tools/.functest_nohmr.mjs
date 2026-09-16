@@ -186,7 +186,7 @@ async function main() {
     // Headless Chromium falls back to SwiftShader (CPU rasterisation), which is 30-100x slower
     // than the real GPU — this cannot verify the §3.5 "50 fps at 1600x900" bar. It runs at a small
     // viewport purely as a REGRESSION tracker: a sudden drop here means someone added something
-    // pathologically expensive. Real frame rate must be measured on the GPU (npm run dev).
+    // pathologically expensive. Real frame rate must be measured on the GPU (pnpm dev).
     await h.page.evaluate(() => window.__GAME.setSize(640, 360));
     const fps = await measureFps(h.page, 40);
     check('software-GL render throughput (regression tracker only)', fps.fps > 1.5,

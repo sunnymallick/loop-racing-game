@@ -3,11 +3,9 @@
  *
  *   node tools/_fxc_r2.mjs nyc:muscle,nyc:supercar,vegas:muscle --out shots/_fxr2a
  *
- * For each pair it runs the SAME crash scenario the capture harness runs, then writes
- *   <name>.png       the frame the critic would score
- *   <name>-dmg.png   a close rear-three-quarter on the dented corner with the impact lamps OFF,
- *                    so the deformation and the scuff can be judged as bodywork
- * and prints clipping statistics (what fraction of the frame is blown to white).
+ * For each pair it runs the SAME crash scenario the capture harness runs, writes <name>.png (the
+ * frame the critic would score) and prints clipping statistics (what fraction of the frame is
+ * blown to white).
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -49,10 +47,7 @@ try {
       const g = G.game;
       G.render(); G.render();
       return {
-        dents: g.effects.body.dents,
-        patchTris: g.effects.body.patches.filter((p) => p.mesh.visible).map((p) => p.geo.drawRange.count / 3),
         impacts: g.effects.impacts,
-        damage: +g.effects.damage.toFixed(2),
         lights: g.effects.lights.map((l) => +l.l.intensity.toFixed(1)),
         alive: { smoke: g.effects.smoke.alive, sparks: g.effects.sparks.alive, glow: g.effects.glow.alive },
         mph: +(g.body.speed * 2.23694).toFixed(0),
@@ -61,44 +56,6 @@ try {
     const name = `${city}-${car}`;
     await h.page.screenshot({ path: path.join(OUT, `${name}.png`), type: 'png' });
     const st = await stats(h.page);
-    // close-up on the dent: city hidden, lamps off, particles hidden, raw forward render
-    const aim = () => h.page.evaluate(() => {
-      const g = window.__GAME.game;
-      const ld = g.effects.body.lastDent;
-      const c = g.engine.camera;
-      const p = g.body.pos, f = g.body.forward, r = g.body.right;
-      const wx = ld ? p.x + r.x * ld.c[0] + f.x * ld.c[2] : p.x;
-      const wy = ld ? p.y + ld.c[1] : p.y + 0.6;
-      const wz = ld ? p.z + r.z * ld.c[0] + f.z * ld.c[2] : p.z;
-      const ox = ld ? -(r.x * ld.d[0] + f.x * ld.d[2]) : r.x;
-      const oz = ld ? -(r.z * ld.d[0] + f.z * ld.d[2]) : r.z;
-      c.position.set(wx + ox * 2.6 - f.x * 1.1, wy + 0.85, wz + oz * 2.6 - f.z * 1.1);
-      c.lookAt(wx, wy, wz);
-      c.fov = 40; c.updateProjectionMatrix();
-      for (const sl of g.effects.lights) { sl.l.intensity = 0; sl.dur = 0; }
-      if (g.city?.group) g.city.group.visible = false;
-      for (const s of g.effects.pools) s.points.visible = false;
-      g.effects.chunks.group.visible = false;
-      const rr = g.engine.renderer;
-      rr.setRenderTarget(null);
-      rr.render(g.engine.scene, c);
-    });
-    await aim();
-    await h.page.screenshot({ path: path.join(OUT, `${name}-dmg.png`), type: 'png' });
-    // …and the same view with the damage undone, as an A/B
-    await h.page.evaluate(() => {
-      window.__GAME.game.effects.body.restore();
-      window.__GAME.game.effects.body.group.visible = false;
-    });
-    await aim();
-    await h.page.screenshot({ path: path.join(OUT, `${name}-clean.png`), type: 'png' });
-    await h.page.evaluate(() => {
-      const g = window.__GAME.game;
-      if (g.city?.group) g.city.group.visible = true;
-      for (const s of g.effects.pools) s.points.visible = true;
-      g.effects.chunks.group.visible = true;
-      g.effects.body.group.visible = true;
-    });
     console.log(`${name}  ${JSON.stringify({ ...info, ...st })}`);
   }
   const errs = await h.page.evaluate(() => window.__ERRORS || []);

@@ -3522,7 +3522,7 @@ function rimRelief(w, h) {
  * It shares the livery sheet, so it is free: no new material, no new draw call, four triangles.
  * Set in our own vector face, like every other glyph in this project.
  */
-const PLATE_TEXT = ['NC 41 7K', 'BX 09 RTL', '7GQ 2214', 'MI 55 DOM'];
+const PLATE_TEXT = ['NC 41 7K', 'BX 09 RTL', '7GQ 2214', 'MI 55 KAI'];
 function plateCell(ctx, w, h, { seed = 1, rear = false }) {
   ctx.fillStyle = rear ? '#e3cf58' : '#eceae2';
   ctx.fillRect(0, 0, w, h);

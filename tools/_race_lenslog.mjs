@@ -4,7 +4,7 @@ const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i === -1 ? d : argv[i + 1]; };
 const CITY = String(arg('city', 'miami'));
 const CAR = String(arg('car', 'muscle'));
-const WHO = String(arg('who', 'HAN'));
+const WHO = String(arg('who', 'IKE'));
 const h = await boot({ width: 640, height: 360 });
 try {
   await open(h.page, h.url, { city: CITY, car: CAR });

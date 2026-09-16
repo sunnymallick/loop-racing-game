@@ -6,7 +6,7 @@ tree.
 ## Running it
 
 ```bash
-npm run dev                      # http://localhost:5180 — real GPU, for feeling the game
+pnpm dev                         # http://localhost:5180 — real GPU, for feeling the game
 node tools/shot.mjs --city la --car muscle --shots chase,drift,nitrous --out shots/mine
 node tools/shot.mjs --all --out shots/sweep        # 4 cities x 4 cars
 node tools/functest.mjs          # control/crash/menu/leak checks; exit 1 on failure

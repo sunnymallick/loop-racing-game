@@ -8,7 +8,7 @@ import { Effects } from './fx/effects.js';
 import { buildVehicle, getVehicle, VEHICLE_IDS } from './vehicles/index.js';
 import { setBodyTint } from './vehicles/kit.js';
 import { VehicleBody, applyPose } from './vehicles/physics.js';
-import { Nitrous, NitrousJet } from './vehicles/nitrous.js';
+import { Nitrous, NitrousJet, NITRO_ARM } from './vehicles/nitrous.js';
 import { buildCityById, getCity, CITY_IDS } from './cities/index.js';
 import { Race } from './race/race.js';
 import { clamp, lerp, smoothstep, RNG } from './core/rng.js';
@@ -92,6 +92,12 @@ class Game {
     this.menu = new Menu(this);
     this.rng = new RNG(4242);
     this._lastBoostPad = -1;
+    // Nitrous cue state. `_nitroCue` rate-limits the refused-press cue and `_nitroAsked` remembers
+    // that the player actually asked for the bottle while it was empty, so "NITRO READY" answers a
+    // question rather than narrating. Both are cleared in startRace() as well: a field initialised
+    // only here survives a city or car swap in whatever state the last race left it.
+    this._nitroCue = 0;
+    this._nitroAsked = false;
     this._skidOn = [false, false, false, false];
 
     window.addEventListener('resize', () => {
@@ -108,10 +114,6 @@ class Game {
 
   async setCity(id) {
     if (this.city) {
-      // (fx piece) a crash BENDS the street furniture it hits, so the FX director holds deformed
-      // geometry from the outgoing city. Let it put that back and drop the reference before the
-      // group is disposed.
-      this.effects.setWorld(null);
       this.engine.scene.remove(this.city.group);
       disposeObject(this.city.group);
       this.city = null;
@@ -122,7 +124,7 @@ class Game {
     // (audio piece) the city picks the music cue — see TRACKS in core/audio.js
     this.audio.setCity(id);
     this.engine.scene.add(built.group);
-    this.effects.setWorld(built.group);   // (fx piece) crashes deform this city's props
+    this.effects.setWorld(built.group);   // (fx piece) smoke tint + crash-camera ray prep
     this.engine.scene.fog = built.fog;
     // LIGHTING piece: replace the sky-only probe with a cube capture of the finished city so car
     // paint and wet asphalt reflect neon and buildings, not just a flat sky. Mutates built.envMap.
@@ -156,9 +158,6 @@ class Game {
     // canvas texture that must outlive this car (see `_stageFloorMesh`)
     if (this.stageFloor) this.stageFloor.removeFromParent();
     this._contactShadow = null;
-    // (fx piece) the crash system deforms and scuffs the REAL bodywork, so it holds references to
-    // this car's geometry — drop them before the car is freed, and re-point it at the new one.
-    this.effects.attachCar(null);
     if (this.car) { this.engine.scene.remove(this.car); disposeObject(this.car); }
     const v = getVehicle(id);
     const car = buildVehicle(id, { color: color || v.spec.colors[0], envMap: this.city?.envMap });
@@ -181,7 +180,7 @@ class Game {
     });
     car.add(this.jet.group);
     this._applyEnv(car);
-    this.effects.attachCar(car);
+    this.effects.attachCar(car);   // (fx piece) crash debris is thrown in this car's paint
     this._heroRig(car);
     return car;
   }
@@ -492,6 +491,7 @@ class Game {
     const p = s.pos.clone().addScaledVector(s.right, slot.lateral * this.city.track.halfWidth);
     this.body.reset(p, Math.atan2(s.tan.x, s.tan.z));
     this.nitro.reset();
+    this._nitroCue = 0; this._nitroAsked = false;
 
     // RACE piece: the opponents' nitrous plumes live under their cars (same reason the player's
     // does), so detach them before disposeObject() walks the subtree and frees the nitrous piece's
@@ -626,7 +626,10 @@ class Game {
     };
 
     // ---- nitrous ----
-    const wasActive = this.nitro.active;
+    // `const wasActive = this.nitro.active` used to sit here, paired with a `void wasActive` after
+    // the beat: a dead latch reading the previous frame. The rule it was the obvious place for —
+    // one ignition per press, not one per frame the button is down — now lives in Nitrous.update()
+    // instead, where the seven AI drivers get it too; race.js calls that method directly.
     this.nitro.update(scaled, racing && this.input.nitro, { moving: this.body.speed > 1.5 });
     if (this.nitro.justFired) {
       this.audio.nitroStart();
@@ -639,8 +642,61 @@ class Game {
       this.hud.message('NITRO!', 1.1, '#ff9214');
     }
     if (this.nitro.justEnded) this.effects.backfire(this._exhaustWorld(), this.body.forward.clone().negate(), this.nitro.cfg.color);
+    // stays every frame and outside every branch: its cutoff is edge-detected inside audio.js, and
+    // moving it into a guard would strand the jet gain wherever it happened to be
     this.audio.nitroSustain(this.nitro.ramp);
-    void wasActive;
+
+    // THE ANSWER TO A HELD BUTTON IS STATE, NOT AN EVENT. A hold is answered by the charge bar,
+    // which now climbs (before this fix a held button pinned it in an 0.011-0.023 sawtooth for
+    // ever); only a discrete PRESS gets a one-shot cue, and even that is rate-limited. A per-frame
+    // or per-held-frame cue here would rebuild the reported bug in a new costume: hud.js rewinds a
+    // live banner of identical text to t = 0, and its draw turns that into a flash and a 1.28x pop.
+    //
+    // EMPTY MEANS EMPTY. This gate was `justEnded && !armed`, and `armed` is `charge >= NITRO_ARM`
+    // — so it printed NITRO EMPTY on every release below the arming floor, over a bar with a fifth
+    // of a tank still lit in it (measured 0.198 / 0.197 / 0.200 / 0.201 on the four classes, about
+    // once per boost, ~20 false banners a race). It cannot be fixed from out here: by the time
+    // main.js reads `charge` the frame's refill is already in it, so a genuine dry-out reads 0.022
+    // rather than 0 and there is nothing left to discriminate on. `endedDry` is read inside
+    // Nitrous.update() before the refill, and is the charge test rather than `!fuel` — a boost cut
+    // by a crash also has no fuel, at three-quarters of a tank. The unspendable band is now drawn
+    // on the bar itself (ui/hud.js), so a release below the mark has a picture and needs no word.
+    if (this.nitro.justEnded && this.nitro.endedDry) this.hud.message('NITRO EMPTY', 0.9, '#7fa8c8');
+    this._nitroCue = Math.max(0, this._nitroCue - scaled);
+    if (this.nitro.refused && this.body.speed > 1.5 && this._nitroCue <= 0) {
+      // 0.9 s against a 0.6 s banner, so an identical banner is always dead before the next one
+      // starts and the rewind path is never taken. A player mashing at 30 Hz generates ~290
+      // refusals in 10 s, so the limiter is doing work, not decorating.
+      this._nitroCue = 0.9;
+      this.audio.nitroArm();     // the valve crack with no bang behind it: "opened, nothing in it"
+      // THE CLICK ANSWERS EVERY REFUSAL; THE WORD ANSWERS ONLY THE ONE IT IS TRUE OF. A press
+      // denied inside the 0.25 s relight lockout was getting the same 'NITRO CHARGING' string as a
+      // press denied for a flat bottle, printed over a bar measured at 96-99 % full — a banner
+      // contradicting the gauge, which is the same class of bug this change set out to remove. So
+      // the reason comes from the state machine (nitrous.js `refusedReason`) and only 'charge'
+      // earns words. A relight refusal keeps the valve click, which is honest for any denied press,
+      // and says nothing: the badge already reads READY and the bar is visibly full, so the player
+      // has been answered by the instrument rather than contradicted by the banner.
+      //
+      // Still one string and not a `tanks > 0 ? … : 'NO NITRO'` ternary: 'tanks' is deterministically
+      // 3 while the economy is dormant (see nitrous.js), so that reason is unreachable — the same
+      // dead branch this change deleted from the drain. It belongs with the economy round that
+      // makes tanks mean something.
+      if (this.nitro.refusedReason === 'charge') {
+        this.hud.message('NITRO CHARGING', 0.6, '#2fd0ff');
+        // …and only a refusal about the BOTTLE counts as having asked for it. _nitroAsked is what
+        // puts a NITRO READY banner on the far side of the wait; a lockout press did not ask.
+        this._nitroAsked = true;
+      }
+    }
+    if (this.nitro.justReady) {
+      this.audio.nitroArm();
+      // Only if the player actually asked while it was empty. DEVIATION from the design as
+      // written, which also set _nitroAsked on the dry-out and so put a READY banner after every
+      // single boost: the design's own rule is that an event answers a press, and a player who ran
+      // dry and waited without pressing has not asked anything. The bar is their answer.
+      if (this._nitroAsked) { this.hud.message('NITRO READY', 0.7, '#3ce0ff'); this._nitroAsked = false; }
+    }
 
     // ---- surface / walls ----
     const t = this.city.track;
@@ -876,7 +932,7 @@ class Game {
       this.audio.tick(scaled, { speed: spd, surface: this.body.surface, boost: this.nitro?.ramp ?? 0 });
     }
 
-    // the body goes in so the FX piece can trail damage smoke off the corner that took a hit
+    // the body goes in so the FX piece can gate tyre smoke on the car's real slip
     this.effects.update(scaled, null, this.body);
     this._updateCamera(dt);
     this.city.update(this.time, this.engine.camera);
@@ -933,23 +989,16 @@ class Game {
   /**
    * THE CUT. One frame, fired the instant the director drops the flag.
    *
-   * Four things happen here that cannot happen gradually, because the frame after this one is a
+   * Three things happen here that cannot happen gradually, because the frame after this one is a
    * different shot and the frame before it was a race:
    *
-   * 1. THE WINNER IS REPAIRED. The critic, at 3x on the round-1 money frame: "the winning car is a
-   *    wreck: two of the four taillights are dead chrome rings while the other two glow, the right
-   *    rear quarter is caved with a hard crease, and the arch is torn open with embers venting from
-   *    the wound. The reference frames never present a battered hero; this build's money frame
-   *    does." The FX director already knows how to put its own deformation back (`BodyDamage.clear`
-   *    un-dents every vertex it moved and drops the scuff and broken-lamp patches) — it simply had
-   *    no reason to before. Doing it ON the cut means no frame ever shows the damage healing.
-   * 2. THE SIDE IS CHOSEN. The finish rig stands off one flank for the whole beat; it picks the
+   * 1. THE SIDE IS CHOSEN. The finish rig stands off one flank for the whole beat; it picks the
    *    side of the road with room on it, once, so it cannot swap sides mid-shot.
-   * 3. THE LINE FIRES. Two gold fountains off the ends of the chequer — §2.5 wants spectacle at the
+   * 2. THE LINE FIRES. Two gold fountains off the ends of the chequer — §2.5 wants spectacle at the
    *    set piece, and round 1's flag had "no confetti/smoke/light cast" at all. They are thrown
    *    from the START LINE's own cross-section, so they are behind the car and inside the shot the
    *    next frame cuts to.
-   * 4. THE ABERRATION IS PARKED. §2.1 wants chromatic aberration subtle; the grade's is radial
+   * 3. THE ABERRATION IS PARKED. §2.1 wants chromatic aberration subtle; the grade's is radial
    *    (`ab ∝ r²`), which is invisible on a car in the middle of the frame and 3–4 px on one staged
    *    out at the right third — where this beat is about to put it. The authored value is kept and
    *    restored, so this is a shot look, not a change to the city's grade.
@@ -958,7 +1007,7 @@ class Game {
     this._flagDone = true;
     this._finSnap = true;
     const trk = this.city?.track;
-    // 2 — which flank the rig stands off. It PREFERS the car's left, because that is the side that
+    // 1 — which flank the rig stands off. It PREFERS the car's left, because that is the side that
     // ends the beat with the car's nose pointing back into the frame, toward the classification —
     // a hero staged on the right third facing off the right edge of the screen is a car leaving.
     // It only crosses over when the car is hugging the left barrier hard enough that standing
@@ -974,16 +1023,12 @@ class Game {
     void trk;
     this._finSide = -1;
 
-    // 1 — a clean winner
-    this.effects.body?.clear?.();
-    this.effects.damage = 0;
-
-    // 3 — the pyro, on the line itself
+    // 2 — the pyro, on the line itself
     this._pyro = 0;
     this._flagPyro(-0.88);
     this._flagPyro(0.88);
 
-    // 4 — snapshot whatever the city's grade authored, and the lamp the rim borrows
+    // 3 — snapshot whatever the city's grade authored, and the lamp the rim borrows
     const ab = this.engine.grade?.uniforms?.uAberration;
     if (ab && this._abBase == null) this._abBase = ab.value;
     const rim = this.jet?.light;
@@ -1689,7 +1734,7 @@ class Game {
     }
     // (fx piece) COMPOSE THE CRASH ON THE CAR. The normal aim point is five to ten metres up the
     // road ahead of the car, which is right for driving and wrong for an impact: it pushes the car
-    // — and the shower, the debris and the damaged corner, all of which are AT the car — into the
+    // — and the shower and the debris, both of which are AT the car — into the
     // bottom corner of the frame or off it. For the second after a hit the aim swings onto the car
     // itself, so the event the frame is about is the thing the frame is pointed at.
     if (this.effects.crashT < 0.85) {
@@ -1820,7 +1865,7 @@ class Game {
    *   recordTime    the fastest time anyone set today, when that is quicker than `record`
    *   recordBy      who set it — and `recordBeaten` is true only when that is the player.
    *
-   * So "8th" and "you set the record" can no longer both be true: the badge now names Han.
+   * So "8th" and "you set the record" can no longer both be true: the badge now names IKE.
    */
   _classification() {
     const r = this.race;
@@ -1931,6 +1976,19 @@ class Game {
       nitroCharge: this.nitro?.charge ?? 0,
       nitroTanks: this.nitro?.tanks ?? 0,
       nitroActive: (this.nitro?.ramp ?? 0) > 0.1,
+      // (HUD piece) A bar that shows a quantity teaches that any quantity is spendable, and it is
+      // not: below `nitroArm` a press is refused. These four are published so the HUD can draw the
+      // arming mark at bx + bw * nitroArm, break the fill's colour across it, and reach the four
+      // badge states instead of only FIRING / CHARGE. hud.js `nitroBadge()` now reads all four:
+      // FIRING (nitroActive) / CHARGE (!nitroArmed) / RELEASE (nitroHeld && nitroReady) / READY.
+      // RELEASE is the one that matters — it is the only cue for the state where the latch is spent
+      // and the button is still down, which is a full bar and a dead button with no other tell.
+      // Drive any "you cannot spend this" dimming off nitroArmed, never off nitroTanks — tanks is
+      // deterministically frozen at 3 (see nitrous.js), so tankFlash/spendIdx stay dormant.
+      nitroArm: NITRO_ARM,
+      nitroArmed: this.nitro?.armed ?? false,
+      nitroReady: this.nitro?.ready ?? false,
+      nitroHeld: this.nitro?.held ?? false,
       drift: this.body?.drift ?? 0,
       // HUD piece: the DRIFT panel's ANGLE readout should render THIS, the simulated slip angle.
       // In round 1 it drew `drift * 42`, so it read 42° while the car was at 24° (§6.2 critic).
@@ -2039,7 +2097,13 @@ window.__GAME = {
   telemetry() {
     return {
       ...game.body.telemetry(),
-      nitro: { charge: +game.nitro.charge.toFixed(3), tanks: game.nitro.tanks, ramp: +game.nitro.ramp.toFixed(3), active: game.nitro.active },
+      // charge/tanks/ramp/active are load-bearing for shot.mjs, functest and every stored
+      // --telemetry JSON: add keys here, never rename or remove one.
+      nitro: {
+        charge: +game.nitro.charge.toFixed(3), tanks: game.nitro.tanks,
+        ramp: +game.nitro.ramp.toFixed(3), active: game.nitro.active,
+        armed: game.nitro.armed, ready: game.nitro.ready,
+      },
       race: game.race ? game.race.telemetry() : null,
       fx: {
         shake: +game.effects.shake.toFixed(3),
@@ -2331,21 +2395,48 @@ window.__GAME = {
         break;
       }
       case 'nitrous':
+        // The nitro.reset() at the head of all three nitrous cases takes the BOTTLE out of the
+        // question of shot ordering. shot.mjs load()s once per city x car and then loops the shots
+        // without resetting; each case's 80-120 frame lead-in happens to refill the bottle, so
+        // back-to-back --shots nitrous,nitrous-long used to measure the same as either in
+        // isolation. Now that a start can be REFUSED below NITRO_ARM, "happens to" is not good
+        // enough.
+        //
+        // IT MOVED THE nitrous-long CAPTURE, AND THE NEW FRAME IS THE RIGHT ONE. Measured on
+        // la/supercar, sequenced (--shots nitrous,nitrous-long) vs. captured on its own after a
+        // fresh load():
+        //     pristine, sequenced   frame 0 {charge 0.814, ramp 0.975} -> 241.5 mph, end 0.343
+        //     pristine, ISOLATED    frame 0 {charge 1.000, ramp 0.000} -> 228.9 mph, end 0.348
+        //     with reset, sequenced frame 0 {charge 1.000, ramp 0.000} -> 230.7 mph, end 0.348
+        //     with reset, ISOLATED  frame 0 {charge 1.000, ramp 0.000} -> 228.9 mph, end 0.348
+        // The 241.5 mph frame was never a reference: it existed only when nitrous-long inherited a
+        // still-spooled boost and an 81 % bottle from the `nitrous` shot captured before it, and it
+        // vanished the moment the same pristine build captured nitrous-long alone. A §8 capture has
+        // to mean the same thing whatever ran before it, so the full-bottle frame is the one to
+        // standardise on. (`shots/` is gitignored and untracked, so no versioned artifact moved.)
+        //
+        // The reset does NOT make shot ordering irrelevant in general — sequenced still reads
+        // 230.7 against 228.9 isolated on an identical nitro state, so something else (race/AI
+        // state) carries between shots. Out of scope here; do not read this comment as a claim
+        // that it is fixed.
         // §8: "0.4 s into a boost" — 26 frames at 1/60 s. Note the per-class SPOOL curve means
         // `boost` legitimately differs here (supercar ~1.0, SUV ~0.12): that is the freight-train
         // vs. light-switch feel §6.3 asks for. The VISUAL level (Nitrous.flame) is on its own
         // faster schedule, so all four classes show a fully lit jet in this frame.
+        game.nitro.reset();
         place(opts.u ?? straightU());
         follow(120, { throttle: 1 });
         follow(26, { throttle: 1, nitro: true });
         break;
       case 'nitrous-long':
+        game.nitro.reset();
         place(opts.u ?? straightU());
         follow(80, { throttle: 1 });
         follow(90, { throttle: 1, nitro: true });
         break;
       case 'nitrous-ignite':
         // the ignition frame itself — muzzle flash, shock ring, FOV snap (ART_DIRECTION §6.3)
+        game.nitro.reset();
         place(opts.u ?? straightU());
         follow(120, { throttle: 1 });
         follow(5, { throttle: 1, nitro: true });

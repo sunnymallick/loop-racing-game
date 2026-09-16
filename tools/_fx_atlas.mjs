@@ -36,7 +36,6 @@ const data = await page.evaluate(() => {
   return {
     smoke: dump(fx.smoke.material.uniforms.uMap.value, '#2a3140'),
     glow: dump(fx.glow.material.uniforms.uMap.value, '#101014'),
-    scuff: dump(fx.body.material.map, '#1c4a3a'),
   };
 });
 for (const [k, v] of Object.entries(data)) {

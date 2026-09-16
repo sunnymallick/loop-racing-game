@@ -1,5 +1,5 @@
 # ART_DIRECTION.md
-### The rubric for *NITRO CIRCUIT* — an arcade driving game in the spirit of Fast & Furious: Arcade Edition
+### The rubric for *NITRO CIRCUIT* — an arcade street-racing game
 
 This document is the **single source of truth** for every critic agent in this project. It is written
 once, from a single grounded pass over the five reference screenshots in `./references/`, and it is
@@ -314,9 +314,9 @@ four cities → **max 65**.
 
 ### 6.6 Collision and crash spectacle — **Target 82**
 Dimensions: impact FX — sparks with correct direction, debris, smoke (25) · camera response — shake,
-kick, brief time dilation (20) · vehicle response — spin, deformation or damage state, recovery (20) ·
-environment response — props that move, break, or scatter (15) · audio — impact layers by severity
-(10) · it never breaks the race: no clipping through the world, no unrecoverable stuck state (10).
+kick, brief time dilation (20) · vehicle response — spin and recovery (20) · environment response —
+marks the crash leaves on the world: scorch on the road, soot and paint on the barrier (15) · audio —
+impact layers by severity (10) · it never breaks the race: no clipping through the world, no unrecoverable stuck state (10).
 *Caps:* collision is a hard stop with no FX → **max 40**. Car can pass through walls → **max 50**.
 No screen shake → **max 65**.
 

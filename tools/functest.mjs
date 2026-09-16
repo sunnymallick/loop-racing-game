@@ -147,6 +147,97 @@ async function main() {
       check(`${car}: nitrous adds speed`, nitro.boosted > nitro.base * 1.03, `${nitro.base.toFixed(1)} → ${nitro.boosted.toFixed(1)} m/s`);
       check(`${car}: nitrous drains charge`, nitro.charge < 0.999, `charge ${nitro.charge.toFixed(2)}`);
 
+      // THE HELD BUTTON. The block above holds nitro for 70 frames = 1.167 s, which is shorter
+      // than every class's `duration` (1.8–4.6 s), so it has never once run a tank dry and never
+      // exercised what happens next. What happened next was the reported bug: the button was still
+      // down, the else branch refilled, charge crossed the 0.02 entry gate three or four frames
+      // later and the whole ignition beat re-ran — audio.nitroStart, jet.ignite, addShake, the
+      // 'NITRO!' banner, a backfire — at 13–15 Hz, for ever, with `ramp` returning to exactly 0
+      // between cycles. On the shipped build this hold measured 270 / 254 / 257 / 254 ignitions
+      // for tuner / muscle / suv / supercar; it must now measure exactly one.
+      //
+      // The second assertion is the other half. `tanks` has never decremented in normal play —
+      // the old `if (charge <= 0)` needed dt > 0.02*duration/drain = 0.036–0.092 s against
+      // main.js's 0.05 clamp — but below ~28 fps it DID, so the economy was a frame-rate lottery.
+      // The decrement is gone and `tanks` is deterministically 3. This pins that in BOTH
+      // directions: it fails if the strobe comes back and it fails if somebody wakes the tank
+      // economy without doing the balance round that owes it.
+      const heldNitro = await h.page.evaluate(async () => {
+        // The badge derivation is exported from the HUD so this can assert the WORD without
+        // reading pixels. Pixels are not optional though: the caption is a cached patch and a key
+        // that forgets the word bakes the first one and blits it for ever, which this cannot see.
+        // Screenshot the held state when touching ui/hud.js `nitroCap`.
+        const { nitroBadge } = await import('/src/ui/hud.js');
+        const G = window.__GAME;
+        // BOOST PADS OFF for the duration of the hold. A pad is a granted resource and it
+        // deliberately re-arms a spent held button (nitrous.js addTank), so the extra ignition one
+        // grants is correct behaviour rather than the strobe — and driving straight for 15 s
+        // crosses one on most starting positions, which made this check read 2 and mean nothing.
+        // The pad rule gets its own assertion below, where the grant is explicit.
+        const pads = G.game.city.boostPads;
+        G.game.city.boostPads = [];
+        try {
+          G.game.nitro.reset();
+          G.step(120, { throttle: 1 });
+          let fires = 0, minTanks = 9;
+          // …and the badge every frame of the hold. Two things are asserted from it: the hold ends
+          // in RELEASE (the state that had no word at all — full bar, dead button, no cue), and it
+          // is never labelled CHARGE while the bottle is actually armed.
+          const badges = {}; let fullButCharge = 0;
+          // one frame at a time, because justFired is a single-frame edge that telemetry() does
+          // not expose — 900 frames is 15 s, three to eight times the longest class duration
+          for (let i = 0; i < 900; i++) {
+            G.step(1, { throttle: 1, nitro: true });
+            if (G.game.nitro.justFired) fires++;
+            minTanks = Math.min(minTanks, G.game.nitro.tanks);
+            const b = nitroBadge(G.game.hudState());
+            badges[b] = (badges[b] || 0) + 1;
+            if (b === 'CHARGE' && G.game.nitro.armed) fullButCharge++;
+          }
+          const endBadge = nitroBadge(G.game.hudState());
+          const endState = { armed: G.game.nitro.armed, held: G.game.nitro.held,
+            ready: G.game.nitro.ready, active: G.game.nitro.active };
+          const t = G.telemetry();
+          // …and then a pad, taken with the button STILL DOWN. Exactly one more ignition: the pad
+          // has to be able to rescue a player who ran dry and never let go, without re-opening the
+          // hold to a second one afterwards.
+          G.game.nitro.addTank();
+          let padFires = 0, padRamp = 0;
+          for (let i = 0; i < 420; i++) {
+            G.step(1, { throttle: 1, nitro: true });
+            if (G.game.nitro.justFired) padFires++;
+            padRamp = Math.max(padRamp, G.game.nitro.ramp);
+          }
+          return { fires, minTanks, charge: t.nitro.charge, tanks: t.nitro.tanks, padFires, padRamp,
+            badges, endBadge, endState, fullButCharge };
+        } finally { G.game.city.boostPads = pads; }
+      });
+      check(`${car}: held nitro fires once, not repeatedly`, heldNitro.fires === 1,
+        `${heldNitro.fires} ignition${heldNitro.fires === 1 ? '' : 's'} in a 15 s hold`);
+      check(`${car}: held nitro does not destroy tanks`, heldNitro.minTanks === 3 && heldNitro.tanks === 3,
+        `tanks ${heldNitro.tanks} (min ${heldNitro.minTanks})`);
+      // …and the bottle must actually refill while the button is still down. Before the fix a held
+      // button pinned charge in an 0.011–0.023 sawtooth around the entry gate for as long as it was
+      // held: the player's whole recharge stream went on a treadmill. Measured 0.019 / 0.020 /
+      // 0.017 / 0.018 then; a 15 s hold now refills to full on every class.
+      check(`${car}: held nitro still recharges`, heldNitro.charge > 0.5,
+        `charge ${heldNitro.charge.toFixed(3)} after a 15 s hold`);
+      check(`${car}: a boost pad re-arms a held button exactly once`,
+        heldNitro.padFires === 1 && heldNitro.padRamp > 0.9,
+        `${heldNitro.padFires} ignition${heldNitro.padFires === 1 ? '' : 's'}, peak ramp ${heldNitro.padRamp.toFixed(2)}`);
+      // A latch that initialises "held" instead of "released" ships green through all 48 nitrous
+      // captures, because every shipped scenario prefixes its boost with a lead-in that writes
+      // nitro:false and re-arms it. Only a direct step() with no false frame before it catches it,
+      // and __GAME.step(70, { nitro: true }) straight after load() is a supported call.
+      await load(h.page, { city: 'la', car });
+      const coldStart = await h.page.evaluate(() => {
+        const G = window.__GAME;
+        G.step(70, { throttle: 1, nitro: true });
+        return G.telemetry().nitro;
+      });
+      check(`${car}: nitro held from the first frame still fires`, coldStart.ramp > 0.5,
+        `ramp ${coldStart.ramp.toFixed(2)} with no released frame before it`);
+
       perCar[car] = { top, maxSlip, maxDrift, boostGain: nitro.boosted / nitro.base };
     }
 
@@ -364,7 +455,7 @@ async function main() {
     // Headless Chromium falls back to SwiftShader (CPU rasterisation), which is 30-100x slower
     // than the real GPU — this cannot verify the §3.5 "50 fps at 1600x900" bar. It runs at a small
     // viewport purely as a REGRESSION tracker: a sudden drop here means someone added something
-    // pathologically expensive. Real frame rate must be measured on the GPU (npm run dev).
+    // pathologically expensive. Real frame rate must be measured on the GPU (pnpm dev).
     await h.page.evaluate(() => window.__GAME.setSize(640, 360));
     // This check used to take its ONLY sample in the 40 frames straight after setSize(), so it was
     // timing the resize — render-target realloc plus shader recompile — rather than throughput. It

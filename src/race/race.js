@@ -19,8 +19,8 @@ import { drawText } from '../core/font.js';
  * LA, player flat out in the muscle car):
  *
  *      the player's muscle   spec 167 mph, measured peak 166
- *      ROMAN's muscle        spec 180 mph, peak 185      ← the same car out of the same table
- *      HAN's SUV             spec 180 mph, peak 192      ← a class the player tops out at 151
+ *      REYES's muscle        spec 180 mph, peak 185      ← the same car out of the same table
+ *      IKE's SUV             spec 180 mph, peak 192      ← a class the player tops out at 151
  *      the three supercars    spec 188 mph
  *
  * Every opponent had been prepped to a common 180 mph top gear (`PREP_TOP`) whatever it arrived
@@ -482,8 +482,8 @@ import { drawText } from '../core/font.js';
  */
 
 const NAMES = [
-  'DOM', 'LETTY', 'ROMAN', 'TEJ', 'MIA', 'HAN', 'GISELE', 'SUKI',
-  'BRIAN', 'JESSE', 'VINCE', 'RICO', 'NIKO', 'CARA', 'AXEL', 'RAY',
+  'KAI', 'NOVA', 'REYES', 'JUNO', 'MARLO', 'IKE', 'SASHA', 'ZANE',
+  'DEX', 'PIPER', 'OSCAR', 'TALIA', 'NIKO', 'CARA', 'AXEL', 'RAY',
 ];
 
 const CHECKPOINTS = 12;          // sectors per lap that must be passed in order
@@ -679,8 +679,8 @@ function cornerComp(ph, m = { top: 1 }) {
  * `tools/_zzr2_speed.mjs` (the critic's own probe — LA, player flat out in the muscle car):
  *
  *      the player's muscle    spec 167 mph, measured peak 166
- *      ROMAN's muscle         spec 180 mph, peak 185 — THE SAME CAR, 8 % more top end
- *      HAN's SUV              spec 180 mph, peak 192 — a class the player tops out at 151
+ *      REYES's muscle         spec 180 mph, peak 185 — THE SAME CAR, 8 % more top end
+ *      IKE's SUV              spec 180 mph, peak 192 — a class the player tops out at 151
  *      the three supercars    spec 188 mph — the only class that was never prepped
  *
  * — i.e. the field was driving a car the player cannot buy, in the one dimension a player can
@@ -1162,7 +1162,7 @@ export class AIDriver {
     // ROUND 9 FLATTENED THE CLASS TERM. It was `lerp(1.30, 0.85, …)`, written when every opponent
     // was prepped to a common 80.5 m/s so the term barely varied — all four classes landed within
     // 0.94–0.95 of each other. On the showroom tables it spans 1.26 (SUV) to 0.85 (supercar), and
-    // measured with `tools/_r3speed.mjs` that put HAN's SUV on the bottle for 52 % of an LA race
+    // measured with `tools/_r3speed.mjs` that put IKE's SUV on the bottle for 52 % of an LA race
     // against a player's ~35 %: the class that had just lost its taller top gear was answering
     // with nitrous instead, which is the same +50 mph surge past the player wearing a plume. The
     // corner compensation (`cornerComp`) is where that lap time is supposed to come from now, so
@@ -1548,7 +1548,7 @@ export class AIDriver {
             // itself on a ribbon is still on the ribbon and is still credited with the traversal
             // if it drives it end to end — but it was never OFFERED the cut in the sense the
             // decision roll below means, so counting it against `cutSeen` produced the round-2
-            // critic's contradiction: LETTY and DOM reported cuts=7 against cutSeen=6, i.e. more
+            // critic's contradiction: NOVA and KAI reported cuts=7 against cutSeen=6, i.e. more
             // shortcuts driven than shortcuts the driver was ever shown. `cutStray` is the
             // difference, and it makes the three counters add up.
             onBranch = nb; this._cutChosen = false; break;
@@ -1767,7 +1767,7 @@ export class AIDriver {
     // straights; feeding it into the corner solve as well (round 3) both double-counted the class
     // and was thrown away again by the tyre ceiling, which is why the SUV — nominally handed 14 %
     // more pace than the supercar — actually cornered 16 % slower than the tuner and finished
-    // every race last, 822 m adrift at the LA flag with HAN and LETTY never once changing places.
+    // every race last, 822 m adrift at the LA flag with IKE and NOVA never once changing places.
     // What is left here is what a DRIVER brings: skill, the field pace, and the corner half of
     // the band's trim.
     // (bounds derived from the director's range, see PACE_FLOOR)
@@ -2026,7 +2026,7 @@ export class AIDriver {
         // and ANDed it with a tidiness test taken at the same instant, so a driver whose appetite
         // sat below the line took a shortcut NEVER — not this lap, not this race, not ever — and
         // one above the line took every cut on the track every lap. Measured over full races: two
-        // of seven drivers (ROMAN in LA and NYC, four of seven in Vegas) finished with a cut count
+        // of seven drivers (REYES in LA and NYC, four of seven in Vegas) finished with a cut count
         // of exactly 0, and it was structural rather than unlucky.
         //
         // A probability, rolled once when the branch comes into view and cached for the rest of
@@ -2338,7 +2338,19 @@ export class AIDriver {
       const chase = Math.max(0, this.band);
       const desire = straightAhead
         * (0.46 * this.boostEager + duel + chase * 0.85 + show);
-      if (!inFrame && speed > p.topSpeed * 0.42 && b.drift < 0.45 && this.offRec < 0.2
+      // `nitro.armed` FIRST, and before the roll. (NITROUS piece, cross-file: nitrous.js gained a
+      // NITRO_ARM floor — a start below 25 % of a tank is now REFUSED — and this roll did not know
+      // about it. A roll spent under the floor used to buy a micro-ignition; now it buys nothing at
+      // all AND burns 1.1-3.4 s of `boostCool`, so the driver is silent through the window it just
+      // paid for. Measured over eight seeded 90 s races, seven opponents each: rolls lost below the
+      // floor went 16 -> 115 and the field's share of the race spent boosting fell 3.5 % relative
+      // (la .2370 -> .2327 / .2293 -> .2189 / .2161 -> .2057 / .2652 -> .2461). Short-circuiting
+      // matters: `rng.bool()` must not be CALLED while unarmed, because consuming the roll is the
+      // whole defect — and leaving the roll unspent keeps the RNG stream in step with the pristine
+      // build. `armed`, not `ready`: `active` is already excluded by `!wantBoost` above, and the
+      // 0.25 s relight lockout provably never binds a driver (0 rolls lost to it in twelve
+      // measured races), so `ready` would only add a term that never fires.
+      if (!inFrame && this.nitro.armed && speed > p.topSpeed * 0.42 && b.drift < 0.45 && this.offRec < 0.2
         && this.rng.bool(clamp(desire, 0, 1) * dt * 3.4)) {
         wantBoost = true;
         // …and the cooldown is short enough that the TANK ECONOMY is what limits them rather than
@@ -2543,7 +2555,7 @@ export class Race {
     }
     // WHO IS DRIVING WHAT. Round 3 dealt the skill ladder out on grid index, which put its two
     // best drivers (0.91 and 0.96) in the tuners — the quickest thing round a street circuit —
-    // and left the lifted truck with a mid-field one. Ability compounded: HAN finished last in
+    // and left the lifted truck with a mid-field one. Ability compounded: IKE finished last in
     // every race, 822 m adrift at the LA flag, and never changed places with anybody all race.
     //
     // A race director casts the other way round. The heavy, low-grip cars get the BEST drivers and

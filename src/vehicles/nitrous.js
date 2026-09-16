@@ -733,7 +733,82 @@ export function getNitro(id) {
 
 // ---------------------------------------------------------------------------------------------
 // State machine
+//
+// THE HELD BUTTON. Reported as "if you run out of NITRO but keep holding shift it flashes NITRO
+// repeatedly". It did, at 13-15 Hz, for as long as the button was down, and it was not only the
+// banner: every cycle re-ran the whole ignition beat — audio.nitroStart(), jet.ignite(),
+// effects.addShake(fx.shake), hud.message('NITRO!') and, on the way out, effects.backfire().
+// Measured on the shipped build over one 20 s hold: 270 / 254 / 257 / 254 of each, per car.
+//
+// The old rule was a single gate, `charge > 0.02 && tanks > 0 && moving`, asked every frame with
+// no memory of whether the button had ever been released. So: a boost drains to the gate and stops
+// with `want` still true; the very next frame takes the else branch and REFILLS; three or four
+// refill frames later charge is back over 0.02, the gate reopens, `!active` is still true, and it
+// re-fires. Per-frame drain at 1/60 s is 0.00926 / 0.00490 / 0.00362 / 0.00725 against a refill of
+// 0.00310 / 0.00170 / 0.00140 / 0.00230, so 2.6-3.2 refill frames pay for the one drain frame and
+// the cycle is a stable 4-frame limit cycle straddling 0.02 — it never terminates and it never
+// produces thrust: `ramp` reached exactly 0 inside every cycle.
+//
+// It also did NOT, as first traced, spend a tank per re-arm. `if (this.charge <= 0)` below could
+// never be reached: crossing from >0.02 to <=0 in one step needs dt > 0.02*duration/drain =
+// 0.036 / 0.068 / 0.092 / 0.046 s, and main.js clamps dt to 0.05. `tanks` has never decremented in
+// normal play — but at a sustained 20 fps it DID (measured: the tuner reached tanks 0 in 2.8 s of
+// held button, the supercar in 3.3 s), which is a frame-rate lottery on the economy rather than an
+// economy. That decrement is removed below; see the note at the drain.
+//
+// Three constants replace the one gate. Do not fold them back into a single number: STARTING a
+// boost and CONTINUING one are different questions and the hysteresis between them is the trick.
 // ---------------------------------------------------------------------------------------------
+
+// ── THE PRICE OF LIGHTING ONE ────────────────────────────────────────────────────────────────
+// `charge > 0.02` also permitted LIGHTING a boost on 2 % of a tank: two frames at peak ramp 0.0016
+// (SUV) or 0.0161 (muscle) — no thrust any instrument can see — while the shell ran the full
+// ignition beat for it. ARM is a TANK FRACTION, so it is per-class in SECONDS for free, and it is
+// sized off the classes' own spool times so that the shortest boost it permits still reaches full
+// authority:
+//     minimum boost = (ARM - EMPTY) * duration = 0.414 / 0.782 / 1.058 / 0.529 s
+//     spool to full (`ramp`)                   = 0.130 / 0.520 / 0.780 / 0.080 s
+// 1/6 was considered and rejected arithmetically: 1/6 of an SUV tank is 0.677 s usable against a
+// 0.78 s spool, so its shortest boost could never reach ramp 1.0 — the exact defect ARM removes.
+export const NITRO_ARM = 0.25;
+
+// Minimum gap between two ignitions. Armed on `justFired` ONLY — never on a release, never on the
+// AI's corner lift (race.js), never on losing `moving`, never on running dry; each of those would
+// punish a driver for doing the right thing. It exists because ARM caps a HOLDING player but not a
+// MASHING one: alternating frames at 30 Hz measured 233 / 300 / 300 / 250 ignitions in 10 s on the
+// shipped build. 0.25 s > the 0.20 s at which audio.js schedules the ignition bang into the future,
+// so two bangs are never in flight at once, and it hard-caps the beat at 4 Hz under any input
+// pattern or frame rate. It cannot bind the AI, whose re-fire needs a fresh desire roll gated by
+// `boostCool` >= 1.1 * 0.7 * 0.55 = 0.42 s — measured, not assumed: over twelve 90 s full-pace
+// races (two cities x four cars, this build and the pre-fix build) the seven opponents lost
+// exactly ZERO desire rolls to this lockout. That headroom is only 0.42 - 0.25 = 0.17 s wide, and
+// it is why the obvious next knob is dangerous; see below.
+export const NITRO_RELIGHT = 0.25;
+
+// WHAT THE FLOOR AND THE LOCKOUT STILL DO NOT COVER — measured, and handed on rather than fixed.
+// A player alternating 4 frames on / 4 off for 10 s still runs the full ignition beat 37 / 37 / 37
+// / 36 times (tuner / muscle / suv / supercar): 3.7 Hz, which is the 4 Hz relight cap and nothing
+// else. NITRO_ARM never binds a masher, because a 4-frame burn costs under 2.5 % of a tank and the
+// run ends at charge 1.000 / 0.999 / 0.997 / 0.991 — the floor is never even approached. Two of
+// those cars produce thrust no instrument can see while doing it (mean peak ramp per ignition
+// 0.534 / 0.066 / 0.021 / 0.679), which is exactly the worthless ignition ARM exists to prevent.
+// It is ~2.3x quieter than the pre-fix build (84 / 75 / 75 / 87 ignitions) but it is reachable.
+//
+// NOT fixed here, deliberately, because every cheap fix costs something this round must not spend:
+// raising NITRO_RELIGHT to ~0.6 s would cap the beat at 1.7 Hz but crosses the AI's 0.42 s minimum
+// `boostCool` and would start binding the field on the same day race.js stopped throwing its rolls
+// away; a minimum committed spend on ignition would make ARM bite but breaks "a normal boost is
+// bit-identical" and moves every stored ramp-integral and refill figure; a minimum burn DURATION
+// would hold a boost through race.js's corner lift, which is the barrier-hit failure that file
+// spent two rounds fixing. This belongs with the tank-economy round that already owes this file a
+// decision on `tanks`. The refusal-reason work below did take the false half of the noise out of
+// it: the same 10 s mash printed 46-49 banners before and prints 37 now, all of them true.
+
+// The level a RUNNING boost cuts out at. UNCHANGED from the shipped 0.02, and it must stay
+// unchanged: the tuner's `nitrous-long` capture — the tightest in the project — ends at charge
+// 0.167, and the functest hold ends at ~0.35. Raising the SUSTAIN floor blanks the first and can
+// cut the second. ARM gates STARTING only.
+const NITRO_EMPTY = 0.02;
 
 export class Nitrous {
   constructor(spec) {
@@ -750,6 +825,32 @@ export class Nitrous {
     this.t = 0;
     this.justFired = false;
     this.justEnded = false;
+    // THE LATCH. `_spent` true means "this hold has already had its ignition"; only releasing the
+    // button (or a boost pad) clears it. `_wantPrev` is the button's previous LEVEL and exists
+    // only to date-stamp a genuine press for the refusal cue.
+    //
+    // Both MUST initialise false here AND in reset(). `__GAME.step(70, { nitro: true })` straight
+    // after load() is a supported harness call with no released frame before it, and it has to
+    // fire. The nasty part is that a latch that started life spent would still ship green through
+    // every capture in the project, because all three nitrous scenarios prefix the boost with an
+    // 80-120 frame lead-in that writes nitro:false and clears it — only direct step() calls would
+    // go dark. functest asserts this case specifically.
+    this._spent = false;
+    this._wantPrev = false;
+    this._relight = 0;         // s remaining on the post-ignition relight lockout
+    this._dry = false;         // ran below ARM; waiting to climb back over it
+    this.justReady = false;    // one-frame edge: the bottle is worth pressing again
+    this.refused = false;      // one-frame edge: a genuine PRESS was denied
+    // WHY THE EDGES CARRY A REASON. main.js cannot work either of these out from outside, because
+    // the charge it reads has already had this frame's refill added to it: at a genuine dry-out it
+    // reads 0.022 (0.0189 burnt + 0.0031 refilled), not 0. So `justEnded && !armed` — the gate that
+    // used to print NITRO EMPTY — fired on every release below NITRO_ARM as well, i.e. on a bar
+    // with a fifth of a tank still visibly in it, about once per boost. The end reason has to be
+    // read HERE, before the refill, and the refusal reason has to distinguish "the bottle is low"
+    // from "you pressed again inside the 0.25 s relight lockout" — those get different answers on
+    // screen, and answering the second one with a word about the bottle is a lie the gauge exposes.
+    this.endedDry = false;     // one-frame edge: the boost that just ended ran the bottle out
+    this.refusedReason = '';   // '' | 'stalled' | 'tanks' | 'charge' | 'relight' | 'other'
   }
 
   /** Thrust includes the ignition overshoot so the punch is felt, not just seen. */
@@ -761,19 +862,86 @@ export class Nitrous {
   /** @param want boolean — the player is holding the nitro button */
   update(dt, want, { moving = true } = {}) {
     this.justFired = false; this.justEnded = false;
+    this.justReady = false; this.refused = false;
+    this.endedDry = false; this.refusedReason = '';
     const c = this.cfg;
-    const canFire = this.charge > 0.02 && this.tanks > 0 && moving;
+    if (this._relight > 0) this._relight = Math.max(0, this._relight - dt);
 
-    if (want && canFire) {
-      if (!this.active) { this.active = true; this.justFired = true; this.t = 0; this.surge = 1; }
+    // ONE IGNITION PER HOLD. `want` is a level, and the state that matters is derived from it
+    // here rather than from Input.pressed('nitro') — that would be the obvious-looking mistake:
+    // input.js returns from its scripted branch before `this.keys` is populated, so pressed() is
+    // always false under the harness (every nitrous capture and every functest nitrous check would
+    // go dark at once), and it is keyboard-only besides. Deriving it here also means the seven AI
+    // drivers get the same rule for free.
+    //
+    // WHY `_spent` AND NOT A PLAIN RISING EDGE ON `want`. A rising edge was tried first and is
+    // wrong in a way that only shows up on the car: it is consumed by a press the gate REFUSES.
+    // Holding the button from the grid — where `moving` is false because the car is stationary —
+    // burned the edge on frame 0, and the boost then never fired however fast the car went. That
+    // is not a corner case: `__GAME.step(70, { nitro: true })` straight after load() is exactly
+    // that shape and it measured ramp 0.000 on all four cars. So the latch is consumed by an
+    // IGNITION, not by a press: a hold that has not yet been answered stays live and fires the
+    // moment the gate opens, and a hold that has already had its boost is dead until released.
+    // The reported bug is the second half of that sentence.
+    const rising = want && !this._wantPrev;
+    this._wantPrev = want;
+    if (!want) this._spent = false;      // releasing the button is the only thing that re-arms it
+
+    const fuel = this.charge > NITRO_EMPTY && this.tanks > 0 && moving;      // enough to KEEP burning
+    const arm = this.charge >= NITRO_ARM && this.tanks > 0 && moving         // enough to LIGHT one
+      && this._relight <= 0;
+
+    // THE TERNARY IS LOAD-BEARING. A running boost is judged by `fuel`, which is the shipped 0.02
+    // exit, so boost length, peak ramp, the ramp and thrust integrals, the speed gained and the
+    // charge left at the end do not move by one bit. Only STARTING is judged by `arm`.
+    if (want && (this.active ? fuel : (!this._spent && arm))) {
+      if (!this.active) {
+        this.active = true; this.justFired = true; this.t = 0; this.surge = 1;
+        this._relight = NITRO_RELIGHT; this._dry = false; this._spent = true;
+      }
       this.charge -= dt * c.drain / c.duration;
-      if (this.charge <= 0) { this.charge = 0; this.tanks = Math.max(0, this.tanks - 1); this.active = false; this.justEnded = true; }
+      // TANK ECONOMY: DELIBERATELY DORMANT. This branch used to also read
+      //   this.tanks = Math.max(0, this.tanks - 1);
+      // which was unreachable above ~28 fps and a lottery below it (see the header). Waking the
+      // economy properly is a balance round with its own screenshots — it would break "repeated
+      // taps are identical", and it would render hud.js's tankFlash/spendIdx art for the first
+      // time in the project's history inside a bug fix. So the decrement is removed rather than
+      // left as frame-rate-dependent dead code: `tanks` is now deterministically 3, and functest
+      // pins that in both directions so nobody switches the economy on by accident.
+      // Below ~28 fps a single step can take the tank straight past the 0.02 sustain floor to 0.
+      // That exit is a dry-out like any other and has to say so, or the banner disappears at
+      // exactly the frame rate where the player most needs to be told what happened.
+      if (this.charge <= 0) { this.charge = 0; this.active = false; this.justEnded = true; this.endedDry = true; }
     } else {
-      if (this.active) this.justEnded = true;
+      if (rising && !this.active) {
+        // A real press, denied — main.js answers it, and it needs to know WHICH refusal this was.
+        // The enumeration is closed and ordered: a rising edge always has `_spent` false (the
+        // released frame that made it an edge cleared the latch two lines up), so the only ways to
+        // land here are the four terms of `arm`. CHARGE is tested before RELIGHT because charge is
+        // the condition that persists — the lockout is gone in 0.25 s and is not worth a word.
+        // 'other' is unreachable today and is kept as a default so a future gate cannot silently
+        // inherit somebody else's reason string.
+        this.refused = true;
+        this.refusedReason = !moving ? 'stalled'
+          : this.tanks <= 0 ? 'tanks'
+            : this.charge < NITRO_ARM ? 'charge'
+              : this._relight > 0 ? 'relight' : 'other';
+      }
+      if (this.active) {
+        this.justEnded = true;
+        // PRE-REFILL, and deliberately NOT `!fuel`. `fuel` is also false when `moving` is false, and
+        // a boost cut by a crash or a stop ends that way with 0.72-0.89 of a tank still in it —
+        // `!fuel` there would print NITRO EMPTY over a three-quarters-full bar, which is the defect
+        // this flag exists to remove, rebuilt in a new place.
+        this.endedDry = this.charge <= NITRO_EMPTY;
+        if (this.charge < NITRO_ARM) this._dry = true;
+      }
       this.active = false;
       if (this.tanks > 0 || this.charge < 1) {
         this.charge = Math.min(1, this.charge + dt * c.refill * 0.30);
       }
+      // Exactly ONE "the bottle is back" edge per dry cycle — never per frame, never per press.
+      if (this._dry && this.charge >= NITRO_ARM && this.tanks > 0) { this._dry = false; this.justReady = true; }
     }
 
     // Spool is linear; the CURVE is what makes the classes feel different.
@@ -795,10 +963,53 @@ export class Nitrous {
     return this.ramp;
   }
 
-  addTank() { this.tanks = Math.min(3, this.tanks + 1); this.charge = 1; }
+  /** Is there enough in the bottle to LIGHT one? What the HUD should colour the bar against. */
+  get armed() { return this.charge >= NITRO_ARM && this.tanks > 0; }
+  /** Armed, out of the relight lockout, and not already burning: a press right now would fire. */
+  get ready() { return this.armed && this._relight <= 0 && !this.active; }
+  /**
+   * The button's level as this piece last saw it. `held && ready` is the HUD's RELEASE case, and it
+   * is exact rather than approximate: `ready` is `armed && _relight <= 0 && !active`, so it is
+   * false while a boost burns, false through the 0.25 s lockout and false below the arming floor.
+   * Button DOWN and a press that would nevertheless fire can therefore mean only one thing — the
+   * latch is spent, and this hold has already had the one ignition it is owed. Drawn as RELEASE,
+   * which is the instruction rather than the diagnosis.
+   *
+   * hud.js drives the badge off that rather than off `held && armed && !active` (the looser form
+   * this note used to suggest): the loose form is also true through the 15 frames of the relight
+   * lockout, where the answer is NOT "release" — the button is about to work on its own.
+   */
+  get held() { return this._wantPrev; }
+
+  // A pad is a granted resource the player drove over, so it re-arms a SPENT held button as well
+  // as filling the bottle: running dry with the button still down and then taking a pad gives
+  // exactly one ignition and one full boost. Without the re-arm it would give a full bar and a
+  // dead button, which is the same confusion in a new costume. It cannot become a re-entry point
+  // for the strobe — the latch is consumed by that single ignition, and both callers (main.js,
+  // race.js) dedupe a pad to one grant per pass.
+  //
+  // It does NOT re-arm a boost that is still burning. There the granted tank is already being
+  // spent — the pad's reward is that the boost runs on from a full bar — and clearing the latch
+  // would buy a second, unasked-for ignition later, once refill carried the bar back over
+  // NITRO_ARM. Measured before this guard: an SUV that crossed a pad 4.3 s into its boost re-lit
+  // on its own 8 s after that boost ended, with the button never released.
+  addTank() {
+    this.tanks = Math.min(3, this.tanks + 1);
+    this.charge = 1;
+    if (!this.active) { this._spent = false; this._dry = false; }
+  }
+
+  // Reached by startRace(), by the harness `load()` and by an AI respawn. It already failed to
+  // clear justFired/justEnded/t; the latch MUST be cleared here too, or a car that swapped city or
+  // class mid-hold would come back with the button still latched and its first boost would not
+  // fire.
   reset() {
     this.charge = 1; this.tanks = 3; this.active = false;
     this.ramp = 0; this.flame = 0; this.surge = 0; this._spool = 0;
+    this._spent = false; this._wantPrev = false; this._relight = 0; this._dry = false;
+    this.justFired = false; this.justEnded = false;
+    this.justReady = false; this.refused = false; this.t = 0;
+    this.endedDry = false; this.refusedReason = '';
   }
 }
 

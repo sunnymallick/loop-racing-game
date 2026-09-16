@@ -1212,7 +1212,7 @@ export class Engine {
  *   NYC    p95 23.6 → 13.6 ms   worst 116.7 → 20.0 ms   frames >20 ms 5.9% → 0.0%
  *
  * Doing it at load costs ~10–30 ms once, on a screen that is already loading, and it makes every
- * later query — the crash camera's sightline probe, WorldDamage, BodyDamage — cheap and, more
+ * later query — the crash camera's sightline probe — cheap and, more
  * importantly, *evenly priced*. A mean frame rate hides this entirely; it is all tail.
  */
 export function prewarmSceneQueries(root) {

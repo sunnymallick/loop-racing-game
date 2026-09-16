@@ -702,6 +702,42 @@ function label(ctx, text, x, y, size, color = LABEL, o = {}) {
   });
 }
 
+/**
+ * THE NITRO BADGE — four words, and the reason this function is exported.
+ *
+ * The strip used to read `active ? 'FIRING' : 'CHARGE'`, which left one state on screen with no
+ * word for it at all, and it is the state a player actually reaches: nitrous fires once per HOLD
+ * (vehicles/nitrous.js, `_spent`), so after a boost ends with the button still down the bottle
+ * refills to FULL and the button does nothing until it is released. Measured on a 15 s hold, all
+ * four classes: {charge 1.000, armed true, ready true, held true, active false} — a 100 % cyan bar,
+ * three lit tanks, the badge reading CHARGE, and no plume, banner or click of any kind for the last
+ * 8-12 s. The same dead state is reached faster and worse by a crash: a boost cut by dropping below
+ * 1.5 m/s while the button is held ends at 0.72-0.89 of a tank and is equally silent.
+ *
+ * `held && ready` is that state and nothing else. `ready` is `armed && _relight <= 0 && !active`,
+ * so it is false while a boost burns, false through the 0.25 s relight lockout and false below the
+ * arming floor; if the button is DOWN and a press would nevertheless fire, the only thing left that
+ * can be stopping it is the spent latch. A hold that has NOT yet had its ignition can never show
+ * RELEASE, because the latch is consumed by the ignition rather than by the press — such a hold
+ * fires the instant the gate opens.
+ *
+ * Order matters: the branches are evaluated so that exactly one can be true. The relight lockout
+ * deliberately falls through to READY rather than earning a fifth word — a word that lives for 15
+ * frames is a strobe, which is the class of bug this whole change set exists to remove.
+ *
+ * Exported (and pure) so tools/functest.mjs can assert the state machine's words without reading
+ * pixels. The pixels are checked by screenshot; see the `nitroCap` key note in `_drawNitro`, which
+ * is where a badge that derives correctly can still draw the wrong word for the rest of the race.
+ */
+export function nitroBadge(s) {
+  const arm = clamp(s.nitroArm ?? 0.25, 0, 1);
+  const armed = s.nitroArmed ?? ((s.nitroCharge ?? 0) >= arm);
+  if (s.nitroActive) return 'FIRING';
+  if (!armed) return 'CHARGE';
+  if (s.nitroHeld && s.nitroReady) return 'RELEASE';
+  return 'READY';
+}
+
 export class HUD {
   constructor(canvasEl) {
     this.canvas = canvasEl;
@@ -1123,7 +1159,7 @@ export class HUD {
      *
      * This is the half of the round-7 bug that survived. The badge was fixed to name its holder,
      * but YOUR RACE went on measuring the player against the record that stood COMING IN — so
-     * miami read "8TH CLASSIFIED", "NEW COURSE RECORD  LETTY  02:01:68", and a green "UNDER IT BY
+     * miami read "8TH CLASSIFIED", "NEW COURSE RECORD  NOVA  02:01:68", and a green "UNDER IT BY
      * 01.14" all at once. Every number was true and the screen still said two things: a green
      * delta is an achievement claim, and it was being made under a badge that had just given the
      * record to somebody else. A superseded target is not a target.
@@ -1181,8 +1217,14 @@ export class HUD {
    * @param s {
    *   position, totalRacers, raceTime, lapTime, lap, laps, standings:[{name,you}],
    *   mph, rpm, redline, gear, nitroCharge, nitroTanks, nitroActive, drift, driftScore,
-   *   cityName, record, countdown, boostStrength, state
+   *   cityName, record, countdown, boostStrength, state,
+   *   nitroArm, nitroArmed, nitroReady, nitroHeld
    * }
+   *
+   * The four nitro state keys are the strip's, not decoration. `nitroArm` is the fraction of the
+   * bar below which a press is REFUSED — it positions the arming mark and breaks the fill's value
+   * across it — and `nitroArmed / nitroReady / nitroHeld` are what `nitroBadge()` needs to reach
+   * RELEASE, the only cue for a spent latch under a held button. See the note on nitroBadge.
    */
   /**
    * Integrate HUD state on the simulation clock. main.js calls this from Game.update() so the
@@ -2384,6 +2426,13 @@ export class HUD {
   _drawNitro(ctx, s, x, y, w, h) {
     const active = s.nitroActive;
     const tanks = s.nitroTanks ?? 0;
+    // The arming floor, as a fraction of the bar. A bar that shows a quantity teaches that any
+    // quantity is spendable, and below this one a press is REFUSED — so the mark is drawn on the
+    // channel and the fill changes value across it. That single line is what makes CHARGE a
+    // statement about a visible boundary instead of an unexplained word, and it is why a release
+    // below the mark no longer needs a banner (main.js no longer prints one).
+    const arm = clamp(s.nitroArm ?? 0.25, 0, 1);
+    const badge = nitroBadge(s);
     const pulse = 0.5 + 0.5 * Math.sin(this.beat * 12);
     const lx = (yy) => x + (h - (yy - y)) * SKEW;
 
@@ -2427,7 +2476,7 @@ export class HUD {
     }
 
     this._patch(ctx, 'nitroFace', x - 24, y - 24, w + h * SKEW + 48, h + 48,
-      `${active}|${tanks}|${s.gear}|${spendIdx}|${this.tankFlash > 0.02 ? Math.round(this.tankFlash * 12) : 0}|${x}|${y}|${w}`, (c) => {
+      `${active}|${tanks}|${s.gear}|${spendIdx}|${this.tankFlash > 0.02 ? Math.round(this.tankFlash * 12) : 0}|${arm}|${x}|${y}|${w}`, (c) => {
         // gear chip — its own inset parallelogram on the leading edge of the strip
         platePath(c, gx, gy, gw, gh, SKEW);
         c.fillStyle = 'rgba(0,0,0,0.5)'; c.fill();
@@ -2472,6 +2521,15 @@ export class HUD {
         // measured at its own y so the shear lines up.
         platePath(c, bx, by, bw, bh, SKEW);
         c.fillStyle = 'rgba(0,0,0,0.55)'; c.fill();
+        // …and the unspendable head of the channel is cut darker still, so the zone reads even at
+        // charge 0, where there is no fill left to change colour. The fill's own split (below) does
+        // the same job whenever there is something in the bottle; this is the empty case.
+        c.save();
+        platePath(c, bx + 1.5, by + 1.5, bw - 3, bh - 3, SKEW);
+        c.clip();
+        platePath(c, bx, by, bw * arm, bh, SKEW);
+        c.fillStyle = 'rgba(0,0,0,0.42)'; c.fill();
+        c.restore();
         c.save();
         c.strokeStyle = 'rgba(150,190,215,0.16)'; c.lineWidth = 1;
         for (let i = 1; i < 6; i++) {
@@ -2483,21 +2541,43 @@ export class HUD {
         c.restore();
       });
 
-    // The caption pulses while firing (live layer) and is fixed art otherwise (cached patch); either
-    // way its drop shadow is a blurred op and stays off the backbuffer.
+    // The caption pulses while firing or asking for a RELEASE (quantised sprite) and is fixed art
+    // otherwise (cached patch); either way its drop shadow is a blurred op and stays off the
+    // backbuffer.
+    //
+    // THE WORD IS IN THE CACHE KEY, AND IT HAS TO BE. Both keys used to be `${hb}|${w}|${lx(hb)}`
+    // — pure layout, nothing state-dependent — which was sound while there was one word per branch
+    // and the branch picked the patch id. With four words it is a trap: the patch would bake
+    // whichever word it saw first and blit that for the rest of the race, and the failure would
+    // look like the badge simply not working while every derivation test stayed green. Verify this
+    // one with a screenshot, not with a unit test.
+    //
+    // The two ids are still shared on purpose. FIRING and RELEASE cannot co-occur (`ready` is false
+    // while a boost burns), so a differing key re-bakes into the same canvas rather than leaking a
+    // second one, and the badge in the key keeps the two from ever colliding at the same pulse step.
     const capW = 70, capB = [lx(hb) + w - GR.PAD - capW - 6, hb - 16, capW + 12, 24];
-    const paintCap = (c, alpha) => label(c, active ? 'FIRING' : 'CHARGE', lx(hb) + w - GR.PAD, hb, 9,
-      active ? `rgba(255,232,178,${alpha})` : 'rgba(160,190,212,0.85)',
+    // Colour is keyed off `badge` and never off a second expression: two expressions is how a word
+    // and its colour end up disagreeing. RELEASE takes a warning amber — it is the only badge that
+    // is an instruction rather than a status. (RELEASE measures 58.7 px at size 9 / tracking 0.24
+    // in the geometric face, against capW 70, so the cap box does not grow.)
+    const capInk = (alpha) => (badge === 'FIRING' ? `rgba(255,232,178,${alpha})`
+      : badge === 'RELEASE' ? `rgba(255,190,90,${alpha})`
+        : badge === 'READY' ? 'rgba(57,215,242,0.9)' : 'rgba(160,190,212,0.85)');
+    const paintCap = (c, alpha) => label(c, badge, lx(hb) + w - GR.PAD, hb, 9, capInk(alpha),
       { align: 'right', tracking: 0.24 });
-    if (active) {
+    if (active || badge === 'RELEASE') {
       const cb = Math.round(pulse * (PULSE_STEPS - 1));
       const ca = 0.6 + 0.4 * (cb / (PULSE_STEPS - 1));
-      this._patch(ctx, `nitroCap${cb}`, ...capB, `${hb}|${w}|${lx(hb)}`, (c) => paintCap(c, ca));
+      this._patch(ctx, `nitroCap${cb}`, ...capB, `${badge}|${hb}|${w}|${lx(hb)}`, (c) => paintCap(c, ca));
     } else {
-      this._patch(ctx, 'nitroCap', ...capB, `${hb}|${w}|${lx(hb)}`, (c) => paintCap(c, 1));
+      this._patch(ctx, 'nitroCap', ...capB, `${badge}|${hb}|${w}|${lx(hb)}`, (c) => paintCap(c, 1));
     }
 
     // charge bar — drains while boosting, creeps back afterwards
+    // `armPx` is quantised to device pixels for the same reason `fpx` is: it goes in two cache
+    // keys, and a retune of NITRO_ARM must invalidate them while nothing else does.
+    const armPx = Math.round(bw * arm * this._res);
+    const ax = bx + bw * arm;
     const fpx = Math.round((bw - 3) * clamp(this.charge, 0, 1) * this._res);
     const fw = fpx / this._res;
     if (fw > 1.5) {
@@ -2505,23 +2585,40 @@ export class HUD {
       // still repaints, but every frame it is holding, refilling slowly or sitting full is a blit.
       const BP = 22;
       this._patch(ctx, 'nitroFill', bx - BP, by - BP, bw + bh * SKEW + BP * 2, bh + BP * 2,
-        `${fpx}|${active}|${bx}|${by}|${bw}|${bh}`, (c) => {
+        `${fpx}|${active}|${armPx}|${bx}|${by}|${bw}|${bh}`, (c) => {
         c.save();
         platePath(c, bx + 1.5, by + 1.5, bw - 3, bh - 3, SKEW);
         c.clip();
         platePath(c, bx + 1.5, by + 1.5, fw, bh - 3, SKEW);
+        // The gradient runs bx..bx+bw in DESIGN space while the fill is clipped to `fw`, so the
+        // break sits at the true arm fraction whatever the bar's length happens to be.
         const g = c.createLinearGradient(bx, 0, bx + bw, 0);
-        g.addColorStop(0, active ? '#fff4cf' : '#2fd0ff');
-        g.addColorStop(1, active ? ORANGE : '#0d7fae');
+        if (active) {
+          // A RUNNING boost legitimately burns below the mark, all the way down to the 0.02 sustain
+          // floor — `arm` gates STARTING only — so the firing fill is one colour and is unchanged.
+          g.addColorStop(0, '#fff4cf');
+          g.addColorStop(1, ORANGE);
+        } else {
+          // Idle, the bar is cut in two at the mark: same hue, half the light below it. Dim segment
+          // = fuel that is in the bottle and cannot start a boost; bright segment = spendable.
+          g.addColorStop(0, '#14506b');
+          g.addColorStop(Math.max(0, arm - 0.001), '#1c6a8c');
+          g.addColorStop(arm, '#2fd0ff');
+          g.addColorStop(1, '#0d7fae');
+        }
         c.fillStyle = g;
         c.shadowBlur = active ? 16 : 7; c.shadowColor = active ? ORANGE : CYAN;
         c.fill();
         c.restore();
       });
     }
-    // notches and bezel are cut over the fill, so they cannot be baked with the channel above
-    this._patch(ctx, 'nitroMarks', bx - 5, by - 5, bw + bh * SKEW + 10, bh + 10,
-      `${fw > 1.5}|${bx}|${by}|${bw}`, (c) => {
+    // Notches, the ARMING MARK and the bezel are cut over the fill, so they cannot be baked with
+    // the channel above — which is exactly why the mark goes here: at charge 1.000 the fill covers
+    // the whole channel, and that full bar with a dead button is the state the mark has to explain.
+    // The rect is padded 12 above `by` (it was 5) because the bezel pip pokes ~4.5 px over the top
+    // edge and carries a shadow; a patch that is too small clips in silence.
+    this._patch(ctx, 'nitroMarks', bx - 6, by - 12, bw + bh * SKEW + 16, bh + 20,
+      `${fw > 1.5}|${armPx}|${bx}|${by}|${bw}`, (c) => {
         if (fw > 1.5) {
           // segment notches, cut on the same shear, so the bar reads as hardware
           c.save();
@@ -2535,6 +2632,27 @@ export class HUD {
           }
           c.restore();
         }
+        // THE ARMING MARK. At arm = 0.25 it lands 1.5 cells in — mid-cell, so it can never be
+        // mistaken for one of the five segment notches. Cut as a dark undercut first and a bright
+        // core over it: the undercut is what lets one line read against both the cyan idle fill and
+        // the amber firing fill without changing colour to do it.
+        c.save();
+        c.beginPath();
+        c.moveTo(ax + bh * SKEW, by); c.lineTo(ax, by + bh);
+        c.strokeStyle = 'rgba(0,0,0,0.85)'; c.lineWidth = 3; c.stroke();
+        c.beginPath();
+        c.moveTo(ax + bh * SKEW, by); c.lineTo(ax, by + bh);
+        c.strokeStyle = 'rgba(255,196,96,0.95)'; c.lineWidth = 1.2; c.stroke();
+        // …and a pip on the bezel above it, so the mark is findable when the bottle is empty and
+        // there is no fill for the line to divide.
+        const px = ax + bh * SKEW;
+        c.beginPath();
+        c.moveTo(px - 4, by - 5.5); c.lineTo(px + 4, by - 5.5); c.lineTo(px, by - 0.5);
+        c.closePath();
+        c.fillStyle = 'rgba(255,196,96,0.95)';
+        c.shadowBlur = 6; c.shadowColor = 'rgba(255,150,40,0.9)';
+        c.fill();
+        c.restore();
         platePath(c, bx, by, bw, bh, SKEW);
         c.strokeStyle = 'rgba(255,255,255,0.18)'; c.lineWidth = 1; c.stroke();
       });
@@ -3222,7 +3340,7 @@ export class HUD {
     // Absolute, not fractional. The position numeral is right-aligned at a fixed 52 px, so a
     // fractional name column collapses onto it the moment the table narrows — which is exactly
     // what happened when the stage took the panel's right third: the r2 layout put `w · 0.100` at
-    // 58 px and the classification read "1YOU", "2LETTY".
+    // 58 px and the classification read "1YOU", "2NOVA".
     const cols = { name: 74, car: Math.max(w * 0.44, 200), time: w - 16 };
     const hy = y + head - 9;
     rtext(ctx, 'DRIVER', {
@@ -3345,7 +3463,7 @@ export class HUD {
      * ONE RECORD ON THE SCREEN. The r2 card compared the player against the time that stood
      * COMING IN and labelled it "PREVIOUS RECORD" — which is a true sentence and still let miami
      * print a green "UNDER IT BY 01.14" under an eighth place and under a badge that had just
-     * given the record to LETTY. Wording cannot fix that, because the fault is not that the reader
+     * given the record to NOVA. Wording cannot fix that, because the fault is not that the reader
      * confuses the two records: it is that a GREEN DELTA IS A CLAIM, and the claim was being made
      * against a target the same screen had already retired.
      *

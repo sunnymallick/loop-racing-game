@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import {
-  ParticleSystem, SkidTrails, GroundDecals, DebrisField, BodyDamage, WorldDamage,
-  smokeAtlas, sparkAtlas, glowAtlas, debrisAtlas, decalAtlas, scuffAtlas,
+  ParticleSystem, SkidTrails, GroundDecals, DebrisField,
+  smokeAtlas, sparkAtlas, glowAtlas, debrisAtlas, decalAtlas,
 } from './particles.js';
 import { RNG, clamp, lerp } from '../core/rng.js';
 import { prewarmSceneQueries } from '../core/engine.js';
@@ -49,7 +49,7 @@ const GRADE_UNDO = 0.26;
 // aim point and the camera's crash weighting use, so the whole crash camera moves as one thing.
 // `DIST` is how far the lens ends up from the car however far sideways it has had to step: the car
 // is 4.2–4.8 m long and at 8.4 m with a 51° lens it fills about a third of the frame width, which
-// leaves the shower, the debris and the damaged corner room to read without shrinking the hero.
+// leaves the shower and the debris room to read without shrinking the hero.
 // `BACK_MIN` keeps some of that distance along the road even when the sideways step has eaten all
 // of it, so the shot never collapses to pure side-on. `LIFT` looks down into the shower rather
 // than across it. `PULL` is deliberately short of 1: a little of the chase rig's own swing
@@ -171,12 +171,6 @@ export class Effects {
     // real 3D chunks — panels, steel, glass. Sprites cannot sell a torn bumper.
     this.chunks = new DebrisField({ seed: 4141 });
     this.chunks.onBounce = (x, y, z, sp) => this._chunkBounce(x, y, z, sp);
-    // damage done TO the car: the panel is caved in, scuffed to bare metal, and the lamp on the
-    // struck corner is put out and broken (§6.6 "vehicle response")
-    this.body = new BodyDamage({ maxPatches: 8, texture: scuffAtlas(), tiles: 3 });
-    // damage done TO the world: what the car hit bends where it was hit (§6.6 "environment
-    // response"). main.js hands this the city group; see setWorld().
-    this.world = new WorldDamage({ maxHits: 10 });
 
     this.pools = [this.smoke, this.sparks, this.glow, this.debris];
     for (const s of this.pools) scene.add(s.points);
@@ -184,8 +178,6 @@ export class Effects {
     scene.add(this.decals.mesh);
     scene.add(this.wallMarks.mesh);
     scene.add(this.chunks.group);
-    scene.add(this.body.group);
-    scene.add(this.world.group);   // props knocked loose out of the city
 
     // Impact lights. Kept in the scene permanently at zero intensity so adding one mid-race never
     // triggers a shader recompile hitch; a crash just turns one on for a few frames.
@@ -272,7 +264,6 @@ export class Effects {
     this._scrapeAcc = 0;
     this._scrapeJudder = 0;
 
-    // damage state: a heavy hit leaves the car trailing smoke from the corner that took it
     this.impacts = 0;            // total impacts this run — the harness uses it to time the shot
     // Seconds since the last crash(). main.js gates its crash-cam occlusion raycast on this: shake
     // alone is not a crash signal (a backfire or a wall scrape raises it too) and a full-city
@@ -285,41 +276,27 @@ export class Effects {
     // The player's physics body, handed in by main.js every frame through update(). It is the only
     // honest tyre-slip signal this piece can see, and `tyreSmoke` gates on it (see `_slipAt`).
     this._car = null;
-    this.damage = 0;             // 0..1, bleeds off over ~10 s
-    this._damageSide = 1;
-    this._damageT = 0;
-    this._dents = 0;             // permanent deformations applied to the bodywork this run
-    this._tears = 0;             // panels peeled open this run — capped, see `_damageCorner`
-    this._damageAt = null;       // car-space centre of the last wound — the damage trail vents here
-    this._lastDentAt = null;     // world XZ of the last dent — keeps repeat hits from stacking
-    this._paint = '#c0c4cc';
+    this._paint = '#c0c4cc';     // the player car's paint, which crash debris is thrown in
   }
 
   setViewportHeight(h) { for (const s of this.pools) s.setViewportHeight(h); }
 
   /**
-   * Point the damage system at the player's car. main.js calls this whenever it builds one; pass
-   * null before disposing the old car so nothing keeps a reference to freed geometry.
+   * Tell the FX director which car the player is driving. main.js calls this whenever it builds
+   * one; all it takes from the car is its paint, which the crash debris is thrown in.
    */
   attachCar(car) {
-    this.body.attach(car || null);
-    // same reason as setWorld(): the damage system's first query into the bodywork must not be the
-    // thing that builds the car's bounding volumes, because that first query happens mid-crash
-    if (car) prewarmSceneQueries(car);
-    // a freshly built car carries no wounds, so the trail must not keep venting from the old one's
-    this._damageAt = null; this._dents = 0; this._tears = 0; this._lastDentAt = null; this.damage = 0;
     if (car?.userData?.paintMaterial) this._paint = `#${car.userData.paintMaterial.color.getHexString()}`;
   }
 
   /**
-   * Point the world-damage system at the city that is loaded. Pass null before the old city is
-   * disposed so its deformed geometry is put back and nothing holds a reference to it.
+   * Tell the FX director which city is loaded, so it re-samples the light its smoke is made of and
+   * prepares the city for the spatial queries a crash makes against it.
    */
   setWorld(group) {
-    this.world.setWorld(group || null);
     this._lightDirty = true;     // a new city means new light, and smoke is made of light
-    // FRAME PACING. Everything a crash asks of the world is a spatial query against this group —
-    // WorldDamage's crush/detach, and main.js's crash-camera sightline probe, which raycasts
+    // FRAME PACING. What a crash asks of the world is a spatial query against this group —
+    // main.js's crash-camera sightline probe, which raycasts
     // `city.group` for the 0.85 s this piece's `crashT` keeps open. three.js builds the bounding
     // volumes those queries need lazily, on the first ray, so the whole cost of a 1900-mesh city
     // landed inside the single frame of the first impact (110–156 ms) and then again, ~40 ms at a
@@ -534,279 +511,6 @@ export class Effects {
 
   /** Run `fn` after `delay` seconds of sim time — how the crash layers are choreographed. */
   _at(delay, fn) { this._queue.push({ t: delay, fn }); }
-
-  /**
-   * Cave in and scuff the corner that took the hit. Kept off the very lightest contacts (a graze
-   * that only sparks should not permanently bend the car) and rate-limited so a long grinding
-   * scrape cannot chew the bodywork to nothing.
-   */
-  _damageCorner(worldPoint, nrm, tan, s, vx = 0, vz = 0) {
-    if (s < 0.26 || this._dents >= 8) return;
-    // A car pinned against one barrier fires crash() repeatedly; without this, six dents stack on
-    // the same 40 cm of panel and punch a crater through the car.
-    const prev = this._lastDentAt;
-    let scale = 1;
-    if (prev) {
-      const d2 = (prev.x - worldPoint.x) ** 2 + (prev.z - worldPoint.z) ** 2;
-      if (d2 < 4.0) scale = 0.34 + 0.66 * clamp(Math.sqrt(d2) / 2.0, 0, 1);
-    }
-    const dir = _v2.copy(nrm).setY(0).normalize();
-    // `nrm` already points from the barrier TOWARD the car, which is the direction the panel is
-    // pushed and the direction BodyDamage wants. (Passing its negation instead selects the inner
-    // faces of the wheel well and pushes them outward, which is invisible from anywhere.)
-    //
-    // Round 3 roughly doubles the depth. At round 2's 0.11 m the panel moved, but the critic read
-    // four crash frames at 2.8x and still called the body "pristine" — a 10 cm dent on a 4.6 m car
-    // is under two pixels of silhouette at chase distance. This is an arcade crash, so it is worth
-    // more than a realistic one: the corner now folds far enough to break the highlight running
-    // down the flank, which is what actually reads.
-    const hit = this.body.dent(worldPoint, dir, tan, {
-      radius: 0.68 + s * 0.58,
-      // Round 5 deepens this again, from 0.085+0.135s to 0.13+0.21s. Round 3's note was right about
-      // the direction and short on the amount: at 0.22 m the crease still did not break the
-      // highlight running down the flank in a 1600x900 chase frame, and "the body is pristine" came
-      // back a second time. At 0.34 m on a heavy hit the shoulder line visibly steps.
-      depth: (0.13 + s * 0.21) * scale,
-      tile: s > 0.62 ? 2 : (this.rng.bool(0.6) ? 0 : 1),
-      rng: this.rng,
-    });
-    if (hit) {
-      this._dents++;
-      this._lastDentAt = { x: worldPoint.x, z: worldPoint.z };
-      // a hard fold across the crumple, and a soot bloom under it, so the damage is three marks
-      // rather than one texture stamp
-      this.body.dent(worldPoint, dir, tan, {
-        radius: 0.50 + s * 0.34, depth: 0.012, tile: 6, rng: this.rng,
-      });
-      if (s > 0.5) {
-        this.body.dent(worldPoint, dir, tan, {
-          radius: 0.86 + s * 0.60, depth: 0.004, tile: 7, rng: this.rng,
-        });
-      }
-    }
-    if (!hit) return;
-    const M = this.body.car.matrixWorld;
-    // remember WHERE on the car the wound is, in car space, so the damage trail vents from the
-    // corner that actually took it rather than from a fixed front-quarter offset
-    this._damageAt = { x: hit.x, y: clamp(hit.y, 0.25, 1.0), z: hit.z };
-    // …and put out the lamp on the corner that took it. This is the damage the chase camera can
-    // actually see: three lit taillight rings and one smashed black one.
-    //
-    // NOTE the reference point. The lamp search runs from where the BODYWORK was actually touched
-    // (`dent` snaps the physics contact onto the skin and hands that back), not from the raw
-    // contact on the barrier plane — that sits on the car's own centreline, which put every lamp
-    // out of range and was why the first cut of this never fired in a real race.
-    this._breakLampAt(hit.clone().applyMatrix4(M), dir, tan, s);
-
-    // TEAR A PANEL OPEN. The dent above changes the car's SHADING; this changes its OUTLINE, which
-    // is the half of "vehicle response" a chase-distance frame can actually show. A flap of the
-    // struck skin peels backward out of the flank, its normals swing through ~90°, and a matching
-    // painted panel is thrown off the same spot — so the piece that left and the hole it left are
-    // the same event rather than two unrelated effects. Only on a real hit: a graze that sparks must
-    // not shred the bodywork.
-    if (s > 0.46 && this._tears < 2) {
-      const tip = this.body.tear(hit.clone().applyMatrix4(M), dir, tan, {
-        radius: 0.34 + s * 0.20,
-        lift: 0.15 + s * 0.13,
-        length: 0.55 + s * 0.32,
-        rng: this.rng,
-        tile: this.rng.bool(0.5) ? 2 : 0,
-      });
-      if (tip) {
-        this._tears++;
-        const wt = tip.applyMatrix4(M);
-        // the wound now vents from the tear, which is the part of the damage that is visible
-        this._damageAt = { x: tip.x, y: clamp(tip.y, 0.25, 1.1), z: tip.z };
-        // …and the metal that used to be there leaves, in the car's own paint
-        for (let i = 0; i < 2; i++) {
-          this.chunks.emit('panel', {
-            pos: [wt.x + this.rng.range(-0.12, 0.12), wt.y + this.rng.range(0.0, 0.22), wt.z + this.rng.range(-0.12, 0.12)],
-            // most of the car's velocity, so the panel tumbles ALONGSIDE the car through the
-            // frames the crash is judged on instead of being left forty metres behind in one
-            vel: [
-              dir.x * -this.rng.range(1.4, 3.8) - tan.x * this.rng.range(1.0, 3.4) + vx * 0.72,
-              this.rng.range(2.4, 5.0),
-              dir.z * -this.rng.range(1.4, 3.8) - tan.z * this.rng.range(1.0, 3.4) + vz * 0.72,
-            ],
-            size: this.rng.range(0.22, 0.36), color: this._shardColor(this._paint),
-            spin: this.rng.range(6, 15), life: this.rng.range(6.5, 9.5),
-          });
-        }
-      }
-    }
-
-    // THE SECOND STATION. A barrier hit at 120 mph is not a point event: the car arrives at an
-    // angle, the leading corner takes it, and then the whole flank grinds down the wall as the car
-    // slides past — which is precisely what the crash captures show (drift 0.83–0.99 at the moment
-    // of impact). So the other end of the struck side is damaged too, more lightly. This is also
-    // what puts a broken lamp in the REAR three-quarter view the piece is scored from when the
-    // leading corner that took the hit was the front one.
-    if (s > 0.48 && this._dents < 8) {
-      const far = hit.clone();
-      far.z += hit.z > 0 ? -2.95 : 2.95;
-      far.y = Math.max(0.30, hit.y - 0.06);
-      const wp2 = far.applyMatrix4(M);
-      const h2 = this.body.dent(wp2, dir, tan, {
-        radius: 0.52 + s * 0.36, depth: 0.055 + s * 0.085,
-        tile: this.rng.bool(0.5) ? 0 : 8, rng: this.rng,
-      });
-      if (h2) {
-        this._dents++;
-        this._breakLampAt(h2.clone().applyMatrix4(M), dir, tan, s * 0.9);
-      }
-    }
-  }
-
-  /** Try to smash the lamp nearest a world-space contact, and dress it if one goes. */
-  _breakLampAt(wp, dir, tan, s) {
-    if (s < 0.32 || this.body.brokenLamps >= 3) return;
-    const lamp = this.body.breakLamp(wp, dir, tan, {
-      radius: 0.30 + s * 0.16, maxDist: 1.30 + s * 0.95, rng: this.rng,
-    });
-    if (lamp) this._lampBreak(lamp, dir, s);
-  }
-
-  /** Glass, a flash and a wisp of smoke at the moment a lamp lets go. */
-  _lampBreak(p, dir, s) {
-    for (let i = 0; i < Math.floor(6 + s * 10); i++) {
-      this.debris.emit({
-        pos: [p.x + this.rng.range(-0.10, 0.10), p.y + this.rng.range(-0.08, 0.08), p.z + this.rng.range(-0.10, 0.10)],
-        vel: [
-          dir.x * -this.rng.range(0.5, 3.0) + this.rng.range(-2.2, 2.2),
-          this.rng.range(0.6, 3.4),
-          dir.z * -this.rng.range(0.5, 3.0) + this.rng.range(-2.2, 2.2),
-        ],
-        life: this.rng.range(0.7, 1.6), size: this.rng.range(0.030, 0.070),
-        rot: this.rng.range(0, 6.28), rotV: this.rng.range(-20, 20), tile: this.rng.int(0, 3),
-        color: this.rng.bool(0.62) ? '#d8382c' : '#e8ecf2', alpha: 1, fadeIn: 0.01, decay: 1.1,
-      });
-    }
-    this.glow.emit({
-      pos: [p.x, p.y, p.z], vel: [0, 0.6, 0],
-      life: 0.055, size: 0.26, grow: 1.4, rot: this.rng.range(0, 6.28), tile: GLOW_SPLIT,
-      color: '#ffd0b4', alpha: 0.75, fadeIn: 0.004, decay: 2.0,
-    });
-  }
-
-  /**
-   * Bend whatever the car hit. §6.6 scores environment response and round 2 scored ~nothing for it:
-   * "the lamppost being struck stands perfectly vertical [with] a trash can... completely
-   * undisturbed. Nothing in the world moves, bends, breaks or scatters." The city's props are merged
-   * per chunk so they cannot be given rigid bodies from this piece — but they CAN be deformed, and
-   * a kerbside post that folds away from the car, sheds fragments in its own colours and leaves a
-   * gouge is the read the verdict was asking for.
-   */
-  _damageWorld(p, nrm, tan, s, vx, vz) {
-    // WHERE the world was hit. main.js resolves a barrier collision by pushing the car back until
-    // its ORIGIN lies on the collision plane, so the contact it reports is roughly on the car's own
-    // centreline — over a metre inboard of the kerb line where street furniture actually stands.
-    // Probing there found nothing in three cities out of four. The world contact is out past the
-    // car's own flank, along -normal.
-    //
-    // …and ONE probe out there is not enough. Instrumented across the four crash captures, the
-    // single point at 1.15 m found something in Los Angeles and nothing in Las Vegas, Miami or New
-    // York — three cities out of four scoring zero on a fifteen-point dimension because the prop
-    // the car was grinding past was 0.4 m further out, or half a car length ahead of the reported
-    // contact. So the probe is now a short SEARCH: three stand-offs across the width of the car's
-    // flank, and at each one the contact itself plus a step forward and back along the wall. It
-    // stops at the first thing it finds, and every step is bounded by the same bounding-sphere
-    // reject the single probe already used, so a miss costs one sphere test per candidate.
-    let loose = null, hit = null;
-    const OUT = [1.15, 0.72, 1.68];
-    const ALONG = [0, -1.1, 1.1];
-    for (let oi = 0; oi < OUT.length && !hit; oi++) {
-      for (let ai = 0; ai < ALONG.length && !hit; ai++) {
-        const d = ALONG[ai], o = OUT[oi];
-        _cp.set(p[0] - nrm.x * o + tan.x * d, p[1], p[2] - nrm.z * o + tan.z * d);
-        // First: does the thing that was hit come away whole? A bin, a cone, a hydrant, a news box,
-        // a sign or a post is fully contained by the contact cylinder and is therefore knocked out
-        // of the city and toppled. A kerb, a wall or a facade never is, and only gets crushed.
-        //
-        // Only tried on the two probes nearest the reported contact: `detach` has to walk the
-        // vertices of every candidate it does not reject to prove containment, which is an order
-        // of magnitude more work than `crush`'s bounded pass, and running it nine times inside the
-        // single frame of an impact is exactly the kind of thing that shows up as a p95 spike.
-        if (oi === 0 && ai < 2) {
-          loose = this.world.detach(_cp, nrm, {
-            radius: 0.85 + s * 0.55, rng: this.rng, speed: clamp(s, 0, 1.1),
-          });
-        }
-        hit = this.world.crush(_cp, nrm, {
-          radius: 0.90 + s * 0.60,
-          depth: 0.18 + s * 0.38,
-          lean: 0.45 + s * 1.05,
-          rng: this.rng,
-        }) || loose;
-      }
-    }
-    // …and if the grid found nothing, ASK. The grid reaches about three metres, and in New York
-    // that is not far enough: the barrier the §8 crash drives into is part of the road ribbon,
-    // which this system must never bend, and the nearest pavement furniture is 4.1 m out. One
-    // bounding-sphere sweep (see `WorldDamage.nearest`) finds it for less than the grid costs, and
-    // only runs on the frames the grid has already missed — so the city that scored zero on a
-    // fifteen-point dimension now sheds a news box or folds a parking meter like the other three.
-    if (!hit) {
-      const near = this.world.nearest(
-        _cp.set(p[0] - nrm.x * 1.2, p[1], p[2] - nrm.z * 1.2), 4.2 + s * 1.6,
-      );
-      if (near) {
-        _cp.copy(near);
-        loose = this.world.detach(_cp, nrm, {
-          radius: 0.85 + s * 0.55, rng: this.rng, speed: clamp(s, 0, 1.1),
-        });
-        hit = this.world.crush(_cp, nrm, {
-          radius: 0.90 + s * 0.60, depth: 0.18 + s * 0.38, lean: 0.45 + s * 1.05, rng: this.rng,
-        }) || loose;
-      }
-    }
-    if (!hit) return;
-    // fragments and dust belong at the thing that was struck, not at the car
-    p = [_cp.x, p[1], _cp.z];
-    // Fragments knocked off the thing that was struck, in ITS colours — the round-2 note was that
-    // "the debris is generic chips, not the prop coming apart".
-    const cols = hit.colors.length ? hit.colors : ['#b9b4a8'];
-    const n = Math.floor(3 + s * s * 9);
-    for (let i = 0; i < n; i++) {
-      this.chunks.emit(this.rng.bool(0.55) ? 'chunk' : 'panel', {
-        pos: [
-          p[0] - nrm.x * this.rng.range(0.05, 0.45) + this.rng.range(-0.25, 0.25),
-          p[1] + this.rng.range(-0.1, 0.85),
-          p[2] - nrm.z * this.rng.range(0.05, 0.45) + this.rng.range(-0.25, 0.25),
-        ],
-        vel: [
-          nrm.x * this.rng.range(1.5, 5.5) - tan.x * this.rng.range(0.5, 4.0) + vx * 0.18,
-          this.rng.range(2.0, 6.0),
-          nrm.z * this.rng.range(1.5, 5.5) - tan.z * this.rng.range(0.5, 4.0) + vz * 0.18,
-        ],
-        size: this.rng.range(0.07, 0.19), color: this.rng.pick(cols),
-        spin: this.rng.range(6, 18), life: this.rng.range(6.0, 9.0),
-      });
-    }
-    // and the pale dust that comes off concrete or painted steel when it is struck — a different
-    // colour and a different speed from the car's own dark smoke, so the two layers read apart
-    for (let i = 0; i < Math.floor(5 + s * 12); i++) {
-      const a = this.rng.range(-0.9, 0.9);
-      this.smoke.emit({
-        pos: [
-          p[0] - nrm.x * 0.15 + tan.x * a * 0.7,
-          p[1] + this.rng.range(-0.25, 0.65),
-          p[2] - nrm.z * 0.15 + tan.z * a * 0.7,
-        ],
-        vel: [
-          nrm.x * this.rng.range(1.6, 5.0) + tan.x * a * 2.2,
-          this.rng.range(0.9, 3.2),
-          nrm.z * this.rng.range(1.6, 5.0) + tan.z * a * 2.2,
-        ],
-        life: this.rng.range(0.7, 1.6), size: this.rng.range(0.18, 0.40),
-        grow: this.rng.range(2.0, 3.2),
-        rot: this.rng.range(-1.4, 1.4), rotV: this.rng.range(-2.2, 2.2), tile: this.rng.int(0, 3),
-        stretch: this.rng.range(1.0, 1.26), align: 0.52,
-        // pale dust off concrete or painted steel — its own albedo, but lit by the scene
-        color: this._smokeColor(this.rng.range(0.55, 1.05), this.rng.range(0.25, 0.85), this._dustAlbedo),
-        alpha: (0.12 + 0.14 * s) * this._pop, fadeIn: 0.01, decay: 1.5,
-      });
-    }
-  }
 
   // ---------------------------------------------------------------- events
 
@@ -1492,7 +1196,6 @@ export class Effects {
     _lp.set(pos.x + nrm.x * 0.35, pos.y + 0.1, pos.z + nrm.z * 0.35);
     this._light(_lp, '#ffb861', 3.0 + 11.0 * a, 0.10, 9, { y: 0, ease: 1.4, flick: 1 });
     this.addShake(0.018 + 0.030 * a);
-    this.damage = clamp(this.damage + a * 0.010, 0, 0.85);
   }
 
   /** Nitrous trail — heat streaks and embers left in the air behind the jet. */
@@ -1682,8 +1385,8 @@ export class Effects {
     // lamps put on the struck panel at the moment §8 captures the frame, which
     // `tools/_fx_crashlight.mjs` measures directly. Round 2 shipped that at ~10x the city key on
     // the flank and 2.8x at the car's centre, and the result was the standing verdict — the car a
-    // white ghost, the struck taxi a featureless slab, the crumple and the scuff this piece spends
-    // most of its budget on erased by the light that was meant to show them. The budget is now
+    // white ghost, the struck taxi a featureless slab, and the car's own paint and
+    // shape erased by the light that was meant to show them. The budget is now
     // ~1.2x the key on the panel: the corner is plainly the brightest bodywork in the frame and
     // plainly on fire, but it is still PAINT, and the spark streaks — which are additive and
     // self-luminous — are left as the only thing in frame that clips.
@@ -1700,7 +1403,7 @@ export class Effects {
     // Weak and close reads as "lit by the fire"; strong and close reads as "the panel is gone",
     // and round 2 was strong and close. It now stands off ~1.1 m from the contact, which puts the
     // near and far ends of the struck corner within a stop of each other instead of four — the
-    // gradient ACROSS the dent is what makes the dent visible, and a singularity flattens it.
+    // gradient ACROSS the panel is what keeps its shape readable, and a singularity flattens it.
     this._lightAt(p, nrm, 0.75, 0.85, heavy ? '#ff9c3c' : '#ffb257', 1.5 + 3.4 * big, 0.60 + 0.55 * s,
       { dist: 9 + 5 * s, hold: 0.05 + 0.05 * s, ease: 1.30, flick: 1, slot: this.CRASH_BURN });
     // POOL: the wide wash — the tarmac, the barrier face and whatever prop is standing next to the
@@ -1737,8 +1440,8 @@ export class Effects {
     // it; a shard whose base colour is already near-white comes out of the impact as flat paper.
     // Sizes are down about a third from round 2. The critic's second tell was "debris scale is
     // wrong — several shards are as large as a wheel, which reads as a preset burst rather than a
-    // car shedding trim". A car sheds trim, lens glass and 10–20 cm of torn panel edge; anything
-    // bigger has to be the ONE knocked-off part below, not eight of them.
+    // car shedding trim". A car sheds trim, lens glass and 10–20 cm of torn panel edge, and
+    // nothing thrown here is bigger than that.
     for (let i = 0; i < nChunk; i++) this._throwChunk('chunk', p, nrm, tan, vx, vz, s, {
       size: this.rng.range(0.05, 0.11),
       color: this.rng.pick(['#6f747c', '#9aa0a8', '#43464d', '#82878f']),
@@ -1757,38 +1460,6 @@ export class Effects {
       color: this.rng.bool(0.5) ? '#a63a30' : '#b4b1ad',
       out: this.rng.range(2.5, 7.0), spin: this.rng.range(8, 20),
     });
-    // THE knocked-off part. §6.6 asks for a damage state you can see; the single clearest read is a
-    // big piece of the car leaving it. One large painted panel is thrown off the struck corner with
-    // most of the car's own velocity, so it tumbles alongside the car through the frames that
-    // matter and then lands on the road behind.
-    if (s > 0.42) {
-      const bigSpin = this.rng.range(5, 12);
-      this.chunks.emit('panel', {
-        pos: [
-          p[0] + nrm.x * 0.25 - tx * this.rng.range(0.1, 0.7),
-          p[1] + this.rng.range(0.05, 0.40),
-          p[2] + nrm.z * 0.25 - tz * this.rng.range(0.1, 0.7),
-        ],
-        vel: [
-          nrm.x * this.rng.range(1.4, 3.6) - tan.x * this.rng.range(1.0, 3.5) + vx * 0.68,
-          this.rng.range(2.6, 5.4),
-          nrm.z * this.rng.range(1.4, 3.6) - tan.z * this.rng.range(1.0, 3.5) + vz * 0.68,
-        ],
-        size: this.rng.range(0.30, 0.44), color: this._shardColor(paintCol),
-        spin: bigSpin, life: this.rng.range(7.0, 10.0),
-      });
-      // …with the trim strip that was bolted to it
-      this.chunks.emit('chunk', {
-        pos: [p[0] + nrm.x * 0.2, p[1] + 0.2, p[2] + nrm.z * 0.2],
-        vel: [
-          nrm.x * this.rng.range(1, 3) - tan.x * this.rng.range(2, 5) + vx * 0.55,
-          this.rng.range(2.2, 4.6),
-          nrm.z * this.rng.range(1, 3) - tan.z * this.rng.range(2, 5) + vz * 0.55,
-        ],
-        size: this.rng.range(0.16, 0.26), color: '#9ba0a8',
-        spin: this.rng.range(9, 18), life: this.rng.range(6.0, 9.0),
-      });
-    }
     // Fine grit only. The sprite shards used to be up to 0.30 and read as flat coloured confetti at
     // full resolution — a torn panel has to be a real object that catches the key light on one
     // facet, which is what the chunk field above is for. These are the dust-sized bits.
@@ -1939,36 +1610,6 @@ export class Effects {
         color: this.rng.bool(0.45) ? this._shardColor(paintCol) : this.rng.pick(['#787d85', '#43474e', '#9ea2a9']),
         spin: this.rng.range(4, 11), life: this.rng.range(6.0, 9.0),
       });
-    }
-
-    // ---- vehicle response: the car is now damaged and shows it ----
-    // THE bodywork itself. §6.6's verdict was that "the body emerges completely unmarked", and no
-    // amount of particle work fixes that — the panel has to change. This caves the struck corner
-    // in along the impact normal with a crease running down the slide direction, and scuffs the
-    // car's own skin there to torn paint over bare metal. Both persist for the rest of the run.
-    this._damageCorner(_v1.set(p[0], p[1], p[2]), nrm, tan, s, vx, vz);
-    // …and the world takes its share of it: whatever was struck bends away and sheds its own bits.
-    if (s > 0.30) this._damageWorld(p, nrm, tan, s, vx, vz);
-    this.damage = clamp(this.damage + 0.30 + big * 0.75, 0, 1);
-    this._damageSide = Math.sign(tan.x * nz - tan.z * nx) || 1;
-    // …and it starts venting immediately from the corner that took it, rather than waiting for the
-    // trickle emitter to catch up — a car that walks away clean is the §6.6 "no damage state" tell.
-    if (s > 0.4) {
-      for (let i = 0; i < Math.floor(4 + big * 12); i++) {
-        this.smoke.emit({
-          pos: [
-            p[0] - tx * this.rng.range(0.2, 1.5) + this.rng.range(-0.3, 0.3),
-            p[1] + this.rng.range(0.1, 0.7),
-            p[2] - tz * this.rng.range(0.2, 1.5) + this.rng.range(-0.3, 0.3),
-          ],
-          vel: [vx * 0.62 + this.rng.range(-1.0, 1.0), this.rng.range(1.2, 3.4), vz * 0.62 + this.rng.range(-1.0, 1.0)],
-          life: this.rng.range(1.2, 2.4), size: this.rng.range(0.22, 0.48), grow: this.rng.range(3.0, 4.4),
-          rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.8, 1.8), tile: this.rng.int(0, 3),
-          stretch: this.rng.range(0.96, 1.18), align: 0.44,
-          color: this._smokeColor(this.rng.bool(0.6) ? 0.10 : 0.26, 0.85, this._rubberAlbedo),
-          alpha: (0.14 + 0.19 * s) * this._pop, fadeIn: 0.02, decay: 1.5,
-        });
-      }
     }
 
     // ---- camera ----
@@ -2268,8 +1909,8 @@ export class Effects {
     const across = (lat - n.lateral) * track.halfWidth;
     // HOLD THE DISTANCE, NOT THE OFFSETS. Stepping five metres across the road on top of a fixed
     // eight metres back puts the lens 9.6 m from the car, and at that range the hero is 19 % of
-    // the frame width — the damage, the torn quarter and the wheel that has been knocked out of
-    // line all stop reading, which is most of what §6.6 scores. So the along-track leg is solved
+    // the frame width — the car's spin and the shower and debris coming off it all stop
+    // reading, which is most of what §6.6 scores. So the along-track leg is solved
     // for whatever the sideways step leaves: the rig ends up the same distance from the car
     // wherever it has had to stand, just at a different angle to it. The floor keeps it from
     // collapsing to a pure side-on shot when the car is a long way off the road.
@@ -2325,87 +1966,6 @@ export class Effects {
     this.fovKick = clamp(this.fovKick + this._fovKickV * dt, -14, 14);
 
     return { offset: this._shakeOff, roll: this._shakeRot };
-  }
-
-  /**
-   * Damage state. §6.6 scores "deformation or damage state" on the vehicle, and a car that walks
-   * away from a 130 mph barrier hit looking factory-fresh is the tell. Geometry deformation lives
-   * in the vehicle piece, so what this owns is the read: the corner that took the hit trails hot
-   * grey smoke and the odd ember for several seconds, and the harder the hit the longer it lasts.
-   */
-  _damageTrail(dt, car) {
-    if (this.damage <= 0.02 || !car) return;
-    const d = this.damage;
-    const spd = Math.hypot(car.vel.x, car.vel.z);
-    this._damageT += dt;
-    // Round 5 raises the rate and the opacity together. §6.6 asks for a damage STATE, and the state
-    // has to be legible in a still taken 0.2 s after the hit as well as in motion — at 14–40
-    // puffs/s at alpha 0.14 the wound put about three visible sprites in that frame, which reads
-    // as nothing at all.
-    const every = 1 / (20 + 34 * d);
-    if (this._damageT < every) return;
-    this._damageT = 0;
-    const f = car.forward, r = car.right;
-    const side = this._damageSide;
-    // Vent from the wound. `_damageAt` is the car-space centre of the last dent, so a rear-quarter
-    // hit smokes from the rear quarter — a fixed front offset put the plume on the opposite corner
-    // from the crumple about half the time, which reads as two unrelated effects.
-    const D = this._damageAt;
-    const lx = D ? D.x : 0.62 * side, lz = D ? D.z : 1.05;
-    const ox = f.x * lz + r.x * lx;
-    const oz = f.z * lz + r.z * lx;
-    const oy = D ? D.y : 0.62;
-    this.smoke.emit({
-      pos: [car.pos.x + ox + this.rng.range(-0.2, 0.2), car.pos.y + oy + this.rng.range(0.05, 0.35), car.pos.z + oz + this.rng.range(-0.2, 0.2)],
-      vel: [
-        car.vel.x * 0.55 + this.rng.range(-0.9, 0.9),
-        this.rng.range(1.4, 3.0),
-        car.vel.z * 0.55 + this.rng.range(-0.9, 0.9),
-      ],
-      life: this.rng.range(0.9, 1.9), size: this.rng.range(0.26, 0.54) * (0.8 + 0.7 * d),
-      grow: this.rng.range(3.2, 4.8),
-      rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.4, 1.4), tile: this.rng.int(0, 3),
-      stretch: this.rng.range(0.98, 1.18), align: 0.44,
-      color: this._smokeColor(this.rng.bool(0.55) ? 0.13 : 0.32, 0.8, this._rubberAlbedo),
-      alpha: (0.22 + 0.30 * d) * this._pop, fadeIn: 0.05, decay: 1.4,
-    });
-    // A paler second layer boiling off the same wound. One value of smoke is a decal; two values
-    // rolling over each other is a plume, and the pale one is what carries the shape at distance.
-    if (d > 0.35) {
-      this.smoke.emit({
-        pos: [car.pos.x + ox + this.rng.range(-0.26, 0.26), car.pos.y + oy + this.rng.range(0.15, 0.55), car.pos.z + oz + this.rng.range(-0.26, 0.26)],
-        vel: [
-          car.vel.x * 0.48 + this.rng.range(-1.1, 1.1),
-          this.rng.range(2.0, 4.0),
-          car.vel.z * 0.48 + this.rng.range(-1.1, 1.1),
-        ],
-        life: this.rng.range(0.7, 1.5), size: this.rng.range(0.30, 0.58) * (0.8 + 0.6 * d),
-        grow: this.rng.range(2.8, 4.0),
-        rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-1.2, 1.2), tile: this.rng.int(0, 3),
-        stretch: this.rng.range(0.94, 1.12), align: 0.40,
-        color: this._smokeColor(this.rng.range(0.62, 0.92), 0.35),
-        alpha: (0.14 + 0.22 * d) * this._pop, fadeIn: 0.06, decay: 1.5,
-      });
-    }
-    // a hot glow inside the wound while the damage is fresh — the corner is still burning
-    if (d > 0.5 && this.rng.bool(0.3)) {
-      this.glow.emit({
-        pos: [car.pos.x + ox, car.pos.y + oy * 0.8 + this.rng.range(-0.1, 0.2), car.pos.z + oz],
-        vel: [car.vel.x * 0.4, this.rng.range(0.4, 1.2), car.vel.z * 0.4],
-        life: this.rng.range(0.10, 0.22), size: this.rng.range(0.18, 0.34), grow: 1.4,
-        rot: this.rng.range(0, 6.28), tile: GLOW_SOOT,
-        color: '#ff8a34', alpha: 0.30 * d, fadeIn: 0.05, decay: 1.8,
-      });
-    }
-    if (d > 0.45 && spd > 8 && this.rng.bool(0.25)) {
-      this.sparks.emit({
-        pos: [car.pos.x + ox, car.pos.y + 0.18, car.pos.z + oz],
-        vel: [-car.vel.x * 0.14 + this.rng.range(-1.5, 1.5), this.rng.range(0.4, 1.8), -car.vel.z * 0.14 + this.rng.range(-1.5, 1.5)],
-        life: this.rng.range(0.2, 0.5), size: this.rng.range(0.9, 1.6),
-        rot: 0, tile: SPARK_SHORT, stretch: 1.3, align: 1,
-        color: '#ffb457', alpha: 0.9, decay: 1.3,
-      });
-    }
   }
 
   update(dt, wind = null, car = null) {
@@ -2474,13 +2034,9 @@ export class Effects {
     // the harness runs hundreds of sim steps per render. See SkidTrails.flush.
     this.skid.flush();
     this.chunks.update(dt);
-    this.world.update(dt);       // toppling / tumbling street furniture
     this.decals.update(dt);
     this.wallMarks.update(dt);
-    this.body.sync();            // the scuff patches ride the car's world matrix
-    this._damageTrail(dt, car);
     this.crashT = Math.min(99, this.crashT + dt);
-    this.damage = Math.max(0, this.damage - dt * 0.085);
 
     // Impact lights. NOTE the clock is *sim* dt, not real dt: during hit-stop the world slows down
     // and the fireball has to slow with it, or the one lamp that sells the impact burns out while
@@ -2525,11 +2081,8 @@ export class Effects {
     this.decals.clear();
     this.wallMarks.clear();
     this.chunks.clear();
-    this.body.clear();           // un-dent the car and drop its scuff patches
-    this.world.clear();          // …un-bend whatever it hit and stand its props back up
-    this.damage = 0; this._damageT = 0; this.impacts = 0; this.crashT = 99;
-    this._scrapeJudder = 0; this._dents = 0; this._tears = 0;
-    this._lastDentAt = null; this._damageAt = null;
+    this.impacts = 0; this.crashT = 99;
+    this._scrapeJudder = 0;
     this._queue.length = 0;
     for (const sl of this.lights) { sl.l.intensity = 0; sl.dur = 0; sl.peak = 0; }
     this.shake = 0; this.shakePeak = 0; this.timeScale = 1;
@@ -2546,8 +2099,6 @@ export class Effects {
     this.decals.mesh.removeFromParent(); this.decals.dispose();
     this.wallMarks.mesh.removeFromParent(); this.wallMarks.dispose();
     this.chunks.dispose();
-    this.body.dispose();
-    this.world.dispose();
     for (const sl of this.lights) sl.l.removeFromParent();
   }
 }

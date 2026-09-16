@@ -3,13 +3,13 @@
  * started, how long it lasted, how far off it got, and the car's state going in (speed against its
  * own target, drift, boost, on a shortcut or not).
  *
- *   node tools/_race_suv.mjs --city la --who HAN [--ablate '{"band":0}']
+ *   node tools/_race_suv.mjs --city la --who IKE [--ablate '{"band":0}']
  */
 import { boot, open, load } from './harness.mjs';
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i === -1 ? d : argv[i + 1]; };
 const CITY = String(arg('city', 'la'));
-const WHO = String(arg('who', 'HAN'));
+const WHO = String(arg('who', 'IKE'));
 const SECONDS = +arg('seconds', 200);
 const ABLATE = JSON.parse(String(arg('ablate', '{"band":0}')));
 
