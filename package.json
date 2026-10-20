@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview --port 5180",
     "shot": "node tools/shot.mjs",
-    "test": "node tools/functest.mjs"
+    "test": "node tools/functest.mjs",
+    "ship": "pnpm build && rsync -az --delete dist/ sunny@nitro-circuit.sunnymallick.dev:/var/www/nitro-circuit/"
   },
   "keywords": [],
   "author": "",
