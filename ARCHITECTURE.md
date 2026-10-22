@@ -44,6 +44,7 @@ src/core/
   audio.js       Web Audio synthesis: engines, nitrous, impacts, UI   [AUDIO piece]
   input.js       keyboard/gamepad/scripted input (harness drives this)
   rng.js         seeded RNG + value noise + fbm. ALWAYS use this, never Math.random()
+  steps.js       step generators: drive() (yields frames) / runSync() (one task) — see Loading
 
 src/vehicles/
   kit.js         materials, loftBody(), wheels, lights, rounded boxes [VEHICLE-ART piece]
@@ -68,6 +69,9 @@ src/fx/
 src/ui/
   hud.js         race HUD                                             [HUD piece]
   menu.js        garage / car select                                  [MENU piece]
+  loading.js     the loading plate — own canvas + rAF loop, font.js glyphs only
+
+src/boot.js      entry: puts the plate up, then dynamic-imports main.js
 
 src/race/race.js AI opponents + race director                         [RACE piece]
 src/main.js      game shell, camera, collisions, window.__GAME harness API
@@ -113,6 +117,29 @@ generator for evenly placing props; `track.curvature(u)` is signed.
 
 **Harness API** (`window.__GAME`): `load({city,car,color})`, `step(n,input)`, `scenario(name,opts)`,
 `telemetry()`, `render()`, `setSize(w,h)`, `renderAudio(kind,seconds,carId)`.
+
+## Loading
+
+Boot, a destination change and a race start each run behind the loading plate
+(`Game.withLoading`). The heavy builds are written as **step generators** that
+`yield { p, label }` at natural boundaries — `buildCitySteps` (cities/kit.js), each city's
+`buildSteps`, `Game.citySteps` / `raceSteps` / `bootSteps`, `Engine.captureEnvironmentSteps`, the
+garage's `ensureStageSteps` / `thumbSteps`. The sync APIs (`setCity`, `startRace`, `buildCity`,
+`captureEnvironment`, …) are those generators run through `runSync`, unchanged.
+
+On a real GPU the cost is mostly shader programs, not geometry, so the plate path (`warm`) also
+runs `Engine.compileSteps` (parallel compile via `KHR_parallel_shader_compile`, polled per frame)
+and `Engine.drawSteps` (every program's first draw, fence-paced in small batches — the GPU pipeline
+build that compile cannot reach). Both must run with the scene in the exact state it will be drawn
+in (visible lights, fog, environment, target), or the real frame recompiles.
+
+- The headless harness (`?shot`) never sees the plate or the warm path: it runs every generator
+  through `runSync`, so captures are byte-identical to the single-task build.
+- `?loadlog` prints each step's duration, the bar value at its end, and its longest freeze. The `p`
+  tables (`CITY_SPLIT`, kit.js `P`, the spans in main.js) are calibrated from it — re-measure if you
+  add a heavy phase. For cold-cache numbers, salt the shader chunks per run rather than deleting the
+  system Metal cache.
+- A new heavy step belongs in a generator with a `yield` before it, not in a constructor.
 
 ## Conventions
 

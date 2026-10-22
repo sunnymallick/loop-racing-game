@@ -5,6 +5,7 @@ import { concrete, brick, skyTexture, sprite, canvas, toTexture, grain, fbmField
 import { roundedBox } from '../vehicles/kit.js';
 import { Track, boostStripTexture, curbStripeTexture, sColor, preGamma, applyGroundDetail } from './track.js';
 import { drawText, measure, textCanvas } from '../core/font.js';
+import { runSync } from '../core/steps.js';
 
 /**
  * Shared city construction kit.
@@ -5777,7 +5778,35 @@ const FURNITURE = [
  * Build a complete city from a declarative definition.
  * @returns {{ group, track, look, spawn, branches, colliders, update }}
  */
-export function buildCity(def, { renderer, night = null, quality = 'high' } = {}) {
+const P = {
+  SKY: 0.000,
+  GROUND: 0.015,
+  TRACK: 0.068,
+  DRESSING: 0.211,
+  BRANCHES: 0.212,
+  LANDMARKS: 0.324,
+  BLOCKS: 0.326,
+  VERGE: 0.634,
+  PROPS: 0.642,
+  FURNITURE: 0.647,
+  SIGNALS: 0.688,
+  WET: 0.689,
+  SKYLINE: 0.690,
+  HEROES: 0.735,
+  MERGE: 0.961,
+  LIGHTS: 0.974,
+};
+
+/** Build a city in one task. See `buildCitySteps` — this is that generator run straight through. */
+export function buildCity(def, opts) { return runSync(buildCitySteps(def, opts)); }
+
+/**
+ * Build a city as a step generator (core/steps.js), yielding `{ p, label }` at every section
+ * boundary so a loading screen can paint between them. `p` values are measured, not guessed: they
+ * are the mean cumulative share of build time at each boundary across the four cities on the real
+ * GPU, so the bar moves at roughly constant speed.
+ */
+export function* buildCitySteps(def, { renderer, night = null, quality = 'high' } = {}) {
   const rng = new RNG(def.seed ?? 1);
   const cache = new Map();                  // per-city materials; disposed with the city group
   const group = new THREE.Group();
@@ -5791,6 +5820,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     night = def.night ?? L.night ?? ((L.sky?.stars ?? 0) > 0.05 || (L.sun?.intensity ?? 2) < 1.3);
   }
 
+  yield { p: P.SKY, label: 'PAINTING THE SKY' };
   // ---- sky ----
   const skyTex = skyTexture({ size: quality === 'low' ? 512 : 1024, ...L.sky });
   const sky = new THREE.Mesh(
@@ -5846,6 +5876,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   const ambient = new THREE.AmbientLight(shadowTint, L.shadowFill ?? (night ? 0.55 : 0.78));
   group.add(ambient);
 
+  yield { p: P.GROUND, label: 'LAYING THE GROUND' };
   // ---- ground ----
   const groundMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(L.ground?.color ?? '#2c2e33'), roughness: 0.95, metalness: 0.0,
@@ -5913,6 +5944,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   // ---- fog ----
   const fog = new THREE.Fog(new THREE.Color(L.fog.color), L.fog.near, L.fog.far);
 
+  yield { p: P.TRACK, label: 'PAVING THE CIRCUIT' };
   // ---- track ----
   const track = new Track(def.track);
   const tdef = def.track;
@@ -5943,12 +5975,14 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     },
   });
   group.add(road);
+  yield { p: P.DRESSING, label: 'MARKING THE LANES' };
   const dressing = track.roadDressing({
     seed: def.seed ?? 1, wet: L.wet ?? 0,
     crossings: tdef.crossings ?? 7,
   });
   group.add(dressing);
 
+  yield { p: P.BRANCHES, label: 'OPENING THE SHORTCUTS' };
   const branchGroups = [];
   const anims = [];
   for (const b of track.branches) {
@@ -5998,6 +6032,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     group.add(arch);
   }
 
+  yield { p: P.LANDMARKS, label: 'SITING THE LANDMARKS' };
   // ---- landmarks (built first: the block generator has to know their sightlines) ----
   const landmarks = new THREE.Group();
   landmarks.name = 'landmarks';
@@ -6037,6 +6072,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     return false;
   };
 
+  yield { p: P.BLOCKS, label: 'BUILDING THE BLOCKS' };
   // ---- mid band: buildings along the route ----
   const blocks = new THREE.Group();
   blocks.name = 'blocks';
@@ -6059,6 +6095,8 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   void schemeRng;
 
   let bi = 0;
+  // how many plots `track.spaced` will hand out down both kerbs — only to pace the progress bar
+  const blockEst = Math.max(1, Math.round(2 * track.length / spacing));
   for (const side of [-1, 1]) {
     for (const s of track.spaced(spacing, {
       side, offset: bdef.offset ?? 26, jitter: bdef.jitter ?? 10,
@@ -6106,10 +6144,12 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
       b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + side * Math.PI / 2 + r.range(-0.16, 0.16);
       blocks.add(b);
       bi++;
+      if (bi % 6 === 0) yield { p: P.BLOCKS + (P.VERGE - P.BLOCKS) * Math.min(1, bi / blockEst), label: 'BUILDING THE BLOCKS' };
     }
   }
   group.add(blocks);
 
+  yield { p: P.VERGE, label: 'SCATTERING THE VERGE' };
   // ---- THE OPEN GROUND, past the modelled shoulder ----
   //
   // The run-off ends about forty metres from the centreline, and every drift capture in the set
@@ -6181,6 +6221,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     }));
   }
 
+  yield { p: P.PROPS, label: 'DRESSING THE STREETS' };
   // ---- near band: lamps, furniture, trees, signage ----
   const props = new THREE.Group();
   props.name = 'props';
@@ -6309,6 +6350,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     }
   }
 
+  yield { p: P.FURNITURE, label: 'FURNISHING THE SIDEWALKS' };
   // --- the general street-furniture mix ---
   if (pdef.furniture !== false) {
     const kinds = pdef.furnitureKinds || FURNITURE;
@@ -6487,6 +6529,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     }
   }
 
+  yield { p: P.SIGNALS, label: 'HANGING THE SIGNALS' };
   // --- traffic signals at the crossings the road dressing painted ---
   for (const [i, u] of (dressing.userData.crossings || []).entries()) {
     for (const side of [-1, 1]) {
@@ -6545,6 +6588,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
     p.userData.u = bp.u;
     props.add(p);
   }
+  yield { p: P.WET, label: 'WETTING THE ROAD' };
   // --- wet-road reflections of the shopfronts ---
   // Emissive geometry lights nothing, so a night city with a hundred glowing signs still had a
   // dead black carriageway (round 2 sampled NYC at rgb(3,5,10) right under a row of lit shops).
@@ -6585,6 +6629,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
 
   group.add(props);
 
+  yield { p: P.SKYLINE, label: 'RAISING THE SKYLINE' };
   // ---- far band ----
   const center = track.at(0).pos.clone();
   if (def.skyline !== false) {
@@ -6600,11 +6645,13 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   // `keepOwnLandmarks: true`. Running both by default would put two Hollywood signs and two
   // pyramids in the same city.
   if (kitLm) for (const o of kitLm.objects) landmarks.add(o);
+  yield { p: P.HEROES, label: 'RAISING THE LANDMARKS' };
   if (def.landmarks && (!kitLm || !kitLm.objects.length || def.keepOwnLandmarks)) {
     for (const lm of def.landmarks({ track, rng: rng.fork(99), night, THREE })) landmarks.add(lm);
   }
   group.add(landmarks);
 
+  yield { p: P.MERGE, label: 'WELDING THE WORLD' };
   // ---- collapse the static world into a handful of draw calls per chunk ----
   // Bigger chunks trade a little frustum culling for far fewer draw calls; at ~200 m the whole
   // circuit is nine cells, which keeps the frame under ~1500 draws including the shadow pass.
@@ -6612,6 +6659,7 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   mergeStatic(props, 340);
   mergeStatic(landmarks, 260);
 
+  yield { p: P.LIGHTS, label: 'WIRING THE LIGHTS' };
   // ---- point-light budget ----
   // Every lit fragment evaluates every light in the scene, so a city that scatters twenty
   // landmark floods around a 2 km lap pays for all twenty on every pixel of every frame — Vegas

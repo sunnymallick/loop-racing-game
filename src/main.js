@@ -9,11 +9,21 @@ import { buildVehicle, getVehicle, VEHICLE_IDS } from './vehicles/index.js';
 import { setBodyTint } from './vehicles/kit.js';
 import { VehicleBody, applyPose } from './vehicles/physics.js';
 import { Nitrous, NitrousJet, NITRO_ARM } from './vehicles/nitrous.js';
-import { buildCityById, getCity, CITY_IDS } from './cities/index.js';
+import { buildCityStepsById, getCity, CITY_IDS } from './cities/index.js';
 import { Race } from './race/race.js';
 import { clamp, lerp, smoothstep, RNG } from './core/rng.js';
+import { drive, runSync, span } from './core/steps.js';
+import { loading } from './ui/loading.js';
 
 const FIXED_DT = 1 / 60;
+// Where a city load's bar hands over from building geometry to compiling and capturing it.
+//
+// The bar's phase splits (this, and the spans in bootSteps / _loadCitySteps / _beginRaceSteps) are
+// measured with `?loadlog` on the real GPU, and they have to straddle two very different machines:
+// CPU steps cost the same every visit, but GPU steps cost ~30x more on a COLD shader cache (a first
+// visit: the city's compile + capture ~6.5 s against ~0.3 s warm). Each split is the mean of the
+// cold and warm shares, so neither visit has the bar crawl through one half and leap the other.
+const CITY_SPLIT = 0.68;
 
 // scratch: the point down the nitrous plume the boost camera composes around, and the corridor
 // test that keeps an overtaken opponent out of the lens during a boost (nitrous piece)
@@ -79,6 +89,7 @@ class Game {
     this.aiCars = [];
 
     this.state = 'menu';       // menu | racing | finished
+    this.loading = false;      // a build is running behind the loading plate — see withLoading()
     this.time = 0;
     this.camMode = 'chase';
     this.camPos = new THREE.Vector3();
@@ -112,13 +123,21 @@ class Game {
 
   // ---------------------------------------------------------------- loading
 
-  async setCity(id) {
+  /** Swap the city in one task — the harness's path, and every `__GAME` caller's. */
+  async setCity(id) { return runSync(this.citySteps(id)); }
+
+  /**
+   * The city swap as a step generator (core/steps.js). `warm` additionally compiles and first-draws
+   * the env capture's programs, paced, before the capture runs — on a cold shader cache the part of
+   * a city load that dominates — which needs `drive()`, so only the loading-screen path asks for it.
+   */
+  *citySteps(id, { warm = false } = {}) {
     if (this.city) {
       this.engine.scene.remove(this.city.group);
       disposeObject(this.city.group);
       this.city = null;
     }
-    const built = buildCityById(id, { renderer: this.engine.renderer, quality: 'high' });
+    const built = yield* span(0, CITY_SPLIT, buildCityStepsById(id, { renderer: this.engine.renderer, quality: 'high' }));
     this.cityId = id;
     this.city = built;
     // (audio piece) the city picks the music cue — see TRACKS in core/audio.js
@@ -128,7 +147,7 @@ class Game {
     this.engine.scene.fog = built.fog;
     // LIGHTING piece: replace the sky-only probe with a cube capture of the finished city so car
     // paint and wet asphalt reflect neon and buildings, not just a flat sky. Mutates built.envMap.
-    this.engine.captureEnvironment(built, { hide: [this.car, ...this.aiCars] });
+    yield* span(CITY_SPLIT, 1, this.engine.captureEnvironmentSteps(built, { hide: [this.car, ...this.aiCars], warm }));
     this.engine.scene.environment = built.envMap || null;
     this.engine.applyLook(built.look);
     // VEHICLE-ART piece: hand the vehicle kit the city's light rig so the dark half of every car —
@@ -145,6 +164,134 @@ class Game {
     this._heroLevel = clamp((L.sun?.intensity ?? 2) * 0.5 + (L.ambient?.intensity ?? 0.8), 0.8, 4.0);
     if (this.car) this._applyEnv(this.car);
     return built;
+  }
+
+  // ---------------------------------------------------------------- loading screens
+
+  /**
+   * Run a build behind the loading plate (ui/loading.js), handing the browser a frame at every step
+   * so the plate animates and its bar follows the build.
+   *
+   * `steps(warm)` makes the step generator. On the headless harness it is called with warm = false
+   * and run straight through in one task with no plate — the exact single-task build every capture
+   * and functest has always seen. Everywhere else it is called with warm = true, which adds the
+   * parallel shader compiles and a warm-up frame, so the first frame the player sees after the
+   * plate lifts is a frame that was already drawn once.
+   */
+  async withLoading(info, steps) {
+    if (this.headless) return runSync(steps(false));
+    this.loading = true;
+    loading.show(info);
+    // `?loadlog` prints, per step: its label, how long it took, the bar's value at its end, and the
+    // longest single stretch inside it with no step boundary — the longest the plate could have
+    // been frozen. The first three are what the `p` tables (CITY_SPLIT, kit.js `P`) are calibrated
+    // from; the last is the one to drive down. Polling steps repeat a label, so only a change of
+    // label closes a step.
+    const log = /[?&]loadlog\b/.test(location.search) ? [] : null;
+    let mark = performance.now(), prev = mark, gap = 0, last = null;
+    const onStep = (s) => {
+      loading.set(s.p, s.label);
+      if (!log) return;
+      const now = performance.now();
+      const key = s.label.replace(/ \d+ \/ \d+$/, '');
+      if (key !== last) {
+        if (last) log.push([last, Math.round(now - mark), +s.p.toFixed(3), Math.round(Math.max(gap, now - prev))]);
+        last = key; mark = now; gap = 0;
+      } else {
+        gap = Math.max(gap, now - prev);
+      }
+      prev = now;
+    };
+    try {
+      return await drive(steps(true), onStep);
+    } finally {
+      this.loading = false;
+      loading.hide();
+      if (log) {
+        const now = performance.now();
+        log.push([last, Math.round(now - mark), 1, Math.round(Math.max(gap, now - prev))]);
+        console.log(`[load] ${info.title || 'BOOT'} ${JSON.stringify(log)}`);
+      }
+    }
+  }
+
+  /** The whole of boot: city, car, garage (or grid), and their shaders. */
+  *bootSteps({ city, car, color, race, warm }) {
+    yield* span(0, 0.52, this.citySteps(city, { warm }));
+    yield { p: 0.52, label: 'ROLLING OUT THE CAR' };
+    this.setCar(car, color);
+    if (race) {
+      yield* span(0.54, 0.68, this.raceSteps());
+    } else {
+      // built (and, warm, its own reflection probe compiled) ahead of open(), which then finds it
+      yield* span(0.54, 0.68, this.menu.ensureStageSteps(warm));
+      this.state = 'menu';
+      this.menu.open('title');
+    }
+    if (!warm) return;
+    if (race && this.hero) this.hero.group.visible = window.__HERO !== false;   // see _beginRaceSteps
+    // The garage's tile photographs: a car build and a pixel read-back each, shot one per frame from
+    // menu.update(). Left there, they were the four long tasks that followed the title onto the
+    // screen and made its first second stutter; shot here, they are steps on the bar.
+    const shots = this.menu.thumbQueue?.length || 0;
+    for (let i = 0; !race && this.menu.thumbQueue?.length; i++) {
+      const at = (f) => 0.68 + 0.16 * ((i + f) / shots);
+      yield* span(at(0), at(1), this.menu.thumbSteps(true, `PHOTOGRAPHING CAR ${i + 1} / ${shots}`));
+    }
+    yield* this._warmSteps(0.84, 1);
+  }
+
+  /**
+   * The map screen's CONFIRM: build the destination behind the plate. `settle` runs the moment the
+   * city stands — the garage puts its stage back there — so the warm-up compiles the screen the
+   * player is about to land on rather than the bare city.
+   */
+  loadCity(id, { settle = null } = {}) {
+    const def = getCity(id).def;
+    return this.withLoading(
+      { kicker: 'NEXT STOP', title: def.name, accent: def.look?.accent },
+      (warm) => this._loadCitySteps(id, warm, settle),
+    );
+  }
+
+  *_loadCitySteps(id, warm, settle) {
+    yield* span(0, warm ? 0.92 : 1, this.citySteps(id, { warm }));
+    settle?.();
+    if (warm) yield* this._warmSteps(0.92, 1);
+  }
+
+  /** The vehicle screen's START: leave the garage and grid the field behind the plate. */
+  beginRace() {
+    const def = getCity(this.cityId).def;
+    return this.withLoading(
+      { kicker: 'TO THE GRID', title: def.name, accent: def.look?.accent },
+      (warm) => this._beginRaceSteps(warm),
+    );
+  }
+
+  *_beginRaceSteps(warm) {
+    this.menu.close();
+    yield* span(0, 0.45, this.raceSteps());
+    if (!warm) return;
+    // A race frame lights the player's car with the hero rig (`_heroLight`), and a light that is
+    // visible changes the program of every lit material in the scene — compile in THAT state, or the
+    // first race frame recompiles the whole city over again.
+    if (this.hero) this.hero.group.visible = window.__HERO !== false;
+    yield* this._warmSteps(0.45, 1);
+  }
+
+  /**
+   * Compile everything the next frame draws, in parallel; make its first draws a batch at a time
+   * (engine `drawSteps` — the GPU pipelines and shadow depth programs `compile()` cannot reach);
+   * then draw that frame once for real behind the plate, which brings up the post chain. None of it
+   * lands on the first frame the player actually sees.
+   */
+  *_warmSteps(a, b) {
+    const at = (f) => a + (b - a) * f;
+    yield* span(a, at(0.45), this.engine.compileSteps(this.engine.scene, this.engine.camera));
+    yield* span(at(0.45), at(0.96), this.engine.drawSteps(this.engine.scene, this.engine.camera));
+    yield { p: at(0.96), label: 'WARMING UP' };
+    this.render(FIXED_DT);
   }
 
   setCar(id, color = null) {
@@ -479,7 +626,10 @@ class Game {
     });
   }
 
-  startRace({ opponents = 7 } = {}) {
+  startRace(opts) { return runSync(this.raceSteps(opts)); }
+
+  /** `startRace` as a step generator: one step per opponent built, so the grid can fill a bar. */
+  *raceSteps({ opponents = 7 } = {}) {
     const def = getCity(this.cityId).def;
     const prevRace = this.race;
     this.race = new Race({
@@ -500,6 +650,7 @@ class Game {
     for (const c of this.aiCars) { this.engine.scene.remove(c); disposeObject(c); }
     this.aiCars = [];
     for (const d of this.race.drivers) {
+      yield { p: this.aiCars.length / this.race.drivers.length, label: `GRIDDING UP ${this.aiCars.length + 1} / ${this.race.drivers.length}` };
       const spec = getVehicle(d.vehicleId).spec;
       const color = spec.colors[(d.id + 1) % spec.colors.length];
       const c = buildVehicle(d.vehicleId, { color, envMap: this.city.envMap });
@@ -2031,8 +2182,16 @@ class Game {
     const raw = (now - (this._last ?? now)) / 1000;
     const dt = Number.isFinite(raw) ? Math.min(0.05, Math.max(0, raw)) : FIXED_DT;
     this._last = now;
+    // A build is running behind the loading plate (`withLoading`). Nothing may simulate or draw a
+    // half-built scene; input still turns over, so a key mashed during the load is spent here
+    // instead of arriving as a `pressed()` on the first frame after it.
+    if (this.loading) { this.input.update(dt); requestAnimationFrame(this.frame); return; }
     this.update(dt || FIXED_DT);
-    this.render(dt || FIXED_DT);
+    // …and checked again here, because a load usually STARTS inside update(): the garage's START
+    // and CONFIRM kick one off from menu.update(), and its first step runs synchronously. Drawing
+    // this frame would draw the half-gridded race with every program still unlinked — which is
+    // the whole serial compile the plate exists to avoid, as one 8 s frame in front of it.
+    if (!this.loading) this.render(dt || FIXED_DT);
     requestAnimationFrame(this.frame);
   };
 
@@ -2048,15 +2207,11 @@ const game = new Game();
 const params = new URLSearchParams(location.search);
 
 const ready = (async () => {
-  await game.setCity(params.get('city') || 'la');
-  game.setCar(params.get('car') || 'muscle', params.get('color'));
-  if (params.get('mode') === 'race' || params.has('shot')) {
-    game.startRace();
-    if (game.race && params.get('go') !== '0') { game.race.state = 'racing'; game.race.countdown = 0; }
-  } else {
-    game.state = 'menu';
-    game.menu.open('title');
-  }
+  const race = params.get('mode') === 'race' || params.has('shot');
+  await game.withLoading({}, (warm) => game.bootSteps({
+    city: params.get('city') || 'la', car: params.get('car') || 'muscle', color: params.get('color'), race, warm,
+  }));
+  if (race && game.race && params.get('go') !== '0') { game.race.state = 'racing'; game.race.countdown = 0; }
   if (!params.has('shot')) game.start();
   return game;
 })();

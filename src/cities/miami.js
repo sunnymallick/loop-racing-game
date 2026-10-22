@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
-  buildCity, cruiseShip, landmarkTower, lowRise, jerseyBarrier, waterBarrier, lightPool,
+  buildCity, buildCitySteps, cruiseShip, landmarkTower, lowRise, jerseyBarrier, waterBarrier, lightPool,
 } from './kit.js';
 import { roundedBox } from '../vehicles/kit.js';
 import { canvas, toTexture, grain, fbmField, normalFromHeight, concrete } from '../core/textures.js';
@@ -4038,3 +4038,5 @@ export const def = {
 };
 
 export function build(opts) { return buildCity(def, opts); }
+/** The same build as a step generator, for the loading screen (see core/steps.js). */
+export function* buildSteps(opts) { return yield* buildCitySteps(def, opts); }

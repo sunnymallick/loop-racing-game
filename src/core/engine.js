@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { Pass } from 'three/addons/postprocessing/Pass.js';
+import { runSync, span } from './steps.js';
 import {
   AtmosphereShader, SpeedShader, GradeShader, bloomPrefilterFragment,
   SpillPrefilterShader, SpillBlurShader, SpillCompositeShader, SpillMaskShader,
@@ -131,6 +132,12 @@ export class Engine {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;   // PCFSoft is deprecated in this three build
     this.renderer.info.autoReset = false;
+    // Shader-error checking reads every program's info log on its first draw, and on ANGLE/Metal
+    // that read blocks until the driver has fully finished the program — even one the non-blocking
+    // completion query (`compileSteps`) has already reported ready. Profiled on a cold shader cache
+    // it was 5.0 s of a race start's warm-up, in single tasks the loading plate could not paint
+    // through. The check is a development aid; three's own guidance is to drop it in production.
+    this.renderer.debug.checkShaderErrors = import.meta.env.DEV;
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
@@ -919,7 +926,134 @@ export class Engine {
     }
   }
 
-  captureEnvironment(city, { hide = [], size = 512, height = 5 } = {}) {
+  /**
+   * COMPILE AHEAD, IN PARALLEL — every program `root` needs, as a step generator (core/steps.js).
+   *
+   * Shader programs are what a load actually waits on: measured on the real GPU (M1 Pro, ANGLE
+   * Metal, cold shader cache) a city's env capture was 8.6–13.6 s and the first frame after it
+   * another 17–20 s, against 3–5.5 s for building all of its geometry. Three links a program the
+   * first time a material is DRAWN, and the first draw then blocks until the driver is done — one
+   * program at a time, with the tab frozen for all of it.
+   *
+   * `renderer.compile()` instead submits every program the scene will need without waiting, and
+   * with KHR_parallel_shader_compile the GPU process links them concurrently while the page stays
+   * live. This then polls `isReady()` (a non-blocking query under that extension) once a frame and
+   * reports `ready / total`, which is a real count the loading screen can show.
+   *
+   * The program a material gets depends on the state it is drawn in — the lights that are VISIBLE,
+   * the fog, `scene.environment`, and whether the target is the canvas or an offscreen buffer (the
+   * output colour space) — so call this with the scene already in the state it will be drawn in.
+   * `target` defaults to the composer's buffer, which is where every real frame is drawn.
+   *
+   * Without the extension it still submits everything (the drivers that lack it still compile
+   * asynchronously up to the first draw) but has nothing to poll, so it returns at once.
+   */
+  *compileSteps(scene = this.scene, camera = this.camera, { target = this.composer.readBuffer, label = 'COMPILING SHADERS', counts = true } = {}) {
+    const r = this.renderer;
+    const known = new Set(r.info.programs);
+    const prevRT = r.getRenderTarget();
+    r.setRenderTarget(target);
+    try { r.compile(scene, camera); } finally { r.setRenderTarget(prevRT); }
+    const pending = r.info.programs.filter((p) => !known.has(p));
+    const total = pending.length;
+    if (!total || !r.extensions.has('KHR_parallel_shader_compile')) return total;
+    while (pending.length) {
+      // Every query is a synchronous round trip to the GPU process, and there can be 400 programs.
+      // They finish in roughly the order they were submitted, so stop reading at the first few that
+      // are still busy rather than asking about every one of them every frame.
+      let busy = 0;
+      for (let i = 0; i < pending.length && busy < 6;) {
+        if (pending[i].isReady()) pending.splice(i, 1);
+        else { busy++; i++; }
+      }
+      const done = total - pending.length;
+      yield { p: done / total, label: counts ? `${label} ${done} / ${total}` : label, wait: pending.length > 0 };
+    }
+    return total;
+  }
+
+  /**
+   * DRAW AHEAD — make every visible program's first draw now, a few at a time, as a step generator.
+   *
+   * A program `compileSteps` has reported ready is still not free to draw with. Profiled on a cold
+   * shader cache, a race start whose 46 new programs had all reported ready still spent ~5 s inside
+   * its first frame: the GPU process builds a program's real GPU pipeline only at its FIRST DRAW
+   * (into a given target format), and the shadow pass compiles its depth variants the same way. It
+   * does that work on the thread that also composites the page, so while one frame's worth of new
+   * pipelines is being built nothing on screen moves — whichever GL call next needs the GPU process
+   * (`getProgramInfoLog`, then `bufferData` once that was switched off) simply absorbs the wait.
+   *
+   * So the first draws are made here, paced: everything is hidden, then each batch of programs is
+   * shown and drawn into `target` with frustum culling off (so it draws whole, wherever the camera
+   * points, and so do its shadow casters), and a GPU fence is waited on before the next batch goes
+   * in. The GPU process never holds more than one small batch, so it can present the loading plate
+   * between them. The batch size adapts: it doubles while fences come back within a frame (a warm
+   * cache, where this should cost next to nothing) and halves when one takes longer than 250 ms.
+   *
+   * Lights are never touched, so every program key stays the one the real frame will ask for. The
+   * pixels are thrown away: `target` is the buffer the next real frame (or the capture) overwrites.
+   */
+  *drawSteps(scene, camera, { target = this.composer.readBuffer, label = 'WARMING UP' } = {}) {
+    const r = this.renderer;
+    const gl = r.getContext();
+    const byProgram = new Map();
+    scene.traverseVisible((o) => {
+      if (!(o.isMesh || o.isPoints || o.isLine || o.isSprite)) return;
+      const m = Array.isArray(o.material) ? o.material[0] : o.material;
+      const key = (m && r.properties.get(m).currentProgram) || m;
+      const list = byProgram.get(key) || [];
+      list.push(o);
+      byProgram.set(key, list);
+    });
+    const groups = [...byProgram.values()];
+    if (!groups.length) return;
+    const saved = [];
+    const hidden = new Set();
+    for (const list of groups) for (const o of list) { saved.push([o, o.frustumCulled]); hidden.add(o); o.visible = false; }
+    // A drawable parented under another drawable (a car's parts) is hidden by its parent too, so
+    // showing one also shows its hidden ancestors for that batch — which then draw along with it.
+    const shown = [];
+    const show = (o) => { for (let a = o; a; a = a.parent) if (hidden.has(a) && !a.visible) { a.visible = true; shown.push(a); } };
+    const prevRT = r.getRenderTarget();
+    let per = 2;
+    try {
+      for (let i = 0; i < groups.length;) {
+        yield { p: i / groups.length, label };
+        const batch = groups.slice(i, i + per);
+        i += batch.length;
+        for (const list of batch) for (const o of list) { o.frustumCulled = false; show(o); }
+        r.setRenderTarget(target);
+        r.render(scene, camera);
+        for (const o of shown) o.visible = false;
+        shown.length = 0;
+        // a fence's status only changes between tasks, so the first check is always after a frame
+        const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gl.flush();
+        const t0 = performance.now();
+        let frames = 0;
+        while (gl.getSyncParameter(sync, gl.SYNC_STATUS) !== gl.SIGNALED) {
+          frames++;
+          yield { p: i / groups.length, label, wait: true };
+        }
+        gl.deleteSync(sync);
+        const took = performance.now() - t0;
+        per = took > 250 ? Math.max(1, per >> 1) : frames <= 1 ? Math.min(64, per * 2) : per;
+      }
+    } finally {
+      for (const [o, culled] of saved) { o.visible = true; o.frustumCulled = culled; }
+      r.setRenderTarget(prevRT);
+    }
+  }
+
+  captureEnvironment(city, opts) { return runSync(this.captureEnvironmentSteps(city, opts)); }
+
+  /**
+   * `captureEnvironment` as a step generator. With `warm`, every program the six cube faces will
+   * draw is compiled in parallel and first-drawn, paced (`compileSteps`, `drawSteps`), in the
+   * capture's own state — cars hidden, no scene environment, the cube target — so the capture
+   * itself finds them ready instead of building them all in one task.
+   */
+  *captureEnvironmentSteps(city, { hide = [], size = 512, height = 5, warm = false } = {}) {
     if (!city) return null;
     const hidden = [];
     for (const o of hide) {
@@ -933,6 +1067,13 @@ export class Engine {
       const rt = new THREE.WebGLCubeRenderTarget(size, { type: THREE.HalfFloatType });
       const cam = new THREE.CubeCamera(0.5, 4000, rt);
       cam.position.copy(this.probePoint(city, height));
+      if (warm) {
+        yield* span(0, 0.62, this.compileSteps(this.scene, cam.children[0], { target: rt }));
+        // every face shares the cube target's format, so drawing the whole city once into face 0
+        // builds the pipelines all six faces will use (see drawSteps)
+        yield* span(0.62, 0.94, this.drawSteps(this.scene, cam.children[0], { target: rt, label: 'CAPTURING REFLECTIONS' }));
+      }
+      yield { p: 0.94, label: 'CAPTURING REFLECTIONS' };
       cam.update(this.renderer, this.scene);
       // …then grade a real horizon into the six faces before PMREM ever sees them.
       this.bakeHorizon(rt, cam, city);

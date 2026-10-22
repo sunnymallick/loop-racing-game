@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  buildCity, dumpster, scaffold, trashCan, lightPool, mergeGroup, PropBatch,
+  buildCity, buildCitySteps, dumpster, scaffold, trashCan, lightPool, mergeGroup, PropBatch,
   fitText as fitSign, twoSidedSign,
 } from './kit.js';
 import { roundedBox } from '../vehicles/kit.js';
@@ -4040,3 +4040,5 @@ export const def = {
 };
 
 export function build(opts) { return buildCity(def, opts); }
+/** The same build as a step generator, for the loading screen (see core/steps.js). */
+export function* buildSteps(opts) { return yield* buildCitySteps(def, opts); }

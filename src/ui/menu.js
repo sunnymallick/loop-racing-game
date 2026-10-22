@@ -11,6 +11,7 @@ import { CITY_IDS, getCity } from '../cities/index.js';
 import { recolor } from '../vehicles/assemble.js';
 import { applyPose } from '../vehicles/physics.js';
 import { disposeObject } from '../core/engine.js';
+import { runSync, span } from '../core/steps.js';
 
 /**
  * GARAGE / CAR SELECT — ART_DIRECTION.md §6.8, target 80.
@@ -2439,7 +2440,15 @@ export class Menu {
    * screenshot. One per frame is the same total work spread over four frames: the menu scenario has
    * all four before its first captured frame, and a player sees the tiles fill in over 70 ms.
    */
-  _pumpThumbs() {
+  _pumpThumbs() { runSync(this.thumbSteps()); }
+
+  /**
+   * One tile, as a step generator. With `warm` (the boot's loading plate), the tile rig is compiled
+   * and first-drawn ahead with the car in it, paced, before the shot. The shot ends in a synchronous
+   * pixel read-back, which waits for every pipeline the draw needed; on a cold shader cache that
+   * was a 6.5 s freeze on the first tile alone.
+   */
+  *thumbSteps(warm = false, label = 'PHOTOGRAPHING THE LINEUP') {
     const g = this.game;
     const renderer = g.engine?.renderer;
     if (!renderer || !this.thumbQueue?.length) return;
@@ -2464,6 +2473,7 @@ export class Menu {
       const mine = id === VEHICLE_IDS[this.carIndex] && g.car;
       const car = mine ? g.car : buildVehicle(id, { color, envMap: env });
       if (!mine && env) { g.engine.applyEnvironment(car, env); this._dampEnv(car); }
+      if (warm) yield* this._warmThumb(car, label);
       const canvas2 = shootThumb(renderer, this.thumbRig, this.thumbRT, car, v.blueprint.dims);
       if (!mine) disposeObject(car);
       this.thumbs[id] = { canvas: canvas2, color };
@@ -2472,6 +2482,20 @@ export class Menu {
       console.warn('tile render failed, falling back to silhouette', e);
       this.thumbs[id] = { canvas: null, color: this._wantColor(id) };
       this._thumbGen = (this._thumbGen || 0) + 1;
+    }
+  }
+
+  *_warmThumb(car, label) {
+    const rig = this.thumbRig, e = this.game.engine;
+    const parent = car.parent, vis = car.visible;
+    rig.scene.add(car);
+    car.visible = true;
+    try {
+      yield* span(0, 0.5, e.compileSteps(rig.scene, rig.cam, { target: this.thumbRT, label, counts: false }));
+      yield* span(0.5, 1, e.drawSteps(rig.scene, rig.cam, { target: this.thumbRT, label }));
+    } finally {
+      if (parent) parent.add(car); else rig.scene.remove(car);
+      car.visible = vis;
     }
   }
 
@@ -2534,9 +2558,17 @@ export class Menu {
   }
 
   /** Build the room once and keep it — hidden — for the life of the page. */
-  _ensureStage() {
+  _ensureStage() { runSync(this.ensureStageSteps()); }
+
+  /**
+   * `_ensureStage` as a step generator (core/steps.js). With `warm`, the stage's own cube capture
+   * compiles and first-draws its programs ahead, paced (engine `compileSteps` / `drawSteps`), so the
+   * capture does not sit on a cold shader cache in one task — measured at 3.3 s of boot otherwise.
+   */
+  *ensureStageSteps(warm = false) {
     if (this.stage) return;
     const g = this.game;
+    yield { p: 0, label: 'OPENING THE GARAGE' };
     const prevCity = g.city?.group.visible;
     if (g.city) g.city.group.visible = false;
     const hidden = [];
@@ -2577,6 +2609,11 @@ export class Menu {
       const rt = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType });
       const cam = new THREE.CubeCamera(0.4, 60, rt);
       cam.position.set(0, 1.32, 0.15);
+      if (warm) {
+        const face = cam.children[0];
+        yield* span(0.1, 0.6, g.engine.compileSteps(g.engine.scene, face, { target: rt, label: 'LIGHTING THE GARAGE' }));
+        yield* span(0.6, 1, g.engine.drawSteps(g.engine.scene, face, { target: rt, label: 'LIGHTING THE GARAGE' }));
+      }
       cam.update(renderer, g.engine.scene);
       const pmrem = new THREE.PMREMGenerator(renderer);
       this.stage.env = pmrem.fromCubemap(rt.texture).texture;
@@ -3271,7 +3308,10 @@ export class Menu {
       g.engine.scene.environment = null;
       g.engine.renderer.renderLists.dispose();
     }
+    let settled = false;
     const done = () => {
+      if (settled) return;
+      settled = true;
       if (st && !st.group.parent) g.engine.scene.add(st.group);
       this.cityBusy = false;
       // Taken before the early return so a forced close can never leave a stale continuation armed
@@ -3288,6 +3328,15 @@ export class Menu {
       // mid-build). Arriving on the vehicle screen IS the signal that the build finished.
       if (after) after();
     };
+    // The player's path builds behind the loading plate, and the stage goes back up INSIDE the load
+    // (`settle`) so the plate's warm-up compiles the screen they land on. A forced flush from close()
+    // and the headless harness keep the single-task build: close() needs the city to exist when it
+    // returns, and every capture was taken against that path.
+    if (!this._closing && !g.headless) {
+      g.loadCity(CITY_IDS[this.cityIndex], { settle: done })
+        .catch((e) => { console.warn('city swap failed', e); done(); });
+      return;
+    }
     let p = null;
     try { p = g.setCity(CITY_IDS[this.cityIndex]); } catch (e) { console.warn('city swap failed', e); }
     if (p && typeof p.then === 'function') p.then(done, done);
@@ -3309,8 +3358,9 @@ export class Menu {
   _start() {
     const g = this.game;
     g.audio.init(); g.audio.ui('confirm');
-    this.close();          // completes any queued destination change first — see close()
-    g.startRace();
+    // closes the garage (which completes any queued destination change first — see close()) and
+    // grids the field, behind the loading plate
+    g.beginRace();
   }
 
   // ---------------------------------------------------------------- 2D layer

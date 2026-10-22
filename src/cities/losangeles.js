@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildCity, overpass, landmarkTower } from './kit.js';
+import { buildCity, buildCitySteps, overpass, landmarkTower } from './kit.js';
 import { preGamma } from './track.js';
 import { drawText } from '../core/font.js';
 import { canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas } from '../core/textures.js';
@@ -3684,3 +3684,5 @@ export const def = {
 };
 
 export function build(opts) { return buildCity(def, opts); }
+/** The same build as a step generator, for the loading screen (see core/steps.js). */
+export function* buildSteps(opts) { return yield* buildCitySteps(def, opts); }

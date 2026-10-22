@@ -14,4 +14,7 @@ export function getCity(id) {
 
 export function buildCityById(id, opts) { return getCity(id).build(opts); }
 
+/** The same build as a step generator (core/steps.js) — what the loading screen drives. */
+export function buildCityStepsById(id, opts) { return getCity(id).buildSteps(opts); }
+
 export const CITY_DEFS = CITY_IDS.map((id) => CITIES[id].def);

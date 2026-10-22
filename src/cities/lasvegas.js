@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
-  buildCity, marqueeArch, landmarkTower,
+  buildCitySteps, marqueeArch, landmarkTower,
   jerseyBarrier, waterBarrier, trafficCones,
 } from './kit.js';
 import { Track } from './track.js';
 import { RNG, clamp, lerp, makeNoise2D, fbm2D } from '../core/rng.js';
 import { canvas, toTexture, grain, concrete } from '../core/textures.js';
 import { drawText } from '../core/font.js';
+import { runSync } from '../core/steps.js';
 
 /**
  * LAS VEGAS — midnight on the Strip.
@@ -4083,14 +4084,18 @@ function inkSkidMarks(group, scene) {
   });
 }
 
-export function build(opts) {
+export function build(opts) { return runSync(buildSteps(opts)); }
+
+/** The Strip's build as a step generator (core/steps.js): the kit's city, then this file's own passes. */
+export function* buildSteps(opts) {
   CACHE = new Map();
   ANIMS = [];
   SITE = null;
   REFL_BANK = null;
   FACE_ATLAS = null;
   const anims = ANIMS;
-  const city = buildCity(def, { ...opts, night: true });
+  const city = yield* buildCitySteps(def, { ...opts, night: true });
+  yield { p: 1, label: 'GROUNDING THE STRIP' };
   const base = city.update;
   // Every car in the scene lays its footprint on the road, last, after the whole wet-road mirror
   // has been drawn (see GROUNDING). The pass reads the scene itself rather than being handed the
