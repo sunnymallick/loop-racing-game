@@ -280,6 +280,7 @@ export class Effects {
   }
 
   setViewportHeight(h) { for (const s of this.pools) s.setViewportHeight(h); }
+  setPixelRatio(pr) { for (const s of this.pools) s.setPixelRatio?.(pr); }
 
   /**
    * Tell the FX director which car the player is driving. main.js calls this whenever it builds

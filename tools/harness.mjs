@@ -10,7 +10,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
  * Every builder/critic agent gets its own server + browser, so many can run concurrently
  * without fighting over a port.
  */
-export async function boot({ headless = true, width = 1600, height = 900, gpu = false } = {}) {
+export async function boot({ headless = true, width = 1600, height = 900, gpu = false, dpr = 1 } = {}) {
   const port = 20000 + Math.floor(Math.random() * 30000);
   const server = await createServer({
     root: ROOT,
@@ -38,19 +38,19 @@ export async function boot({ headless = true, width = 1600, height = 900, gpu = 
     headless: gpu ? false : headless,
     ...(gpu ? { channel: 'chrome' } : {}),
     args: gpu
-      ? ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--enable-zero-copy', '--force-device-scale-factor=1']
+      ? ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--enable-zero-copy', `--force-device-scale-factor=${dpr}`]
       : [
         '--use-angle=swiftshader',
         '--enable-unsafe-swiftshader',
         '--ignore-gpu-blocklist',
         '--enable-webgl',
         '--disable-dev-shm-usage',
-        '--force-device-scale-factor=1',
+        `--force-device-scale-factor=${dpr}`,
       ],
   });
   const context = await browser.newContext({
     viewport: { width, height },
-    deviceScaleFactor: 1,
+    deviceScaleFactor: dpr,
     reducedMotion: 'no-preference',
   });
   const page = await context.newPage();

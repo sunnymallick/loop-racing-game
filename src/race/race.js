@@ -1174,7 +1174,8 @@ export class AIDriver {
     this.reaction = lerp(0.42, 0.10, this.skill) * r.range(0.7, 1.35);
 
     this.dims = opts.dims || { length: 4.6, width: 2.0, wheelbase: 2.8, trackRear: 1.6 };
-    this.body = new VehicleBody(spec, { wheelbase: this.dims.wheelbase ?? 2.8 });
+    // assists: false — the AI drives the original handling model it was tuned against (physics.js)
+    this.body = new VehicleBody(spec, { wheelbase: this.dims.wheelbase ?? 2.8, assists: false });
     this.nitro = new Nitrous(spec);
     this.counter = new Progress(opts.u ?? 0);
 

@@ -5777,7 +5777,7 @@ const FURNITURE = [
  * Build a complete city from a declarative definition.
  * @returns {{ group, track, look, spawn, branches, colliders, update }}
  */
-export function buildCity(def, { renderer, night = null, quality = 'high' } = {}) {
+export function buildCity(def, { renderer, night = null, quality = 'high', lightBudget = null } = {}) {
   const rng = new RNG(def.seed ?? 1);
   const cache = new Map();                  // per-city materials; disposed with the city group
   const group = new THREE.Group();
@@ -6617,7 +6617,8 @@ export function buildCity(def, { renderer, night = null, quality = 'high' } = {}
   // landmark floods around a 2 km lap pays for all twenty on every pixel of every frame — Vegas
   // measured 9.8 ms of a 19.8 ms frame in exactly that state. The bank keeps a fixed handful of
   // real lights and re-points them at whatever is near enough to matter (see LightBank).
-  const lightBank = new LightBank({ budget: def.lightBudget ?? 6 });
+  // The graphics preset (core/quality.js) can only ever LOWER the city's own budget.
+  const lightBank = new LightBank({ budget: Math.min(def.lightBudget ?? 6, lightBudget ?? Infinity) });
   lightBank.harvest(group);
   group.add(lightBank.group);
 

@@ -625,6 +625,8 @@ export class ParticleSystem {
   }
 
   setViewportHeight(h) { this.material.uniforms.uHeight.value = h * 0.5; }
+  /** Sprite sizes are in DEVICE pixels, so they follow the renderer's actual pixel ratio. */
+  setPixelRatio(pr) { this.material.uniforms.uPixelRatio.value = pr; }
 
   get alive() { return this.max - this.free.length; }
 

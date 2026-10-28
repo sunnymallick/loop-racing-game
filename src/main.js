@@ -12,6 +12,7 @@ import { Nitrous, NitrousJet, NITRO_ARM } from './vehicles/nitrous.js';
 import { buildCityById, getCity, CITY_IDS } from './cities/index.js';
 import { Race } from './race/race.js';
 import { clamp, lerp, smoothstep, RNG } from './core/rng.js';
+import { QUALITY, initialQuality, rememberQuality, nextQuality, AdaptiveResolution } from './core/quality.js';
 
 const FIXED_DT = 1 / 60;
 
@@ -66,6 +67,11 @@ class Game {
     this.hud = new HUD(document.getElementById('ui'));
     this.effects = new Effects(this.engine.scene);
     this.effects.setViewportHeight(this.container.clientHeight || 900);
+    // Graphics quality (core/quality.js). Headless captures default to HIGH so screenshots stay
+    // comparable with every earlier round; a player starts on MEDIUM with adaptive resolution.
+    this.adaptive = new AdaptiveResolution();
+    this.setQuality(new URLSearchParams(location.search).has('shot') && !new URLSearchParams(location.search).has('quality')
+      ? 'high' : initialQuality(), { remember: false });
 
     this.city = null;
     this.cityId = null;
@@ -118,12 +124,14 @@ class Game {
       disposeObject(this.city.group);
       this.city = null;
     }
-    const built = buildCityById(id, { renderer: this.engine.renderer, quality: 'high' });
+    const q = QUALITY[this.qualityLevel] || QUALITY.high;
+    const built = buildCityById(id, { renderer: this.engine.renderer, quality: q.city, lightBudget: q.lightBudget });
     this.cityId = id;
     this.city = built;
     // (audio piece) the city picks the music cue — see TRACKS in core/audio.js
     this.audio.setCity(id);
     this.engine.scene.add(built.group);
+    this.engine.applyShadowQuality(built.group);
     this.effects.setWorld(built.group);   // (fx piece) smoke tint + crash-camera ray prep
     this.engine.scene.fog = built.fog;
     // LIGHTING piece: replace the sky-only probe with a cube capture of the finished city so car
@@ -145,6 +153,23 @@ class Game {
     this._heroLevel = clamp((L.sun?.intensity ?? 2) * 0.5 + (L.ambient?.intensity ?? 0.8), 0.8, 4.0);
     if (this.car) this._applyEnv(this.car);
     return built;
+  }
+
+  /**
+   * Switch graphics preset (G in game). Resolution, post-processing, HUD sharpness and shadow maps
+   * change at once; the city's light budget and sky texture follow on the next city load.
+   */
+  setQuality(level, { remember = true, announce = false } = {}) {
+    const q = QUALITY[level] || QUALITY.medium;
+    this.qualityLevel = QUALITY[level] ? level : 'medium';
+    this.engine.applyQuality(q);
+    this.adaptive.setFloor(q.minScale);
+    this.adaptive.reset(1);
+    this.engine.setRenderScale(1);
+    this.hud.setSupersample(q.hudSS);
+    this.effects.setPixelRatio(this.engine.renderer.getPixelRatio());
+    if (remember) rememberQuality(this.qualityLevel);
+    if (announce) this.hud.message(`GRAPHICS ${q.label}`, 1.2, '#39d7f2');
   }
 
   setCar(id, color = null) {
@@ -593,6 +618,7 @@ class Game {
   update(dt) {
     this.time += dt;
     this.input.update(dt);
+    if (this.input.pressed('quality')) this.setQuality(nextQuality(this.qualityLevel), { announce: this.state !== 'menu' });
 
     if (this.state === 'menu') {
       // the garage lights its own hero (menu.js `_enterStage`); the race rig must not be in there
@@ -2033,6 +2059,12 @@ class Game {
     this._last = now;
     this.update(dt || FIXED_DT);
     this.render(dt || FIXED_DT);
+    // dynamic resolution: only ever a stepped change, at most about once a second
+    const scale = this.adaptive.sample(now);
+    if (scale !== null) {
+      this.engine.setRenderScale(scale);
+      this.effects.setPixelRatio(this.engine.renderer.getPixelRatio());
+    }
     requestAnimationFrame(this.frame);
   };
 

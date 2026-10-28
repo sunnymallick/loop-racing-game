@@ -124,7 +124,13 @@ export class Engine {
       stencil: false,
       depth: true,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Render resolution = min(devicePixelRatio, the preset's cap) x the adaptive render scale.
+    // See core/quality.js; HIGH (cap 2, scale 1) is the original build.
+    this._maxPixelRatio = 2;
+    this._renderScale = 1;
+    this._allowSpill = true;
+    this._shadowMapSize = 2048;
+    this.renderer.setPixelRatio(this._pixelRatio());
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     // Tonemapping AND the sRGB encode happen in GradeShader, at the end of the chain, once.
     this.renderer.toneMapping = THREE.NoToneMapping;
@@ -236,9 +242,15 @@ export class Engine {
     const height = h || this.container.clientHeight || window.innerHeight;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this._cssW = width; this._cssH = height;
+    const pr = this._pixelRatio();
+    this.renderer.setPixelRatio(pr);
     this.renderer.setSize(width, height, false);
+    this.composer.setPixelRatio(pr);            // also resizes every pass at the new device size
     this.composer.setSize(width, height);
-    this.bloom.setSize(width, height);
+    // Bloom has always run at CSS resolution (it is a blur — extra pixels buy nothing); it just
+    // must not run ABOVE the 3D image when the render scale is below 1.
+    this.bloom.setSize(Math.max(1, Math.round(width * Math.min(1, pr))), Math.max(1, Math.round(height * Math.min(1, pr))));
 
     // WebGLRenderTarget.setSize does not resize an attached DepthTexture — do it by hand or the
     // atmosphere pass samples a stale, wrongly-sized depth buffer.
@@ -253,6 +265,55 @@ export class Engine {
     this.grade.uniforms.uResolution.value.set(width, height);
     this.speed.uniforms.uResolution.value.set(width, height);
     this.atmos.uniforms.uResolution.value.set(width, height);
+  }
+
+  // ------------------------------------------------------------------ graphics quality
+
+  _pixelRatio() {
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    return Math.max(0.4, Math.min(dpr, this._maxPixelRatio) * this._renderScale);
+  }
+
+  /** Adaptive resolution (core/quality.js): 1 = the preset's full resolution. */
+  setRenderScale(s) {
+    if (Math.abs(s - this._renderScale) < 1e-3) return;
+    this._renderScale = s;
+    if (this._cssW) this.resize(this._cssW, this._cssH);
+  }
+
+  get renderScale() { return this._renderScale; }
+
+  /**
+   * Apply a preset from core/quality.js. Everything here is live; the city-side settings (light
+   * budget, sky texture) are passed to buildCity by main.js and take effect on the next city load.
+   */
+  applyQuality(q) {
+    this.quality = q;
+    this._maxPixelRatio = q.maxPixelRatio;
+    this.smaa.enabled = q.smaa;
+    this._allowSpill = q.spill;
+    this.spill.enabled = !!this._spillWanted && q.spill;
+    const setDef = (pass, key, v) => {
+      const d = pass.material.defines;
+      if (d[key] !== v) { d[key] = v; pass.material.needsUpdate = true; }
+    };
+    setDef(this.atmos, 'WET_TAPS', q.wetTaps);
+    setDef(this.atmos, 'SHAFT_SAMPLES', q.shaftSamples);
+    setDef(this.speed, 'BLUR_TAPS', q.speedTaps);
+    this._shadowMapSize = q.shadowMapSize;
+    this.applyShadowQuality();
+    if (this._cssW) this.resize(this._cssW, this._cssH);
+  }
+
+  /** Resize every shadow map in the scene to the preset's size (call again after a city load). */
+  applyShadowQuality(root = this.scene) {
+    const size = this._shadowMapSize;
+    root.traverse((o) => {
+      if (!o.isDirectionalLight || !o.castShadow || !o.shadow) return;
+      if (o.shadow.mapSize.x === size) return;
+      o.shadow.mapSize.set(size, size);
+      if (o.shadow.map) { o.shadow.map.dispose(); o.shadow.map = null; }   // reallocated on next render
+    });
   }
 
   // ------------------------------------------------------------------ per-city look
@@ -512,7 +573,8 @@ export class Engine {
     // point survives everywhere there is no emissive nearby.
     sc.uRolloff.value = sp.rolloff ?? mix2(0.85, 0.55);
     sc.uTint.value.copy(unitTint(col(look.accent, 0xffffff), mix2(0.08, 0.20)));
-    this.spill.enabled = spillAmt > 0.005;
+    this._spillWanted = spillAmt > 0.005;
+    this.spill.enabled = this._spillWanted && this._allowSpill;
 
     // ---- ambient floor ----------------------------------------------------------------------
     // "Night cities are lit by emissive geometry and their spill, **not by a bright ambient term**."

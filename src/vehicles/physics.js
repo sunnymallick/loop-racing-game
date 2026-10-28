@@ -100,6 +100,7 @@ export class VehicleBody {
     this.driftDir = 1;           // +1 = sliding through a right-hander, -1 = mirror
     this.commit = 0;             // 0..1 filtered driver commitment (throttle/lock/handbrake)
     this.driftAsk = 0;           // 0..1 the same, HANDS ONLY — the licence to sustain a slide
+    this.driftLatch = 0;         // 0..1 a slide the HANDBRAKE started and the car is still in
     this.grounded = true;
     this.airborne = 0;
     this.vy = 0;                 // vertical velocity for ramps/jumps
@@ -145,7 +146,7 @@ export class VehicleBody {
   reset(pos, yaw) {
     this.pos.copy(pos); this.yaw = yaw;
     this.vel.set(0, 0, 0); this.yawRate = 0; this.speed = 0; this.groundSpeed = 0;
-    this.drift = 0; this.slide = 0; this.commit = 0; this.driftAsk = 0;
+    this.drift = 0; this.slide = 0; this.commit = 0; this.driftAsk = 0; this.driftLatch = 0;
     this.slip = 0; this.slipAllow = 0; this.slipTarget = 0;
     this.vy = 0; this.y = pos.y;
     this.boost = 0; this.steerAngle = 0; this.steerVisual = 0; this.assist = 0;
@@ -291,10 +292,50 @@ export class VehicleBody {
     if (vLong > vMax) vLong = lerp(vLong, vMax, 1 - Math.exp(-8 * dt));
     if (vLong < -p.reverseMax) vLong = -p.reverseMax;
 
+    // ---------------------------------------------------------------- drift latch
+    // A DRIFT IS ASKED FOR WITH THE HANDBRAKE. Everything below used to count steering INTO the
+    // corner as a request for a slide (`into` bought both `commit` and `driftAsk`). On a keyboard
+    // every corner is taken on full lock, so every corner was a request: measured with
+    // tools/drivetest.mjs, a keyboard player with the handbrake never touched spent 60–75% of a
+    // lap more than 10° sideways and hit 30–48° of slip. That is the "undriveable" report.
+    //
+    // So the drift licence now has exactly one door. Pulling the handbrake latches it; while the
+    // car is still sideways from that slide, lock either way (deeper into it, or opposite to hold
+    // it) keeps the licence exactly as before, so a handbrake drift is still balanced on the
+    // throttle and the wheel. Once the angle has come back under this class's own drift line the
+    // latch lets go and the car is a grip car again.
+    const slipNowDeg = Math.abs(Math.atan2(vLat, Math.max(4.0, absV))) * RAD2DEG;
+    //
+    // `opts.assists === false` keeps the original model exactly (the latch pinned open, full lock at
+    // every speed): race.js passes it for the AI field, whose pace and racecraft were tuned over
+    // many rounds against that model and which never drives with a keyboard.
+    if (this.opts.assists === false) this.driftLatch = 1;
+    else if (hb && absV > 6) this.driftLatch = 1;
+    else if (slipNowDeg < p.driftOn * 0.8 || absV < 4) this.driftLatch = Math.max(0, this.driftLatch - 3.0 * dt);
+    const latch = this.driftLatch;
+
     // ---------------------------------------------------------------- steering
     // Authority falls with speed so the car isn't twitchy flat out, but never to zero.
     const speedF = 1 / (1 + absV * p.steerFalloff);
-    const steerLimit = p.steerMax * lerp(p.steerFloor, 1.0, speedF);
+    const steerBase = p.steerMax * lerp(p.steerFloor, 1.0, speedF);
+    // ...and outside a drift, full lock is the angle the FRONT TYRES CAN USE at this speed, never
+    // more: the geometric angle for the tightest arc the front grip can hold (L/R with R = v²/a)
+    // plus the tyre's own working slip angle. Past that a front tyre only scrubs, so the extra
+    // lock bought nothing but understeer and — on a keyboard, where every press is full lock — a
+    // snap of yaw the rear then had to catch. Inside a handbrake slide the full base range comes
+    // back, because opposite lock is how a drift is held.
+    const Lw = this.opts.wheelbase ?? 2.8;
+    const vS = Math.max(absV, 1);
+    // The tyre term is a MARGIN, not a whole slip angle: cornering hard the rear runs nearly the
+    // same slip angle as the front, so what the front needs over the geometric angle is roughly
+    // the understeer gradient's worth, half a peak. A whole one (or more) at 70 m/s is 13° of lock
+    // the car cannot use and a weave a keyboard driver cannot get out of.
+    let gripLock = Math.atan((Lw * p.gripFront * GRAV * 0.95) / (vS * vS)) + p.alphaPeak * (p.gripLockSlip ?? 0.5);
+    // Catching a slide needs lock past that, toward the slide: add the slip angle the car is
+    // carrying, so opposite lock can always point the front wheels down the road.
+    const slipSigned = Math.atan2(vLat, Math.max(4.0, absV));
+    if (steerIn * slipSigned > 0) gripLock += Math.abs(slipSigned);
+    const steerLimit = lerp(Math.min(steerBase, gripLock), steerBase, latch);
     const wantAngle = steerIn * steerLimit;
     // Unwinding the wheel is quicker than winding it on — that is what makes a catch feel sharp.
     const rate = p.steerRate * (Math.abs(wantAngle) < Math.abs(this.steerAngle) ? 1.45 : 1);
@@ -333,7 +374,8 @@ export class VehicleBody {
     // untouched (that is §6.2's "held with counter-steer"), a driver pinned against the stop is
     // asking to come back and gets the rear axle handed back to them.
     const lockLeft = 1 - smoothstep(0.80, 1.0, Math.abs(this.steerAngle) / Math.max(0.02, steerLimit));
-    const commitRaw = clamp(hb * 0.9 + into * 0.75 + counter * 0.95 * lockLeft + throttle * 0.30, 0, 1);
+    // Hands only count while a handbrake slide is live (see the drift latch above).
+    const commitRaw = clamp(hb * 0.9 + latch * (into * 0.75 + counter * 0.95 * lockLeft + throttle * 0.30), 0, 1);
     this.commit = lerp(this.commit, commitRaw, 1 - Math.exp(-7 * dt));
     //
     // THE FLOOR IS A DEAD BAND, AND THE DEAD BAND IS WHERE A FAILED RECOVERY PARKS. Below `allow`
@@ -430,7 +472,7 @@ export class VehicleBody {
     // for it) — what has changed is that with the wheel straight it no longer feeds itself for ever.
     // The handbrake also counts IMMEDIATELY rather than through the 0.14 s filter: pulling it is
     // not an ambiguous request, and the flick has to break the axle away on the very first frame.
-    const askRaw = clamp(hb * 0.95 + into * 0.85 + counter * 1.0 * lockLeft, 0, 1);
+    const askRaw = clamp(hb * 0.95 + latch * (into * 0.85 + counter * 1.0 * lockLeft), 0, 1);
     this.driftAsk = lerp(this.driftAsk, askRaw, 1 - Math.exp(-7 * dt));
     // The ramp is deliberately low and narrow. It has to be at FULL authority for a driver holding
     // a third of a turn of opposite lock — that is a drifter balancing the car, and at 0.18–0.55 a
@@ -441,7 +483,15 @@ export class VehicleBody {
 
     // The rear's friction circle. Everything that makes a car oversteer lives in this one number,
     // which is why `rearGrip` is in the telemetry: it is the drift, quantified.
-    const circle = Math.sqrt(Math.max(0.02, 1 - Math.pow(clamp(rearLoad * p.powerOversteer, 0, 0.99), 2)));
+    // POWER OVERSTEER FADES WITH SPEED unless a handbrake slide is live. `rearLoad` is the engine
+    // force over the tyre's budget, and in the low gears of the torquier classes it reads 1.5–1.8
+    // all the way up to 50 m/s, so the friction circle took a third of the rear's grip on a
+    // STRAIGHT at full throttle. drivetest caught the muscle car fishtailing ±16° at 110 mph in
+    // third with the wheel nearly centred. Real power oversteer is a low-speed, low-gear thing
+    // (force = power / speed), so it keeps its full bite out of slow corners and fades to a third
+    // of it by 30 m/s — and comes straight back inside a slide the driver started.
+    const powerFade = lerp(1, p.powerFadeHigh ?? 0.35, smoothstep(12, 30, absV) * (1 - this.driftLatch));
+    const circle = Math.sqrt(Math.max(0.02, 1 - Math.pow(clamp(rearLoad * p.powerOversteer * powerFade, 0, 0.99), 2)));
     // KINETIC FRICTION. A tyre past its peak slip angle grips less than one at its peak — that is
     // the whole reason a slide is self-sustaining and why a drift is a balance rather than a
     // switch. Without it, a car in a tall gear at 116 mph cannot lean hard enough on the rears to
@@ -680,6 +730,18 @@ export class VehicleBody {
       // ...and the same backstop carries the post-impact window: a barrier hit that leaves the car
       // 60° sideways is exactly where §6.2's "recovery and controllability after a hit" is won or
       // lost, and `recover` on its own only damped the rotation rather than ending it.
+      // SPEED STABILITY. Tyres damp yaw in proportion to 1/v, so a bicycle model gets steadily
+      // twitchier the faster it goes — at 70 m/s the muscle car's heading and its course could
+      // swing ±20° apart in a weave a keyboard driver fed rather than caught (drivetest). Outside a
+      // handbrake slide, the heading is eased toward the rate its own path is turning at, harder
+      // the faster the car is going. This is NOT a yaw damper: `sustain` is the course rate, so a
+      // steady corner is untouched and only the heading/path DIFFERENCE is damped.
+      // One-sided past the class's drift line, like every other term in this loop: while a big
+      // angle is CLOSING it stays out of the way, so it can only ever slow a slide down, never
+      // hold one up (drifttest's dirt cells at 68 m/s measure exactly that).
+      const closeW = 1 - smoothstep(p.driftOn * DEG2RAD, p.driftFull * DEG2RAD, Math.abs(slipS));
+      const stab = (p.speedStability ?? 4.0) * smoothstep(18, 60, vRef) * (1 - this.driftLatch) * (opening ? 1 : closeW);
+      if (stab > 0.001) this.yawRate = lerp(this.yawRate, sustain, 1 - Math.exp(-stab * h));
       const anti = Math.max(guard, rec * 0.85);
       if (anti > 0.001) this.yawRate = lerp(this.yawRate, sustain, 1 - Math.exp(-anti * 16 * h));
       // Low speed: the tyre model has nothing to work with, so blend toward Ackermann geometry.
@@ -909,6 +971,7 @@ export class VehicleBody {
       // this is near zero is the latch this model has now been fixed for four rounds, and it is
       // the one number that makes that visible in a trace instead of only in a scripted capture.
       driftAsk: +this.driftAsk.toFixed(3),
+      driftLatch: +this.driftLatch.toFixed(3),
       steerDeg: +(this.steerAngle * RAD2DEG).toFixed(2),
       counterDeg: +(this.assist * RAD2DEG).toFixed(2),
       frontDeg: +(this.steerVisual * RAD2DEG).toFixed(2),

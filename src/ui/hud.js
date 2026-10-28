@@ -1053,6 +1053,17 @@ export class HUD {
     }
   }
 
+  /**
+   * Samples per CSS pixel for the HUD backbuffer (core/quality.js `hudSS`). 3 is the original look
+   * and costs a ~9 Mpx canvas clear + draw + high-quality downscale every frame; at or below the
+   * device pixel ratio the backbuffer is dropped and the HUD draws straight to its canvas.
+   */
+  setSupersample(ss) {
+    if (this.ss === ss) return;
+    this.ss = ss;
+    this.resize(this.w || undefined, this.h || undefined);
+  }
+
   resize(w, h) {
     const W = w || window.innerWidth, H = h || window.innerHeight;
     // Everything in the cache was rasterised for the old backbuffer resolution and for layout at
@@ -1060,7 +1071,7 @@ export class HUD {
     this._flushCache();
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.scale = Math.max(this.dpr, Math.min(
-      SS,
+      this.ss ?? SS,
       SS_MAX_EDGE / Math.max(1, W), SS_MAX_EDGE / Math.max(1, H),
       Math.sqrt(SS_MAX_PX / Math.max(1, W * H)),
     ));
