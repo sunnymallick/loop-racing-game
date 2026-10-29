@@ -106,6 +106,7 @@ export const AtmosphereShader = {
     uWetPatch: { value: 0.55 },    // puddle contrast (0 = uniformly wet)
     uWetPatchScale: { value: 0.055 },
     uWetFresnel: { value: 4.0 },
+    uWetFloor: { value: 0.14 },    // Fresnel floor: the base reflectance of a WATER FILM (0 = dry)
 
     uHazeColor: { value: new THREE.Color(0x8fa8c8) },  // ambient scatter colour
     uHazeSunColor: { value: new THREE.Color(0xffd7a8) },// forward-scatter colour near the sun
@@ -137,7 +138,7 @@ export const AtmosphereShader = {
                   uHazeHeight, uHazeBase, uHazeFalloff, uHazeDesat,
                   uSunVisible, uShaft, uShaftDensity, uShaftDecay, uShaftThreshold, uSunGlow, uBoost,
                   uWet, uWetPlaneY, uWetBand, uWetThresh, uWetKnee, uWetSpread, uWetGain, uWetPatch,
-                  uWetPatchScale, uWetFresnel;
+                  uWetPatchScale, uWetFresnel, uWetFloor;
     uniform vec3 uBalance, uHazeColor, uHazeSunColor, uShaftTint, uCamPos, uSunDir, uWetTint;
     uniform mat4 uInvViewProj, uViewProj;
     varying vec2 vUv;
@@ -234,8 +235,11 @@ export const AtmosphereShader = {
             }
             // Schlick, but with a floor: physically a wet road at 50 degrees reflects ~5%, which
             // reads as nothing on screen. Arcade wet asphalt keeps a base term so the road under
-            // the car still catches its own brake lights.
-            float fres = 0.14 + 0.86 * pow(1.0 - clamp(dot(-rd, nrm), 0.0, 1.0), uWetFresnel);
+            // the car still catches its own brake lights. The floor is the WATER's, though, so it
+            // is a uniform: a dry road (LA) sets it to 0, or every bright thing above the horizon
+            // comes back as a legible mirror image in the near and mid carriageway.
+            float fres = uWetFloor + (1.0 - uWetFloor)
+                       * pow(1.0 - clamp(dot(-rd, nrm), 0.0, 1.0), uWetFresnel);
 
             vec3 rm = vec3(rd.x, -rd.y, rd.z);
             // reflections blur with the distance they travel; near-camera road (steep ray) smears

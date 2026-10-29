@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RNG, clamp, lerp, smoothstep } from '../core/rng.js';
+import { RNG, clamp, lerp, smoothstep, makeNoise2D, fbm2D } from '../core/rng.js';
 import { asphalt, concrete, canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas } from '../core/textures.js';
 
 /**
@@ -544,6 +544,74 @@ export function roadGlyphTexture(kind = 'arrow') {
     }
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
+  });
+}
+
+/**
+ * A crosswalk bar, worn the way road paint actually wears.
+ *
+ * The generic glyph wear above punches ~110 round blots out of the paint, which is fine on an
+ * arrow seen from 20 m and was the "dalmatian" every NYC landmark frame put front and centre:
+ * a crosswalk bar is a 0.62 x 3.6 m quad, so each blot landed on the road as a crisp grey
+ * ellipse. Paint does not wear in spots, it wears in the direction the tyres travel. So here
+ * canvas X runs ACROSS the bar (~2.4 mm a pixel) and Y runs ALONG it, with the traffic (~14 mm a
+ * pixel), and everything is built from that anisotropy:
+ *
+ *  - a tyre-path band somewhere across the bar where the paint is scrubbed through in long
+ *    streaks (`heavy` says how far: 0 a bar between the wheel tracks, 1 a bar right under one);
+ *  - fine streak noise everywhere else, stretched along the traffic, so the gaps are scuffs;
+ *  - ragged long edges and chipped ends instead of a ruled rectangle;
+ *  - aggregate showing through as tiny elongated pits, densest in the band.
+ */
+export function crosswalkBarTexture(variant = 0, heavy = 0.5) {
+  return decalTex(`glyph:xwalk:${variant}:${heavy}`, (ctx, s) => {
+    const rng = new RNG(911 + variant * 37);
+    const nA = makeNoise2D(1301 + variant * 7), nB = makeNoise2D(1709 + variant * 11);
+    const n01 = (fn, x, y, o) => clamp(0.5 + 0.5 * fbm2D(fn, x, y, o), 0, 1);
+    const band = rng.range(0.28, 0.72) * s, bandW = rng.range(0.13, 0.22) * s;
+    // edge bite depth per row (long edges) and per column (ends), in pixels
+    const bite = (v, k) => 3 + 20 * Math.pow(n01(nB, v * 9 + k * 31.7, k * 3.1, 3), 1.6);
+    const img = ctx.createImageData(s, s);
+    const d = img.data;
+    for (let y = 0; y < s; y++) {
+      const fy = y / s;
+      const eL = bite(fy, 0), eR = bite(fy, 1);
+      for (let x = 0; x < s; x++) {
+        const fx = x / s;
+        let a = 0.94;
+        // ragged long edges, and chipped ends (an end pixel is 14 mm, so the bites are shallow)
+        a *= smoothstep(eL - 2.5, eL + 2.5, x) * smoothstep(eR - 2.5, eR + 2.5, s - 1 - x);
+        const eEnd = 1.5 + 5 * n01(nB, fx * 7, 5.3 + (y < s / 2 ? 0 : 9), 2);
+        a *= smoothstep(eEnd - 1.5, eEnd + 1.5, Math.min(y, s - 1 - y));
+        // the wheel track wanders a few centimetres and is worn through in PATCHES along its
+        // length, not as one ruled slot
+        const bandC = band + 0.07 * s * fbm2D(nB, fy * 2.2, 7.7, 2);
+        const tyre = Math.exp(-(((x - bandC) / bandW) ** 2)) * (0.35 + 0.65 * heavy)
+                   * (0.55 + 0.45 * n01(nB, 3.3, fy * 3.1, 2));
+        // streaks along the traffic (~2.5 cm across, ~0.5 m along, warped so none is ruled
+        // straight) and broader scuffed blotches where the aggregate is coming through
+        const wx = fx + 0.012 * fbm2D(nA, fy * 5, 1.7, 2);
+        const st = n01(nA, wx * 26, fy * 7, 4);
+        const blot = n01(nB, fx * 3.5 + 11, fy * 4.5, 3);
+        const wear = st * (0.42 + 0.85 * tyre) + blot * (0.22 + 0.55 * tyre);
+        a *= 1 - smoothstep(0.58, 0.85, wear);
+        // aggregate pits: short dashes along Y, mostly where the tyres run
+        if (rng.next() < 0.010 + 0.10 * tyre) a *= rng.range(0.05, 0.6);
+        const i = (y * s + x) * 4;
+        // grime settles into the worn band before the paint goes
+        const g = 1 - 0.16 * tyre * st;
+        d[i] = 242 * g; d[i + 1] = 239 * g; d[i + 2] = 228 * g;
+        d[i + 3] = clamp(a, 0, 1) * 255;
+      }
+    }
+    // stretch the pits into dashes along the traffic: blend each row with the one above
+    for (let y = s - 1; y > 0; y--) {
+      for (let x = 0; x < s; x++) {
+        const i = (y * s + x) * 4, j = ((y - 1) * s + x) * 4;
+        d[i + 3] = Math.min(d[i + 3], 0.55 * d[i + 3] + 0.45 * d[j + 3] + 40);
+      }
+    }
+    ctx.putImageData(img, 0, 0);
   });
 }
 
@@ -2636,6 +2704,10 @@ export class Track {
     const oilMats = [0, 1, 2].map((i) => flatMat(stainTexture(i, 'oil'), { rough: 0.22 }));
     const skidMat = flatMat(skidTexture(1), { rough: 0.75 });
     const paintMat = flatMat(roadGlyphTexture('bar'), { rough: 0.78, color: 0xe6e3d8 });
+    // crosswalk bars get their own directional wear (see crosswalkBarTexture): light, medium
+    // and a bar sitting right in a wheel track
+    const crossMats = [[0, 0.15], [1, 0.55], [2, 1.0]].map(([v, hv]) =>
+      flatMat(crosswalkBarTexture(v, hv), { rough: 0.78, color: 0xe6e3d8 }));
 
     /** Lay a quad flat on the road, centred at (u, lateral), size (across, along), rotated. */
     const quad = (material, u, lateral, across, along, rot = 0, lift = 0.012) => {
@@ -2659,14 +2731,16 @@ export class Track {
       crossU.push(u);
     }
     g.userData.crossings = crossU;
-    for (const u0 of crossU) {
+    for (const [ci, u0] of crossU.entries()) {
       const f = this.frame(u0);
       const barW = 0.62, gap = 0.62;
       const span = f.half * 2 * 0.92;
       const n = Math.max(4, Math.floor(span / (barW + gap)));
       for (let i = 0; i < n; i++) {
         const lat = (-0.92 + (i + 0.5) * (1.84 / n));
-        quad(paintMat, u0, lat, barW, 3.6);
+        // a fixed hash, not the shared rng: drawing from it here would reshuffle every manhole,
+        // stain and skid placed after this loop
+        quad(crossMats[(i * 7 + ci * 3 + (i >> 1)) % 3], u0, lat, barW, 3.6);
       }
       // stop line just before it
       const du = 3.2 / this.length;
