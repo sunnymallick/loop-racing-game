@@ -101,6 +101,10 @@ export class VehicleBody {
     this.commit = 0;             // 0..1 filtered driver commitment (throttle/lock/handbrake)
     this.driftAsk = 0;           // 0..1 the same, HANDS ONLY — the licence to sustain a slide
     this.driftLatch = 0;         // 0..1 a slide the HANDBRAKE started and the car is still in
+    this.latchSide = 0;          // which way that slide went (sign of vLat) — the corner it is in
+    this.latchPeak = 0;          // …and the most slip it reached that way, degrees
+    this.driftBank = 0;         // seconds of drift the live slide has banked (−1: spoiled)
+    this.driftPayout = 0;        // one frame, 0..1: a clean slide just ended and paid out this much
     this.grounded = true;
     this.airborne = 0;
     this.vy = 0;                 // vertical velocity for ramps/jumps
@@ -147,6 +151,7 @@ export class VehicleBody {
     this.pos.copy(pos); this.yaw = yaw;
     this.vel.set(0, 0, 0); this.yawRate = 0; this.speed = 0; this.groundSpeed = 0;
     this.drift = 0; this.slide = 0; this.commit = 0; this.driftAsk = 0; this.driftLatch = 0;
+    this.latchSide = 0; this.latchPeak = 0; this.driftBank = 0; this.driftPayout = 0;
     this.slip = 0; this.slipAllow = 0; this.slipTarget = 0;
     this.vy = 0; this.y = pos.y;
     this.boost = 0; this.steerAngle = 0; this.steerVisual = 0; this.assist = 0;
@@ -309,10 +314,49 @@ export class VehicleBody {
     // `opts.assists === false` keeps the original model exactly (the latch pinned open, full lock at
     // every speed): race.js passes it for the AI field, whose pace and racecraft were tuned over
     // many rounds against that model and which never drives with a keyboard.
+    //
+    // …and the latch remembers WHICH CORNER: the side the slide went the moment it became a real
+    // one. The drift line in the tyre loop carries the car round that corner, and it keeps doing
+    // so if a keyboard catch overshoots through straight — that overshoot is the slide's own exit,
+    // not a new corner, and it is exactly where the car used to be flung at the outside barrier.
+    // But an overshoot is only the slide's exit while it is SMALLER than the slide was (and than
+    // twice this class's drift line): one that swings out further the other way is a new slide
+    // nobody asked for, and the latch lets go of it. Held, a flick that peaked at 10° and swung to
+    // 19° the other way kept a half-open latch alive on the overshoot, and one that stayed under
+    // the drift line and then swung out parked the car at 29° for over a second (drivetest
+    // --handbrake at the default push, the SUV in NYC and Miami: a barrier hit and 3 s off the
+    // road where the round-9 latch had none). The side, likewise, is only taken while the
+    // handbrake's own slide is fresh (latch over half), and a latch that never found one lets go
+    // whatever the angle.
+    const slideOn = slipNowDeg > p.driftOn * 0.8;
     if (this.opts.assists === false) this.driftLatch = 1;
-    else if (hb && absV > 6) this.driftLatch = 1;
-    else if (slipNowDeg < p.driftOn * 0.8 || absV < 4) this.driftLatch = Math.max(0, this.driftLatch - 3.0 * dt);
+    else {
+      const pulled = hb && absV > 6;
+      if (pulled) this.driftLatch = 1;
+      if (!this.latchSide && slideOn && this.driftLatch > 0.5) this.latchSide = Math.sign(vLat);
+      if (this.latchSide && Math.sign(vLat) === this.latchSide) this.latchPeak = Math.max(this.latchPeak, slipNowDeg);
+      const overshoot = this.latchSide && Math.sign(vLat) === -this.latchSide
+        && slipNowDeg > Math.max(this.latchPeak, p.driftOn * 2);
+      if (!pulled && (!slideOn || absV < 4 || !this.latchSide || overshoot)) this.driftLatch = Math.max(0, this.driftLatch - 3.0 * dt);
+      if (this.driftLatch <= 0) { this.latchSide = 0; this.latchPeak = 0; }
+    }
     const latch = this.driftLatch;
+    // THE PAYOUT. A handbrake slide used to be all cost — scrub, a lit rear that would not put the
+    // power down, a slower exit — and the score it ran up only ever reached the HUD. So a live slide
+    // banks seconds of real drift (`drift` is the 0..1 the HUD scores), and a CLEAN one — no
+    // barrier, never past the class's own limit — pays out on the frame the latch lets go:
+    // `driftPayout` 0..1 (a second of full drift is a full payout), which main.js turns into
+    // nitrous. A slide that touches a wall or gets away from the driver banks nothing.
+    this.driftPayout = 0;
+    if (this.opts.assists !== false) {
+      if (latch > 0) {
+        if (this.wallT > 0 || slipNowDeg > p.slipMax + 8) this.driftBank = -1;
+        else if (this.driftBank >= 0) this.driftBank += this.drift * dt;
+      } else if (this.driftBank) {
+        if (this.driftBank > 0) this.driftPayout = clamp(this.driftBank, 0, 1);
+        this.driftBank = 0;
+      }
+    }
 
     // ---------------------------------------------------------------- steering
     // Authority falls with speed so the car isn't twitchy flat out, but never to zero.
@@ -322,8 +366,8 @@ export class VehicleBody {
     // more: the geometric angle for the tightest arc the front grip can hold (L/R with R = v²/a)
     // plus the tyre's own working slip angle. Past that a front tyre only scrubs, so the extra
     // lock bought nothing but understeer and — on a keyboard, where every press is full lock — a
-    // snap of yaw the rear then had to catch. Inside a handbrake slide the full base range comes
-    // back, because opposite lock is how a drift is held.
+    // snap of yaw the rear then had to catch. Inside a handbrake slide more of the range comes
+    // back (below), because opposite lock is how a drift is held.
     const Lw = this.opts.wheelbase ?? 2.8;
     const vS = Math.max(absV, 1);
     // The tyre term is a MARGIN, not a whole slip angle: cornering hard the rear runs nearly the
@@ -334,8 +378,18 @@ export class VehicleBody {
     // Catching a slide needs lock past that, toward the slide: add the slip angle the car is
     // carrying, so opposite lock can always point the front wheels down the road.
     const slipSigned = Math.atan2(vLat, Math.max(4.0, absV));
-    if (steerIn * slipSigned > 0) gripLock += Math.abs(slipSigned);
-    const steerLimit = lerp(Math.min(steerBase, gripLock), steerBase, latch);
+    const catching = steerIn * slipSigned > 0;
+    if (catching) gripLock += Math.abs(slipSigned);
+    // Inside a handbrake slide the lock opens up, but to what the SLIDE can use rather than to the
+    // stop: the grip angle, plus the slip angle the car is carrying (either way — into the slide it
+    // is the angle the flick has already swung the nose through), plus one more peak of tyre. It
+    // used to be the whole base range, and on a keyboard, where every press is the whole range,
+    // that was 10–20° of front tyre past anything it could use: a front axle scrubbing wide on
+    // the way out of every slide, which is where drivetest's handbrake laps left the road. (The AI's
+    // model, whose latch is pinned open, keeps the whole range it was tuned on.)
+    const latchLock = this.opts.assists === false ? steerBase
+      : Math.min(steerBase, gripLock + (catching ? 0 : Math.abs(slipSigned)) + p.alphaPeak);
+    const steerLimit = lerp(Math.min(steerBase, gripLock), latchLock, latch);
     const wantAngle = steerIn * steerLimit;
     // Unwinding the wheel is quicker than winding it on — that is what makes a catch feel sharp.
     const rate = p.steerRate * (Math.abs(wantAngle) < Math.abs(this.steerAngle) ? 1.45 : 1);
@@ -640,6 +694,13 @@ export class VehicleBody {
     const kinW = 1 - smoothstep(3, 12, absV);                     // car-park steering blend
     const alphaPeak = Math.max(0.04, p.alphaPeak);
 
+    // The drift line (see the sub-step): what grip-limited full lock bends the path by, and how much
+    // of it the driver is asking for — a live handbrake latch with lock held either way. The
+    // AI's model (assists: false) pins the latch open and is left exactly as it was tuned.
+    const gripLine = p.gripFront * GRAV * surfaceGrip * df * 0.95;
+    const lineW = this.opts.assists === false ? 0 : latch * clamp(into + counter, 0, 1);
+    const lineSign = this.latchSide ? -this.latchSide : dir;
+
     const SUB = 4;
     const h = dt / SUB;
     let aLatAcc = 0, fyfAcc = 0, fyrAcc = 0, slideAcc = 0, beyondAcc = 0;
@@ -679,7 +740,29 @@ export class VehicleBody {
       const cd = Math.cos(delta);
       const fyf = -muF * sat(alphaF / alphaPeak) * gate;
       const fyr = -muR * sat(alphaR / alphaPeak) * gate;
-      const aLatT = fyf * cd * biteF + fyr;
+      let aLatT = fyf * cd * biteF + fyr;
+      const sinB = vLat / vRef, cosB = Math.abs(vLong) / vRef;
+      // THE DRIFT LINE. A handbrake slide used to cost its line: with the rear cut, the course
+      // bends with the front axle alone, so on lock into the corner the car went round on less
+      // path-bending than the same lock buys on grip and washed wide — drivetest --handbrake at the
+      // limit took 7 barrier hits and 21 s off the tarmac a lap set against 2 and 9 s on grip, for
+      // no time gained. So while the latch is live and the driver holds lock — either way: into the
+      // slide or catching it is still a driver working a corner — the path is carried round THE
+      // CORNER THE SLIDE IS IN (`latchSide`), to the grip line: the acceleration across the path
+      // grip-limited full lock asks of the front tyres (`gripLine`, the figure `gripLock` is built
+      // on), never more. That includes a keyboard catch that overshoots through straight: the
+      // overshoot is the slide's exit, and it was where the car left the corner pointed at the
+      // outside barrier. It acts on the PATH only — perpendicular to the velocity, so it costs no
+      // speed and spins nothing — and `sustain` below carries the car's angle round with it. Hands
+      // off the keys, the slide is the driver's to balance, exactly as before.
+      if (lineW > 0.001) {
+        const s = lineSign;
+        const lack = gripLine * lineW - (aLatT * cosB - this.aLong * sinB) * s;
+        if (lack > 0) {
+          aLatT += cosB * s * lack;
+          vLong -= sinB * s * lack * h;
+        }
+      }
       const driftW = smoothstep(0.14, 0.34, Math.abs(slipS));
       slideAcc += Math.abs(sat(alphaR / alphaPeak));   // rear friction budget already spent sideways
       beyondAcc += clamp(Math.abs(alphaR) / alphaPeak - 1, 0, 2) * 0.5;   // past the peak → kinetic
@@ -696,7 +779,6 @@ export class VehicleBody {
       // straight — which is why recovery is clean and a spin is impossible.
       // Stability control has priority: any grip it hands back also releases the hold, so lifting
       // off and centring the wheel winds the car straight instead of parking it in a slide.
-      const sinB = vLat / vRef, cosB = Math.abs(vLong) / vRef;
       const sustain = (aLatT * cosB - this.aLong * sinB) / vRef;   // yaw rate that holds this angle
       // ...and "while the driver is COMMITTED" is what the paragraph above has always claimed it
       // does, but there was no commitment term in the weight — only the drift-angle ramp and the
