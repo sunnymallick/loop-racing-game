@@ -35,6 +35,8 @@ export async function boot({ headless = true, width = 1600, height = 900, gpu = 
   //    ask for the installed Google Chrome via `channel` and drop every software-rasteriser flag.
   //    Without this, "headed" runs still report ~0.5 fps and look like a catastrophic perf bug.
   const browser = await chromium.launch({
+    // CHROME_PATH: use a specific Chromium binary (e.g. where Playwright's own download is unavailable)
+    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
     headless: gpu ? false : headless,
     ...(gpu ? { channel: 'chrome' } : {}),
     args: gpu
@@ -74,6 +76,8 @@ export async function boot({ headless = true, width = 1600, height = 900, gpu = 
 export async function open(page, url, { city = 'la', car = 'muscle', color = null, timeout = 120000 } = {}) {
   const q = new URLSearchParams({ shot: '1', city, car });
   if (color) q.set('color', color);
+  // SHOT_QUALITY=low|medium|high: capture at a graphics preset instead of shot mode's default (high)
+  if (process.env.SHOT_QUALITY) q.set('quality', process.env.SHOT_QUALITY);
   await page.goto(`${url}/?${q}`, { waitUntil: 'domcontentloaded', timeout });
   await page.waitForFunction('window.__READY === true || window.__READY === "error"', null, { timeout });
   const state = await page.evaluate('window.__READY');
