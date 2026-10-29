@@ -66,6 +66,155 @@ function rot180(cs, w, h = 1) { return cs.map((c) => c.map(([x, y]) => [w - x, h
 /** Non-uniform scale, used to derive x-height forms from cap forms. */
 function xform(cs, sx, sy, dx = 0, dy = 0) { return cs.map((c) => c.map(([x, y]) => [x * sx + dx, y * sy + dy])); }
 
+// ---------------------------------------------------------------- single-outline figures
+//
+// Most glyphs are a union of overlapping strokes, which the nonzero fill joins cleanly. Figures
+// whose strokes meet AROUND an enclosed space cannot be built that way: wherever two strokes leave
+// a pocket between them, the pocket is a hole in the union (the nitrous halo shone through the 2),
+// and every pen pass — weight, glow, bevel — strokes each overlapping contour separately, so a
+// stroke's edge that runs inside a counter grows into it (the hook in the 6's bowl, the 4's counter
+// choked to a dot). The 2, 4, 6 and 9 are therefore traced as ONE outline plus at most one explicit
+// counter, with the joins solved where the edges actually cross.
+
+/** An ellipse is [cx, cy, rx, ry]; `at` is its point at parameter angle a. */
+const at = (e, a) => [e[0] + Math.cos(a) * e[2], e[1] + Math.sin(a) * e[3]];
+const thin = (e, t) => [e[0], e[1], e[2] - t, e[3] - t];
+const insideE = (e) => ([x, y]) => ((x - e[0]) / e[2]) ** 2 + ((y - e[1]) / e[3]) ** 2 < 1;
+/** Which side of the line through p along d a point lies on. */
+const sideL = (p, d) => ([x, y]) => d[0] * (y - p[1]) - d[1] * (x - p[0]) > 0;
+/** Parameter angle of a point on (or near) ellipse e, in (-π, π]. */
+const angleOn = (e, [x, y]) => Math.atan2((y - e[1]) / e[3], (x - e[0]) / e[2]);
+/** First angle, walking e from a0 towards a1, where test(point, angle) changes value; bisected. */
+function crossing(e, a0, a1, test) {
+  const n = 720;
+  const t0 = test(at(e, a0), a0);
+  let lo = a0;
+  for (let i = 1; i <= n; i++) {
+    let hi = a0 + (a1 - a0) * (i / n);
+    if (test(at(e, hi), hi) !== t0) {
+      for (let k = 0; k < 40; k++) {
+        const mid = (lo + hi) / 2;
+        if (test(at(e, mid), mid) === t0) lo = mid; else hi = mid;
+      }
+      return (lo + hi) / 2;
+    }
+    lo = hi;
+  }
+  throw new Error('font: figure edges do not meet');
+}
+/** Concatenate runs of points into one contour, dropping the duplicate where two runs join. */
+function trace(...runs) {
+  const out = [];
+  for (const run of runs) {
+    for (const p of run) {
+      const q = out[out.length - 1];
+      if (!q || Math.abs(q[0] - p[0]) > 1e-7 || Math.abs(q[1] - p[1]) > 1e-7) out.push(p);
+    }
+  }
+  return out;
+}
+
+/**
+ * The 6: a hooked stroke that runs down the left side into a closed bowl. One outline (hook outer
+ * edge → bowl outer edge round the bottom and up → hook inner edge back to the terminal) and the
+ * bowl's counter. The hook's inner edge only exists ABOVE the point where it meets the bowl, so it
+ * can never cut into the counter.
+ * @param bowl ellipse of the bowl's outer edge   @param hook ellipse of the hook's outer edge
+ * @param t stroke   @param aT angle of the hook's terminal (upper right)
+ */
+function sixFigure(bowl, hook, t, aT) {
+  const hi = thin(hook, t);
+  // hook's outer edge, walked over the top and down the left until it runs into the bowl
+  const aQ = crossing(hook, aT, 0.5 * Math.PI, insideE(bowl));
+  const bQ = angleOn(bowl, at(hook, aQ));
+  // bowl's outer edge from there: down, round the bottom, up the right, over the top, and on
+  // into the aperture under the hook. (Q is on the bowl's upper left, so bQ is in (-π, -π/2), and
+  // the walk resumes from the bowl's upper right, at -9π/4.)
+  //
+  // The bowl and the hook's inner edge close on each other at a shallow angle, so the true crotch
+  // is a long hairline wedge that every pen pass half-fills into a dark slit. The bowl is left
+  // early instead — where the aperture is still `trap` wide — and the wedge's tip is filled with
+  // ink: the aperture ends square, as the stroke's own width allows.
+  const from = -2.25 * Math.PI;
+  const trap = 0.13;
+  const near = (p) => {                         // nearest point on the hook's inner edge as drawn
+    let m = Infinity, am = 0;
+    for (let i = 0; i <= 720; i++) {
+      const a = Math.PI + (aT - Math.PI) * (i / 720);
+      const q = at(hi, a);
+      const dq = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      if (dq < m) { m = dq; am = a; }
+    }
+    return [m, am];
+  };
+  const open = (p) => insideE(hi)(p) && near(p)[0] > trap;
+  if (!(bQ > -Math.PI && bQ < -0.5 * Math.PI) || !open(at(bowl, from))) {
+    throw new Error('font: the 6 bowl must meet the hook upper left and clear it upper right');
+  }
+  const bP = crossing(bowl, from, bQ - 2 * Math.PI, open);
+  // square across the aperture: on to the hook's edge at the point nearest the bowl's
+  const aP = near(at(bowl, bP))[1] - 2 * Math.PI;
+  const outer = trace(
+    arcInto([], ...hook, aT, aQ),
+    arcInto([], ...bowl, bQ, bP),
+    arcInto([], ...hi, aP, aT - 2 * Math.PI),
+  );
+  const bi = thin(bowl, t);
+  return [cw(outer), ccw(arcInto([], ...bi, 0, TAU).slice(0, -1))];
+}
+
+/**
+ * The 2: bowl arc over the top, a spine that leaves the bowl along its tangent, and the base bar —
+ * one outline, no counter. The spine's inner edge is parallel to its outer edge and is cut off
+ * exactly where it meets the bowl's inner edge, so no pocket is left between them.
+ * @param bowl ellipse of the bowl's outer edge   @param t bowl stroke
+ * @param a0 angle of the bowl's left terminal
+ * @param foot x where the spine's outer edge lands on the base bar   @param w spine width along x
+ * @param bar base bar height   @param inkW ink width
+ */
+function twoFigure(bowl, t, a0, foot, w, bar, inkW) {
+  const R1 = [foot, 1 - bar];
+  // the spine's outer edge is the tangent from the foot to the bowl's right side
+  const tang = (p, a) => {
+    const d = [-Math.sin(a) * bowl[2], Math.cos(a) * bowl[3]];
+    return d[0] * (p[1] - R1[1]) - d[1] * (p[0] - R1[0]) > 0;
+  };
+  const aR = crossing(bowl, 2.0 * Math.PI, 2.5 * Math.PI, tang);
+  const R0 = at(bowl, aR);
+  const d = [R1[0] - R0[0], R1[1] - R0[1]];
+  const L1 = [foot - w, 1 - bar];
+  const bi = thin(bowl, t);
+  const aL = crossing(bi, 1.5 * Math.PI, a0 + 2 * Math.PI, sideL(L1, d));
+  return [cw(trace(
+    arcInto([], ...bowl, a0, aR),
+    [R1, [inkW, 1 - bar], [inkW, 1], [0, 1], [0, 1 - bar], L1],
+    arcInto([], ...bi, aL, a0),
+  ))];
+}
+
+/**
+ * The 4: diagonal, stem and crossbar as one outline, and the triangle between them as an explicit
+ * counter, so no pen pass can grow into it.
+ * @param s0,s1 stem x range   @param b0,b1 crossbar y range   @param inkW crossbar length
+ * @param tx diagonal centre x at the cap line   @param slope diagonal run in x per unit y
+ * @param dw diagonal width along x
+ */
+function fourFigure(s0, s1, b0, b1, inkW, tx, slope, dw) {
+  const xl = (y) => tx - dw / 2 - slope * y;   // diagonal's left edge
+  const xr = (y) => tx + dw / 2 - slope * y;   // diagonal's right edge
+  // where the right edge meets the stem. The counter's two acute corners are cut flat a hair
+  // inside the true point, so an anti-aliased tip can't pinch off into a speck or a slit.
+  const apex = (tx + dw / 2 - s0) / slope + 0.03;
+  const foot = b0 - 0.03;
+  return [
+    cw([
+      [xl(0), 0], [s1, 0], [s1, b0], [inkW, b0], [inkW, b1], [s1, b1], [s1, 1], [s0, 1], [s0, b1],
+      [0, b1], [0, b0], [xl(b0), b0],
+    ]),
+    ccw([[xr(apex), apex], [s0, apex], [s0, b0], [xr(foot), b0], [xr(foot), foot]]),
+  ];
+}
+
 const ST = 0.165;    // stem
 const BT = 0.152;    // horizontal bar (optically lighter than the stem)
 const DT = 0.205;    // diagonal, horizontal pen
@@ -160,24 +309,17 @@ const FIG = 0.80;
 const fig = (ch, c, inkW) => def(ch, FIG, c, (FIG - 0.14 - inkW) / 2 + 0.07);
 fig('0', [...ring(0.36, 0.50, 0.36, 0.502, RT)], 0.72);
 fig('1', [box(0.28, 0, 0.28 + ST, 1), cw([[0.28, 0.02], [0.28, 0.30], [0.075, 0.235]])], 0.45 + 0.075);
-fig('2', [
-  band(0.36, 0.30, 0.32, 0.30, RT, 0.88 * Math.PI, 2.10 * Math.PI),
-  hbar(0.60, 0.34, 0.155, 0.88, 0.245),
-  box(0, 1 - BT, 0.72, 1),
-], 0.72);
+fig('2', twoFigure([0.36, 0.30, 0.32, 0.30], RT, 0.88 * Math.PI, 0.30, 0.245, BT, 0.72), 0.72);
 fig('3', [
   band(0.34, 0.275, 0.30, 0.275, RT, 0.88 * Math.PI, 2.42 * Math.PI),
   band(0.34, 0.725, 0.33, 0.275, RT, 1.52 * Math.PI, 2.88 * Math.PI),
 ], 0.70);
-fig('4', [box(0, 0.60, 0.70, 0.60 + BT), box(0.44, 0, 0.44 + ST, 1), hbar(0.47, 0, 0.115, 0.66, 0.225)], 0.70);
+fig('4', fourFigure(0.44, 0.44 + ST, 0.60, 0.60 + BT, 0.70, 0.47, 0.355 / 0.66, 0.225), 0.70);
 fig('5', [
   box(0, 0, 0.66, BT), box(0, 0, ST, 0.52), box(0, 0.36, 0.36, 0.36 + RT),
   band(0.34, 0.68, 0.34, 0.32, RT, 1.5 * Math.PI, 2.86 * Math.PI),
 ], 0.68);
-const SIX = [
-  ...ring(0.36, 0.66, 0.36, 0.34, RT),
-  band(0.44, 0.62, 0.42, 0.62, RT, 1.72 * Math.PI, 1.0 * Math.PI),
-];
+const SIX = sixFigure([0.36, 0.70, 0.36, 0.30], [0.44, 0.62, 0.42, 0.62], RT, 1.70 * Math.PI);
 fig('6', SIX, 0.72);
 fig('7', [box(0, 0, 0.72, BT), hbar(0.585, 0, 0.19, 1, 0.235)], 0.72);
 fig('8', [...ring(0.35, 0.275, 0.31, 0.277, RT * 0.94), ...ring(0.36, 0.725, 0.34, 0.277, RT)], 0.70);
@@ -384,20 +526,17 @@ const FIGG = 0.72;
 const figG = (ch, c, inkW) => defG(ch, FIGG, c, (FIGG - 0.10 - inkW) / 2 + 0.05);
 figG('0', ring(0.31, 0.5, 0.31, 0.5, gRT), 0.62);
 figG('1', [box(0.245, 0, 0.245 + gST, 1), cw([[0.245, 0.02], [0.245, 0.265], [0.065, 0.205]])], 0.325 + 0.065);
-figG('2', [
-  band(0.31, 0.30, 0.30, 0.30, gRT, 0.88 * P, 2.10 * P),
-  hbar(0.545, 0.34, 0.135, 0.87, 0.19), box(0, 1 - gBT, 0.62, 1),
-], 0.62);
+figG('2', twoFigure([0.31, 0.30, 0.30, 0.30], gRT, 0.88 * P, 0.23, 0.21, gBT, 0.62), 0.62);
 figG('3', [
   band(0.305, 0.272, 0.28, 0.272, gRT, 0.88 * P, 2.42 * P),
   band(0.305, 0.728, 0.305, 0.272, gRT, 1.52 * P, 2.88 * P),
 ], 0.61);
-figG('4', [box(0, 0.62, 0.60, 0.62 + gBT), box(0.395, 0, 0.395 + gST, 1), hbar(0.425, 0, 0.095, 0.68, 0.185)], 0.60);
+figG('4', fourFigure(0.395, 0.395 + gST, 0.62, 0.62 + gBT, 0.60, 0.425, 0.33 / 0.68, 0.185), 0.60);
 figG('5', [
   box(0, 0, 0.58, gBT), box(0, 0, gST, 0.50), box(0, 0.36, 0.32, 0.36 + gRT),
   band(0.30, 0.68, 0.30, 0.32, gRT, 1.5 * P, 2.86 * P),
 ], 0.60);
-const SIXG = [...ring(0.31, 0.66, 0.31, 0.34, gRT), band(0.38, 0.62, 0.37, 0.62, gRT, 1.72 * P, 1.0 * P)];
+const SIXG = sixFigure([0.31, 0.68, 0.31, 0.32], [0.38, 0.62, 0.37, 0.62], gRT, 1.72 * P);
 figG('6', SIXG, 0.62);
 figG('7', [box(0, 0, 0.62, gBT), hbar(0.50, 0, 0.155, 1, 0.185)], 0.62);
 figG('8', [...ring(0.30, 0.272, 0.27, 0.272, gRT * 0.95), ...ring(0.31, 0.728, 0.30, 0.272, gRT)], 0.61);
@@ -715,22 +854,33 @@ const SEGPTS = {
   f: vseg(0.055, 0.115, 0.445),
   g: hseg(0.10, DW - 0.10, 0.50),
 };
+// The 1 is the one figure that is not tabular. A full-width 1 lights only the right-hand column,
+// and at the clocks' ghost level (~0.1) the dark left half reads as a gap in the number:
+// "02:08:2 1", "00: 16:38". So it gets a cell just wide enough for its own two bars, centred,
+// with no ghost segments (a ghost's left column would land in the previous digit).
+const ONE_W = 0.16;
+const SEGPTS1 = { b: vseg(ONE_W / 2, 0.115, 0.445), c: vseg(ONE_W / 2, 0.555, 0.885) };
+const PUNCT = 0.36;
+
+/** Advance of one seven-segment character, tracking included. */
+export function sevenSegAdvance(ch, { size = 40, tracking = 0.20 } = {}) {
+  if (ch === ':' || ch === '.') return size * PUNCT;
+  return size * ((ch === '1' ? ONE_W : DW) + tracking);
+}
 
 /**
  * Seven-segment display (the reference's red countdown clock and cyan lap timer).
  * Unlit segments are drawn at low alpha so the display reads as physical hardware.
+ *
+ * Alignment is against the TABULAR box (every digit a full cell, see measureSevenSeg), so a running
+ * clock never moves as a whole: a narrow 1 only closes up the digits after it, inside that box.
  */
 export function drawSevenSeg(ctx, text, {
   x = 0, y = 0, size = 40, color = '#ff2e2e', dim = 0.12, tracking = 0.20,
   italic = 0.06, glow = 10, align = 'left', alpha = 1, dimColor = null,
 } = {}) {
   const str = String(text);
-  const digitW = size * DW;
-  const adv = digitW + size * tracking;
-  const punct = size * 0.36;
-  let total = 0;
-  for (const ch of str) total += (ch === ':' || ch === '.') ? punct : adv;
-  total -= size * tracking;
+  const total = measureSevenSeg(str, { size, tracking });
   let cx = align === 'center' ? x - total / 2 : align === 'right' ? x - total : x;
 
   ctx.save();
@@ -755,17 +905,18 @@ export function drawSevenSeg(ctx, text, {
       };
       if (ch === ':') { dot(0.34); dot(0.72); } else dot(0.96);
       ctx.shadowBlur = 0;
-      cx += punct;
+      cx += sevenSegAdvance(ch, { size, tracking });
       continue;
     }
     const on = SEG[ch] ?? SEG[' '];
-    for (const s of Object.keys(SEGPTS)) {
+    const segs = ch === '1' ? SEGPTS1 : SEGPTS;
+    for (const s of Object.keys(segs)) {
       const lit = on.includes(s);
       ctx.globalAlpha = alpha * (lit ? 1 : dim);
       ctx.fillStyle = lit ? color : off;
       ctx.shadowBlur = lit ? glow : 0;
       ctx.shadowColor = color;
-      const pts = SEGPTS[s];
+      const pts = segs[s];
       ctx.beginPath();
       for (let i = 0; i < pts.length; i++) {
         const [px, py] = map(pts[i]);
@@ -775,15 +926,21 @@ export function drawSevenSeg(ctx, text, {
       ctx.fill();
     }
     ctx.shadowBlur = 0;
-    cx += adv;
+    cx += sevenSegAdvance(ch, { size, tracking });
   }
   ctx.restore();
 }
 
-/** Width of a seven-segment string, for layout. */
+/**
+ * Layout box of a seven-segment string: every digit counts as a full cell, so the box of a clock
+ * never changes with its value. A 1 draws narrower than its cell (sevenSegAdvance gives the
+ * advance it actually takes).
+ */
 export function measureSevenSeg(text, { size = 40, tracking = 0.20 } = {}) {
   let total = 0;
-  for (const ch of String(text)) total += (ch === ':' || ch === '.') ? size * 0.36 : size * DW + size * tracking;
+  for (const ch of String(text)) {
+    total += (ch === ':' || ch === '.') ? size * PUNCT : size * DW + size * tracking;
+  }
   return Math.max(0, total - size * tracking);
 }
 
