@@ -456,11 +456,30 @@ export class Engine {
     // frame's darkest 1% sat at sRGB 27–29/255 in all four cities (a grey, not a black); this lands
     // it near 10/255 while the median moves less than 10%. Night is bent slightly harder — asphalt
     // between neon reflections is exactly the surface that has to reach the floor.
+    // (w12) ...and at night the toe now LIFTS rather than bends down. The r3 night end (1.34, black
+    // 0.0052) zeroed everything under ~0.009 display-linear and squeezed the rest of the bottom
+    // twentieth: measured on the w11 sweep, 41-46% of every Vegas and NYC frame sat below sRGB
+    // luminance 25 — asphalt, facades and car flanks all one ink. Measured on vegas-muscle-chase,
+    // even an identity toe leaves 34% there, so straightening the curve is not enough: the night
+    // exponent goes under 1, which opens the shadows into the indigo they already carry (the toe
+    // is a luminance RATIO, so hue survives) while a smaller black subtraction keeps a real black
+    // point and uFloor's tint under it. Below L25: nyc chase 50-53% -> 19-22%, vegas 47-48% ->
+    // 24-25%; any-channel-250 unchanged at ~0.075%, darkest pixel (3,4,8). Highlights are
+    // untouched (the curve is the identity above uToeEnd). The lift runs on its own nightness ramp
+    // so NYC (n ~ 0.63) gets all of it rather than two thirds, and it is blended OVER the r3 curve,
+    // so LA and Miami (n < 0.1) keep exactly the day toe they had. A look that is dark for reasons
+    // other than night (the garage: black walls, n ~ 0.66) opts out with grade.uNightToe = 0.
     const toeBias = clamp(g.uBlackPoint ?? 1.0, 0.6, 1.5);
+    // The deepest night opens a little further again: Vegas (n = 1) has no key light at all and a
+    // black sky over a third of the frame, and at NYC's curve it still measured 32-34% below L25.
+    const nT = smooth(0.25, 0.60, n) * clamp(g.uNightToe ?? 1, 0, 1);
+    const deep = smooth(0.60, 1.0, n);
     u.uToe.value = 1.0;
-    u.uToeEnd.value = mix2(0.048, 0.044);
-    u.uToePow.value = clamp(mix2(1.30, 1.34) * (0.55 + 0.45 * toeBias), 1.0, 1.75);
-    u.uBlack.value = clamp(mix2(0.0058, 0.0052) * toeBias, 0.0, 0.012);
+    u.uToeEnd.value = lerp(mix2(0.048, 0.044), lerp(0.055, 0.065, deep), nT);
+    u.uToePow.value = clamp(lerp(mix2(1.30, 1.34), lerp(0.76, 0.62, deep), nT)
+      * (0.55 + 0.45 * toeBias), 0.55, 1.75);
+    u.uBlack.value = clamp(lerp(mix2(0.0058, 0.0052), lerp(0.0022, 0.0020, deep), nT) * toeBias,
+      0.0, 0.012);
 
     const nightGain = accent.clone().lerp(new THREE.Color(1, 1, 1), 0.5);
     const gainHue = g.uGain ? col(g.uGain) : sunCol.clone().lerp(nightGain, n);
