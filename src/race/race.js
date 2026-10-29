@@ -2391,7 +2391,8 @@ export class AIDriver {
     const offTrack = Math.abs(lateral) > 1.05 && !junction;
     if (offTrack) this.offT += dt;
     const surfaceGrip = offTrack ? lerp(1.0, 0.58, smoothstep(1.05, 1.5, Math.abs(lateral))) : 1.0;
-    b.surface = offTrack ? 'dirt' : 'road';
+    // what is under the car, as main.js reads it for the player: the gutter lane is asphalt
+    b.surface = !offTrack ? 'road' : onBranch ? 'dirt' : t.surfaceAt(Math.abs(lateral));
     b.brakeLit = brake > 0.12;
     this.throttle = throttle; this.brake = brake; this.targetSpeed = target;
 
@@ -2419,14 +2420,24 @@ export class AIDriver {
     // Exactly the player's rule (main.js): opponents hit the same walls, lose the same speed and
     // recover the same way. Round 1 lerped them back onto the road when they ran wide, which is
     // the "driving on rails" tell §6.10 explicitly calls out.
+    // On the street that wall is the face the player hits too — the kerb face or a declared barrier
+    // run, met by the car's BODY (Track.wallCheck); a shortcut ribbon keeps its centre-line bound.
     const wallAt = 1.52;
     this.wallHit = 0;
-    if (Math.abs(lateral) > wallAt && !junction) {
+    let over = 0, faceLat = wallAt * halfWidth, faceH = 0.9;
+    if (junction) {
+      // a shortcut mouth or merge: no street barrier here
+    } else if (onBranch) {
+      if (Math.abs(lateral) > wallAt) over = (Math.abs(lateral) - wallAt) * halfWidth;
+    } else {
+      const c = t.wallCheck(near, b.forward, (this.dims.width ?? 2.0) * 0.5, (this.dims.length ?? 4.6) * 0.5);
+      if (c) { over = c.over; faceLat = c.face.off; faceH = c.face.h; }
+    }
+    if (over > 0) {
       _v3.copy(sample.right).multiplyScalar(-Math.sign(lateral));
       // push back along the LATERAL axis only — rebuilding the position from the sample's
       // cross-section throws the along-track component away, and a car held against a barrier is
       // then re-snapped onto the same cross-section every frame and never moves again
-      const over = (Math.abs(lateral) - wallAt) * halfWidth;
       b.pos.addScaledVector(_v3, over);
       const s = b.impact(_v3, 0.26, 0.58);
       if (s > 0.05) this.hits++;
@@ -2434,9 +2445,13 @@ export class AIDriver {
       // has to throw the same shower the player's car does, or the world has two rule sets
       this.wallHit = Math.max(s, speed > 7 ? 0.02 : 0);
       this.wallN.copy(_v3);
-      this.wallPt.copy(sample.pos)
-        .addScaledVector(sample.right, Math.sign(lateral) * halfWidth * wallAt)
-        .addScaledVector(_v3, -0.2).setY(0.42);
+      // the face's own foot (banked gutter, not the centreline) — the FX stamp their marks from it
+      this.wallFloor = onBranch ? sample.pos.y
+        : t.floorAt(near.u, Math.sign(lateral) || 1, faceLat - halfWidth).y;
+      this.wallFaceH = faceH;
+      this.wallPt.copy(b.pos)
+        .addScaledVector(sample.right, Math.sign(lateral) * (faceLat - Math.abs(lateral) * halfWidth + over))
+        .setY(this.wallFloor + Math.min(0.42, faceH * 0.6));
     }
     return this;
   }
@@ -2913,9 +2928,10 @@ export class Race {
       // the world has two rule sets — one where hitting a wall is an event and one where a car
       // silently slides along it — and the second one is the "driving on rails" read (§6.10).
       if (d.wallHit > 0.015) {
-        if (d.wallHit > 0.24) fx.crash(d.wallPt, d.wallN, d.wallHit * 0.8, { vel: b.vel });
+        const at = { floor: d.wallFloor ?? d.wallPt.y - 0.4, faceH: d.wallFaceH ?? 0.9 };
+        if (d.wallHit > 0.24) fx.crash(d.wallPt, d.wallN, d.wallHit * 0.8, { vel: b.vel, ...at });
         else if (d.wallHit > 0.05) fx.sparkBurst(d.wallPt, d.wallN, d.wallHit * 0.6, { vel: b.vel });
-        else fx.wallScrape(d.wallPt, d.wallN, b.vel, clamp((Math.abs(b.speed) - 6) / 26, 0, 1) * 0.8);
+        else fx.wallScrape(d.wallPt, d.wallN, b.vel, clamp((Math.abs(b.speed) - 6) / 26, 0, 1) * 0.8, at);
       }
       const slide = clamp(b.slide ?? b.drift, 0, 1) * smoothstep(4, 13, Math.abs(b.speed));
       // a standing start is the one time a car is sliding at walking pace, and the smoke off the

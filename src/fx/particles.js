@@ -1337,10 +1337,11 @@ export class GroundDecals {
    * Stamp a decal onto a vertical surface — the soot and paint a car leaves ON the barrier it hit.
    * `normal` points away from the wall, `w`/`h` are half-extents along the wall and up it.
    */
-  addWall(pos, normal, w, h, opts = {}) {
+  addWall(pos, normal, w, h, opts = {}, push = 0.30) {
     this._u.set(-normal.z, 0, normal.x).normalize().multiplyScalar(w);
     this._v.set(0, h, 0);
-    const push = 0.30;   // clear of the barrier's own shell, which is thicker than the collision plane
+    // `push`: how far proud of `pos` along the normal. The default clears a barrier shell thicker
+    // than a virtual collision plane; a caller that knows the real face passes a few centimetres.
     return this._quad(
       pos.x + normal.x * push, pos.y, pos.z + normal.z * push,
       this._u.x, this._u.y, this._u.z,

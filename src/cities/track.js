@@ -1517,6 +1517,100 @@ export class Track {
     }
     this.turn = sm;
     this.branches = (def.branches || []).map((b, i) => new Branch(this, b, i));
+
+    // THE WALL IS THE THING YOU CAN SEE. Collision used to be a virtual line at |lateral| 1.52 on
+    // the car's CENTRE, which matched nothing drawn: the kerb face sits ~0.15 m past it, so every
+    // car ended a barrier hit with half its body through the kerb and into the sidewalk, and a
+    // run of jersey units standing on the rumble strip was driven straight through. The wall is
+    // now a FACE — the kerb face by default, or the inner face of a barrier run a city declares in
+    // `def.walls` — and a car stops when its BODY reaches it (see `wallCheck`). Both are known
+    // without building a single mesh, so tools/drivetest.mjs and the AI read the same wall the
+    // player hits. `buildRoad()` derives the kerb from the same two numbers and re-states it.
+    this.curbWidth = def.curbWidth ?? 1.2;
+    this.wallOffset = Math.max(this.curbWidth + 1.4, this.halfWidth * ((def.wallLateral ?? 1.52) - 1) + 0.15);
+    this.kerbHeight = 0.17;
+    // A city that lays its own kerb over the kit's (Las Vegas) says where its face really is.
+    this.kerbFace = { inset: def.kerbFace?.inset ?? 0, h: def.kerbFace?.h ?? this.kerbHeight };
+    this.walls = [];
+    for (const w of def.walls || []) this.addWall(w);
+  }
+
+  /**
+   * Declare a solid run along one kerb: `{ u0, u1, side, h, off, off1 }`. `h` is the height of the
+   * face a car meets there — a barrier standing on the kerb, toe at its lip, is still met at the
+   * kerb face, but it is a metre of concrete and the impact and its marks are sized to that. A
+   * run standing INSIDE the kerb face also gives `off`, metres from the road edge to its inner
+   * face (ramping to `off1` at `u1`, for a taper), and then it is the wall there — which is only
+   * honest if the city places its meshes along exactly that line.
+   */
+  addWall({ u0, u1, side, off = null, off1 = off, h = 0.9 }) {
+    this.walls.push({ u0: ((u0 % 1) + 1) % 1, u1: ((u1 % 1) + 1) % 1, side: Math.sign(side) || 1, off, off1, h });
+  }
+
+  /**
+   * The solid face on one side of the road at `u`: `{ off, h, kerb }` with `off` measured from
+   * the centreline in metres. The kerb face unless a declared run stands in front of it.
+   */
+  wallFace(u, side) {
+    u = ((u % 1) + 1) % 1;
+    let off = this.halfWidth + this.wallOffset - this.kerbFace.inset, h = this.kerbFace.h, kerb = true;
+    for (const w of this.walls) {
+      if (w.side !== side) continue;
+      const span = ((w.u1 - w.u0) % 1 + 1) % 1;
+      const along = ((u - w.u0) % 1 + 1) % 1;
+      if (along > span) continue;
+      const o = w.off == null ? off : this.halfWidth + lerp(w.off, w.off1, span > 0 ? along / span : 0);
+      if (o <= off) { off = o; h = w.h; kerb = false; }
+    }
+    return { off, h, kerb };
+  }
+
+  /**
+   * Does a car's BODY reach the wall? `near` is a `nearest()` result for the car's centre, `fwd`
+   * its heading, `hw`/`hl` its half width and half length. The reach toward the wall is the
+   * outermost corner of the body at its current yaw against the road, so a car arriving at an
+   * angle touches with the front corner and a car slid in sideways touches with its flank.
+   * Returns null when clear, else `{ over, side, face }` — `over` metres past the face.
+   */
+  wallCheck(near, fwd, hw, hl) {
+    const s = near.sample;
+    const side = Math.sign(near.lateral) || 1;
+    const cosA = Math.abs(fwd.x * s.tan.x + fwd.z * s.tan.z);
+    const sinA = Math.abs(fwd.x * s.right.x + fwd.z * s.right.z);
+    const reach = Math.min(hl, hw * cosA + hl * sinA);
+    const face = this.wallFace(near.u, side);
+    const over = Math.abs(near.lateral) * this.halfWidth + reach - face.off;
+    return over > 0 ? { over, side, face, reach } : null;
+  }
+
+  /**
+   * What is under a car whose centre is `absLat` half-widths out: the carriageway, the rumble
+   * kerb, or the worn asphalt of the gutter lane between the kerb and the kerb face. Past the
+   * kerb face — which only a car on a shortcut can reach — it is dirt.
+   */
+  surfaceAt(absLat) {
+    const m = absLat * this.halfWidth - this.halfWidth;
+    if (m <= 0.02 * this.halfWidth) return 'road';
+    if (m <= this.curbWidth) return 'kerb';
+    return m <= this.wallOffset ? 'road' : 'dirt';
+  }
+
+  /**
+   * The world point on the drawn surface `off` metres out from the road edge, between the road and
+   * the kerb face — the same banked, relaxing cross-section `buildRoad()` laid it from — so a mark
+   * stamped at the foot of a wall lies ON the gutter instead of under it on a banked corner.
+   */
+  floorAt(u, side, off) {
+    const S = this.section;
+    let st = { off, y: 0.02, flat: 0 };
+    if (S) {
+      const list = [S.roadEdge, S.curbOut, S.gutterOut];
+      const i = off <= list[1].off ? 0 : 1;
+      const a = list[i], b = list[i + 1];
+      const k = clamp((off - a.off) / (b.off - a.off), 0, 1);
+      st = { off, y: lerp(a.y, b.y, k), flat: lerp(a.flat, b.flat, k) };
+    }
+    return this.station(this.frame(u), side, st);
   }
 
   at(u) {
@@ -1885,7 +1979,8 @@ export class Track {
      *   road | rumble curb | gutter / parking lane | kerb face | sidewalk | graded apron
      */
     const wallOff = Math.max(curbWidth + 1.4, this.halfWidth * (wallLateral - 1) + 0.15);
-    this.wallOffset = wallOff;
+    this.wallOffset = wallOff;              // the collision face — see the constructor
+    this.curbWidth = curbWidth;
     this.kerbHeight = 0.17;
     const kerbTop = this.kerbHeight;
 
@@ -1946,6 +2041,7 @@ export class Track {
     };
     S.apronOut = S.vergeOut;                                 // kept for callers that read the old name
     g.userData.section = S;
+    this.section = S;                                         // floorAt() reads the gutter from it
 
     // curbs: the red/white striped rumble strip seen in every reference frame
     if (curb) {

@@ -2824,6 +2824,37 @@ TRACK.branches = [
   { kind: 'ramp', enterU: U(2250), exitU: U(2470), width: 8, rise: 9, points: cornerCut(2250, 2470, 40, 2) },
 ];
 
+/**
+ * The barrier runs the street furniture below lays out, in lap metres. They live up here, beside
+ * the track, because they are part of its WALL. Round 11 stood them on the rumble strip and the
+ * gutter (1.15 m and 3.0 m off the white line) while the collision line sat at the kerb, five
+ * metres behind them — so every car drove straight through the hoarding, and all three Vegas
+ * crash captures came to rest behind it. They now stand where the wall is: up on the raised kerb,
+ * toe at its lip, so a car that runs wide meets the jersey units it can see. Each run is declared
+ * to the Track (`TRACK.walls`) at that same face so the impact knows it hit a metre of concrete,
+ * not 30 cm of kerb.
+ */
+const BARRIER_RUNS = [
+  { m0: 244, m1: 372, side: 1, gapAt: null, taper: true },   // Strip works, right
+  { m0: 470, m1: 592, side: -1, gapAt: null, taper: true },  // ...and one opposite
+  { m0: 800, m1: 1240, side: -1, gapAt: null },      // outside of the fast sweeper
+  { m0: 2430, m1: 2720, side: -1, gapAt: null },      // outside of the west hairpin
+  // the alley mouth: a wall with a hole knocked in it, right where shortcut B leaves
+  { m0: 1400, m1: 1580, side: 1, gapAt: [1486, 1534] },
+];
+// This city's kerb (raisedKerb) is 30 cm tall and its lip stands 7 cm proud of the kit's face.
+TRACK.kerbFace = { inset: 0.07, h: 0.30 };
+const RUN_OFF = T0.wallOffset + 0.46;                // unit centreline: toe just back from the lip
+const RUN_Y = 0.27;                                  // standing on the kerb top, not in the gutter
+const TAPER = { len: 46 };                           // the cones that announce a works zone
+TRACK.walls = [];
+for (const run of BARRIER_RUNS) {
+  const wall = (m0, m1) => TRACK.walls.push({ u0: U(m0), u1: U(m1), side: run.side, h: 1.0 });
+  if (!run.gapAt) { wall(run.m0, run.m1); continue; }
+  wall(run.m0, run.gapAt[0]);
+  wall(run.gapAt[1], run.m1);
+}
+
 // ---------------------------------------------------------------- landmark siting
 
 let SITE = null;
@@ -3710,28 +3741,24 @@ export const def = {
       // cones off the nose of it — is the thing that is actually there on Las Vegas Blvd every
       // year of its life, and it puts real vertical furniture at the road edge in the frame the
       // critic is looking at.
-      const runs = [
-        { m0: 244, m1: 372, side: 1, gapAt: null, off: 3.0, taper: true },   // Strip works, right
-        { m0: 470, m1: 592, side: -1, gapAt: null, off: 3.0, taper: true },  // ...and one opposite
-        { m0: 800, m1: 1240, side: -1, gapAt: null },      // outside of the fast sweeper
-        { m0: 2430, m1: 2720, side: -1, gapAt: null },      // outside of the west hairpin
-        // the alley mouth: a wall with a hole knocked in it, right where shortcut B leaves
-        { m0: 1400, m1: 1580, side: 1, gapAt: [1486, 1534] },
-      ];
-      for (const run of runs) {
-        const OFF = run.off ?? 1.15;
-        // A works zone is announced before it arrives: a taper of cones walking out from the lane
-        // line to the nose of the hoarding, which is the single most legible piece of road
-        // furniture there is and reads at any distance.
+      // (the runs themselves are BARRIER_RUNS, beside the track: they are its walls too)
+      for (const run of BARRIER_RUNS) {
+        const OFF = RUN_OFF;
+        // A works zone is announced before it arrives: a line of cones down the kerb lip to the
+        // nose of the hoarding, which is the single most legible piece of road furniture there is
+        // and reads at any distance. (It used to walk out across the lane, where every car on the
+        // road drove through it.)
         if (run.taper) {
           for (let k = 0; k < 9; k++) {
             const t = k / 8;
-            const m = run.m0 - 46 + t * 46;
+            const m = run.m0 - TAPER.len + t * TAPER.len;
             const s = track.at(U(m));
             const c = trafficCones({ cache: CACHE, seed: (m | 0) * 13 + 1, n: 1 });
+            // trafficCones jitters a cone up to 1.2 m across the kerb (its local X, which this
+            // yaw leaves across the road), so the line is centred 1.5 m up on the walk
             c.position.copy(s.pos)
-              .addScaledVector(s.right, run.side * (track.halfWidth * lerp(0.80, 1.0, t) + OFF * t))
-              .setY(s.pos.y + 0.02);
+              .addScaledVector(s.right, run.side * (track.halfWidth + T0.wallOffset + 1.5))
+              .setY(s.pos.y + RUN_Y + 0.02);
             c.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.4, 0.4);
             out.push(c);
             barShade.add(groundGeo(1.5, 1.5), c.position.x, c.position.y + 0.05, c.position.z);
@@ -3743,7 +3770,8 @@ export const def = {
             // knocked-over units either side of the hole
             const s = track.at(U(m));
             const b = waterBarrier({ len: 2.0, cache: CACHE, seed: (m | 0), color: GOLD });
-            b.position.copy(s.pos).addScaledVector(s.right, run.side * (track.halfWidth + OFF - 0.05)).setY(0.1);
+            // back on the walk: slewed up to 0.7 rad, a 2 m unit reaches ~0.95 m toward the road
+            b.position.copy(s.pos).addScaledVector(s.right, run.side * (track.halfWidth + OFF + 0.65)).setY(0.1 + 0.17);
             b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.7, 0.7);
             b.rotation.z = br.bool(0.5) ? 1.4 : 0;
             out.push(b);
@@ -3764,9 +3792,11 @@ export const def = {
             : roll < cSub
               ? trafficCones({ cache: CACHE, seed: (m | 0) * 5, n: br.int(2, 3) })
               : jerseyBarrier({ len: 4, cache: CACHE, seed: (m | 0) * 7 });
+          // a cone cluster spreads 1.2 m either side of its own centre, across the kerb
+          const coneBack = roll >= wSub && roll < cSub ? 1.0 : 0;
           b.position.copy(s.pos)
-            .addScaledVector(s.right, run.side * (track.halfWidth + OFF))
-            .setY(s.pos.y + br.range(-0.03, 0.02));
+            .addScaledVector(s.right, run.side * (track.halfWidth + OFF + coneBack))
+            .setY(s.pos.y + RUN_Y + br.range(-0.03, 0.02));
           b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.03, 0.03);
           b.scale.setScalar(br.range(0.97, 1.04));
           out.push(b);
@@ -3940,14 +3970,15 @@ export const def = {
       const HW = track.halfWidth;
       const WOFF = track.wallOffset ?? 6.2;      // kerb face; the sidewalk starts 0.18 outboard
 
-      // --- the neon gates. Their legs land in the gutter, an arm's length off the racing line,
-      // and round 1 measured one of them meeting the road with neither a shadow nor a pool of
-      // its own light. Both, now: a hard foot patch and the cyan/gold/magenta spill it stands in.
+      // --- the neon gates. Their legs stand on the sidewalk just past the kerb face (the kit
+      // places them at HW + WOFF + 0.9), and round 1 measured one of them meeting the road with
+      // neither a shadow nor a pool of its own light. Both, now: a hard foot patch and the
+      // cyan/gold/magenta spill it stands in.
       for (const gt of def.props.gates || []) {
         const s = track.at(gt.u);
         const yaw = Math.atan2(s.tan.x, s.tan.z);
         for (const sx of [-1, 1]) {
-          const p = s.pos.clone().addScaledVector(s.right, sx * HW * 1.3);
+          const p = s.pos.clone().addScaledVector(s.right, sx * (HW + WOFF + 0.9));
           out.push(poolAt(p, 26, 40, yaw, gt.color, 0.50, 0.11));
           out.push(shadeAt(p, 4.6, 4.6, yaw, 0.72, 0.13));
         }

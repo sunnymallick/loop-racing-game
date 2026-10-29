@@ -2953,6 +2953,14 @@ const OUT = outwardSign(MAIN);
 const IN = -OUT;
 
 /**
+ * The circuit barriers on the two fast seaward corners: u ranges on the OUTSIDE kerb. They used to
+ * stand 6.4 m off the white line, 25 cm inside the kerb face and half in the gutter, so the wall
+ * a car met there ran through the middle of them. They now stand up on the kerb, toe at its lip,
+ * and are declared to the Track (`def.track.walls`) so a hit there is a hit on a metre of concrete.
+ */
+const CORNER_BARRIERS = { runs: [[0.300, 0.470], [0.620, 0.720]] };
+
+/**
  * Every route option in the city, as a u range the block generator has to leave OPEN.
  *
  * Round 2's note said it plainly: "across six captures at three different track positions I saw
@@ -3243,6 +3251,7 @@ export const def = {
     },
     crossings: 6,
     main: MAIN,
+    walls: CORNER_BARRIERS.runs.map(([u0, u1]) => ({ u0, u1, side: OUT, h: 1.0 })),
     branches: [
       // THE OCEAN DRIVE ALLEY. Opens off the inland kerb 40 m past the landmark capture's finish
       // point, so the frame that is supposed to show the city's hero landmark also shows a lit
@@ -3750,7 +3759,9 @@ export const def = {
         while (v < 1) {
           if (!inAlley(v)) {
             const s = track.at(v);
-            const off = wallOff + 0.4 + walk * pr.range(0.35, 0.85);
+            // wallOff is measured from the road EDGE: without the half-width these palms stood
+            // 2-4 m inside the carriageway, in the inland lane
+            const off = track.halfWidth + wallOff + 0.4 + walk * pr.range(0.35, 0.85);
             const pos = s.pos.clone().addScaledVector(s.right, IN * off);
             plant(pos.clone().setY(pos.y + kerbY), {
               h: pr.range(8.5, 17), seed: Math.floor(v * 7919) + 5, lean: pr.range(0.04, 0.24),
@@ -3786,12 +3797,15 @@ export const def = {
       const line = new Batch(neonMaterial(cache, '#26e0a8', 0.95), { cast: false });
       const stud = new Batch(neonMaterial(cache, '#ffb8e0', 1.6), { cast: false });
       const N = 320;
+      // ON the kerb lip, not 0.55 m off the road edge: there the tube and its studs stood across
+      // the rumble strip, inside the wall, and every car that ran wide drove through them.
+      const lip = (track.wallOffset ?? 6.65) + 0.10;
       for (let k = 0; k < N; k++) {
         const f0 = track.frame(k / N);
         const f1 = track.frame((k + 1) / N);
-        const a = f0.pos.clone().addScaledVector(f0.right, OUT * (f0.half + 0.55))
+        const a = f0.pos.clone().addScaledVector(f0.right, OUT * (f0.half + lip))
           .addScaledVector(f0.normal, 0.24);
-        const b = f1.pos.clone().addScaledVector(f1.right, OUT * (f1.half + 0.55))
+        const b = f1.pos.clone().addScaledVector(f1.right, OUT * (f1.half + lip))
           .addScaledVector(f1.normal, 0.24);
         const len = a.distanceTo(b);
         if (len > 30) continue;
@@ -3816,16 +3830,17 @@ export const def = {
     {
       const g = new THREE.Group();
       const br = rng.fork(83);
-      for (const [u0, u1] of [[0.300, 0.470], [0.620, 0.720]]) {
+      const kerbY = track.kerbHeight ?? 0.17;
+      for (const [u0, u1] of CORNER_BARRIERS.runs) {
         for (const s of track.spaced(4.05, {
-          side: OUT, offset: 6.4, from: u0, to: u1, rng: br,
+          side: OUT, offset: track.wallOffset + 0.46, from: u0, to: u1, rng: br,
         })) {
           if (br.bool(0.07)) continue;
           const roll = br.next();
           const b = roll < 0.12
             ? waterBarrier({ len: 2.0, cache, seed: s.index * 5 + 3, color: '#2fd8b4' })
             : jerseyBarrier({ len: 4, cache, seed: s.index * 7 + 1 });
-          b.position.copy(s.pos).setY(s.pos.y + br.range(-0.03, 0.02));
+          b.position.copy(s.pos).setY(s.pos.y + kerbY + br.range(-0.03, 0.02));
           b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + br.range(-0.04, 0.04);
           b.scale.setScalar(br.range(0.96, 1.05));
           g.add(b);

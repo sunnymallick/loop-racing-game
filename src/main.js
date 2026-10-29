@@ -746,7 +746,10 @@ class Game {
     const wantSide = lateral < -0.42 ? 1 : -1;
     this._boostSide = lerp(this._boostSide ?? wantSide, wantSide, 1 - Math.exp(-1.2 * scaled));
     const surfaceGrip = absLat > 1.02 ? lerp(1.0, 0.58, smoothstep(1.02, 1.5, absLat)) : 1.0;
-    this.body.surface = absLat > 1.02 ? 'dirt' : 'road';
+    // What is actually under the car: the gutter lane between the rumble kerb and the kerb face is
+    // worn asphalt, not dirt, and it is where every barrier contact now happens. The grip above is
+    // left as it was — running wide still costs you.
+    this.body.surface = onBranch ? (absLat > 1.02 ? 'dirt' : 'road') : t.surfaceAt(absLat);
 
     this.body.brakeLit = inp.brake > 0.1;
     this.body.step(scaled, inp, {
@@ -758,35 +761,68 @@ class Game {
     });
 
     // ---- wall collision ----
-    const wallAt = 1.52;
-    if (absLat > wallAt) {
-      const s = onBranch ? onBranch.sample : nearMain.sample;
-      const inward = s.right.clone().multiplyScalar(-Math.sign(lateral));
-      const halfW = onBranch ? onBranch.branch.halfWidth : t.halfWidth;
-      const wallPoint = s.pos.clone().addScaledVector(s.right, Math.sign(lateral) * halfW * wallAt);
+    // CRASH piece: the wall is the face you can SEE — the kerb face, or the inner face of a barrier
+    // run the city declares — and the car stops when its BODY reaches it, not its centre (see
+    // Track.wallCheck). The old rule was a virtual line at |lateral| 1.52 on the centre, ~0.15 m
+    // short of the kerb face, so a car at the wall had half its width through the kerb, inside a
+    // parked car or behind a barrier it had passed straight through, and every impact burst and
+    // scorch mark landed on nothing. Shortcut ribbons keep their own centre-line wall (race.js
+    // owns cars on a branch with the same bound).
+    let wall = null;
+    if (onBranch) {
+      const wallAt = 1.52;
+      if (absLat > wallAt) {
+        const s = onBranch.sample;
+        const halfW = onBranch.branch.halfWidth;
+        const side = Math.sign(lateral);
+        const contact = s.pos.clone().addScaledVector(s.right, side * halfW * wallAt);
+        wall = { s, side, over: (absLat - wallAt) * halfW, contact, faceH: 0.9, floor: contact.y };
+      }
+    } else {
+      const d = this.car.userData.dims;
+      const hw = d.width * 0.5, hl = d.length * 0.5;
+      const fwd = this.body.forward;
+      const c = t.wallCheck(nearMain, fwd, hw, hl);
+      if (c) {
+        const s = nearMain.sample;
+        // The point that touches: the body corner that reaches furthest toward the face, carried
+        // onto the face itself. A car arriving at an angle sparks off its front corner, ahead of
+        // its own centre — which is where the eye looks for it.
+        const toward = s.right.clone().multiplyScalar(c.side);
+        const cr = this.body.right;
+        const sl = Math.sign(fwd.dot(toward)) || 1, sw = Math.sign(cr.dot(toward)) || 1;
+        const contact = this.body.pos.clone().addScaledVector(fwd, sl * hl).addScaledVector(cr, sw * hw);
+        // Snapped onto the face at the corner's OWN cross-section: two metres ahead of the centre
+        // the road has already turned, and the centre's frame left the burst ~0.3 m inside the kerb.
+        const cn = t.nearest(contact, nearMain.u);
+        const cOff = t.wallFace(cn.u, c.side).off;
+        contact.addScaledVector(cn.sample.right, c.side * (cOff - c.side * cn.lateral * t.halfWidth));
+        const floor = t.floorAt(cn.u, c.side, cOff - t.halfWidth).y;
+        wall = { s, side: c.side, over: c.over, contact, faceH: c.face.h, floor };
+      }
+    }
+    if (wall) {
+      const inward = wall.s.right.clone().multiplyScalar(-wall.side);
       // RACE piece: push the car back across the road by the overshoot, rather than rebuilding its
       // position from the sample's cross-section. The old form discarded the along-track component,
       // so a car held against a barrier was re-snapped onto the *same* cross-section every frame:
       // it sat at exactly |lateral| = 1.52 reading 150 mph and travelling nowhere, and `nearest()`
       // kept returning the same sample, so it never got out. (A full-race probe with the player on
       // autopilot ended with the player on lap 0 after four minutes, pinned to one barrier.)
-      const over = (absLat - wallAt) * halfW;
-      this.body.pos.addScaledVector(inward, over);
+      this.body.pos.addScaledVector(inward, wall.over);
       const strength = this.body.impact(inward, 0.28, 0.62);
-      // FX contact point. This is NOT "one metre outboard of the car" — that put the burst a metre
-      // *behind* the barrier, hanging in open air, which is why the crash read as a decal pasted
-      // over the frame (ART_DIRECTION §6.6). The solid surface the car is actually touching is the
-      // kerb face / barrier line, which by the track's own cross-section sits right on the
-      // collision plane, so the burst belongs on `wallPoint` itself, at rubbing-strip height.
-      const hit = wallPoint.clone().addScaledVector(inward, -0.2).setY(0.42);
+      // FX contact point: ON the face, at the height the body meets it — rubbing-strip height on a
+      // barrier, sill height on a kerb that only stands 17 cm proud of the gutter.
+      const hit = wall.contact.setY(wall.floor + Math.min(0.42, wall.faceH * 0.6));
+      const at = { floor: wall.floor, faceH: wall.faceH };
       if (strength > 0.03) {
-        if (strength > 0.22) this.effects.crash(hit, inward, strength, { vel: this.body.vel, paint: this.carColor });
+        if (strength > 0.22) this.effects.crash(hit, inward, strength, { vel: this.body.vel, paint: this.carColor, ...at });
         else this.effects.sparkBurst(hit, inward, strength * 0.7, { vel: this.body.vel });
         this.audio.impact(strength, { surface: 'concrete', pan: Math.sign(lateral) * 0.6 });
       } else if (Math.abs(this.body.speed) > 6) {
         // Scraping along a wall is the common case and must still throw sparks — otherwise a
         // player pinned to the barrier at 120 mph gets no feedback at all.
-        this.effects.wallScrape(hit, inward, this.body.vel, clamp((Math.abs(this.body.speed) - 6) / 26, 0, 1));
+        this.effects.wallScrape(hit, inward, this.body.vel, clamp((Math.abs(this.body.speed) - 6) / 26, 0, 1), at);
         // (audio piece) metal on barrier is a SCRAPE, not a tyre squeal
         this.audio.scrape(0.35 + 0.65 * clamp((Math.abs(this.body.speed) - 6) / 26, 0, 1));
       }

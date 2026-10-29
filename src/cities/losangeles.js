@@ -1702,6 +1702,9 @@ function cloudTexture(seed) {
 
 // ---------------------------------------------------------------- the city definition
 
+/** The guard rail on the sweeper home: its u range. It stands on the kerb (section 5). */
+const GUARD_RAIL = { u0: 0.800, u1: 0.878 };
+
 export const def = {
   id: 'la',
   name: 'LOS ANGELES',
@@ -2141,6 +2144,8 @@ export const def = {
       [-232, -396], [-330, -330], [-400, -244], [-428, -146],
       [-410, -52], [-338, 20], [-238, 56], [-138, 42], [-56, 16],
     ],
+    // The W-beam guard rail on the sweeper home (section 5 below) is the face a car meets there.
+    walls: [{ u0: GUARD_RAIL.u0, u1: GUARD_RAIL.u1, side: 1, h: 1.25 }],
     branches: [
       // a construction flyover cutting the double-apex
       { kind: 'ramp', enterU: 0.330, exitU: 0.430, width: 8.5, rise: 8, points: [[800, -350], [720, -420]] },
@@ -3188,10 +3193,14 @@ export const def = {
         while (u < 1) {
           const inChannel = side > 0 && u > CH0 && u < CH1;
           const stand = R.int(3, 6);
-          const setback = inChannel ? 86 + R.range(0, 7) : HW + R.range(4.0, 8.6);
+          // Behind the kerb, past the parked-car rank: HW + 4.0 put trunks 1.9 m inside the kerb
+          // face, where a car running wide drove through them. Same draw count, so the RNG stream
+          // (and every tree's height, lean and seed) is unchanged.
+          const walk = HW + (track.wallOffset ?? 5.87);
+          const setback = inChannel ? 86 + R.range(0, 7) : walk + R.range(3.2, 4.8);
           for (let k = 0; k < stand && u < 1; k++) {
             const wide = side > 0 && u > CH0 && u < CH1;
-            plant(u, side, (wide ? 86 + R.range(0, 7) : setback) + R.range(-1.2, 1.6), {
+            plant(u, side, (wide ? 86 + R.range(0, 7) : setback) + R.range(-0.2, 1.2), {
               tall: R.bool(0.68), seed: i * 7 + (side > 0 ? 101 : 313),
               y: wide ? 15.9 : 0.16, lod: wide ? 2 : 0,
             });
@@ -3294,18 +3303,20 @@ export const def = {
       const beamGeo = new THREE.BoxGeometry(0.14, 0.42, 1);      // scaled to each span
       let prev = null;
       for (let i = 0; i < GR; i++) {
-        const u = lerp(0.800, 0.878, i / (GR - 1));
+        const u = lerp(GUARD_RAIL.u0, GUARD_RAIL.u1, i / (GR - 1));
         const s = track.at(u);
-        const at = s.pos.clone().addScaledVector(s.right, HW + 5.2);
+        // On the kerb, posts' inner face at its lip. At HW + 5.2 the rail stood 0.7 m out in the
+        // gutter lane, inside the wall, and cars running wide drove through it.
+        const at = s.pos.clone().addScaledVector(s.right, HW + (track.wallOffset ?? 5.87) + 0.12);
         const post = new THREE.Mesh(postGeo, railMat);
-        post.position.copy(at).setY(0.67);
+        post.position.copy(at).setY(0.67 + 0.17);
         post.rotation.y = Math.atan2(s.tan.x, s.tan.z);
         post.castShadow = true;
         M.take(post);
         if (prev) {
           const beam = new THREE.Mesh(beamGeo, railMat);
           beam.scale.z = prev.distanceTo(at);
-          beam.position.copy(prev).lerp(at, 0.5).setY(1.02);
+          beam.position.copy(prev).lerp(at, 0.5).setY(1.02 + 0.17);
           beam.rotation.y = Math.atan2(at.x - prev.x, at.z - prev.z);
           beam.castShadow = true;
           M.take(beam);
