@@ -133,7 +133,8 @@ function drive(id, track, spawnU, fps) {
     if (TRACE && slip > TRACE) {
       console.log(JSON.stringify({ t: +t.toFixed(2), v: +v.toFixed(1), slip: +(b.slip * R2D).toFixed(1), steer: +input.steer.toFixed(2),
         thr: input.throttle, brk: input.brake, rearGrip: +b.rearGrip.toFixed(2), wheelSlip: +b.wheelSlip.toFixed(2), gear: b.gear,
-        latch: +b.driftLatch.toFixed(2), yawRate: +b.yawRate.toFixed(2), u: +u.toFixed(3) }));
+        latch: +b.driftLatch.toFixed(2), yawRate: +b.yawRate.toFixed(2), u: +u.toFixed(3), lat: +n2.lateral.toFixed(2),
+        k: +(track.turnRate(u) * 1000).toFixed(1) }));
     }
     if (b.groundSpeed > 8) {
       out.maxSlip = Math.max(out.maxSlip, slip);

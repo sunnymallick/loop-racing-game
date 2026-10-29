@@ -509,8 +509,15 @@ const FINISH_WINDOW = 60;
  * procession however hard the band pulls. Every driver is asked for a figure close to this one,
  * tilted only slightly toward its own car, and is then hard-capped at what its own tyres actually
  * have — so nobody is ever driving on grip it does not possess.
+ *
+ * ROUND 10: 1.55 → 1.25. At 1.55 the ask the telemetry reported was 1.52–1.84 G for the grid a
+ * muscle-car player meets, against the player's own front tyres at 1.18–1.50, and the race-prepped
+ * tyres underneath it were up to 1.85× the showroom's — the field was cornering on grip nobody can
+ * buy. 1.25 sits the reference on the calibration car's own figure (the muscle car's combined
+ * 1.29 G), and the field's pace (PACE_NOM) — not stickier rubber — is what sets how hard it is
+ * driven on it. See the round-10 note over PACE_NOM for what that does to the finishing order.
  */
-const REF_LAT_G = 1.55;
+const REF_LAT_G = 1.25;
 /** …and the same idea for braking, m/s². Nobody is asked for more than their own brakes give. */
 const REF_DECEL = 19.0;
 
@@ -573,7 +580,10 @@ function machineRef(ph) {
   const cal = calRef();
   return {
     top: clamp(Math.pow((ph.topSpeed || cal.top) / cal.top, 0.85), 0.90, 1.14),
-    grip: clamp(Math.pow(combinedG(ph) / cal.g, 0.55), 0.92, 1.25),
+    // (round 10: the grip scale stops at 1.10, not 1.25. At 1.25 a supercar player's grid was
+    // asked for 1.91–2.28 G and prepped to 2.3× its own tyres; the supercar's own 1.89 G of real
+    // grip is the most anything on this road should be asked for.)
+    grip: clamp(Math.pow(combinedG(ph) / cal.g, 0.55), 0.92, 1.10),
   };
 }
 
@@ -631,9 +641,28 @@ function machineRef(ph) {
  * autopilot lapping in 48.2 s: the field pace sat on its 1.13 ceiling for 56 % of the race, the
  * supercars were asked for 1.564 G and the SUV's cap handed it 1.420, and the 10 % that re-opened
  * there was worth 2.5 s a lap. So the target is the common ask at FULL field pace.
+ *
+ * ROUND 10: …and it is now COMPUTED as exactly that — the reference ask at the top of the
+ * director's range plus the corner half of the catch-up trim — instead of a literal that had
+ * drifted to 1.76 G (13 % over even the old reference, and the reason the prep reached 1.85× a
+ * class's own tyres). With round 10's reference and pace it comes to ~1.06 G: on a muscle-car
+ * player's grid the tuner, the muscle car and the supercar need no prep at all and the SUV gets
+ * 12 % more tyre (31 % at most, on a supercar player's grid, where the muscle car gets 6 %) — the
+ * opponents drive the showroom's cars in all but name. The telemetry's `askG` lands 1.07–1.48 G
+ * across all four player cars (1.18–1.34 for the muscle car), against 1.52–2.28 before.
+ * (A function, because the pace constants live further down.)
  */
-const PREP_G = 1.76;        // combined lateral G, after aero, every opponent's car is built to
-const PREP_MAX_GRIP = 1.85; // …and nothing is prepped past 1.85× its own tyres
+const prepG = () => REF_LAT_G * PACE_HI * (1 + TRIM_CATCH * 0.40);
+const PREP_MAX_GRIP = 1.35; // …and nothing is prepped past 1.35× its own tyres (was 1.85)
+/**
+ * HOW FAR THE BOTTLE MAY LIFT AN OPPONENT PAST ITS OWN TOP SPEED. Round 10. The nitrous table's
+ * `topSpeedMul` is 1.26–1.56 by class, so a boosting supercar opponent was allowed 131 m/s — 293 mph
+ * against a showroom top of 188 — and the field's boost peaks were measured at 233–263 mph, a
+ * figure a player reads straight off the speedo and cannot match except in the one car that has
+ * it. 1.15 caps the field at 174 (SUV) to 216 mph (supercar): a plume is still worth a pass down a
+ * straight, it is no longer a car going past at 80 mph more than the player's own.
+ */
+const AI_BOOST_TOP = 1.15;
 /**
  * THE ANCHOR both halves of the class normalisation are measured against: the calibration car's
  * own top speed in m/s, scaled to the machine the player brought (`machineRef`). `paceMul` uses
@@ -718,7 +747,7 @@ function racePrepped(ph, m = { top: 1, grip: 1 }) {
   const ceil = lerp(0.95, 0.86, smoothstep(1600, 2500, ph.mass || 1500));
   // …and the target carries the class's corner compensation, or the prep would size the tyre for
   // an ask the driver is no longer making (see `cornerComp` and `AIDriver.refG`).
-  const gripMul = clamp((PREP_G * m.grip * cornerComp(ph, m) / ceil) / realG, 1, PREP_MAX_GRIP * m.grip);
+  const gripMul = clamp((prepG() * m.grip * cornerComp(ph, m) / ceil) / realG, 1, PREP_MAX_GRIP * m.grip);
   // brakes, on the same principle as REF_DECEL: only the class that cannot reach the common
   // braking figure on its own gets any, and only enough to reach it.
   const brakeMul = clamp((REF_DECEL * m.grip * 1.06 * ((ph.mass || 1500) / 1400)) / (ph.brake || 20), 1, 1.35 * m.grip);
@@ -741,7 +770,7 @@ function racePrepped(ph, m = { top: 1, grip: 1 }) {
     // …AND NOTHING ELSE — the three keys above this line are reachable ONLY through the A/B
     // ablation. `topSpeed`, `power` and `traction` are the STRAIGHT LINE and the LAUNCH, the two
     // things a player measures by watching the car in front pull away, and in a real race an
-    // opponent gets exactly the ones the showroom gives the player. See the note over PREP_G.
+    // opponent gets exactly the ones the showroom gives the player. See the note over prepG.
     // (`traction` was lifted with the tyres — `lerp(1, gripMul, 0.8)` — which is defensible as
     // rubber but reads as acceleration: it is worth ~0.2 s a lap and not worth the argument.)
     prep: { grip: +gripMul.toFixed(3), top: +topMul.toFixed(3), brake: +brakeMul.toFixed(3) },
@@ -758,14 +787,9 @@ function parseRecord(v) {
   if (p.length === 2) return p[0] * 60 + p[1];
   return p[0] || 0;
 }
-// Where the field's pace starts before Race._pace has measured anybody: at the field's own honest
-// pace, because that is now the only pace there is (see PACE_NOM). It used to start deliberately
-// under the field's ability so a quick player could get past the grid; the field no longer moves
-// far enough from here for the starting value to matter.
-const START_PACE = 1.00;
-
 /**
- * THE FIELD'S HONEST PACE, AND THE ±6 % THE DIRECTOR MAY TRIM AROUND IT — see `Race._pace`.
+ * THE FIELD'S HONEST PACE, AND WHAT THE DIRECTOR MAY TRIM AROUND IT (+6 %, −24 % since round 10)
+ * — see `Race._pace`.
  *
  * ROUND 8. Every earlier round widened or narrowed this range while leaving the principle alone,
  * and the principle was the bug: THE FIELD HAD NO PACE OF ITS OWN. Round 7 shipped [0.60, 1.26],
@@ -790,11 +814,42 @@ const START_PACE = 1.00;
  * driver in the field (3.6 s) — so WHO you are racing matters more than what the director wants,
  * which is the whole claim. What the trim buys is that the pack does not drift apart over three
  * laps; what it cannot buy any more is the result.
+ *
+ * ROUND 10: RE-MEASURED AGAINST A PLAYER, NOT AGAINST ITSELF, AND IT WAS NOT CLOSE. The calibration
+ * above is the field against its own solo laps. `tools/racesim.mjs` races the real director and
+ * seven drivers against drivetest's keyboard player (digital keys through the real `Input`,
+ * braking for corners at `--push` of its own front grip, main.js's barrier and boost pads) in all
+ * four cities and all four cars. On the round-9 numbers (PACE_NOM 1.00, REF_LAT_G 1.55, PREP_G
+ * 1.76) the player finished P8 in every one of the 48 races at push 0.62, 0.80 and 0.95, and still
+ * P8 in all 48 with the bottle too — 7–14 s down on a clean on-limit drive with it. A field with
+ * the bottle, a draft and a catch-up trim cannot be calibrated on solo laps without any of them.
+ *
+ * So the field's own pace is now 0.78 and the director may hold it as far as 24 % under that
+ * (PACE_HOLD) for a player who is slower still — the hold half can only ever make a race easier
+ * to finish well in, never take a result off anybody, which is the same argument TRIM_HOLD makes
+ * below. Measured, seeds 5 and 11, 16 races per row, mean finishing place:
+ *
+ *                          push 0.62   push 0.80   push 0.95
+ *      without nitrous       5.9         4.4         2.7   (14/32 wins)
+ *      with nitrous          6.0         2.8         1.3   (28/32 wins)
+ *
+ * — monotone in the player's pace in both columns, a clean on-limit race with the bottle wins seven
+ * in eight, and the field still finishes within ~2–4 s of a 0.62 driver (the packs stay together;
+ * the ladder is what decides where in them you are). By car at 0.95 with nitrous: tuner 1.0,
+ * muscle 1.0, SUV 2.3, supercar 1.0 — the SUV's misses are the keyboard driver's own barrier hits
+ * in it at that push (10–12 a race in LA and Vegas), not the field.
  */
-const PACE_NOM = 1.00;
-const PACE_BAND = 0.06;
-const PACE_LO = PACE_NOM * (1 - PACE_BAND);
+const PACE_NOM = 0.78;
+const PACE_BAND = 0.06;    // how far ABOVE its own pace the director may ask the field to go…
+const PACE_HOLD = 0.24;    // …and how far BELOW it, to wait for a slower player (round 10)
+const PACE_LO = PACE_NOM * (1 - PACE_HOLD);
 const PACE_HI = PACE_NOM * (1 + PACE_BAND);
+// Where the field's pace starts before Race._pace has measured anybody: at the field's own honest
+// pace, because that is now the only pace there is. It used to start deliberately under the
+// field's ability so a quick player could get past the grid; the field no longer moves far enough
+// from here for the starting value to matter. (It was a literal 1.00 that had to be kept equal to
+// PACE_NOM by hand.)
+const START_PACE = PACE_NOM;
 /** …and how long the opening lasts, in seconds — see the grace clamp in `Race._pace`. */
 const PACE_GRACE = 20;
 /**
@@ -932,7 +987,7 @@ export const AI_TUNE = {
   restation: 1,     // the out-of-shot re-station (Race._restation)
   nitro: 1,         // opponents spend their tanks
   lens: 1,          // keep opponents out of the chase camera
-  // THE ROUND-8 STRAIGHT LINE, FOR A/B ONLY — see the note over PREP_G. Set to 1 BEFORE
+  // THE ROUND-8 STRAIGHT LINE, FOR A/B ONLY — see the note over prepG. Set to 1 BEFORE
   // `startRace()` and every opponent gets the old race-prepped top gear back (80.5 m/s and the
   // power to reach it), which is the build the round-2 critic measured at 180–188 mph against the
   // player's 167. It exists so the claim "the field now drives the player's cars" is falsifiable
@@ -942,7 +997,7 @@ export const AI_TUNE = {
   prepTop: 0,
 };
 
-/** The retired straight-line prep — only reachable through `AI_TUNE.prepTop`. See PREP_G. */
+/** The retired straight-line prep — only reachable through `AI_TUNE.prepTop`. See prepG. */
 const PREP_TOP_LEGACY = 80.5;
 
 /**
@@ -1177,6 +1232,8 @@ export class AIDriver {
     // assists: false — the AI drives the original handling model it was tuned against (physics.js)
     this.body = new VehicleBody(spec, { wheelbase: this.dims.wheelbase ?? 2.8, assists: false });
     this.nitro = new Nitrous(spec);
+    // …and the bottle may lift this car's top speed only so far past its own (AI_BOOST_TOP)
+    this.boostTopMul = Math.min(spec.nitro?.topSpeedMul ?? 1.3, AI_BOOST_TOP);
     this.counter = new Progress(opts.u ?? 0);
 
     this.u = 0;
@@ -1611,7 +1668,7 @@ export class AIDriver {
     }
 
     const speed = Math.max(0, b.speed);
-    const topMul = 1 + (this.nitro.ramp * ((this.spec.nitro.topSpeedMul ?? 1.3) - 1));
+    const topMul = 1 + (this.nitro.ramp * (this.boostTopMul - 1));
 
     // ------------------------------------------------------------ pack integrity
     // Every driver holds a STATION: the gap, in metres, the director wants between this car and
@@ -2400,7 +2457,7 @@ export class AIDriver {
       surfaceGrip,
       boost: this.nitro.ramp,
       boostThrust: this.nitro.thrust,
-      topSpeedMul: this.spec.nitro.topSpeedMul,
+      topSpeedMul: this.boostTopMul,
       groundY,
     });
 
@@ -3746,8 +3803,11 @@ export class Race {
     // a sensible reading of a range 0.66 wide and nonsense against round 8's, which is 0.12 wide:
     // the lower edge of that smoothstep sits below the loop's own floor, so the gate would have
     // read "fully saturated" from the first frame of every race.)
+    // (…and since round 10 the range is not symmetric — PACE_HOLD below, PACE_BAND above — so the
+    // fraction is taken of the half the loop is actually in.)
+    const span = this.fieldPace < PACE_NOM ? PACE_HOLD : PACE_BAND;
     const sat = smoothstep(0.72, 0.98,
-      Math.abs(this.fieldPace - PACE_NOM) / Math.max(1e-6, PACE_NOM * PACE_BAND));
+      Math.abs(this.fieldPace - PACE_NOM) / Math.max(1e-6, PACE_NOM * span));
     const slideAuth = lerp(0.12, 1, sat);
     let holdLeft = Math.max(0, this.holdBudget - this.slideBack);
     const L = this.track.length;

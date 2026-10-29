@@ -15,6 +15,8 @@ import { clamp, lerp, smoothstep, RNG } from './core/rng.js';
 import { QUALITY, initialQuality, rememberQuality, nextQuality, AdaptiveResolution } from './core/quality.js';
 
 const FIXED_DT = 1 / 60;
+// Nitrous a clean handbrake slide refills on its exit, per unit of physics.js `driftPayout`.
+const DRIFT_NITRO = 0.35;
 
 // scratch: the point down the nitrous plume the boost camera composes around, and the corridor
 // test that keeps an overtaken opponent out of the lens during a boost (nitrous piece)
@@ -759,6 +761,13 @@ class Game {
       topSpeedMul: this.nitro.cfg.topSpeedMul,
       groundY,
     });
+    // A clean handbrake slide pays out in nitrous the frame it ends (physics.js `driftPayout`: a
+    // second of full drift with no barrier is a full payout, a third of a tank). Only in a race,
+    // and the nitrous piece's own update turns a refill past the arm line into NITRO READY.
+    if (racing && this.body.driftPayout > 0) {
+      this.nitro.charge = Math.min(1, this.nitro.charge + DRIFT_NITRO * this.body.driftPayout);
+      if (this.body.driftPayout > 0.25) this.hud.message(`DRIFT +${Math.round(DRIFT_NITRO * this.body.driftPayout * 100)}% NITRO`, 0.8, '#ff5fd2');
+    }
 
     // ---- wall collision ----
     // CRASH piece: the wall is the face you can SEE — the kerb face, or the inner face of a barrier
@@ -1849,7 +1858,16 @@ class Game {
     // (presentation piece, r2) 48→55 is 86° across. Together with the 5.63 m rig that is the
     // measured 32 % of frame width; the flame term is rescaled again (8 → 11) so a boost still
     // snaps to the same 70° the nitrous piece tuned.
-    const targetFov = 48 + smoothstep(0.08, 1.0, speed01) * 7 + boost * 4 + flame * 11 + kick * 14;
+    // …AND PART OF THE SPEED READ IS ABSOLUTE. Every term here used to run off `speed01`, the
+    // fraction of THIS car's top speed, so flat out was the same 54.85° in an SUV at 151 mph and a
+    // supercar at 188 — and the same speed lines — and the one thing a faster car should feel like
+    // it did not. Now 3° of the 7 still follows the fraction (a car at its own limit still feels
+    // at its limit) and 4.5° follows the speedometer, saturating near 197 mph; flat out the four
+    // classes land 54.5° (SUV) · 54.7° (tuner) · 55.0° (muscle) · 55.5° (supercar) — a degree
+    // across the garage, felt rather than seen. The boost terms are untouched.
+    const vAbs = Math.abs(b.speed);
+    const targetFov = 48 + smoothstep(0.08, 1.0, speed01) * 3 + smoothstep(20, 88, vAbs) * 4.5
+      + boost * 4 + flame * 11 + kick * 14;
     this.camFov = lerp(this.camFov, targetFov, 1 - Math.exp(-(6 + surge * 26) * dt));
     cam.fov = this.camFov + (this.effects.fovKick || 0);   // impact punch (fx piece)
     cam.updateProjectionMatrix();
@@ -1882,8 +1900,12 @@ class Game {
     // ignition crack keeps most of its authority because that spike is over in a third of a second.
     const nos = Math.max(flame, boost);
     this.engine.grade.uniforms.uBoost.value = clamp(nos * 0.62 + kick * 0.40, 0, 1.6);
-    this.engine.speed.uniforms.uAmount.value = clamp(smoothstep(0.2, 1.05, speed01) * 0.58 + nos * 0.34 + kick * 0.30, 0, 1.15);
-    this.engine.speed.uniforms.uLines.value = clamp(smoothstep(0.55, 1.08, speed01) * 0.7 + nos * 0.42 + kick * 0.36, 0, 1);
+    // (the speed blur and lines take the same split as the FOV: a little over half off the
+    // fraction of top speed, the rest off the speedometer — see `vAbs` above)
+    const blurRead = smoothstep(0.2, 1.05, speed01) * 0.55 + smoothstep(15, 85, vAbs) * 0.45;
+    const lineRead = smoothstep(0.55, 1.08, speed01) * 0.55 + smoothstep(40, 88, vAbs) * 0.45;
+    this.engine.speed.uniforms.uAmount.value = clamp(blurRead * 0.58 + nos * 0.34 + kick * 0.30, 0, 1.15);
+    this.engine.speed.uniforms.uLines.value = clamp(lineRead * 0.7 + nos * 0.42 + kick * 0.36, 0, 1);
     this.engine.speed.uniforms.uTint.value.set(this.nitro?.cfg.color || '#8fd4ff');
 
     // Heat haze (nitrous piece): the plume boils the air, so the grade pass ripples the image
