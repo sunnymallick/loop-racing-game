@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildCity, overpass, landmarkTower } from './kit.js';
+import { buildCity, overpass, landmarkTower, shortcutGate } from './kit.js';
 import { preGamma } from './track.js';
 import { drawText } from '../core/font.js';
 import { canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas } from '../core/textures.js';
@@ -1702,6 +1702,9 @@ function cloudTexture(seed) {
 
 // ---------------------------------------------------------------- the city definition
 
+/** The guard rail on the sweeper home: its u range. It stands on the kerb (section 5). */
+const GUARD_RAIL = { u0: 0.800, u1: 0.878 };
+
 export const def = {
   id: 'la',
   name: 'LOS ANGELES',
@@ -1751,9 +1754,18 @@ export const def = {
     // which is Miami's and Vegas's look, not this one — see shots/r3-la-c. What is left is a
     // grazing sky sheen on the far third of the road (the Schlick exponent stays at its dry 5.2)
     // and nothing at all in the near field.
+    //
+    // THE GHOST HOLLYWOOD. The reflection term above still carried a WET road's Fresnel: a 0.14
+    // floor (the base reflectance of a water film) plus a Schlick exponent of 5.2, which together
+    // reflect ~29% at the 16-degree depression the near carriageway sits at in a chase frame —
+    // and the brightest thing 16 degrees ABOVE the horizon is the hillside letters, so they came
+    // back as a legible mirror image in dry asphalt (la-tuner-chase, around 600,560). Dry
+    // asphalt has no film and no floor: `floor: 0`, and the exponent goes up to 9 so only a
+    // genuinely grazing ray picks anything up — ~5% at that 16 degrees (a sixth of before), still
+    // ~60% at the 3-degree far third where the sky sheen belongs.
     wetLook: {
       strength: 0.22, spread: 0.010, gain: 1.35, threshold: 0.44, knee: 0.34,
-      patch: 0.88, patchScale: 0.060, fresnel: 5.2, band: 0.40,
+      patch: 0.88, patchScale: 0.060, fresnel: 9.0, floor: 0, band: 0.40,
     },
     /**
      * MEASURED, not assumed. The sky dome is a 3400 m sphere carrying an equirect gradient whose
@@ -2141,6 +2153,8 @@ export const def = {
       [-232, -396], [-330, -330], [-400, -244], [-428, -146],
       [-410, -52], [-338, 20], [-238, 56], [-138, 42], [-56, 16],
     ],
+    // The W-beam guard rail on the sweeper home (section 5 below) is the face a car meets there.
+    walls: [{ u0: GUARD_RAIL.u0, u1: GUARD_RAIL.u1, side: 1, h: 1.25 }],
     branches: [
       // a construction flyover cutting the double-apex
       { kind: 'ramp', enterU: 0.330, exitU: 0.430, width: 8.5, rise: 8, points: [[800, -350], [720, -420]] },
@@ -2838,6 +2852,157 @@ export const def = {
       }
     }
 
+    // ================================================================ 1b. the ways off the lap
+    //
+    // §6.4 capped this city at 70 for "no visible shortcut or ramp", and the cap was earned by the
+    // CAPTURES, not the code: the kit already stands a lit JUMP / SHORTCUT gantry over every
+    // branch mouth, but the mouths sit at u 0.33 and 0.52 and not one of the five §8 frames
+    // looks at either. What the frames DO look at is the flyover deck beside the double apex (the
+    // muscle and SUV drifts end 80 m past its mouth) and the flood channel down the right kerb
+    // (the tuner and supercar drifts, and the landmark frame). So the opportunity is put where
+    // the camera already is: the flyover's fascia carries a run of hazard chevrons the whole way
+    // up and over, with painted chevrons on its deck, and the channel floor gets two lit gantries
+    // of its own that stand clear over the parapet from the main road.
+    {
+      const fly = track.branches.find((b) => b.kind === 'ramp');
+      const cut = track.branches.find((b) => b.kind === 'shortcut' && Math.abs(b.enterU - 0.520) < 0.01);
+      const P = (b, t) => b.curve.getPointAt(t).setY(b.curve.getPointAt(t).y + b.riseAt(t));
+
+      if (fly) {
+        // Black chevrons on amber, the roadside alignment-board colours, drawn as one tile that
+        // repeats along the fascia. The SAME uv on both faces: the far face reads mirrored, which
+        // is exactly what makes its chevrons point the way the deck runs from that side too.
+        const { c, ctx } = canvas(256, 64);
+        ctx.fillStyle = '#f2a51c'; ctx.fillRect(0, 0, 256, 64);
+        ctx.fillStyle = '#15130f';
+        for (let k = 0; k < 2; k++) {
+          const x = k * 128 + 22;
+          ctx.beginPath();
+          ctx.moveTo(x, 6); ctx.lineTo(x + 30, 6); ctx.lineTo(x + 74, 32);
+          ctx.lineTo(x + 30, 58); ctx.lineTo(x, 58); ctx.lineTo(x + 44, 32);
+          ctx.closePath(); ctx.fill();
+        }
+        ctx.fillRect(0, 0, 256, 4); ctx.fillRect(0, 60, 256, 4);
+        grain(ctx, 256, 64, 6, rng.fork(731));
+        const bandTex = toTexture(c, { srgb: true });            // repeats along the deck
+        const bandMat = new THREE.MeshStandardMaterial({
+          map: bandTex, emissiveMap: bandTex, emissive: 0xffffff,
+          emissiveIntensity: night ? 1.6 : 0.42, roughness: 0.88, metalness: 0,
+          // Matte, and almost no env: seen from above at a graze the sky sheen turned the black
+          // chevrons as pale as the amber and the band read as plain stripes.
+          envMapIntensity: 0.25,
+        });
+        // The deck's own cross-section, re-derived exactly as Branch.buildRoad lays it (same
+        // trim, same mouth flare), so the band hugs the fascia rather than an approximation of it.
+        const segs = Math.max(24, Math.floor(fly.length / 2.5));
+        const F = [];
+        for (let i = 0; i <= segs; i++) {
+          const t = lerp(fly.trim, 1 - fly.trim, i / segs);
+          const tan = fly.curve.getTangentAt(t).normalize();
+          const right = new THREE.Vector3().crossVectors(tan, UP).normalize();
+          const e = i / segs;
+          const flare = 1 + 0.75 * (1 - smoothstep(0, 0.12, e) * smoothstep(0, 0.12, 1 - e));
+          F.push({ p: P(fly, t), right, half: fly.halfWidth * flare, rise: fly.riseAt(t), t });
+        }
+        for (const side of [-1, 1]) {
+          const pos = [], uv = [], idx = [];
+          let along = 0, n = 0;
+          for (let i = 0; i <= segs; i++) {
+            const f = F[i];
+            if (i > 0) along += f.p.distanceTo(F[i - 1].p);
+            // only where the deck is genuinely off the street: at the mouths the fascia is buried
+            if (f.rise < 0.5) { n = 0; continue; }
+            const q = f.p.clone().addScaledVector(f.right, side * (f.half + 0.82));
+            pos.push(q.x, q.y + 0.12, q.z, q.x, q.y - 0.50 - f.rise * 0.08, q.z);
+            uv.push(along / 2.6, 1, along / 2.6, 0);
+            const k = pos.length / 3 - 2;
+            if (n > 0) {
+              // wind each side's face OUTWARD (+right on +1, -right on -1)
+              if (side > 0) idx.push(k - 2, k - 1, k, k - 1, k + 1, k);
+              else idx.push(k - 2, k, k - 1, k - 1, k, k + 1);
+            }
+            n++;
+          }
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+          geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+          geo.setIndex(idx);
+          geo.computeVertexNormals();
+          const m = new THREE.Mesh(geo, bandMat);
+          m.castShadow = false; m.receiveShadow = true;
+          m.userData.noMerge = true;
+          out.push(m);
+        }
+
+        // ...and the deck says it too: amber chevrons painted up the climb, every 13 m from the
+        // foot of the ramp to the crest, laid on the sloped deck itself (not on a flat plane that
+        // would be under the tarmac at one end and floating at the other).
+        const { c: pc, ctx: px } = canvas(128, 128);
+        px.clearRect(0, 0, 128, 128);
+        px.fillStyle = '#ffffff';
+        px.beginPath();
+        px.moveTo(64, 10); px.lineTo(124, 70); px.lineTo(124, 108); px.lineTo(64, 48);
+        px.lineTo(4, 108); px.lineTo(4, 70); px.closePath(); px.fill();
+        px.globalCompositeOperation = 'destination-out';
+        const pr = rng.fork(733);
+        for (let k = 0; k < 70; k++) {                    // tyre-worn, not freshly painted
+          px.globalAlpha = pr.range(0.10, 0.45);
+          px.fillRect(pr.range(0, 128), pr.range(0, 128), pr.range(1, 3), pr.range(6, 26));
+        }
+        px.globalAlpha = 1; px.globalCompositeOperation = 'source-over';
+        const paintTex = toTexture(pc, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+        const deckPaint = new THREE.MeshStandardMaterial({
+          color: 0xffb020, map: paintTex, transparent: true, depthWrite: false,
+          emissive: 0xffb020, emissiveMap: paintTex, emissiveIntensity: night ? 1.2 : 0.30,
+          roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+        });
+        const pos = [], uv = [], idx = [];
+        const tCrest = 0.5;
+        for (let t = fly.trim + 10 / fly.length; t < tCrest; t += 13 / fly.length) {
+          const a = P(fly, t - 1.6 / fly.length), b = P(fly, t + 1.6 / fly.length);
+          const along = b.clone().sub(a).multiplyScalar(0.5);
+          const tan = fly.curve.getTangentAt(t).normalize();
+          const across = new THREE.Vector3().crossVectors(tan, UP).normalize().multiplyScalar(fly.halfWidth * 0.42);
+          const cc = a.clone().lerp(b, 0.5).setY(a.clone().lerp(b, 0.5).y + 0.07);
+          const base = pos.length / 3;
+          for (const [sa, sb] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+            const q = cc.clone().addScaledVector(across, sa).addScaledVector(along, sb);
+            pos.push(q.x, q.y, q.z);
+          }
+          uv.push(1, 0, 0, 0, 1, 1, 0, 1);
+          idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);   // facing up
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+        geo.setIndex(idx);
+        geo.computeVertexNormals();
+        const dm = new THREE.Mesh(geo, deckPaint);
+        dm.renderOrder = 3;
+        dm.userData.noMerge = true;
+        out.push(dm);
+      }
+
+      // Two lit gantries over the channel floor, aimed down the cut. The near one sits ~90 m ahead
+      // of where the drift captures end; the far one 120 m ahead of the landmark frame, standing
+      // over the floor between the girder bridge and the stack. 7.6 m clears the parapet by a
+      // board's height from the main road, which is where both frames are taken from.
+      if (cut) {
+        for (const [mu, seed] of [[0.625, 41], [0.672, 43]]) {
+          const s = track.at(mu);
+          const hit = cut.nearest(s.pos.clone().addScaledVector(s.right, 34.7));
+          const tan = cut.curve.getTangentAt(hit.t).normalize();
+          const gate = shortcutGate({
+            width: cut.halfWidth * 2, height: 7.6, color: '#ffb020', label: 'SHORTCUT',
+            night, seed,
+          });
+          gate.position.copy(P(cut, hit.t));
+          gate.rotation.y = Math.atan2(tan.x, tan.z);
+          out.push(gate);
+        }
+      }
+    }
+
     // ================================================================ 2. the four-level stack
     //
     // Two viaducts crossing over the road at 14 m and 26 m, with three curved connectors woven
@@ -3188,10 +3353,14 @@ export const def = {
         while (u < 1) {
           const inChannel = side > 0 && u > CH0 && u < CH1;
           const stand = R.int(3, 6);
-          const setback = inChannel ? 86 + R.range(0, 7) : HW + R.range(4.0, 8.6);
+          // Behind the kerb, past the parked-car rank: HW + 4.0 put trunks 1.9 m inside the kerb
+          // face, where a car running wide drove through them. Same draw count, so the RNG stream
+          // (and every tree's height, lean and seed) is unchanged.
+          const walk = HW + (track.wallOffset ?? 5.87);
+          const setback = inChannel ? 86 + R.range(0, 7) : walk + R.range(3.2, 4.8);
           for (let k = 0; k < stand && u < 1; k++) {
             const wide = side > 0 && u > CH0 && u < CH1;
-            plant(u, side, (wide ? 86 + R.range(0, 7) : setback) + R.range(-1.2, 1.6), {
+            plant(u, side, (wide ? 86 + R.range(0, 7) : setback) + R.range(-0.2, 1.2), {
               tall: R.bool(0.68), seed: i * 7 + (side > 0 ? 101 : 313),
               y: wide ? 15.9 : 0.16, lod: wide ? 2 : 0,
             });
@@ -3294,18 +3463,20 @@ export const def = {
       const beamGeo = new THREE.BoxGeometry(0.14, 0.42, 1);      // scaled to each span
       let prev = null;
       for (let i = 0; i < GR; i++) {
-        const u = lerp(0.800, 0.878, i / (GR - 1));
+        const u = lerp(GUARD_RAIL.u0, GUARD_RAIL.u1, i / (GR - 1));
         const s = track.at(u);
-        const at = s.pos.clone().addScaledVector(s.right, HW + 5.2);
+        // On the kerb, posts' inner face at its lip. At HW + 5.2 the rail stood 0.7 m out in the
+        // gutter lane, inside the wall, and cars running wide drove through it.
+        const at = s.pos.clone().addScaledVector(s.right, HW + (track.wallOffset ?? 5.87) + 0.12);
         const post = new THREE.Mesh(postGeo, railMat);
-        post.position.copy(at).setY(0.67);
+        post.position.copy(at).setY(0.67 + 0.17);
         post.rotation.y = Math.atan2(s.tan.x, s.tan.z);
         post.castShadow = true;
         M.take(post);
         if (prev) {
           const beam = new THREE.Mesh(beamGeo, railMat);
           beam.scale.z = prev.distanceTo(at);
-          beam.position.copy(prev).lerp(at, 0.5).setY(1.02);
+          beam.position.copy(prev).lerp(at, 0.5).setY(1.02 + 0.17);
           beam.rotation.y = Math.atan2(at.x - prev.x, at.z - prev.z);
           beam.castShadow = true;
           M.take(beam);

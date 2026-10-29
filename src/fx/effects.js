@@ -280,6 +280,7 @@ export class Effects {
   }
 
   setViewportHeight(h) { for (const s of this.pools) s.setViewportHeight(h); }
+  setPixelRatio(pr) { for (const s of this.pools) s.setPixelRatio?.(pr); }
 
   /**
    * Tell the FX director which car the player is driving. main.js calls this whenever it builds
@@ -1081,7 +1082,7 @@ export class Effects {
    * body is pinned to a wall, so it has to be cheap, dense and *directional* — the stream trails
    * back past the camera and bounces off the tarmac.
    */
-  wallScrape(pos, normal, vel, amount) {
+  wallScrape(pos, normal, vel, amount, { floor = 0, faceH = 0.9 } = {}) {
     const a = clamp(amount, 0, 1);
     this._scrapeT += 1;
     const nrm = _cn.copy(normal).setY(0).normalize();
@@ -1176,18 +1177,20 @@ export class Effects {
       this.kick(_v3.set(-nrm.x, 0.2, -nrm.z), 2.2 + a * 3.4);
       _lp.set(pos.x + nrm.x * 0.3, pos.y + 0.2, pos.z + nrm.z * 0.3);
       this._light(_lp, '#ffc074', 10 + 26 * a, 0.30, 12, { y: 0, hold: 0.03, ease: 1.5, flick: 1 });
-      // scorch on the barrier where it caught
-      _cp.set(pos.x, Math.max(0.5, pos.y), pos.z);
-      this.wallMarks.addWall(_cp, nrm, 1.2 + a * 1.6, 0.20 + a * 0.16, {
+      // scorch on the barrier where it caught — on its FACE, inside its height (a kerb is 17 cm)
+      const mh = Math.min(0.20 + a * 0.16, faceH * 0.45);
+      _cp.set(pos.x, floor + Math.min(faceH * 0.5, 0.5), pos.z);
+      this.wallMarks.addWall(_cp, nrm, 1.2 + a * 1.6, mh, {
         tile: DECAL_SMEAR, opacity: 0.30 + 0.18 * a, life: 16, color: '#1b1414',
-      });
+      }, 0.04);
     }
     // rubber/paint smear ground marks under the contact point
     this._scrapeAcc += a;
     if (this._scrapeAcc > 2.2) {
       this._scrapeAcc = 0;
       const yaw = Math.atan2(vel.x, vel.z);
-      this.decals.add(_v1.set(pos.x, 0.0, pos.z), this.rng.range(0.5, 0.9), yaw, {
+      // on the tarmac at the foot of the face, not under the contact point inside the kerb
+      this.decals.add(_v1.set(pos.x + nrm.x * 0.45, floor + 0.02, pos.z + nrm.z * 0.45), this.rng.range(0.5, 0.9), yaw, {
         tile: DECAL_SMEAR, opacity: 0.42, life: 11, color: '#20191a', aspect: 0.45,
       });
     }
@@ -1259,7 +1262,7 @@ export class Effects {
    * three: layered particles, a shake + directional kick + FOV punch + time dilation, and a
    * scorch decal plus a lit flash that actually illuminates the barrier.
    */
-  crash(pos, normal, strength, { color = '#ffc46a', vel = null, paint = null } = {}) {
+  crash(pos, normal, strength, { color = '#ffc46a', vel = null, paint = null, floor = 0, faceH = 0.9 } = {}) {
     const s0 = clamp(strength, 0, 1);
     const p = [pos.x, pos.y, pos.z];
     const nrm = _cn.copy(normal).setY(0).normalize();
@@ -1521,7 +1524,7 @@ export class Effects {
         const a = this.rng.range(0, Math.PI * 2);
         const sp = this.rng.range(3.5, 9.5) * (0.5 + s);
         this.smoke.emit({
-          pos: [p[0] + Math.cos(a) * 0.4, 0.10, p[2] + Math.sin(a) * 0.4],
+          pos: [p[0] + Math.cos(a) * 0.4, floor + 0.10, p[2] + Math.sin(a) * 0.4],
           vel: [Math.cos(a) * sp, this.rng.range(0.2, 1.1), Math.sin(a) * sp],
           life: this.rng.range(1.3, 2.6), size: this.rng.range(0.24, 0.52), grow: this.rng.range(2.6, 4.0),
           rot: this.rng.range(-1.5, 1.5), rotV: this.rng.range(-0.6, 0.6), tile: this.rng.int(0, 3),
@@ -1546,7 +1549,7 @@ export class Effects {
       }
       for (let i = 0; i < Math.floor(4 + big * 10); i++) {
         this.smoke.emit({
-          pos: [p[0] + this.rng.range(-1.6, 1.6), this.rng.range(0.05, 0.5), p[2] + this.rng.range(-1.6, 1.6)],
+          pos: [p[0] + this.rng.range(-1.6, 1.6), floor + this.rng.range(0.05, 0.5), p[2] + this.rng.range(-1.6, 1.6)],
           vel: [this.rng.range(-1.1, 1.1), this.rng.range(0.05, 0.5), this.rng.range(-1.1, 1.1)],
           life: this.rng.range(2.0, 3.6), size: this.rng.range(0.9, 1.8), grow: 3.2,
           rot: this.rng.range(0, 6.28), rotV: this.rng.range(-0.4, 0.4), tile: this.rng.int(0, 3),
@@ -1560,12 +1563,17 @@ export class Effects {
     // The player drives past this a second later, so it is laid as a SCRAPE that runs back down the
     // wall along the tangent the car was sliding, not one blob under the car. Three overlapping
     // stamps, darkest and widest at the contact, fading down the trail.
+    // They lie on the tarmac IN FRONT of the face, at the gutter's own height (`floor`): they used
+    // to go 0.35 m behind the contact at y = 0, which is inside the kerb or under the barrier, so
+    // not one of them was ever seen.
     const yaw = Math.atan2(tx, tz);
     for (let k = 0; k < 3; k++) {
       const d = 0.5 + k * (1.5 + s * 1.9);
       const f = 1 - k * 0.3;
+      const w = (1.3 + s * 2.1) * f;
+      const inset = Math.min(0.30 + w * (k === 0 ? 0.85 : 0.40) * 0.5, 1.4);
       this.decals.add(
-        _v3.set(p[0] - tx * d - nx * 0.35, 0, p[2] - tz * d - nz * 0.35),
+        _v3.set(p[0] - tx * d + nx * inset, floor + 0.02, p[2] - tz * d + nz * inset),
         (1.3 + s * 2.1) * f, yaw,
         {
           tile: k === 0 ? DECAL_SCORCH : DECAL_SMEAR,
@@ -1575,20 +1583,25 @@ export class Effects {
       );
     }
     if (s > 0.35) {
-      this.decals.add(_v3.set(p[0] - nx * 0.2 - vx * 0.05, 0, p[2] - nz * 0.2 - vz * 0.05), 1.1 + s * 1.8, yaw, {
+      this.decals.add(_v3.set(p[0] + nx * 0.9 - vx * 0.05, floor + 0.02, p[2] + nz * 0.9 - vz * 0.05), 1.1 + s * 1.8, yaw, {
         tile: DECAL_SCUFF, opacity: 0.30 * s, life: 14, color: '#241d18', aspect: 0.55,
       });
     }
-    // soot and a smear of the car's paint left ON the barrier — the wall is marked by the hit
-    _cp.set(p[0], Math.max(0.42, p[1]), p[2]);
-    this.wallMarks.addWall(_cp, nrm, 1.1 + s * 2.0, 0.40 + s * 0.45, {
+    // soot and a smear of the car's paint left ON the barrier — the wall is marked by the hit. The
+    // marks are sized to the face they land on: a jersey unit takes a soot bloom up to its cap, a
+    // 17 cm kerb a long low streak along its face, and both sit a few cm proud of it rather than
+    // hanging 0.3 m out in the air in front of a wall that was never there.
+    const midY = floor + Math.min(faceH * 0.5, 0.5);
+    const tall = faceH > 0.5;
+    _cp.set(p[0], midY, p[2]);
+    this.wallMarks.addWall(_cp, nrm, (1.1 + s * 2.0) * (tall ? 1 : 1.4), Math.min(0.40 + s * 0.45, faceH * 0.5), {
       tile: DECAL_SCORCH, opacity: 0.35 + 0.35 * s, life: 20, color: '#15100f',
-    });
+    }, tall ? 0.10 : 0.03);
     if (s > 0.3) {
-      _cp.set(p[0] - tx * (0.6 + s), Math.max(0.40, p[1] - 0.12), p[2] - tz * (0.6 + s));
-      this.wallMarks.addWall(_cp, nrm, 1.4 + s * 2.6, 0.20 + s * 0.22, {
-        tile: DECAL_SMEAR, opacity: 0.42 * s, life: 20, color: paintCol,
-      });
+      _cp.set(p[0] - tx * (0.6 + s), midY - (tall ? 0.12 : 0), p[2] - tz * (0.6 + s));
+      this.wallMarks.addWall(_cp, nrm, 1.4 + s * 2.6, Math.min(0.20 + s * 0.22, faceH * 0.42), {
+        tile: DECAL_SMEAR, opacity: (tall ? 0.42 : 0.6) * s, life: 20, color: paintCol,
+      }, tall ? 0.11 : 0.035);
     }
     // Aftermath the player drives past: a handful of low-energy pieces thrown just far enough to
     // tumble once and come to REST on the tarmac at the contact, rather than everything flying

@@ -9,7 +9,7 @@ import {
 } from '../core/textures.js';
 import { sColor } from './track.js';
 import { drawText, measure } from '../core/font.js';
-import { RNG } from '../core/rng.js';
+import { RNG, makeNoise2D, fbm2D, clamp, smoothstep } from '../core/rng.js';
 
 /**
  * NEW YORK CITY — a blue-hour canyon run.
@@ -359,6 +359,123 @@ function fold(group, chunk = 1e9) {
   mergeGroup(group, chunk);
   group.traverse((o) => { if (o.isMesh) o.userData.noMerge = true; });
   return group;
+}
+
+/**
+ * SODIUM ON THE GROUND OFF THE KERB.
+ *
+ * Every crash capture ends with the car past the kerb, and what it ended up on was a flat
+ * near-black void: rgb(6,7,12) over 20-25% of the frame. The ground plane there is lit by the
+ * cobalt `groundGlow` and nothing else, and that knob cannot fix it — measured on the tuner crash,
+ * swapping it for an amber at 3x the intensity moved that patch by seven code values, because
+ * the plane's albedo is a dark slate and the grade's toe swallows whatever is multiplied into it.
+ *
+ * What a vacant lot beside a Manhattan avenue actually looks like at night is POOLS: the spill of
+ * the lamps behind the fences, a sodium floodlight over a yard, the glow out of a cellar door.
+ * So this lays one additive ribbon down each side of the lap, 0.06 m over the ground plane, with
+ * irregular sodium pools baked into it (28-52 m apart, 9-16 m across), a dim floor between
+ * them so the ground never reads as void, and cracked-paving grain multiplied through both so a
+ * pool reads as lit ground rather than as a flat tan decal. It sits UNDER everything that is
+ * meant to be there: the carriageway, the branch decks, the kerbs, the river sheet and every
+ * building are all above -0.29, so it can only ever show where there was nothing but black.
+ * Additive fog would ADD the fog colour to the far ground, so its fog term fades it out instead.
+ */
+function sodiumGround(track, { night }) {
+  if (!night) return [];
+  const W = 24, TILE = 132;                   // metres across / along one texture tile
+  const TW = 128, TH = 512;
+  const rng = new RNG(5077);
+  const nG = makeNoise2D(5081), nC = makeNoise2D(5087);
+  const pools = [];
+  for (let y = rng.range(0, 18); y < TILE - 12; y += rng.range(28, 52)) {
+    pools.push({ y, x: rng.range(5.5, 15), r: rng.range(4.5, 8.0), e: rng.range(1.15, 1.6), k: rng.range(0.65, 1.0) });
+  }
+  const { c, ctx } = canvas(TW, TH);
+  const img = ctx.createImageData(TW, TH);
+  const d = img.data;
+  const SOD = [1.0, 0.43, 0.12];              // linear sodium: 2000 K is orange, not cream
+  const enc = (v) => 255 * Math.pow(clamp(v, 0, 1), 1 / 2.2);
+  for (let py = 0; py < TH; py++) {
+    const Y = (py + 0.5) / TH * TILE;
+    for (let px = 0; px < TW; px++) {
+      const X = (px + 0.5) / TW * W;
+      let I = 0.12;                           // the floor: never void
+      for (const p of pools) {
+        let dy = Math.abs(Y - p.y); dy = Math.min(dy, TILE - dy);   // wraps with the tile
+        const q = Math.hypot((X - p.x) / p.r, dy / (p.r * p.e));
+        if (q < 1) I += p.k * (1 - q * q) * (1 - q * q);
+      }
+      // broken paving: blotchy grain, and a crack network where a ridge of the noise is thin
+      const gr = 0.66 + 0.34 * clamp(0.5 + 0.5 * fbm2D(nG, X * 0.7, Y * 0.7, 4), 0, 1);
+      const ridge = 1 - Math.abs(fbm2D(nC, X * 0.30, Y * 0.30, 3));
+      const crack = 1 - 0.55 * smoothstep(0.955, 0.99, ridge);
+      // fade in from the verge and out toward the building line
+      const fin = smoothstep(0.5, 3.0, X) * (1 - smoothstep(W - 7, W, X));
+      const v = I * gr * crack * fin;
+      const i = (py * TW + px) * 4;
+      d[i] = enc(v * SOD[0]); d[i + 1] = enc(v * SOD[1]); d[i + 2] = enc(v * SOD[2]); d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = toTexture(c, { srgb: true });
+  // 1.5 measured on the tuner crash: the off-road patch right of the car goes from rgb(5,7,11)
+  // to ~rgb(32,17,16) between pools and the pool the car stops in reads as lit amber paving with
+  // its cracks in it; 2.0 began to flatten into a tan wash, 0.9 still left a void.
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex, color: new THREE.Color(1.5, 1.5, 1.5),
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
+  });
+  mat.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', [
+      '#ifdef USE_FOG',
+      '  #ifdef FOG_EXP2',
+      '    float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );',
+      '  #else',
+      '    float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );',
+      '  #endif',
+      '  gl_FragColor.rgb *= 1.0 - fogFactor;',
+      '#endif',
+    ].join('\n'));
+  };
+  mat.customProgramCacheKey = () => 'nyc-sodium-ground';
+
+  const y = (track.groundY ?? -0.35) + 0.06;
+  const edge = track.halfWidth + 0.8;
+  const n = Math.ceil(track.length / 4);
+  const out = [];
+  for (const side of [-1, 1]) {
+    const pos = [], uv = [], idx = [];
+    let along = 0, prev = null;
+    for (let i = 0; i <= n; i++) {
+      const s = track.at(i / n);
+      if (prev) along += s.pos.distanceTo(prev);
+      prev = s.pos;
+      // on a tight corner the inside edge of a 24 m band would fold over itself
+      const R = 1 / Math.max(1e-4, Math.abs(track.turnRate(i / n)));
+      const w = clamp(0.7 * (R - edge), 4, W);
+      const a = s.pos.clone().addScaledVector(s.right, side * edge);
+      const b = s.pos.clone().addScaledVector(s.right, side * (edge + w));
+      pos.push(a.x, y, a.z, b.x, y, b.z);
+      uv.push(0, along / TILE, w / W, along / TILE);
+      if (i > 0) {
+        const k = i * 2;
+        // facing up: (outer - inner) x (forward) is +Y on the +right side, -Y on the other
+        if (side > 0) idx.push(k - 2, k - 1, k, k - 1, k + 1, k);
+        else idx.push(k - 2, k, k - 1, k - 1, k, k + 1);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    const m = new THREE.Mesh(geo, mat);
+    m.name = 'sodiumGround';
+    m.renderOrder = 1;                        // under the cars' contact shadows (renderOrder 2)
+    m.frustumCulled = false;                  // one ribbon round the whole lap
+    m.userData.noMerge = true;
+    out.push(m);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- small shared helpers
@@ -3699,8 +3816,9 @@ export const def = {
 
     // ---------------------------------------------------------------- 7. the street itself
     const HW = track.halfWidth;
-    // Just outside the collision wall PLUS half a car: the wall clamps the player's centre to
-    // 1.52 half-widths, so anything parked closer than this gets driven through in a wall scrape.
+    // Up on the sidewalk, clear of the kerb line below: the wall is the kerb face (HW + wallOffset,
+    // see Track.wallCheck) and a car's body stops against it, so nothing parked out here is ever
+    // reached — and the barricades now standing on the kerb edge fit between the two.
     const kerb = HW + 7.0;
 
     // ---- the kerb line ------------------------------------------------------------------------
@@ -3708,23 +3826,31 @@ export const def = {
     // consecutive units are the same mesh and nothing lands on a grid (§7's 66 cap).
     {
       const wallOff = track.wallOffset ?? HW * 0.54;
+      const kerbY = track.kerbHeight ?? 0.17;
       const kinds = ['jersey', 'jersey', 'jersey', 'sawhorse', 'sawhorse', 'plywood', 'plate'];
+      // How far each unit reaches either side of its own centreline (sawhorse legs splay, the
+      // plate stack is a metre and a half of steel lying flat).
+      const DEPTH = { jersey: 0.31, sawhorse: 0.48, plywood: 0.33, plate: 0.9 };
       for (const side of [-1, 1]) {
         let u = rng.range(0, 0.01);
         let n = 0;
         while (u < 1) {
           const s = track.at(u);
-          const p = s.pos.clone().addScaledVector(s.right, side * (wallOff + 0.5));
           const gap = rng.range(3.4, 7.2);
           const kind = rng.pick(kinds);
           const len = kind === 'plywood' ? rng.range(4.4, 7.0) : rng.range(2.9, 4.6);
+          // ON THE KERB, not in the lane. This was `wallOff + 0.5` from the CENTRELINE — 5.6 m out on
+          // a 9.5 m half-width, i.e. in the outside lane, where every car on the road drove through
+          // it. The unit's inner toe now stands just back from the kerb face, on the raised walk.
+          const p = s.pos.clone().addScaledVector(s.right,
+            side * (HW + wallOff + 0.16 + (DEPTH[kind] + len * 0.026) * 1.05));
           // leave the shortcut mouths, the station stairs and the crossings open
           if (clear(p, 9) && rng.bool(0.9)) {
             const o = nycBarricade(M, {
               kind, seed: n * 17 + (side > 0 ? 3 : 8), len,
               phase: (n * 3 + (side > 0 ? 2 : 0)) % 5, night,
             });
-            o.position.copy(p).setY(s.pos.y + rng.range(-0.02, 0.02));
+            o.position.copy(p).setY(s.pos.y + kerbY + rng.range(-0.02, 0.02));
             o.rotation.y = Math.atan2(s.tan.x, s.tan.z) + rng.range(-0.05, 0.05);
             o.scale.setScalar(rng.range(0.96, 1.05));
             street.add(o);
@@ -3744,7 +3870,8 @@ export const def = {
         const u = (i / 26 + 0.017) % 1;
         for (const side of [-1, 1]) {
           const s = track.at(u);
-          const p = s.pos.clone().addScaledVector(s.right, side * (HW + 1.9));
+          // on the kerb edge: at HW + 1.9 the post stood in the gutter lane, inside the wall
+          const p = s.pos.clone().addScaledVector(s.right, side * (HW + (track.wallOffset ?? 5.1) + 0.45));
           if (!clear(p, 7)) continue;
           const bl = streetBlade(M, {
             text: streets[(i * 2 + (side > 0 ? 1 : 0)) % streets.length],
@@ -3840,9 +3967,10 @@ export const def = {
           m += t.len + rng.range(0.55, h ? 2.2 : 3.0) + (rng.bool(h ? 0.09 : 0.14) ? rng.range(4, 14) : 0);
         }
       }
-      // ...and every so often one is double-parked with its hazards on, half a lane out, which is
-      // the single most New York thing a street can do. Narrow bodies only, and still outside the
-      // collision wall (which clamps the player's centre to 1.49 half-widths) by a clear margin.
+      // ...and every so often one is pulled up badly across the kerb line with its hazards on, which
+      // is the single most New York thing a street can do. Narrow bodies only. It used to stand
+      // 1.7 m in front of the rank — half its body over the gutter, inside the wall, where cars
+      // drove through it; its inner corner now stops at the kerb face.
       {
         const DP = FLEET.filter((t) => t.key === 'cab' || t.key === 'sedan' || t.key === 'van');
         for (const [u, side] of [
@@ -3850,12 +3978,16 @@ export const def = {
           [0.268, -1], [0.311, 1], [0.359, -1], [0.401, 1], [0.612, -1], [0.821, 1],
         ]) {
           const s = track.at(u);
-          const p = s.pos.clone().addScaledVector(s.right, side * (kerb - 1.7));
-          if (!clear(p, 9)) continue;
           const t = DP[Math.round(u * 1000) % DP.length];
+          const slew = rng.range(0.10, 0.19);
+          // inner corner = centre - (half length · sin slew + half width · cos slew), half width ~1.0
+          const reach = t.len * 0.5 * Math.sin(slew) + 1.0 * Math.cos(slew);
+          const p = s.pos.clone().addScaledVector(s.right,
+            side * Math.max(kerb - 1.7, HW + (track.wallOffset ?? HW * 0.54) + 0.12 + reach * 1.035));
+          if (!clear(p, 9)) continue;
           FB.add(t.key, t.make, {
             pos: { x: p.x, y: s.pos.y + 0.17, z: p.z },
-            rotY: Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0) + side * rng.range(0.10, 0.19),
+            rotY: Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0) + side * slew,
             variant: Math.round(u * 700) % t.n, variants: t.n,
           });
         }
@@ -4035,6 +4167,8 @@ export const def = {
     for (const [g, chunk] of Object.values(BAND)) {
       if (g.children.length) out.push(fold(g, chunk));
     }
+    // the sodium spill on the ground past the kerbs (see sodiumGround)
+    out.push(...sodiumGround(track, { night }));
     return out;
   },
 };

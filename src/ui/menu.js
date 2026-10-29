@@ -225,6 +225,9 @@ const GARAGE_LOOK = {
   grade: {
     uSaturation: 1.20, uExposure: 1.13, uContrast: 1.13, uVignette: 0.26, uVigRadius: 0.30,
     uLift: '#101d29', uGain: '#fff0dc', uGrain: 0.011, uAberration: 0.0018,
+    // the garage is dark because it is a black room, not because it is night: keep the r3 toe
+    // (engine.applyLook's w12 night lift is for the night cities)
+    uNightToe: 0,
   },
 };
 
@@ -3808,12 +3811,17 @@ export class Menu {
     const sw = 30, gap = 8;
     const cy = chipY + 2;
     const px0 = x + cw + 128;
-    fillPlate(ctx, px0 - 14, chipY, 258, 28, 'rgba(9,14,22,0.66)');
+    // The swatches start off the label's MEASURED width, not a fixed 62: the T's bar ran into the
+    // selected swatch's ring, which stands 3 px proud of the swatch and carries a glow. 16 px of
+    // air at the foot is ~22 px at the cap line, where the ring leans away on the 0.28 shear.
+    const lw = measure('PAINT', { size: 14, tracking: 0.22, face: 'geo' }).width;
+    let sx = px0 + lw + 16;
+    const swEnd = sx + spec.colors.length * (sw + gap) - gap;
+    fillPlate(ctx, px0 - 14, chipY, swEnd + 14 - (px0 - 14), 28, 'rgba(9,14,22,0.66)');
     drawText(ctx, 'PAINT', {
       x: px0, y: cy + 18, size: 14, weight: 0.14, tracking: 0.22,
       color: 'rgba(198,218,236,0.92)', face: 'geo',
     });
-    let sx = px0 + 62;
     spec.colors.forEach((col, i) => {
       const on = i === this.colorIndex;
       fillPlate(ctx, sx, cy, sw, 24, col, 0.28);

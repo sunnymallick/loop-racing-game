@@ -106,6 +106,7 @@ export const AtmosphereShader = {
     uWetPatch: { value: 0.55 },    // puddle contrast (0 = uniformly wet)
     uWetPatchScale: { value: 0.055 },
     uWetFresnel: { value: 4.0 },
+    uWetFloor: { value: 0.14 },    // Fresnel floor: the base reflectance of a WATER FILM (0 = dry)
 
     uHazeColor: { value: new THREE.Color(0x8fa8c8) },  // ambient scatter colour
     uHazeSunColor: { value: new THREE.Color(0xffd7a8) },// forward-scatter colour near the sun
@@ -137,7 +138,7 @@ export const AtmosphereShader = {
                   uHazeHeight, uHazeBase, uHazeFalloff, uHazeDesat,
                   uSunVisible, uShaft, uShaftDensity, uShaftDecay, uShaftThreshold, uSunGlow, uBoost,
                   uWet, uWetPlaneY, uWetBand, uWetThresh, uWetKnee, uWetSpread, uWetGain, uWetPatch,
-                  uWetPatchScale, uWetFresnel;
+                  uWetPatchScale, uWetFresnel, uWetFloor;
     uniform vec3 uBalance, uHazeColor, uHazeSunColor, uShaftTint, uCamPos, uSunDir, uWetTint;
     uniform mat4 uInvViewProj, uViewProj;
     varying vec2 vUv;
@@ -234,8 +235,11 @@ export const AtmosphereShader = {
             }
             // Schlick, but with a floor: physically a wet road at 50 degrees reflects ~5%, which
             // reads as nothing on screen. Arcade wet asphalt keeps a base term so the road under
-            // the car still catches its own brake lights.
-            float fres = 0.14 + 0.86 * pow(1.0 - clamp(dot(-rd, nrm), 0.0, 1.0), uWetFresnel);
+            // the car still catches its own brake lights. The floor is the WATER's, though, so it
+            // is a uniform: a dry road (LA) sets it to 0, or every bright thing above the horizon
+            // comes back as a legible mirror image in the near and mid carriageway.
+            float fres = uWetFloor + (1.0 - uWetFloor)
+                       * pow(1.0 - clamp(dot(-rd, nrm), 0.0, 1.0), uWetFresnel);
 
             vec3 rm = vec3(rd.x, -rd.y, rd.z);
             // reflections blur with the distance they travel; near-camera road (steep ray) smears
@@ -478,16 +482,32 @@ export const SpeedShader = {
     uTint: { value: new THREE.Color(0x8fd4ff) },
     uScale: { value: 0.055 },    // max sample stride as a fraction of the radius
     uInner: { value: 0.30 },     // radius under which nothing blurs at all
+    // The nitrous jet's first metre, one capsule per outlet (uv endpoints xy -> zw, radius in
+    // frame heights), held out of the blur. uHold 0 = no hold. See NitrousJet.throatHold().
+    uHold: { value: 0.0 },
+    uHoldA: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uHoldB: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uHoldR: { value: new THREE.Vector2(0, 0) },
   },
   vertexShader: VERT,
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse;
-    uniform vec2 uResolution, uCenter;
-    uniform float uTime, uAmount, uLines, uScale, uInner;
+    uniform vec2 uResolution, uCenter, uHoldR;
+    uniform vec4 uHoldA, uHoldB;
+    uniform float uTime, uAmount, uLines, uScale, uInner, uHold;
     uniform vec3 uTint;
     varying vec2 vUv;
 
     ${LIB}
+
+    /** 1 inside a capsule (segment s.xy -> s.zw, radius r, in frame heights), 0 well outside. */
+    float capsule(vec2 p, vec4 s, float r, vec2 asp){
+      vec2 a = s.xy * asp, b = s.zw * asp, q = p * asp;
+      vec2 ab = b - a;
+      float h = clamp(dot(q - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
+      float dd = length(q - a - ab * h);
+      return 1.0 - smoothstep(r, r * 1.7 + 0.004, dd);
+    }
 
     void main(){
       vec2 dir = vUv - uCenter;
@@ -496,6 +516,15 @@ export const SpeedShader = {
 
       if (uAmount > 0.004) {
         float mask = smoothstep(uInner, 0.78, d);
+        // (nitrous, w12) The blur runs along the jet's own axis, so it smears the throat-to-cone
+        // taper into a soft ribbon wherever the chase framing puts the root of the plume out past
+        // uInner. The first metre of every outlet is held sharp; the cone downstream of it still
+        // streaks, which is where speed reads anyway.
+        if (uHold > 0.002) {
+          vec2 asp = vec2(uResolution.x / max(uResolution.y, 1.0), 1.0);
+          float hold = max(capsule(vUv, uHoldA, uHoldR.x, asp), capsule(vUv, uHoldB, uHoldR.y, asp));
+          mask *= 1.0 - hold * uHold;
+        }
         float w = uAmount * mask;
         if (w > 0.002) {
           float jitter = hash12(vUv * uResolution + uTime * 60.0) - 0.5;
@@ -672,11 +701,37 @@ export const GradeShader = {
       float r2 = dot(c, c);
 
       // ---- chromatic aberration: zero in the middle, a few pixels at the corners ----
+      // (w12) CAPPED IN PIXELS, AND SPREAD RATHER THAN SAMPLED. Under nitrous uBoost x4 took the
+      // red-blue split to ~25 px at the frame rim (miami-suv-nitrous right edge, la-muscle top
+      // right) — a double image, not a lens. The split is now measured in pixels and held under
+      // CA_MAX_PX however hard the boost pushes. And a single tap per channel turned the radial
+      // blur's per-pixel jitter into colour: R, G and B each read a DIFFERENT noisy pixel, so
+      // every high-contrast edge out at the rim fizzed green/magenta. Each channel is now the mean
+      // of four taps spread over its share of the split (a real lens smears a spectrum, it does not
+      // pick three wavelengths), which averages that grain out of the chroma; G is spread over a
+      // small centred span for the same reason, so the three channels carry matched noise. The
+      // spreads are centred on the old offsets, so an unboosted frame keeps the split it had; the
+      // cap is on that centre, and the outermost taps land at 1.3x it (~9 px).
+      const float CA_MAX_PX = 7.0;
       float ab = uAberration * (1.0 + uBoost * 4.0) * r2 * 2.6;
+      vec2 oR = c * ab * 1.25, oB = -c * ab * 1.05;
+      float splitPx = length((oR - oB) * uResolution);
+      float capk = min(1.0, CA_MAX_PX / max(splitPx, 1e-4));
+      oR *= capk; oB *= capk;
       vec3 col;
-      col.r = texture2D(tDiffuse, uv + c * ab * 1.25).r;
-      col.g = texture2D(tDiffuse, uv).g;
-      col.b = texture2D(tDiffuse, uv - c * ab * 1.05).b;
+      if (splitPx * capk < 0.75) {
+        col = vec3(texture2D(tDiffuse, uv + oR).r, texture2D(tDiffuse, uv).g,
+                   texture2D(tDiffuse, uv + oB).b);
+      } else {
+        col = vec3(0.0);
+        for (int i = 0; i < 4; i++) {
+          float f = (float(i) + 0.5) * 0.25;
+          col.r += texture2D(tDiffuse, uv + oR * mix(0.70, 1.30, f)).r;
+          col.g += texture2D(tDiffuse, uv + (oR - oB) * ((f - 0.5) * 0.30)).g;
+          col.b += texture2D(tDiffuse, uv + oB * mix(0.70, 1.30, f)).b;
+        }
+        col *= 0.25;
+      }
 
       col = max(col, 0.0) * uPostExposure;
 

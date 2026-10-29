@@ -124,7 +124,13 @@ export class Engine {
       stencil: false,
       depth: true,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Render resolution = min(devicePixelRatio, the preset's cap) x the adaptive render scale.
+    // See core/quality.js; HIGH (cap 2, scale 1) is the original build.
+    this._maxPixelRatio = 2;
+    this._renderScale = 1;
+    this._allowSpill = true;
+    this._shadowMapSize = 2048;
+    this.renderer.setPixelRatio(this._pixelRatio());
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     // Tonemapping AND the sRGB encode happen in GradeShader, at the end of the chain, once.
     this.renderer.toneMapping = THREE.NoToneMapping;
@@ -236,9 +242,15 @@ export class Engine {
     const height = h || this.container.clientHeight || window.innerHeight;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this._cssW = width; this._cssH = height;
+    const pr = this._pixelRatio();
+    this.renderer.setPixelRatio(pr);
     this.renderer.setSize(width, height, false);
+    this.composer.setPixelRatio(pr);            // also resizes every pass at the new device size
     this.composer.setSize(width, height);
-    this.bloom.setSize(width, height);
+    // Bloom has always run at CSS resolution (it is a blur — extra pixels buy nothing); it just
+    // must not run ABOVE the 3D image when the render scale is below 1.
+    this.bloom.setSize(Math.max(1, Math.round(width * Math.min(1, pr))), Math.max(1, Math.round(height * Math.min(1, pr))));
 
     // WebGLRenderTarget.setSize does not resize an attached DepthTexture — do it by hand or the
     // atmosphere pass samples a stale, wrongly-sized depth buffer.
@@ -253,6 +265,55 @@ export class Engine {
     this.grade.uniforms.uResolution.value.set(width, height);
     this.speed.uniforms.uResolution.value.set(width, height);
     this.atmos.uniforms.uResolution.value.set(width, height);
+  }
+
+  // ------------------------------------------------------------------ graphics quality
+
+  _pixelRatio() {
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    return Math.max(0.4, Math.min(dpr, this._maxPixelRatio) * this._renderScale);
+  }
+
+  /** Adaptive resolution (core/quality.js): 1 = the preset's full resolution. */
+  setRenderScale(s) {
+    if (Math.abs(s - this._renderScale) < 1e-3) return;
+    this._renderScale = s;
+    if (this._cssW) this.resize(this._cssW, this._cssH);
+  }
+
+  get renderScale() { return this._renderScale; }
+
+  /**
+   * Apply a preset from core/quality.js. Everything here is live; the city-side settings (light
+   * budget, sky texture) are passed to buildCity by main.js and take effect on the next city load.
+   */
+  applyQuality(q) {
+    this.quality = q;
+    this._maxPixelRatio = q.maxPixelRatio;
+    this.smaa.enabled = q.smaa;
+    this._allowSpill = q.spill;
+    this.spill.enabled = !!this._spillWanted && q.spill;
+    const setDef = (pass, key, v) => {
+      const d = pass.material.defines;
+      if (d[key] !== v) { d[key] = v; pass.material.needsUpdate = true; }
+    };
+    setDef(this.atmos, 'WET_TAPS', q.wetTaps);
+    setDef(this.atmos, 'SHAFT_SAMPLES', q.shaftSamples);
+    setDef(this.speed, 'BLUR_TAPS', q.speedTaps);
+    this._shadowMapSize = q.shadowMapSize;
+    this.applyShadowQuality();
+    if (this._cssW) this.resize(this._cssW, this._cssH);
+  }
+
+  /** Resize every shadow map in the scene to the preset's size (call again after a city load). */
+  applyShadowQuality(root = this.scene) {
+    const size = this._shadowMapSize;
+    root.traverse((o) => {
+      if (!o.isDirectionalLight || !o.castShadow || !o.shadow) return;
+      if (o.shadow.mapSize.x === size) return;
+      o.shadow.mapSize.set(size, size);
+      if (o.shadow.map) { o.shadow.map.dispose(); o.shadow.map = null; }   // reallocated on next render
+    });
   }
 
   // ------------------------------------------------------------------ per-city look
@@ -395,6 +456,9 @@ export class Engine {
     // Dry asphalt only catches a reflection at a real grazing angle, so the Schlick exponent goes
     // up as the water goes away and the sheen retreats to the far half of the road where it belongs.
     a.uWetFresnel.value = w.fresnel ?? lerp(4.8, 2.4, smooth(0.15, 0.55, wet));
+    // The Fresnel floor is a water film's base reflectance. Every wet city keeps the 0.14 it has
+    // always had; a city that is dry asphalt says so with `floor: 0` (see LA's wetLook).
+    a.uWetFloor.value = w.floor ?? 0.14;
 
     // ---- light shafts --------------------------------------------------------------------
     // A city can force them with look.shafts; otherwise they scale with how strong and how *low*
@@ -456,11 +520,30 @@ export class Engine {
     // frame's darkest 1% sat at sRGB 27–29/255 in all four cities (a grey, not a black); this lands
     // it near 10/255 while the median moves less than 10%. Night is bent slightly harder — asphalt
     // between neon reflections is exactly the surface that has to reach the floor.
+    // (w12) ...and at night the toe now LIFTS rather than bends down. The r3 night end (1.34, black
+    // 0.0052) zeroed everything under ~0.009 display-linear and squeezed the rest of the bottom
+    // twentieth: measured on the w11 sweep, 41-46% of every Vegas and NYC frame sat below sRGB
+    // luminance 25 — asphalt, facades and car flanks all one ink. Measured on vegas-muscle-chase,
+    // even an identity toe leaves 34% there, so straightening the curve is not enough: the night
+    // exponent goes under 1, which opens the shadows into the indigo they already carry (the toe
+    // is a luminance RATIO, so hue survives) while a smaller black subtraction keeps a real black
+    // point and uFloor's tint under it. Below L25: nyc chase 50-53% -> 19-22%, vegas 47-48% ->
+    // 24-25%; any-channel-250 unchanged at ~0.075%, darkest pixel (3,4,8). Highlights are
+    // untouched (the curve is the identity above uToeEnd). The lift runs on its own nightness ramp
+    // so NYC (n ~ 0.63) gets all of it rather than two thirds, and it is blended OVER the r3 curve,
+    // so LA and Miami (n < 0.1) keep exactly the day toe they had. A look that is dark for reasons
+    // other than night (the garage: black walls, n ~ 0.66) opts out with grade.uNightToe = 0.
     const toeBias = clamp(g.uBlackPoint ?? 1.0, 0.6, 1.5);
+    // The deepest night opens a little further again: Vegas (n = 1) has no key light at all and a
+    // black sky over a third of the frame, and at NYC's curve it still measured 32-34% below L25.
+    const nT = smooth(0.25, 0.60, n) * clamp(g.uNightToe ?? 1, 0, 1);
+    const deep = smooth(0.60, 1.0, n);
     u.uToe.value = 1.0;
-    u.uToeEnd.value = mix2(0.048, 0.044);
-    u.uToePow.value = clamp(mix2(1.30, 1.34) * (0.55 + 0.45 * toeBias), 1.0, 1.75);
-    u.uBlack.value = clamp(mix2(0.0058, 0.0052) * toeBias, 0.0, 0.012);
+    u.uToeEnd.value = lerp(mix2(0.048, 0.044), lerp(0.055, 0.065, deep), nT);
+    u.uToePow.value = clamp(lerp(mix2(1.30, 1.34), lerp(0.76, 0.62, deep), nT)
+      * (0.55 + 0.45 * toeBias), 0.55, 1.75);
+    u.uBlack.value = clamp(lerp(mix2(0.0058, 0.0052), lerp(0.0022, 0.0020, deep), nT) * toeBias,
+      0.0, 0.012);
 
     const nightGain = accent.clone().lerp(new THREE.Color(1, 1, 1), 0.5);
     const gainHue = g.uGain ? col(g.uGain) : sunCol.clone().lerp(nightGain, n);
@@ -512,7 +595,8 @@ export class Engine {
     // point survives everywhere there is no emissive nearby.
     sc.uRolloff.value = sp.rolloff ?? mix2(0.85, 0.55);
     sc.uTint.value.copy(unitTint(col(look.accent, 0xffffff), mix2(0.08, 0.20)));
-    this.spill.enabled = spillAmt > 0.005;
+    this._spillWanted = spillAmt > 0.005;
+    this.spill.enabled = this._spillWanted && this._allowSpill;
 
     // ---- ambient floor ----------------------------------------------------------------------
     // "Night cities are lit by emissive geometry and their spill, **not by a bright ambient term**."

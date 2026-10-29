@@ -12,8 +12,11 @@ import { Nitrous, NitrousJet, NITRO_ARM } from './vehicles/nitrous.js';
 import { buildCityById, getCity, CITY_IDS } from './cities/index.js';
 import { Race } from './race/race.js';
 import { clamp, lerp, smoothstep, RNG } from './core/rng.js';
+import { QUALITY, initialQuality, rememberQuality, nextQuality, AdaptiveResolution } from './core/quality.js';
 
 const FIXED_DT = 1 / 60;
+// Nitrous a clean handbrake slide refills on its exit, per unit of physics.js `driftPayout`.
+const DRIFT_NITRO = 0.35;
 
 // scratch: the point down the nitrous plume the boost camera composes around, and the corridor
 // test that keeps an overtaken opponent out of the lens during a boost (nitrous piece)
@@ -66,6 +69,11 @@ class Game {
     this.hud = new HUD(document.getElementById('ui'));
     this.effects = new Effects(this.engine.scene);
     this.effects.setViewportHeight(this.container.clientHeight || 900);
+    // Graphics quality (core/quality.js). Headless captures default to HIGH so screenshots stay
+    // comparable with every earlier round; a player starts on MEDIUM with adaptive resolution.
+    this.adaptive = new AdaptiveResolution();
+    this.setQuality(new URLSearchParams(location.search).has('shot') && !new URLSearchParams(location.search).has('quality')
+      ? 'high' : initialQuality(), { remember: false });
 
     this.city = null;
     this.cityId = null;
@@ -118,12 +126,14 @@ class Game {
       disposeObject(this.city.group);
       this.city = null;
     }
-    const built = buildCityById(id, { renderer: this.engine.renderer, quality: 'high' });
+    const q = QUALITY[this.qualityLevel] || QUALITY.high;
+    const built = buildCityById(id, { renderer: this.engine.renderer, quality: q.city, lightBudget: q.lightBudget });
     this.cityId = id;
     this.city = built;
     // (audio piece) the city picks the music cue — see TRACKS in core/audio.js
     this.audio.setCity(id);
     this.engine.scene.add(built.group);
+    this.engine.applyShadowQuality(built.group);
     this.effects.setWorld(built.group);   // (fx piece) smoke tint + crash-camera ray prep
     this.engine.scene.fog = built.fog;
     // LIGHTING piece: replace the sky-only probe with a cube capture of the finished city so car
@@ -145,6 +155,23 @@ class Game {
     this._heroLevel = clamp((L.sun?.intensity ?? 2) * 0.5 + (L.ambient?.intensity ?? 0.8), 0.8, 4.0);
     if (this.car) this._applyEnv(this.car);
     return built;
+  }
+
+  /**
+   * Switch graphics preset (G in game). Resolution, post-processing, HUD sharpness and shadow maps
+   * change at once; the city's light budget and sky texture follow on the next city load.
+   */
+  setQuality(level, { remember = true, announce = false } = {}) {
+    const q = QUALITY[level] || QUALITY.medium;
+    this.qualityLevel = QUALITY[level] ? level : 'medium';
+    this.engine.applyQuality(q);
+    this.adaptive.setFloor(q.minScale);
+    this.adaptive.reset(1);
+    this.engine.setRenderScale(1);
+    this.hud.setSupersample(q.hudSS);
+    this.effects.setPixelRatio(this.engine.renderer.getPixelRatio());
+    if (remember) rememberQuality(this.qualityLevel);
+    if (announce) this.hud.message(`GRAPHICS ${q.label}`, 1.2, '#39d7f2');
   }
 
   setCar(id, color = null) {
@@ -593,6 +620,7 @@ class Game {
   update(dt) {
     this.time += dt;
     this.input.update(dt);
+    if (this.input.pressed('quality')) this.setQuality(nextQuality(this.qualityLevel), { announce: this.state !== 'menu' });
 
     if (this.state === 'menu') {
       // the garage lights its own hero (menu.js `_enterStage`); the race rig must not be in there
@@ -720,7 +748,10 @@ class Game {
     const wantSide = lateral < -0.42 ? 1 : -1;
     this._boostSide = lerp(this._boostSide ?? wantSide, wantSide, 1 - Math.exp(-1.2 * scaled));
     const surfaceGrip = absLat > 1.02 ? lerp(1.0, 0.58, smoothstep(1.02, 1.5, absLat)) : 1.0;
-    this.body.surface = absLat > 1.02 ? 'dirt' : 'road';
+    // What is actually under the car: the gutter lane between the rumble kerb and the kerb face is
+    // worn asphalt, not dirt, and it is where every barrier contact now happens. The grip above is
+    // left as it was — running wide still costs you.
+    this.body.surface = onBranch ? (absLat > 1.02 ? 'dirt' : 'road') : t.surfaceAt(absLat);
 
     this.body.brakeLit = inp.brake > 0.1;
     this.body.step(scaled, inp, {
@@ -730,37 +761,77 @@ class Game {
       topSpeedMul: this.nitro.cfg.topSpeedMul,
       groundY,
     });
+    // A clean handbrake slide pays out in nitrous the frame it ends (physics.js `driftPayout`: a
+    // second of full drift with no barrier is a full payout, a third of a tank). Only in a race,
+    // and the nitrous piece's own update turns a refill past the arm line into NITRO READY.
+    if (racing && this.body.driftPayout > 0) {
+      this.nitro.charge = Math.min(1, this.nitro.charge + DRIFT_NITRO * this.body.driftPayout);
+      if (this.body.driftPayout > 0.25) this.hud.message(`DRIFT +${Math.round(DRIFT_NITRO * this.body.driftPayout * 100)}% NITRO`, 0.8, '#ff5fd2');
+    }
 
     // ---- wall collision ----
-    const wallAt = 1.52;
-    if (absLat > wallAt) {
-      const s = onBranch ? onBranch.sample : nearMain.sample;
-      const inward = s.right.clone().multiplyScalar(-Math.sign(lateral));
-      const halfW = onBranch ? onBranch.branch.halfWidth : t.halfWidth;
-      const wallPoint = s.pos.clone().addScaledVector(s.right, Math.sign(lateral) * halfW * wallAt);
+    // CRASH piece: the wall is the face you can SEE — the kerb face, or the inner face of a barrier
+    // run the city declares — and the car stops when its BODY reaches it, not its centre (see
+    // Track.wallCheck). The old rule was a virtual line at |lateral| 1.52 on the centre, ~0.15 m
+    // short of the kerb face, so a car at the wall had half its width through the kerb, inside a
+    // parked car or behind a barrier it had passed straight through, and every impact burst and
+    // scorch mark landed on nothing. Shortcut ribbons keep their own centre-line wall (race.js
+    // owns cars on a branch with the same bound).
+    let wall = null;
+    if (onBranch) {
+      const wallAt = 1.52;
+      if (absLat > wallAt) {
+        const s = onBranch.sample;
+        const halfW = onBranch.branch.halfWidth;
+        const side = Math.sign(lateral);
+        const contact = s.pos.clone().addScaledVector(s.right, side * halfW * wallAt);
+        wall = { s, side, over: (absLat - wallAt) * halfW, contact, faceH: 0.9, floor: contact.y };
+      }
+    } else {
+      const d = this.car.userData.dims;
+      const hw = d.width * 0.5, hl = d.length * 0.5;
+      const fwd = this.body.forward;
+      const c = t.wallCheck(nearMain, fwd, hw, hl);
+      if (c) {
+        const s = nearMain.sample;
+        // The point that touches: the body corner that reaches furthest toward the face, carried
+        // onto the face itself. A car arriving at an angle sparks off its front corner, ahead of
+        // its own centre — which is where the eye looks for it.
+        const toward = s.right.clone().multiplyScalar(c.side);
+        const cr = this.body.right;
+        const sl = Math.sign(fwd.dot(toward)) || 1, sw = Math.sign(cr.dot(toward)) || 1;
+        const contact = this.body.pos.clone().addScaledVector(fwd, sl * hl).addScaledVector(cr, sw * hw);
+        // Snapped onto the face at the corner's OWN cross-section: two metres ahead of the centre
+        // the road has already turned, and the centre's frame left the burst ~0.3 m inside the kerb.
+        const cn = t.nearest(contact, nearMain.u);
+        const cOff = t.wallFace(cn.u, c.side).off;
+        contact.addScaledVector(cn.sample.right, c.side * (cOff - c.side * cn.lateral * t.halfWidth));
+        const floor = t.floorAt(cn.u, c.side, cOff - t.halfWidth).y;
+        wall = { s, side: c.side, over: c.over, contact, faceH: c.face.h, floor };
+      }
+    }
+    if (wall) {
+      const inward = wall.s.right.clone().multiplyScalar(-wall.side);
       // RACE piece: push the car back across the road by the overshoot, rather than rebuilding its
       // position from the sample's cross-section. The old form discarded the along-track component,
       // so a car held against a barrier was re-snapped onto the *same* cross-section every frame:
       // it sat at exactly |lateral| = 1.52 reading 150 mph and travelling nowhere, and `nearest()`
       // kept returning the same sample, so it never got out. (A full-race probe with the player on
       // autopilot ended with the player on lap 0 after four minutes, pinned to one barrier.)
-      const over = (absLat - wallAt) * halfW;
-      this.body.pos.addScaledVector(inward, over);
+      this.body.pos.addScaledVector(inward, wall.over);
       const strength = this.body.impact(inward, 0.28, 0.62);
-      // FX contact point. This is NOT "one metre outboard of the car" — that put the burst a metre
-      // *behind* the barrier, hanging in open air, which is why the crash read as a decal pasted
-      // over the frame (ART_DIRECTION §6.6). The solid surface the car is actually touching is the
-      // kerb face / barrier line, which by the track's own cross-section sits right on the
-      // collision plane, so the burst belongs on `wallPoint` itself, at rubbing-strip height.
-      const hit = wallPoint.clone().addScaledVector(inward, -0.2).setY(0.42);
+      // FX contact point: ON the face, at the height the body meets it — rubbing-strip height on a
+      // barrier, sill height on a kerb that only stands 17 cm proud of the gutter.
+      const hit = wall.contact.setY(wall.floor + Math.min(0.42, wall.faceH * 0.6));
+      const at = { floor: wall.floor, faceH: wall.faceH };
       if (strength > 0.03) {
-        if (strength > 0.22) this.effects.crash(hit, inward, strength, { vel: this.body.vel, paint: this.carColor });
+        if (strength > 0.22) this.effects.crash(hit, inward, strength, { vel: this.body.vel, paint: this.carColor, ...at });
         else this.effects.sparkBurst(hit, inward, strength * 0.7, { vel: this.body.vel });
         this.audio.impact(strength, { surface: 'concrete', pan: Math.sign(lateral) * 0.6 });
       } else if (Math.abs(this.body.speed) > 6) {
         // Scraping along a wall is the common case and must still throw sparks — otherwise a
         // player pinned to the barrier at 120 mph gets no feedback at all.
-        this.effects.wallScrape(hit, inward, this.body.vel, clamp((Math.abs(this.body.speed) - 6) / 26, 0, 1));
+        this.effects.wallScrape(hit, inward, this.body.vel, clamp((Math.abs(this.body.speed) - 6) / 26, 0, 1), at);
         // (audio piece) metal on barrier is a SCRAPE, not a tyre squeal
         this.audio.scrape(0.35 + 0.65 * clamp((Math.abs(this.body.speed) - 6) / 26, 0, 1));
       }
@@ -912,6 +983,8 @@ class Game {
         rpm: this.body.rpm, throttle: inp.throttle,
         gearShift: this.body.gearShiftT > 0, volume: 1,
       }, scaled);
+      // (audio piece) the nearest opponents' engines, panned and distance-attenuated off the camera
+      this.audio.rivals(this.race?.drivers, this.engine.camera, this.body);
       // `slide` not `drift`: a tyre squeals when it scrubs, and that includes a standing burnout.
       // (audio piece) the surface and road speed go in too: tarmac howls, dirt washes, kerbs
       // rumble, and the ambience bed / music scheduler ride on the same state.
@@ -1445,6 +1518,7 @@ class Game {
     const sp = this.engine.speed.uniforms;
     sp.uAmount.value = lerp(sp.uAmount.value, 0, 1 - Math.exp(-5 * dt));
     sp.uLines.value = lerp(sp.uLines.value, 0, 1 - Math.exp(-8 * dt));
+    if (sp.uHold) sp.uHold.value = 0;
   }
 
   _updateCamera(dt) {
@@ -1785,7 +1859,16 @@ class Game {
     // (presentation piece, r2) 48→55 is 86° across. Together with the 5.63 m rig that is the
     // measured 32 % of frame width; the flame term is rescaled again (8 → 11) so a boost still
     // snaps to the same 70° the nitrous piece tuned.
-    const targetFov = 48 + smoothstep(0.08, 1.0, speed01) * 7 + boost * 4 + flame * 11 + kick * 14;
+    // …AND PART OF THE SPEED READ IS ABSOLUTE. Every term here used to run off `speed01`, the
+    // fraction of THIS car's top speed, so flat out was the same 54.85° in an SUV at 151 mph and a
+    // supercar at 188 — and the same speed lines — and the one thing a faster car should feel like
+    // it did not. Now 3° of the 7 still follows the fraction (a car at its own limit still feels
+    // at its limit) and 4.5° follows the speedometer, saturating near 197 mph; flat out the four
+    // classes land 54.5° (SUV) · 54.7° (tuner) · 55.0° (muscle) · 55.5° (supercar) — a degree
+    // across the garage, felt rather than seen. The boost terms are untouched.
+    const vAbs = Math.abs(b.speed);
+    const targetFov = 48 + smoothstep(0.08, 1.0, speed01) * 3 + smoothstep(20, 88, vAbs) * 4.5
+      + boost * 4 + flame * 11 + kick * 14;
     this.camFov = lerp(this.camFov, targetFov, 1 - Math.exp(-(6 + surge * 26) * dt));
     cam.fov = this.camFov + (this.effects.fovKick || 0);   // impact punch (fx piece)
     cam.updateProjectionMatrix();
@@ -1818,8 +1901,12 @@ class Game {
     // ignition crack keeps most of its authority because that spike is over in a third of a second.
     const nos = Math.max(flame, boost);
     this.engine.grade.uniforms.uBoost.value = clamp(nos * 0.62 + kick * 0.40, 0, 1.6);
-    this.engine.speed.uniforms.uAmount.value = clamp(smoothstep(0.2, 1.05, speed01) * 0.58 + nos * 0.34 + kick * 0.30, 0, 1.15);
-    this.engine.speed.uniforms.uLines.value = clamp(smoothstep(0.55, 1.08, speed01) * 0.7 + nos * 0.42 + kick * 0.36, 0, 1);
+    // (the speed blur and lines take the same split as the FOV: a little over half off the
+    // fraction of top speed, the rest off the speedometer — see `vAbs` above)
+    const blurRead = smoothstep(0.2, 1.05, speed01) * 0.55 + smoothstep(15, 85, vAbs) * 0.45;
+    const lineRead = smoothstep(0.55, 1.08, speed01) * 0.55 + smoothstep(40, 88, vAbs) * 0.45;
+    this.engine.speed.uniforms.uAmount.value = clamp(blurRead * 0.58 + nos * 0.34 + kick * 0.30, 0, 1.15);
+    this.engine.speed.uniforms.uLines.value = clamp(lineRead * 0.7 + nos * 0.42 + kick * 0.36, 0, 1);
     this.engine.speed.uniforms.uTint.value.set(this.nitro?.cfg.color || '#8fd4ff');
 
     // Heat haze (nitrous piece): the plume boils the air, so the grade pass ripples the image
@@ -1828,6 +1915,12 @@ class Game {
     if (gu.uHeat) {
       const amt = this.jet ? this.jet.heatPoint(cam, gu.uHeatPos.value) : 0;
       gu.uHeat.value = clamp(amt, 0, 1.4);
+    }
+    // ...and the first metre of the jet is held out of the radial blur, so the throat-to-cone taper
+    // stays crisp while the rest of the frame streaks (nitrous piece, w12).
+    const su = this.engine.speed.uniforms;
+    if (su.uHold) {
+      su.uHold.value = this.jet ? this.jet.throatHold(cam, su.uHoldA.value, su.uHoldB.value, su.uHoldR.value) : 0;
     }
   }
 
@@ -2033,6 +2126,12 @@ class Game {
     this._last = now;
     this.update(dt || FIXED_DT);
     this.render(dt || FIXED_DT);
+    // dynamic resolution: only ever a stepped change, at most about once a second
+    const scale = this.adaptive.sample(now);
+    if (scale !== null) {
+      this.engine.setRenderScale(scale);
+      this.effects.setPixelRatio(this.engine.renderer.getPixelRatio());
+    }
     requestAnimationFrame(this.frame);
   };
 

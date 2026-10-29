@@ -51,7 +51,7 @@ async function main() {
   const tmp = path.join(path.dirname(OUT), '.crop.html');
   await fs.mkdir(path.dirname(OUT), { recursive: true });
   await fs.writeFile(tmp, html);
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   const page = await browser.newPage({ viewport: { width: W, height: Math.min((H + 23) * cells.length, 30000) }, deviceScaleFactor: 1 });
   await page.goto(`file://${tmp}`);
   await page.waitForLoadState('networkidle');

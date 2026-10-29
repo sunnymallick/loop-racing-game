@@ -10,7 +10,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
  * Every builder/critic agent gets its own server + browser, so many can run concurrently
  * without fighting over a port.
  */
-export async function boot({ headless = true, width = 1600, height = 900, gpu = false } = {}) {
+export async function boot({ headless = true, width = 1600, height = 900, gpu = false, dpr = 1 } = {}) {
   const port = 20000 + Math.floor(Math.random() * 30000);
   const server = await createServer({
     root: ROOT,
@@ -35,22 +35,24 @@ export async function boot({ headless = true, width = 1600, height = 900, gpu = 
   //    ask for the installed Google Chrome via `channel` and drop every software-rasteriser flag.
   //    Without this, "headed" runs still report ~0.5 fps and look like a catastrophic perf bug.
   const browser = await chromium.launch({
+    // CHROME_PATH: use a specific Chromium binary (e.g. where Playwright's own download is unavailable)
+    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
     headless: gpu ? false : headless,
     ...(gpu ? { channel: 'chrome' } : {}),
     args: gpu
-      ? ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--enable-zero-copy', '--force-device-scale-factor=1']
+      ? ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--enable-zero-copy', `--force-device-scale-factor=${dpr}`]
       : [
         '--use-angle=swiftshader',
         '--enable-unsafe-swiftshader',
         '--ignore-gpu-blocklist',
         '--enable-webgl',
         '--disable-dev-shm-usage',
-        '--force-device-scale-factor=1',
+        `--force-device-scale-factor=${dpr}`,
       ],
   });
   const context = await browser.newContext({
     viewport: { width, height },
-    deviceScaleFactor: 1,
+    deviceScaleFactor: dpr,
     reducedMotion: 'no-preference',
   });
   const page = await context.newPage();
@@ -74,6 +76,8 @@ export async function boot({ headless = true, width = 1600, height = 900, gpu = 
 export async function open(page, url, { city = 'la', car = 'muscle', color = null, timeout = 120000 } = {}) {
   const q = new URLSearchParams({ shot: '1', city, car });
   if (color) q.set('color', color);
+  // SHOT_QUALITY=low|medium|high: capture at a graphics preset instead of shot mode's default (high)
+  if (process.env.SHOT_QUALITY) q.set('quality', process.env.SHOT_QUALITY);
   await page.goto(`${url}/?${q}`, { waitUntil: 'domcontentloaded', timeout });
   await page.waitForFunction('window.__READY === true || window.__READY === "error"', null, { timeout });
   const state = await page.evaluate('window.__READY');

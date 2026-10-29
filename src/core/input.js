@@ -21,6 +21,7 @@ const KEYMAP = {
   cancel: ['Escape', 'KeyQ'],
   restart: ['KeyR'],
   camera: ['KeyV'],
+  quality: ['KeyG'],    // cycle graphics quality (core/quality.js)
 };
 
 export class Input {

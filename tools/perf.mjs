@@ -10,6 +10,11 @@
  *
  *   node tools/perf.mjs                        # all four cities, supercar
  *   node tools/perf.mjs --cities vegas --car muscle --frames 400
+ *   node tools/perf.mjs --quality high --dpr 2         # the original build on a Retina screen
+ *   node tools/perf.mjs --quality medium --dpr 2       # the new default, same screen
+ *
+ * --quality picks a preset from src/core/quality.js (default: high, the original build). Adaptive
+ * resolution is held at 1 here so the number measures the preset itself, not the auto-scaler.
  */
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -49,9 +54,11 @@ const FRAMES = Number(arg('frames', 300));
 const W = Number(arg('width', 1600));
 const H = Number(arg('height', 900));
 const BAR = 50;
+const QUALITY = arg('quality', 'high');
+const DPR = Number(arg('dpr', 1));
 
 async function main() {
-  const h = await boot({ gpu: true, width: W, height: H });
+  const h = await boot({ gpu: true, width: W, height: H, dpr: DPR });
   const rows = [];
   try {
     await open(h.page, h.url, { city: CITIES[0], car: CAR });
@@ -64,6 +71,7 @@ async function main() {
       return d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
     });
     console.log(`GPU: ${gpu}`);
+    console.log(`quality ${QUALITY}, devicePixelRatio ${DPR}, ${W}x${H} CSS px`);
     const guard = loadGuard();
     const software = /swiftshader|software|llvmpipe/i.test(gpu);
     if (software) console.log('⚠ Still on a software rasteriser — these numbers are NOT the real-GPU bar.\n');
@@ -72,6 +80,11 @@ async function main() {
       await load(h.page, { city, car: CAR });
       await scenario(h.page, 'chase');
       await h.page.evaluate(([w, hh]) => window.__GAME.setSize(w, hh), [W, H]);
+      await h.page.evaluate((q) => {
+        const g = window.__GAME.game;
+        g.setQuality(q, { remember: false });
+        g.adaptive.enabled = false;
+      }, QUALITY);
 
       const r = await h.page.evaluate(async (n) => {
         const g = window.__GAME.game;
@@ -132,7 +145,7 @@ async function main() {
       ? `PASS — worst city ${worst.toFixed(1)} fps at ${W}x${H} (bar: ${BAR})`
       : `FAIL — worst city ${worst.toFixed(1)} fps at ${W}x${H} (bar: ${BAR})`) + caveat);
     console.log('='.repeat(62));
-    await fs.writeFile(path.join(ROOT, 'shots/perf.json'), JSON.stringify({ gpu, width: W, height: H, bar: BAR, rows }, null, 2));
+    await fs.writeFile(path.join(ROOT, 'shots/perf.json'), JSON.stringify({ gpu, quality: QUALITY, dpr: DPR, width: W, height: H, bar: BAR, rows }, null, 2));
     process.exitCode = worst >= BAR ? 0 : 1;
   } finally {
     await h.close();

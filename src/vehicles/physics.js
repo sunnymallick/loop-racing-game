@@ -67,6 +67,9 @@ const UP = new THREE.Vector3(0, 1, 0);
 const RAD2DEG = 57.29578;
 const DEG2RAD = 1 / RAD2DEG;
 const GRAV = 9.81;
+// How long a hard barrier hit keeps its yaw kick (seconds of sim time) and its peak rate (rad/s).
+const KICK_T = 0.42;
+const KICK_RATE = 2.6;
 
 /** Saturating tyre curve: linear at small slip, asymptotes to the friction limit. */
 const sat = (x) => x / Math.sqrt(1 + x * x);
@@ -100,6 +103,11 @@ export class VehicleBody {
     this.driftDir = 1;           // +1 = sliding through a right-hander, -1 = mirror
     this.commit = 0;             // 0..1 filtered driver commitment (throttle/lock/handbrake)
     this.driftAsk = 0;           // 0..1 the same, HANDS ONLY — the licence to sustain a slide
+    this.driftLatch = 0;         // 0..1 a slide the HANDBRAKE started and the car is still in
+    this.latchSide = 0;          // which way that slide went (sign of vLat) — the corner it is in
+    this.latchPeak = 0;          // …and the most slip it reached that way, degrees
+    this.driftBank = 0;         // seconds of drift the live slide has banked (−1: spoiled)
+    this.driftPayout = 0;        // one frame, 0..1: a clean slide just ended and paid out this much
     this.grounded = true;
     this.airborne = 0;
     this.vy = 0;                 // vertical velocity for ramps/jumps
@@ -119,6 +127,8 @@ export class VehicleBody {
     this.lastImpact = 0;
     this.impactImpulse = 0;
     this.recover = 0;            // seconds of post-impact stability assist left
+    this.kickT = 0;              // seconds of a hard hit's yaw kick left (see impact())
+    this.kickRate = 0;
     this.wallT = 0;              // seconds of barrier contact left
     this.wallN = new THREE.Vector3(0, 0, 1);
     this.odo = 0;
@@ -145,11 +155,12 @@ export class VehicleBody {
   reset(pos, yaw) {
     this.pos.copy(pos); this.yaw = yaw;
     this.vel.set(0, 0, 0); this.yawRate = 0; this.speed = 0; this.groundSpeed = 0;
-    this.drift = 0; this.slide = 0; this.commit = 0; this.driftAsk = 0;
+    this.drift = 0; this.slide = 0; this.commit = 0; this.driftAsk = 0; this.driftLatch = 0;
+    this.latchSide = 0; this.latchPeak = 0; this.driftBank = 0; this.driftPayout = 0;
     this.slip = 0; this.slipAllow = 0; this.slipTarget = 0;
     this.vy = 0; this.y = pos.y;
     this.boost = 0; this.steerAngle = 0; this.steerVisual = 0; this.assist = 0;
-    this.wheelSlip = 0; this.recover = 0; this.wallT = 0;
+    this.wheelSlip = 0; this.recover = 0; this.wallT = 0; this.kickT = 0; this.kickRate = 0;
     this.gear = 1; this.gearShiftT = 0; this.shifts = 0;
     this.aLong = 0; this.aLat = 0; this.understeer = 0; this.rearGrip = 1; this.rearSlide = 0; this.rearBeyond = 0;
     this.roll = this.pitch = this.heave = 0;
@@ -291,10 +302,99 @@ export class VehicleBody {
     if (vLong > vMax) vLong = lerp(vLong, vMax, 1 - Math.exp(-8 * dt));
     if (vLong < -p.reverseMax) vLong = -p.reverseMax;
 
+    // ---------------------------------------------------------------- drift latch
+    // A DRIFT IS ASKED FOR WITH THE HANDBRAKE. Everything below used to count steering INTO the
+    // corner as a request for a slide (`into` bought both `commit` and `driftAsk`). On a keyboard
+    // every corner is taken on full lock, so every corner was a request: measured with
+    // tools/drivetest.mjs, a keyboard player with the handbrake never touched spent 60–75% of a
+    // lap more than 10° sideways and hit 30–48° of slip. That is the "undriveable" report.
+    //
+    // So the drift licence now has exactly one door. Pulling the handbrake latches it; while the
+    // car is still sideways from that slide, lock either way (deeper into it, or opposite to hold
+    // it) keeps the licence exactly as before, so a handbrake drift is still balanced on the
+    // throttle and the wheel. Once the angle has come back under this class's own drift line the
+    // latch lets go and the car is a grip car again.
+    const slipNowDeg = Math.abs(Math.atan2(vLat, Math.max(4.0, absV))) * RAD2DEG;
+    //
+    // `opts.assists === false` keeps the original model exactly (the latch pinned open, full lock at
+    // every speed): race.js passes it for the AI field, whose pace and racecraft were tuned over
+    // many rounds against that model and which never drives with a keyboard.
+    //
+    // …and the latch remembers WHICH CORNER: the side the slide went the moment it became a real
+    // one. The drift line in the tyre loop carries the car round that corner, and it keeps doing
+    // so if a keyboard catch overshoots through straight — that overshoot is the slide's own exit,
+    // not a new corner, and it is exactly where the car used to be flung at the outside barrier.
+    // But an overshoot is only the slide's exit while it is SMALLER than the slide was (and than
+    // twice this class's drift line): one that swings out further the other way is a new slide
+    // nobody asked for, and the latch lets go of it. Held, a flick that peaked at 10° and swung to
+    // 19° the other way kept a half-open latch alive on the overshoot, and one that stayed under
+    // the drift line and then swung out parked the car at 29° for over a second (drivetest
+    // --handbrake at the default push, the SUV in NYC and Miami: a barrier hit and 3 s off the
+    // road where the round-9 latch had none). The side, likewise, is only taken while the
+    // handbrake's own slide is fresh (latch over half), and a latch that never found one lets go
+    // whatever the angle.
+    const slideOn = slipNowDeg > p.driftOn * 0.8;
+    if (this.opts.assists === false) this.driftLatch = 1;
+    else {
+      const pulled = hb && absV > 6;
+      if (pulled) this.driftLatch = 1;
+      if (!this.latchSide && slideOn && this.driftLatch > 0.5) this.latchSide = Math.sign(vLat);
+      if (this.latchSide && Math.sign(vLat) === this.latchSide) this.latchPeak = Math.max(this.latchPeak, slipNowDeg);
+      const overshoot = this.latchSide && Math.sign(vLat) === -this.latchSide
+        && slipNowDeg > Math.max(this.latchPeak, p.driftOn * 2);
+      if (!pulled && (!slideOn || absV < 4 || !this.latchSide || overshoot)) this.driftLatch = Math.max(0, this.driftLatch - 3.0 * dt);
+      if (this.driftLatch <= 0) { this.latchSide = 0; this.latchPeak = 0; }
+    }
+    const latch = this.driftLatch;
+    // THE PAYOUT. A handbrake slide used to be all cost — scrub, a lit rear that would not put the
+    // power down, a slower exit — and the score it ran up only ever reached the HUD. So a live slide
+    // banks seconds of real drift (`drift` is the 0..1 the HUD scores), and a CLEAN one — no
+    // barrier, never past the class's own limit — pays out on the frame the latch lets go:
+    // `driftPayout` 0..1 (a second of full drift is a full payout), which main.js turns into
+    // nitrous. A slide that touches a wall or gets away from the driver banks nothing.
+    this.driftPayout = 0;
+    if (this.opts.assists !== false) {
+      if (latch > 0) {
+        if (this.wallT > 0 || slipNowDeg > p.slipMax + 8) this.driftBank = -1;
+        else if (this.driftBank >= 0) this.driftBank += this.drift * dt;
+      } else if (this.driftBank) {
+        if (this.driftBank > 0) this.driftPayout = clamp(this.driftBank, 0, 1);
+        this.driftBank = 0;
+      }
+    }
+
     // ---------------------------------------------------------------- steering
     // Authority falls with speed so the car isn't twitchy flat out, but never to zero.
     const speedF = 1 / (1 + absV * p.steerFalloff);
-    const steerLimit = p.steerMax * lerp(p.steerFloor, 1.0, speedF);
+    const steerBase = p.steerMax * lerp(p.steerFloor, 1.0, speedF);
+    // ...and outside a drift, full lock is the angle the FRONT TYRES CAN USE at this speed, never
+    // more: the geometric angle for the tightest arc the front grip can hold (L/R with R = v²/a)
+    // plus the tyre's own working slip angle. Past that a front tyre only scrubs, so the extra
+    // lock bought nothing but understeer and — on a keyboard, where every press is full lock — a
+    // snap of yaw the rear then had to catch. Inside a handbrake slide more of the range comes
+    // back (below), because opposite lock is how a drift is held.
+    const Lw = this.opts.wheelbase ?? 2.8;
+    const vS = Math.max(absV, 1);
+    // The tyre term is a MARGIN, not a whole slip angle: cornering hard the rear runs nearly the
+    // same slip angle as the front, so what the front needs over the geometric angle is roughly
+    // the understeer gradient's worth, half a peak. A whole one (or more) at 70 m/s is 13° of lock
+    // the car cannot use and a weave a keyboard driver cannot get out of.
+    let gripLock = Math.atan((Lw * p.gripFront * GRAV * 0.95) / (vS * vS)) + p.alphaPeak * (p.gripLockSlip ?? 0.5);
+    // Catching a slide needs lock past that, toward the slide: add the slip angle the car is
+    // carrying, so opposite lock can always point the front wheels down the road.
+    const slipSigned = Math.atan2(vLat, Math.max(4.0, absV));
+    const catching = steerIn * slipSigned > 0;
+    if (catching) gripLock += Math.abs(slipSigned);
+    // Inside a handbrake slide the lock opens up, but to what the SLIDE can use rather than to the
+    // stop: the grip angle, plus the slip angle the car is carrying (either way — into the slide it
+    // is the angle the flick has already swung the nose through), plus one more peak of tyre. It
+    // used to be the whole base range, and on a keyboard, where every press is the whole range,
+    // that was 10–20° of front tyre past anything it could use: a front axle scrubbing wide on
+    // the way out of every slide, which is where drivetest's handbrake laps left the road. (The AI's
+    // model, whose latch is pinned open, keeps the whole range it was tuned on.)
+    const latchLock = this.opts.assists === false ? steerBase
+      : Math.min(steerBase, gripLock + (catching ? 0 : Math.abs(slipSigned)) + p.alphaPeak);
+    const steerLimit = lerp(Math.min(steerBase, gripLock), latchLock, latch);
     const wantAngle = steerIn * steerLimit;
     // Unwinding the wheel is quicker than winding it on — that is what makes a catch feel sharp.
     const rate = p.steerRate * (Math.abs(wantAngle) < Math.abs(this.steerAngle) ? 1.45 : 1);
@@ -333,7 +433,8 @@ export class VehicleBody {
     // untouched (that is §6.2's "held with counter-steer"), a driver pinned against the stop is
     // asking to come back and gets the rear axle handed back to them.
     const lockLeft = 1 - smoothstep(0.80, 1.0, Math.abs(this.steerAngle) / Math.max(0.02, steerLimit));
-    const commitRaw = clamp(hb * 0.9 + into * 0.75 + counter * 0.95 * lockLeft + throttle * 0.30, 0, 1);
+    // Hands only count while a handbrake slide is live (see the drift latch above).
+    const commitRaw = clamp(hb * 0.9 + latch * (into * 0.75 + counter * 0.95 * lockLeft + throttle * 0.30), 0, 1);
     this.commit = lerp(this.commit, commitRaw, 1 - Math.exp(-7 * dt));
     //
     // THE FLOOR IS A DEAD BAND, AND THE DEAD BAND IS WHERE A FAILED RECOVERY PARKS. Below `allow`
@@ -430,7 +531,7 @@ export class VehicleBody {
     // for it) — what has changed is that with the wheel straight it no longer feeds itself for ever.
     // The handbrake also counts IMMEDIATELY rather than through the 0.14 s filter: pulling it is
     // not an ambiguous request, and the flick has to break the axle away on the very first frame.
-    const askRaw = clamp(hb * 0.95 + into * 0.85 + counter * 1.0 * lockLeft, 0, 1);
+    const askRaw = clamp(hb * 0.95 + latch * (into * 0.85 + counter * 1.0 * lockLeft), 0, 1);
     this.driftAsk = lerp(this.driftAsk, askRaw, 1 - Math.exp(-7 * dt));
     // The ramp is deliberately low and narrow. It has to be at FULL authority for a driver holding
     // a third of a turn of opposite lock — that is a drifter balancing the car, and at 0.18–0.55 a
@@ -441,7 +542,15 @@ export class VehicleBody {
 
     // The rear's friction circle. Everything that makes a car oversteer lives in this one number,
     // which is why `rearGrip` is in the telemetry: it is the drift, quantified.
-    const circle = Math.sqrt(Math.max(0.02, 1 - Math.pow(clamp(rearLoad * p.powerOversteer, 0, 0.99), 2)));
+    // POWER OVERSTEER FADES WITH SPEED unless a handbrake slide is live. `rearLoad` is the engine
+    // force over the tyre's budget, and in the low gears of the torquier classes it reads 1.5–1.8
+    // all the way up to 50 m/s, so the friction circle took a third of the rear's grip on a
+    // STRAIGHT at full throttle. drivetest caught the muscle car fishtailing ±16° at 110 mph in
+    // third with the wheel nearly centred. Real power oversteer is a low-speed, low-gear thing
+    // (force = power / speed), so it keeps its full bite out of slow corners and fades to a third
+    // of it by 30 m/s — and comes straight back inside a slide the driver started.
+    const powerFade = lerp(1, p.powerFadeHigh ?? 0.35, smoothstep(12, 30, absV) * (1 - this.driftLatch));
+    const circle = Math.sqrt(Math.max(0.02, 1 - Math.pow(clamp(rearLoad * p.powerOversteer * powerFade, 0, 0.99), 2)));
     // KINETIC FRICTION. A tyre past its peak slip angle grips less than one at its peak — that is
     // the whole reason a slide is self-sustaining and why a drift is a balance rather than a
     // switch. Without it, a car in a tall gear at 116 mph cannot lean hard enough on the rears to
@@ -590,6 +699,13 @@ export class VehicleBody {
     const kinW = 1 - smoothstep(3, 12, absV);                     // car-park steering blend
     const alphaPeak = Math.max(0.04, p.alphaPeak);
 
+    // The drift line (see the sub-step): what grip-limited full lock bends the path by, and how much
+    // of it the driver is asking for — a live handbrake latch with lock held either way. The
+    // AI's model (assists: false) pins the latch open and is left exactly as it was tuned.
+    const gripLine = p.gripFront * GRAV * surfaceGrip * df * 0.95;
+    const lineW = this.opts.assists === false ? 0 : latch * clamp(into + counter, 0, 1);
+    const lineSign = this.latchSide ? -this.latchSide : dir;
+
     const SUB = 4;
     const h = dt / SUB;
     let aLatAcc = 0, fyfAcc = 0, fyrAcc = 0, slideAcc = 0, beyondAcc = 0;
@@ -629,7 +745,29 @@ export class VehicleBody {
       const cd = Math.cos(delta);
       const fyf = -muF * sat(alphaF / alphaPeak) * gate;
       const fyr = -muR * sat(alphaR / alphaPeak) * gate;
-      const aLatT = fyf * cd * biteF + fyr;
+      let aLatT = fyf * cd * biteF + fyr;
+      const sinB = vLat / vRef, cosB = Math.abs(vLong) / vRef;
+      // THE DRIFT LINE. A handbrake slide used to cost its line: with the rear cut, the course
+      // bends with the front axle alone, so on lock into the corner the car went round on less
+      // path-bending than the same lock buys on grip and washed wide — drivetest --handbrake at the
+      // limit took 7 barrier hits and 21 s off the tarmac a lap set against 2 and 9 s on grip, for
+      // no time gained. So while the latch is live and the driver holds lock — either way: into the
+      // slide or catching it is still a driver working a corner — the path is carried round THE
+      // CORNER THE SLIDE IS IN (`latchSide`), to the grip line: the acceleration across the path
+      // grip-limited full lock asks of the front tyres (`gripLine`, the figure `gripLock` is built
+      // on), never more. That includes a keyboard catch that overshoots through straight: the
+      // overshoot is the slide's exit, and it was where the car left the corner pointed at the
+      // outside barrier. It acts on the PATH only — perpendicular to the velocity, so it costs no
+      // speed and spins nothing — and `sustain` below carries the car's angle round with it. Hands
+      // off the keys, the slide is the driver's to balance, exactly as before.
+      if (lineW > 0.001) {
+        const s = lineSign;
+        const lack = gripLine * lineW - (aLatT * cosB - this.aLong * sinB) * s;
+        if (lack > 0) {
+          aLatT += cosB * s * lack;
+          vLong -= sinB * s * lack * h;
+        }
+      }
       const driftW = smoothstep(0.14, 0.34, Math.abs(slipS));
       slideAcc += Math.abs(sat(alphaR / alphaPeak));   // rear friction budget already spent sideways
       beyondAcc += clamp(Math.abs(alphaR) / alphaPeak - 1, 0, 2) * 0.5;   // past the peak → kinetic
@@ -646,7 +784,6 @@ export class VehicleBody {
       // straight — which is why recovery is clean and a spin is impossible.
       // Stability control has priority: any grip it hands back also releases the hold, so lifting
       // off and centring the wheel winds the car straight instead of parking it in a slide.
-      const sinB = vLat / vRef, cosB = Math.abs(vLong) / vRef;
       const sustain = (aLatT * cosB - this.aLong * sinB) / vRef;   // yaw rate that holds this angle
       // ...and "while the driver is COMMITTED" is what the paragraph above has always claimed it
       // does, but there was no commitment term in the weight — only the drift-angle ramp and the
@@ -680,6 +817,18 @@ export class VehicleBody {
       // ...and the same backstop carries the post-impact window: a barrier hit that leaves the car
       // 60° sideways is exactly where §6.2's "recovery and controllability after a hit" is won or
       // lost, and `recover` on its own only damped the rotation rather than ending it.
+      // SPEED STABILITY. Tyres damp yaw in proportion to 1/v, so a bicycle model gets steadily
+      // twitchier the faster it goes — at 70 m/s the muscle car's heading and its course could
+      // swing ±20° apart in a weave a keyboard driver fed rather than caught (drivetest). Outside a
+      // handbrake slide, the heading is eased toward the rate its own path is turning at, harder
+      // the faster the car is going. This is NOT a yaw damper: `sustain` is the course rate, so a
+      // steady corner is untouched and only the heading/path DIFFERENCE is damped.
+      // One-sided past the class's drift line, like every other term in this loop: while a big
+      // angle is CLOSING it stays out of the way, so it can only ever slow a slide down, never
+      // hold one up (drifttest's dirt cells at 68 m/s measure exactly that).
+      const closeW = 1 - smoothstep(p.driftOn * DEG2RAD, p.driftFull * DEG2RAD, Math.abs(slipS));
+      const stab = (p.speedStability ?? 4.0) * smoothstep(18, 60, vRef) * (1 - this.driftLatch) * (opening ? 1 : closeW);
+      if (stab > 0.001) this.yawRate = lerp(this.yawRate, sustain, 1 - Math.exp(-stab * h));
       const anti = Math.max(guard, rec * 0.85);
       if (anti > 0.001) this.yawRate = lerp(this.yawRate, sustain, 1 - Math.exp(-anti * 16 * h));
       // Low speed: the tyre model has nothing to work with, so blend toward Ackermann geometry.
@@ -712,6 +861,19 @@ export class VehicleBody {
     const aLatMean = aLatAcc / SUB;
     this.rearSlide = lerp(this.rearSlide, slideAcc / SUB, 1 - Math.exp(-10 * dt));
     this.rearBeyond = lerp(this.rearBeyond, beyondAcc / SUB, 1 - Math.exp(-12 * dt));
+    // THE HIT KICK (crash piece). Everything above exists to keep the car straight — the drift
+    // ESC, the anti-spin backstop, the post-impact `recover` damping and, below, the wall pin that
+    // lays the heading along the barrier — and together they ate the yaw `impact()` handed out
+    // inside two frames: a 150 mph hit read +0.2 s later at -0.03 rad/s, i.e. as a car that brushed
+    // a wall rather than one that hit it (§6.6, "vehicle response — spin and recovery"). For the
+    // length of the kick its rate is OWNED here, decaying linearly to nothing, so the nose is
+    // thrown off the barrier by ~25-30° on a hard hit; the same stabilisers then bring it back, and
+    // that recovery is the second half of what §6.6 scores.
+    if (this.kickT > 0) {
+      const k = this.kickT / KICK_T;
+      this.yawRate = lerp(this.yawRate, this.kickRate * k, 1 - Math.exp(-24 * dt));
+      this.kickT = Math.max(0, this.kickT - dt);
+    }
     this.yaw += this.yawRate * dt;
     this.recover = Math.max(0, this.recover - dt);
 
@@ -738,7 +900,7 @@ export class VehicleBody {
     // not an accident, and snapping it straight is the "model that can no longer slide" failure —
     // ungated, this cost the supercar's LA slide 10° of peak angle (34° → 24°). With the gate the
     // extra authority only exists for a driver who has let go of the car.
-    if (this.wallT > 0) {
+    if (this.wallT > 0 && this.kickT <= 0) {
       const tang = new THREE.Vector3().crossVectors(UP, this.wallN).normalize();
       if (tang.dot(this.vel) < 0 && this.vel.lengthSq() > 1) tang.negate();
       else if (this.vel.lengthSq() <= 1 && tang.dot(fwd) < 0) tang.negate();
@@ -858,6 +1020,7 @@ export class VehicleBody {
     const vn = this.vel.dot(normal);
     if (vn >= 0) return 0;
     const strength = clamp(-vn / 26, 0, 1);
+    const v0 = Math.hypot(this.vel.x, this.vel.z);
     // Restitution FALLS with closing speed. A light tap bounces off a barrier; a square hit at
     // 85 mph deforms and stops. As a constant it did the opposite — the harder you hit, the harder
     // you were thrown back — so a head-on barrier hit catapulted the car backwards at 28% of its
@@ -880,6 +1043,25 @@ export class VehicleBody {
     const square = Math.abs(this.forward.dot(normal));
     this.yawRate += side * strength * lerp(1.5, 0.5, square);
     this.yawRate = clamp(this.yawRate, -3.4, 3.4);
+    // A HARD HIT IS NOT A SCRAPE (crash piece). Below ~0.22 — the line main.js draws between a
+    // spark shower and a crash — nothing changes: a rub costs the speed into the wall and a little
+    // friction, which is what keeps a clumsy corner survivable. Above it the hit crumples the car
+    // and throws its nose off the wall: the hit as a whole is made to cost up to ~31% of the speed
+    // the car arrived with (~35% by +0.2 s, measured on the §8 crash captures, where it used to
+    // cost ~20%) — topped up only when the bounce above took less, never stacked on a steep hit
+    // that already lost more — and a yaw kick `step()` holds for KICK_T before handing the car
+    // back to its stabilisers.
+    const hard = smoothstep(0.22, 0.55, strength);
+    if (hard > 0) {
+      const kept = Math.hypot(this.vel.x, this.vel.z) / Math.max(v0, 1e-3);
+      const want = 1 - 0.31 * hard;
+      if (kept > want) this.vel.multiplyScalar(want / kept);
+      const kick = side * KICK_RATE * hard * lerp(1, 0.6, square);
+      if (this.kickT <= 0 || Math.abs(kick) > Math.abs(this.kickRate * this.kickT / KICK_T)) {
+        this.kickRate = kick;
+        this.kickT = KICK_T;
+      }
+    }
     this.recover = Math.max(this.recover, 0.30 + strength * 0.90);
     this.pitchV += strength * 7;                 // nose dives into the hit
     this.rollV += side * strength * 2.4;
@@ -909,6 +1091,7 @@ export class VehicleBody {
       // this is near zero is the latch this model has now been fixed for four rounds, and it is
       // the one number that makes that visible in a trace instead of only in a scripted capture.
       driftAsk: +this.driftAsk.toFixed(3),
+      driftLatch: +this.driftLatch.toFixed(3),
       steerDeg: +(this.steerAngle * RAD2DEG).toFixed(2),
       counterDeg: +(this.assist * RAD2DEG).toFixed(2),
       frontDeg: +(this.steerVisual * RAD2DEG).toFixed(2),

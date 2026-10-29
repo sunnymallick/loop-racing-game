@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RNG, clamp, lerp, smoothstep } from '../core/rng.js';
+import { RNG, clamp, lerp, smoothstep, makeNoise2D, fbm2D } from '../core/rng.js';
 import { asphalt, concrete, canvas, toTexture, grain, fbmField, normalFromHeight, grayCanvas } from '../core/textures.js';
 
 /**
@@ -544,6 +544,74 @@ export function roadGlyphTexture(kind = 'arrow') {
     }
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
+  });
+}
+
+/**
+ * A crosswalk bar, worn the way road paint actually wears.
+ *
+ * The generic glyph wear above punches ~110 round blots out of the paint, which is fine on an
+ * arrow seen from 20 m and was the "dalmatian" every NYC landmark frame put front and centre:
+ * a crosswalk bar is a 0.62 x 3.6 m quad, so each blot landed on the road as a crisp grey
+ * ellipse. Paint does not wear in spots, it wears in the direction the tyres travel. So here
+ * canvas X runs ACROSS the bar (~2.4 mm a pixel) and Y runs ALONG it, with the traffic (~14 mm a
+ * pixel), and everything is built from that anisotropy:
+ *
+ *  - a tyre-path band somewhere across the bar where the paint is scrubbed through in long
+ *    streaks (`heavy` says how far: 0 a bar between the wheel tracks, 1 a bar right under one);
+ *  - fine streak noise everywhere else, stretched along the traffic, so the gaps are scuffs;
+ *  - ragged long edges and chipped ends instead of a ruled rectangle;
+ *  - aggregate showing through as tiny elongated pits, densest in the band.
+ */
+export function crosswalkBarTexture(variant = 0, heavy = 0.5) {
+  return decalTex(`glyph:xwalk:${variant}:${heavy}`, (ctx, s) => {
+    const rng = new RNG(911 + variant * 37);
+    const nA = makeNoise2D(1301 + variant * 7), nB = makeNoise2D(1709 + variant * 11);
+    const n01 = (fn, x, y, o) => clamp(0.5 + 0.5 * fbm2D(fn, x, y, o), 0, 1);
+    const band = rng.range(0.28, 0.72) * s, bandW = rng.range(0.13, 0.22) * s;
+    // edge bite depth per row (long edges) and per column (ends), in pixels
+    const bite = (v, k) => 3 + 20 * Math.pow(n01(nB, v * 9 + k * 31.7, k * 3.1, 3), 1.6);
+    const img = ctx.createImageData(s, s);
+    const d = img.data;
+    for (let y = 0; y < s; y++) {
+      const fy = y / s;
+      const eL = bite(fy, 0), eR = bite(fy, 1);
+      for (let x = 0; x < s; x++) {
+        const fx = x / s;
+        let a = 0.94;
+        // ragged long edges, and chipped ends (an end pixel is 14 mm, so the bites are shallow)
+        a *= smoothstep(eL - 2.5, eL + 2.5, x) * smoothstep(eR - 2.5, eR + 2.5, s - 1 - x);
+        const eEnd = 1.5 + 5 * n01(nB, fx * 7, 5.3 + (y < s / 2 ? 0 : 9), 2);
+        a *= smoothstep(eEnd - 1.5, eEnd + 1.5, Math.min(y, s - 1 - y));
+        // the wheel track wanders a few centimetres and is worn through in PATCHES along its
+        // length, not as one ruled slot
+        const bandC = band + 0.07 * s * fbm2D(nB, fy * 2.2, 7.7, 2);
+        const tyre = Math.exp(-(((x - bandC) / bandW) ** 2)) * (0.35 + 0.65 * heavy)
+                   * (0.55 + 0.45 * n01(nB, 3.3, fy * 3.1, 2));
+        // streaks along the traffic (~2.5 cm across, ~0.5 m along, warped so none is ruled
+        // straight) and broader scuffed blotches where the aggregate is coming through
+        const wx = fx + 0.012 * fbm2D(nA, fy * 5, 1.7, 2);
+        const st = n01(nA, wx * 26, fy * 7, 4);
+        const blot = n01(nB, fx * 3.5 + 11, fy * 4.5, 3);
+        const wear = st * (0.42 + 0.85 * tyre) + blot * (0.22 + 0.55 * tyre);
+        a *= 1 - smoothstep(0.58, 0.85, wear);
+        // aggregate pits: short dashes along Y, mostly where the tyres run
+        if (rng.next() < 0.010 + 0.10 * tyre) a *= rng.range(0.05, 0.6);
+        const i = (y * s + x) * 4;
+        // grime settles into the worn band before the paint goes
+        const g = 1 - 0.16 * tyre * st;
+        d[i] = 242 * g; d[i + 1] = 239 * g; d[i + 2] = 228 * g;
+        d[i + 3] = clamp(a, 0, 1) * 255;
+      }
+    }
+    // stretch the pits into dashes along the traffic: blend each row with the one above
+    for (let y = s - 1; y > 0; y--) {
+      for (let x = 0; x < s; x++) {
+        const i = (y * s + x) * 4, j = ((y - 1) * s + x) * 4;
+        d[i + 3] = Math.min(d[i + 3], 0.55 * d[i + 3] + 0.45 * d[j + 3] + 40);
+      }
+    }
+    ctx.putImageData(img, 0, 0);
   });
 }
 
@@ -1517,6 +1585,100 @@ export class Track {
     }
     this.turn = sm;
     this.branches = (def.branches || []).map((b, i) => new Branch(this, b, i));
+
+    // THE WALL IS THE THING YOU CAN SEE. Collision used to be a virtual line at |lateral| 1.52 on
+    // the car's CENTRE, which matched nothing drawn: the kerb face sits ~0.15 m past it, so every
+    // car ended a barrier hit with half its body through the kerb and into the sidewalk, and a
+    // run of jersey units standing on the rumble strip was driven straight through. The wall is
+    // now a FACE — the kerb face by default, or the inner face of a barrier run a city declares in
+    // `def.walls` — and a car stops when its BODY reaches it (see `wallCheck`). Both are known
+    // without building a single mesh, so tools/drivetest.mjs and the AI read the same wall the
+    // player hits. `buildRoad()` derives the kerb from the same two numbers and re-states it.
+    this.curbWidth = def.curbWidth ?? 1.2;
+    this.wallOffset = Math.max(this.curbWidth + 1.4, this.halfWidth * ((def.wallLateral ?? 1.52) - 1) + 0.15);
+    this.kerbHeight = 0.17;
+    // A city that lays its own kerb over the kit's (Las Vegas) says where its face really is.
+    this.kerbFace = { inset: def.kerbFace?.inset ?? 0, h: def.kerbFace?.h ?? this.kerbHeight };
+    this.walls = [];
+    for (const w of def.walls || []) this.addWall(w);
+  }
+
+  /**
+   * Declare a solid run along one kerb: `{ u0, u1, side, h, off, off1 }`. `h` is the height of the
+   * face a car meets there — a barrier standing on the kerb, toe at its lip, is still met at the
+   * kerb face, but it is a metre of concrete and the impact and its marks are sized to that. A
+   * run standing INSIDE the kerb face also gives `off`, metres from the road edge to its inner
+   * face (ramping to `off1` at `u1`, for a taper), and then it is the wall there — which is only
+   * honest if the city places its meshes along exactly that line.
+   */
+  addWall({ u0, u1, side, off = null, off1 = off, h = 0.9 }) {
+    this.walls.push({ u0: ((u0 % 1) + 1) % 1, u1: ((u1 % 1) + 1) % 1, side: Math.sign(side) || 1, off, off1, h });
+  }
+
+  /**
+   * The solid face on one side of the road at `u`: `{ off, h, kerb }` with `off` measured from
+   * the centreline in metres. The kerb face unless a declared run stands in front of it.
+   */
+  wallFace(u, side) {
+    u = ((u % 1) + 1) % 1;
+    let off = this.halfWidth + this.wallOffset - this.kerbFace.inset, h = this.kerbFace.h, kerb = true;
+    for (const w of this.walls) {
+      if (w.side !== side) continue;
+      const span = ((w.u1 - w.u0) % 1 + 1) % 1;
+      const along = ((u - w.u0) % 1 + 1) % 1;
+      if (along > span) continue;
+      const o = w.off == null ? off : this.halfWidth + lerp(w.off, w.off1, span > 0 ? along / span : 0);
+      if (o <= off) { off = o; h = w.h; kerb = false; }
+    }
+    return { off, h, kerb };
+  }
+
+  /**
+   * Does a car's BODY reach the wall? `near` is a `nearest()` result for the car's centre, `fwd`
+   * its heading, `hw`/`hl` its half width and half length. The reach toward the wall is the
+   * outermost corner of the body at its current yaw against the road, so a car arriving at an
+   * angle touches with the front corner and a car slid in sideways touches with its flank.
+   * Returns null when clear, else `{ over, side, face }` — `over` metres past the face.
+   */
+  wallCheck(near, fwd, hw, hl) {
+    const s = near.sample;
+    const side = Math.sign(near.lateral) || 1;
+    const cosA = Math.abs(fwd.x * s.tan.x + fwd.z * s.tan.z);
+    const sinA = Math.abs(fwd.x * s.right.x + fwd.z * s.right.z);
+    const reach = Math.min(hl, hw * cosA + hl * sinA);
+    const face = this.wallFace(near.u, side);
+    const over = Math.abs(near.lateral) * this.halfWidth + reach - face.off;
+    return over > 0 ? { over, side, face, reach } : null;
+  }
+
+  /**
+   * What is under a car whose centre is `absLat` half-widths out: the carriageway, the rumble
+   * kerb, or the worn asphalt of the gutter lane between the kerb and the kerb face. Past the
+   * kerb face — which only a car on a shortcut can reach — it is dirt.
+   */
+  surfaceAt(absLat) {
+    const m = absLat * this.halfWidth - this.halfWidth;
+    if (m <= 0.02 * this.halfWidth) return 'road';
+    if (m <= this.curbWidth) return 'kerb';
+    return m <= this.wallOffset ? 'road' : 'dirt';
+  }
+
+  /**
+   * The world point on the drawn surface `off` metres out from the road edge, between the road and
+   * the kerb face — the same banked, relaxing cross-section `buildRoad()` laid it from — so a mark
+   * stamped at the foot of a wall lies ON the gutter instead of under it on a banked corner.
+   */
+  floorAt(u, side, off) {
+    const S = this.section;
+    let st = { off, y: 0.02, flat: 0 };
+    if (S) {
+      const list = [S.roadEdge, S.curbOut, S.gutterOut];
+      const i = off <= list[1].off ? 0 : 1;
+      const a = list[i], b = list[i + 1];
+      const k = clamp((off - a.off) / (b.off - a.off), 0, 1);
+      st = { off, y: lerp(a.y, b.y, k), flat: lerp(a.flat, b.flat, k) };
+    }
+    return this.station(this.frame(u), side, st);
   }
 
   at(u) {
@@ -1885,7 +2047,8 @@ export class Track {
      *   road | rumble curb | gutter / parking lane | kerb face | sidewalk | graded apron
      */
     const wallOff = Math.max(curbWidth + 1.4, this.halfWidth * (wallLateral - 1) + 0.15);
-    this.wallOffset = wallOff;
+    this.wallOffset = wallOff;              // the collision face — see the constructor
+    this.curbWidth = curbWidth;
     this.kerbHeight = 0.17;
     const kerbTop = this.kerbHeight;
 
@@ -1946,6 +2109,7 @@ export class Track {
     };
     S.apronOut = S.vergeOut;                                 // kept for callers that read the old name
     g.userData.section = S;
+    this.section = S;                                         // floorAt() reads the gutter from it
 
     // curbs: the red/white striped rumble strip seen in every reference frame
     if (curb) {
@@ -2636,6 +2800,10 @@ export class Track {
     const oilMats = [0, 1, 2].map((i) => flatMat(stainTexture(i, 'oil'), { rough: 0.22 }));
     const skidMat = flatMat(skidTexture(1), { rough: 0.75 });
     const paintMat = flatMat(roadGlyphTexture('bar'), { rough: 0.78, color: 0xe6e3d8 });
+    // crosswalk bars get their own directional wear (see crosswalkBarTexture): light, medium
+    // and a bar sitting right in a wheel track
+    const crossMats = [[0, 0.15], [1, 0.55], [2, 1.0]].map(([v, hv]) =>
+      flatMat(crosswalkBarTexture(v, hv), { rough: 0.78, color: 0xe6e3d8 }));
 
     /** Lay a quad flat on the road, centred at (u, lateral), size (across, along), rotated. */
     const quad = (material, u, lateral, across, along, rot = 0, lift = 0.012) => {
@@ -2659,14 +2827,16 @@ export class Track {
       crossU.push(u);
     }
     g.userData.crossings = crossU;
-    for (const u0 of crossU) {
+    for (const [ci, u0] of crossU.entries()) {
       const f = this.frame(u0);
       const barW = 0.62, gap = 0.62;
       const span = f.half * 2 * 0.92;
       const n = Math.max(4, Math.floor(span / (barW + gap)));
       for (let i = 0; i < n; i++) {
         const lat = (-0.92 + (i + 0.5) * (1.84 / n));
-        quad(paintMat, u0, lat, barW, 3.6);
+        // a fixed hash, not the shared rng: drawing from it here would reshuffle every manhole,
+        // stain and skid placed after this loop
+        quad(crossMats[(i * 7 + ci * 3 + (i >> 1)) % 3], u0, lat, barW, 3.6);
       }
       // stop line just before it
       const du = 3.2 / this.length;
