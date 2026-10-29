@@ -795,56 +795,296 @@ function glowMaterial(cache, color, intensity = 2.2, opts = {}) {
  * `glowMaterial` gives a plate of one flat colour, and a row of those on a dark wall is exactly
  * the "emissive quads pasted on a colour field" the round-1 critique called out — once bloom gets
  * hold of it there is nothing inside the light at all. This is the same plate with a ROOM behind
- * it: a ceiling-lit falloff, mullions, a counter, back-shelves and the odd standing silhouette.
+ * it: a ceiling-lit falloff, fittings along the back wall, and the people in it.
+ *
+ * The rooms used to be one 128 px picture per material, stretched whole over every bay: a 2.5 m
+ * pane carried ~50 texels a metre of shelf-blocks drawn three texels thick, and every window on a
+ * building showed the same one, so a podium read as one magnified motif stamped down the street
+ * (§7's tiling cap, 65). Now there is ONE atlas of eight wide interiors per city — 1024 x 512 each,
+ * lit and dim, shop / lobby / bar / diner / showroom / screens / office / shuttered — drawn
+ * neutral and tinted by the material, and each pane looks into its own crop of one of them (see
+ * shopPicker): its own room, its own part of that room, mirrored or not, never the same room as
+ * the pane beside it. A crop is 250-600 texels across a pane, so the picture is minified, not
+ * magnified, at any distance the camera gets to.
  */
-function shopWindowMaterial(cache, color, night, seed = 1) {
-  return mat(cache, `shopwin|${color}|${night}|${seed}`, () => {
-    const S = 128;
-    const { c, ctx } = canvas(S, S);
-    const rng = new RNG(seed * 97 + 11);
-    const col = sColor(color);
-    const rgb = (m, a = 1) => `rgba(${clamp(col.r * 255 * m, 0, 255) | 0},${clamp(col.g * 255 * m, 0, 255) | 0},${clamp(col.b * 255 * m, 0, 255) | 0},${a})`;
-    // lit ceiling, falling off toward the floor
-    const gr = ctx.createLinearGradient(0, 0, 0, S);
-    gr.addColorStop(0, rgb(1.25));
-    gr.addColorStop(0.22, rgb(1.0));
-    gr.addColorStop(0.78, rgb(0.55));
-    gr.addColorStop(1, rgb(0.30));
-    ctx.fillStyle = gr; ctx.fillRect(0, 0, S, S);
-    // back wall / shelving units
-    for (let k = 0; k < rng.int(2, 5); k++) {
-      const x = rng.range(0, S * 0.85), w2 = rng.range(S * 0.10, S * 0.28);
-      const y = rng.range(S * 0.25, S * 0.55), h2 = rng.range(S * 0.18, S * 0.42);
-      ctx.fillStyle = `rgba(20,14,10,${rng.range(0.22, 0.5)})`;
-      ctx.fillRect(x, y, w2, h2);
-      for (let r = 0; r < 3; r++) {
-        ctx.fillStyle = `rgba(255,240,214,${rng.range(0.05, 0.18)})`;
-        ctx.fillRect(x, y + (r + 0.7) * (h2 / 3), w2, 1.6);
+const SHOP_CW = 1024, SHOP_CH = 512, SHOP_NX = 2, SHOP_NY = 4;
+// Which interior each cell holds. Two of the eight are dim (after hours, shuttered), so a
+// frontage has dark-ish panes in it without a single pane being a flat black hole.
+const SHOP_ROOMS = ['shop', 'lobby', 'bar', 'diner', 'showroom', 'screens', 'office', 'shutter'];
+
+function shopAtlas(cache) {
+  return mat(cache, 'shopwin-atlas', () => {
+    const W = SHOP_CW * SHOP_NX, H = SHOP_CH * SHOP_NY;
+    const { c, ctx } = canvas(W, H);
+    SHOP_ROOMS.forEach((kind, i) => {
+      ctx.save();
+      ctx.translate((i % SHOP_NX) * SHOP_CW, Math.floor(i / SHOP_NX) * SHOP_CH);
+      ctx.beginPath(); ctx.rect(0, 0, SHOP_CW, SHOP_CH); ctx.clip();
+      drawRoom(ctx, kind, new RNG(i * 131 + 17));
+      ctx.restore();
+    });
+    grain(ctx, W, H, 3, new RNG(29));
+    return toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+  });
+}
+
+/** One interior, neutral warm-white, drawn into a SHOP_CW x SHOP_CH cell at the origin. */
+function drawRoom(ctx, kind, rng) {
+  const W = SHOP_CW, H = SHOP_CH;
+  const dim = kind === 'office' || kind === 'shutter';
+  const k = dim ? 0.42 : 1;
+  const g = (m, a = 1) => {
+    const v = clamp(m * k, 0, 1.3);
+    return `rgba(${clamp(255 * v, 0, 255) | 0},${clamp(246 * v, 0, 255) | 0},${clamp(232 * v, 0, 255) | 0},${a})`;
+  };
+  const ink = (a) => `rgba(14,10,8,${a})`;
+  const floorY = H * rng.range(0.84, 0.88);
+
+  // ceiling-lit back wall, falling off toward the floor
+  const wall = ctx.createLinearGradient(0, 0, 0, H);
+  wall.addColorStop(0, g(1.15)); wall.addColorStop(0.20, g(1.0));
+  wall.addColorStop(0.70, g(0.62)); wall.addColorStop(1, g(0.34));
+  ctx.fillStyle = wall; ctx.fillRect(0, 0, W, H);
+
+  // ceiling band and the fittings in it: each one throws a pool down the wall, so the room is
+  // lit in places rather than evenly, and two crops of it are never the same brightness
+  ctx.fillStyle = ink(0.30); ctx.fillRect(0, 0, W, H * 0.07);
+  const lamps = rng.int(3, 6);
+  for (let i = 0; i < lamps; i++) {
+    const x = (i + rng.range(0.25, 0.75)) * (W / lamps);
+    const pool = ctx.createRadialGradient(x, H * 0.10, 4, x, H * 0.38, H * 0.62);
+    pool.addColorStop(0, g(0.55, 0.9)); pool.addColorStop(1, g(0.0, 0));
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = pool; ctx.fillRect(x - H * 0.7, 0, H * 1.4, H);
+    ctx.globalCompositeOperation = 'source-over';
+    if (kind === 'bar' || kind === 'diner' || kind === 'lobby') {
+      // pendants on a drop rod
+      ctx.fillStyle = ink(0.7); ctx.fillRect(x - 1.5, 0, 3, H * 0.13);
+      ctx.fillStyle = g(1.3); ctx.beginPath(); ctx.ellipse(x, H * 0.14, 15, 8, 0, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.fillStyle = g(1.3); ctx.fillRect(x - 26, H * 0.065, 52, 5);
+    }
+  }
+
+  // floor, with the light reflected in it
+  const fl = ctx.createLinearGradient(0, floorY, 0, H);
+  fl.addColorStop(0, ink(0.40)); fl.addColorStop(1, ink(0.62));
+  ctx.fillStyle = fl; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.fillStyle = g(0.5, 0.18); ctx.fillRect(0, floorY, W, 2);
+
+  const person = (x, foot, hh, a = rng.range(0.62, 0.86), seated = false) => {
+    const head = hh * 0.068;
+    const top = foot - hh;
+    ctx.fillStyle = ink(a);
+    ctx.beginPath(); ctx.arc(x, top + head, head, 0, Math.PI * 2); ctx.fill();
+    const sh = hh * rng.range(0.11, 0.14);                  // half shoulder width
+    const waist = seated ? foot - hh * 0.30 : foot - hh * 0.47;
+    ctx.beginPath();
+    ctx.moveTo(x - head * 0.55, top + head * 2.0);
+    ctx.quadraticCurveTo(x - sh, top + head * 2.1, x - sh, top + head * 3.2);
+    ctx.lineTo(x - sh * 0.78, waist);
+    ctx.lineTo(x + sh * 0.78, waist);
+    ctx.lineTo(x + sh, top + head * 3.2);
+    ctx.quadraticCurveTo(x + sh, top + head * 2.1, x + head * 0.55, top + head * 2.0);
+    ctx.closePath(); ctx.fill();
+    if (!seated) {
+      const lw = sh * 0.62, sp = rng.range(0, sh * 0.35);
+      ctx.fillRect(x - sh * 0.74 - sp * 0.5, waist - 2, lw, foot - waist + 2);
+      ctx.fillRect(x + sh * 0.74 - lw + sp * 0.5, waist - 2, lw, foot - waist + 2);
+    }
+  };
+  const crowd = (n, foot = floorY + rng.range(2, 14)) => {
+    for (let i = 0; i < n; i++) person(rng.range(W * 0.04, W * 0.96), foot + rng.range(-4, 8), H * rng.range(0.50, 0.62));
+  };
+
+  if (kind === 'shop' || kind === 'shutter') {
+    // shelving bays along the back wall, stocked
+    let x = rng.range(-30, 10);
+    while (x < W) {
+      const bw = rng.range(110, 190), top = H * rng.range(0.22, 0.32), bot = floorY - 6;
+      ctx.fillStyle = ink(0.42); ctx.fillRect(x, top, bw, bot - top);
+      const shelves = rng.int(4, 6);
+      for (let s = 0; s < shelves; s++) {
+        const sy = top + ((s + 1) / (shelves + 0.4)) * (bot - top);
+        ctx.fillStyle = g(0.95, 0.55); ctx.fillRect(x + 4, sy, bw - 8, 3);
+        // the stock: little packs of differing height and value, never a solid bar
+        let px = x + 7;
+        while (px < x + bw - 12) {
+          const pw = rng.range(6, 17), ph = rng.range(10, 26);
+          ctx.fillStyle = rng.bool(0.5) ? g(rng.range(0.55, 1.05), 0.85) : ink(rng.range(0.25, 0.5));
+          ctx.fillRect(px, sy - ph, pw, ph);
+          px += pw + rng.range(1, 4);
+        }
+      }
+      x += bw + rng.range(14, 60);
+    }
+    if (kind === 'shop') {
+      ctx.fillStyle = ink(0.66); ctx.fillRect(W * rng.range(0.15, 0.55), floorY - H * 0.22, W * 0.26, H * 0.22);
+      crowd(rng.int(2, 4));
+    } else {
+      // a roller shutter most of the way down, the shop dark behind it
+      const sh = H * rng.range(0.52, 0.74);
+      ctx.fillStyle = 'rgba(70,66,62,0.94)'; ctx.fillRect(0, 0, W, sh);
+      for (let y = 4; y < sh; y += 9) {
+        ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fillRect(0, y, W, 2);
+        ctx.fillStyle = 'rgba(0,0,0,0.30)'; ctx.fillRect(0, y + 3, W, 2);
+      }
+      ctx.fillStyle = ink(0.8); ctx.fillRect(0, sh - 6, W, 8);
+    }
+  } else if (kind === 'lobby') {
+    // stone panelling, a long reception desk with a lit top edge, planters, people
+    for (let x = 0; x < W; x += 128) { ctx.fillStyle = ink(0.10); ctx.fillRect(x, H * 0.1, 3, floorY - H * 0.1); }
+    const dx = W * rng.range(0.25, 0.45);
+    ctx.fillStyle = ink(0.72); ctx.fillRect(dx, floorY - H * 0.20, W * 0.34, H * 0.20);
+    ctx.fillStyle = g(1.2, 0.8); ctx.fillRect(dx, floorY - H * 0.20, W * 0.34, 4);
+    for (let i = 0; i < 2; i++) {
+      const px = rng.range(40, W - 40);
+      ctx.fillStyle = ink(0.6); ctx.fillRect(px - 22, floorY - 46, 44, 46);
+      for (let l = 0; l < 9; l++) {
+        ctx.beginPath();
+        ctx.ellipse(px + rng.range(-34, 34), floorY - 60 - rng.range(0, 70), rng.range(10, 22), rng.range(6, 12), rng.range(0, 3), 0, Math.PI * 2);
+        ctx.fill();
       }
     }
-    // a customer or two
-    for (let k = 0, n = rng.int(0, 2); k < n; k++) {
-      const x = rng.range(S * 0.12, S * 0.85), hh = rng.range(S * 0.26, S * 0.40);
-      ctx.fillStyle = `rgba(12,9,8,${rng.range(0.45, 0.75)})`;
-      ctx.fillRect(x, S * 0.86 - hh, rng.range(4, 8), hh);
-      ctx.beginPath(); ctx.arc(x + 3, S * 0.86 - hh, 3.2, 0, 7); ctx.fill();
+    crowd(rng.int(3, 5));
+  } else if (kind === 'bar') {
+    // back bar: mirrored shelves of bottles, the bar counter, stools, drinkers
+    const top = H * 0.24, bot = H * 0.56;
+    ctx.fillStyle = ink(0.36); ctx.fillRect(0, top, W, bot - top);
+    for (let s = 0; s < 3; s++) {
+      const sy = top + (s + 1) * ((bot - top) / 3);
+      ctx.fillStyle = g(1.1, 0.6); ctx.fillRect(0, sy, W, 3);
+      for (let x = rng.range(0, 8); x < W; x += rng.range(9, 15)) {
+        const bh = rng.range(20, 34);
+        ctx.fillStyle = g(rng.range(0.6, 1.25), rng.range(0.5, 0.9));
+        ctx.fillRect(x, sy - bh, 5, bh);
+        ctx.fillRect(x + 1.5, sy - bh - 7, 2, 7);
+      }
     }
-    // counter / kick plate along the bottom, then the frame
-    ctx.fillStyle = 'rgba(16,12,10,0.55)'; ctx.fillRect(0, S * 0.86, S, S * 0.14);
-    ctx.fillStyle = 'rgba(10,8,7,0.85)';
-    const bays = rng.int(2, 3);
-    for (let i = 1; i < bays; i++) ctx.fillRect((i / bays) * S - 1.6, 0, 3.2, S);
-    ctx.fillRect(0, 0, S, 3); ctx.fillRect(0, S - 3, S, 3);
-    ctx.fillRect(0, 0, 3, S); ctx.fillRect(S - 3, 0, 3, S);
-    ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fillRect(0, S * 0.34, S, 1.6);   // transom
-    grain(ctx, S, S, 5, rng);
-    const t = toTexture(c, { srgb: true, wrap: THREE.ClampToEdgeWrapping });
+    const cy = floorY - H * 0.24;
+    for (let i = 0; i < rng.int(3, 6); i++) person(rng.range(30, W - 30), cy + H * 0.05, H * 0.46, rng.range(0.5, 0.7));
+    ctx.fillStyle = ink(0.78); ctx.fillRect(0, cy, W, floorY - cy);
+    ctx.fillStyle = g(1.0, 0.7); ctx.fillRect(0, cy, W, 4);
+    for (let x = rng.range(20, 60); x < W; x += rng.range(70, 110)) {
+      ctx.fillStyle = ink(0.85); ctx.fillRect(x - 15, floorY - 56, 30, 7); ctx.fillRect(x - 3, floorY - 50, 6, 50);
+    }
+    crowd(rng.int(1, 3));
+  } else if (kind === 'diner') {
+    // booths in a row, a table in each, people sitting in some
+    for (let x = rng.range(-20, 20); x < W; x += rng.range(170, 220)) {
+      ctx.fillStyle = ink(0.55);
+      ctx.beginPath(); ctx.roundRect(x, floorY - H * 0.34, 28, H * 0.34, 10); ctx.fill();
+      ctx.beginPath(); ctx.roundRect(x + 120, floorY - H * 0.34, 28, H * 0.34, 10); ctx.fill();
+      if (rng.bool(0.6)) person(x + 52, floorY - H * 0.06, H * 0.40, 0.75, true);
+      if (rng.bool(0.5)) person(x + 98, floorY - H * 0.06, H * 0.40, 0.75, true);
+      ctx.fillStyle = ink(0.8); ctx.fillRect(x + 30, floorY - H * 0.20, 88, 8);
+      ctx.fillRect(x + 70, floorY - H * 0.20, 8, H * 0.20);
+      ctx.fillStyle = g(1.1, 0.6); ctx.fillRect(x + 30, floorY - H * 0.20, 88, 2);
+    }
+    crowd(rng.int(0, 2));
+  } else if (kind === 'showroom') {
+    // sparse: plinths with something on each, spotlit from above
+    for (let x = rng.range(60, 140); x < W; x += rng.range(200, 300)) {
+      const sp = ctx.createLinearGradient(0, H * 0.07, 0, floorY);
+      sp.addColorStop(0, g(0.8, 0.5)); sp.addColorStop(1, g(0.0, 0));
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = sp;
+      ctx.beginPath(); ctx.moveTo(x - 10, H * 0.07); ctx.lineTo(x + 10, H * 0.07);
+      ctx.lineTo(x + 70, floorY); ctx.lineTo(x - 70, floorY); ctx.closePath(); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = ink(0.55); ctx.fillRect(x - 34, floorY - H * 0.18, 68, H * 0.18);
+      ctx.fillStyle = ink(0.75);
+      ctx.beginPath(); ctx.ellipse(x, floorY - H * 0.18 - 26, rng.range(18, 34), 26, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    crowd(rng.int(1, 2));
+  } else if (kind === 'screens') {
+    // a games room: rows of lit screens on cabinets, and players in front of them
+    for (let x = rng.range(10, 40); x < W; x += rng.range(64, 84)) {
+      const top = floorY - H * rng.range(0.52, 0.60);
+      ctx.fillStyle = ink(0.82); ctx.fillRect(x, top, 50, floorY - top);
+      ctx.fillStyle = g(rng.range(1.0, 1.3), 0.95); ctx.fillRect(x + 7, top + 14, 36, 44);
+      ctx.fillStyle = g(1.2, 0.8); ctx.fillRect(x + 4, top + 2, 42, 7);
+    }
+    for (let i = 0; i < rng.int(2, 4); i++) person(rng.range(30, W - 30), floorY + 10, H * 0.58, 0.88);
+  } else {
+    // an office after hours: desks, one lamp still on, the blinds part-way down
+    for (let x = rng.range(0, 40); x < W; x += rng.range(150, 210)) {
+      ctx.fillStyle = ink(0.6); ctx.fillRect(x, floorY - H * 0.20, 110, 7); ctx.fillRect(x + 6, floorY - H * 0.20, 6, H * 0.20);
+      ctx.fillRect(x + 30, floorY - H * 0.31, 48, H * 0.10);
+      if (rng.bool(0.4)) {
+        const lp = ctx.createRadialGradient(x + 90, floorY - H * 0.24, 2, x + 90, floorY - H * 0.24, 70);
+        lp.addColorStop(0, 'rgba(255,240,215,0.85)'); lp.addColorStop(1, 'rgba(255,240,215,0)');
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = lp; ctx.fillRect(x + 20, floorY - H * 0.24 - 70, 140, 140);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+    const bl = H * rng.range(0.30, 0.55);
+    for (let y = 0; y < bl; y += 11) {
+      ctx.fillStyle = 'rgba(200,190,175,0.55)'; ctx.fillRect(0, y, W, 8);
+      ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(0, y + 8, W, 2);
+    }
+  }
+
+  // the glass itself: one or two faint diagonal reflections, so a pane is never a clean print
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 2; i++) {
+    const x = rng.range(0, W), sw = rng.range(40, 120);
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + sw, 0); ctx.lineTo(x + sw - H * 0.6, H); ctx.lineTo(x - H * 0.6, H);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/** The shopfront material for one glass colour. Every pane of every building shares the atlas. */
+function shopWindowMaterial(cache, color, night) {
+  return mat(cache, `shopwin|${color}|${night}`, () => {
+    const t = shopAtlas(cache);
+    // The atlas is neutral; the colour is the material's, exactly as the old per-colour canvas
+    // multiplied it in (an sRGB product decodes to the product of the linear values).
+    const col = new THREE.Color(color);
     return new THREE.MeshStandardMaterial({
-      map: t, emissiveMap: t, emissive: new THREE.Color(0xffffff),
+      map: t, emissiveMap: t, color: col, emissive: col,
       emissiveIntensity: night ? 1.35 : 0.20,
       roughness: 0.35, metalness: 0.1,
     });
   });
+}
+
+/**
+ * Hands each shopfront pane its own view into the atlas: a room, a crop of it at the pane's own
+ * aspect (so nothing is stretched), an offset into the room, and a mirror. The room is never the
+ * one the previous pane got, so no two neighbouring panes on a frontage can match.
+ * Returns `pane(geo, w, h)`, which rewrites a PlaneGeometry's UVs in place and returns it.
+ */
+function shopPicker(seed) {
+  const rng = new RNG(seed * 7919 + 101);
+  const N = SHOP_ROOMS.length;
+  let last = rng.int(0, N - 1);
+  const W = SHOP_CW * SHOP_NX, H = SHOP_CH * SHOP_NY, inset = 3;
+  return (geo, w, h) => {
+    const v = (last + rng.int(1, N - 1)) % N;
+    last = v;
+    // crop size in texels: a third to two thirds of the room's width, at the pane's aspect
+    let cw = SHOP_CW * rng.range(0.30, 0.62);
+    let ch = cw * (h / w);
+    const maxH = SHOP_CH - inset * 2;
+    if (ch > maxH) { cw *= maxH / ch; ch = maxH; }
+    const x0 = (v % SHOP_NX) * SHOP_CW + inset + rng.range(0, SHOP_CW - inset * 2 - cw);
+    // bias the crop toward the floor, which is where the people and the furniture are
+    const y0 = Math.floor(v / SHOP_NX) * SHOP_CH + inset + (SHOP_CH - inset * 2 - ch) * Math.sqrt(rng.next());
+    const flip = rng.bool(0.5);
+    const uv = geo.attributes.uv;
+    for (let i = 0; i < uv.count; i++) {
+      let s = uv.getX(i);
+      if (flip) s = 1 - s;
+      // canvas y runs down, texture v runs up (flipY)
+      uv.setXY(i, (x0 + s * cw) / W, 1 - (y0 + (1 - uv.getY(i)) * ch) / H);
+    }
+    uv.needsUpdate = true;
+    return geo;
+  };
 }
 
 /**
@@ -1018,7 +1258,8 @@ export function building({
   const mmat = metalMaterial(cache, '#3a3e45');
   const rmat = roofMaterial(cache);
   const lobbyColor = shopColor || (night ? litColor : '#7d9cb0');
-  const gmat = shopWindowMaterial(cache, lobbyColor, night, seed % 4);
+  const gmat = shopWindowMaterial(cache, lobbyColor, night);
+  const pane = shopPicker(seed);
 
   const fac = new Batch(fmat);
   const stone = new Batch(smat);
@@ -1068,7 +1309,9 @@ export function building({
       const off = -len / 2 + (i + 0.5) * (len / bays);
       const r = rng.next();
       const target = r < 0.30 ? darkShop : (r > 0.90 ? accentShop : glow);
-      const geo = new THREE.PlaneGeometry((len / bays) * 0.9, bandH * (r < 0.30 ? 1 : rng.range(0.86, 1.0)));
+      const gw = (len / bays) * 0.9, gh = bandH * (r < 0.30 ? 1 : rng.range(0.86, 1.0));
+      const geo = new THREE.PlaneGeometry(gw, gh);
+      if (target === glow) pane(geo, gw, gh);
       if (ax) target.add(geo, ax * (pw / 2 + 0.06), bandY, off, yaw);
       else target.add(geo, off, bandY, az * (pd / 2 + 0.06), yaw);
     }
@@ -1102,7 +1345,7 @@ export function building({
     const ew = clamp(w * 0.30, 3.0, 6.0);
     stone.add(_box(ew + 1.1, podiumH * 0.80, 0.5), 0, podiumH * 0.40, pd / 2 + 0.18);         // surround
     metal.add(_box(ew, podiumH * 0.62, 0.28), 0, podiumH * 0.31, pd / 2 + 0.40);              // dark door frame
-    glow.add(new THREE.PlaneGeometry(ew * 0.86, podiumH * 0.50), 0, podiumH * 0.29, pd / 2 + 0.56);
+    glow.add(pane(new THREE.PlaneGeometry(ew * 0.86, podiumH * 0.50), ew * 0.86, podiumH * 0.50), 0, podiumH * 0.29, pd / 2 + 0.56);
     metal.add(_box(0.12, podiumH * 0.50, 0.06), 0, podiumH * 0.29, pd / 2 + 0.60);            // door split
     metal.add(_box(ew + 2.2, 0.30, 1.9), 0, podiumH * 0.72, pd / 2 + 0.9);                     // canopy
     metal.add(new THREE.CylinderGeometry(0.07, 0.07, 1.1, 6), (ew + 2.0) / 2 - 0.3, podiumH * 0.72 + 0.6, pd / 2 + 0.9, 0, { rz: 0.5 });
@@ -1313,7 +1556,8 @@ export function lowRise({
   const smat = stoneMaterial(cache, trimC);
   const mmat = metalMaterial(cache, '#3a3e45');
   const rmat = roofMaterial(cache);
-  const shopGlow = shopWindowMaterial(cache, night ? '#ffbb66' : '#8fb0c2', night, (seed + 3) % 4);
+  const shopGlow = shopWindowMaterial(cache, night ? '#ffbb66' : '#8fb0c2', night);
+  const pane = shopPicker(seed + 3);
 
   const body = new Batch(bmat);
   const stone = new Batch(smat);
@@ -1345,9 +1589,9 @@ export function lowRise({
     const cx = -w / 2 + bw * (i + 0.5);
     if (i === Math.floor(bays / 2)) {
       metal.add(_box(bw * 0.52, winH + 0.5, 0.2), cx, sillY + (winH + 0.5) / 2 - 0.2, d / 2 + 0.16);
-      glow.add(new THREE.PlaneGeometry(bw * 0.44, winH + 0.2), cx, sillY + winH / 2, d / 2 + 0.26);
+      glow.add(pane(new THREE.PlaneGeometry(bw * 0.44, winH + 0.2), bw * 0.44, winH + 0.2), cx, sillY + winH / 2, d / 2 + 0.26);
     } else {
-      glow.add(new THREE.PlaneGeometry(bw * 0.80, winH), cx, sillY + winH / 2 + 0.3, d / 2 + 0.20);
+      glow.add(pane(new THREE.PlaneGeometry(bw * 0.80, winH), bw * 0.80, winH), cx, sillY + winH / 2 + 0.3, d / 2 + 0.20);
       metal.add(_box(bw * 0.84, 0.14, 0.24), cx, sillY + 0.3, d / 2 + 0.22);
       metal.add(_box(bw * 0.84, 0.14, 0.24), cx, sillY + winH + 0.3, d / 2 + 0.22);
     }
@@ -1367,7 +1611,8 @@ export function lowRise({
       const rowY = h * (rows === 1 ? 0.72 : 0.56 + rIdx * 0.26);
       for (let i = 0; i < n; i++) {
         const cx = -w / 2 + (w / n) * (i + 0.5);
-        (night && rng.bool(0.42) ? glow : darkGlass).add(new THREE.PlaneGeometry(1.15, 1.8), cx, rowY, d / 2 + 0.14);
+        if (night && rng.bool(0.42)) glow.add(pane(new THREE.PlaneGeometry(1.15, 1.8), 1.15, 1.8), cx, rowY, d / 2 + 0.14);
+        else darkGlass.add(new THREE.PlaneGeometry(1.15, 1.8), cx, rowY, d / 2 + 0.14);
         stone.add(_box(1.5, 0.18, 0.4), cx, rowY - 1.0, d / 2 + 0.18);   // sill
         stone.add(_box(1.55, 0.22, 0.42), cx, rowY + 1.02, d / 2 + 0.18); // lintel
         stone.add(_box(0.16, 2.1, 0.34), cx - w / (n * 2), rowY, d / 2 + 0.16);

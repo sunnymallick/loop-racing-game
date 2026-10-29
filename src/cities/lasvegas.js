@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   buildCity, marqueeArch, landmarkTower,
-  jerseyBarrier, waterBarrier, trafficCones,
+  jerseyBarrier, waterBarrier, trafficCones, fitText,
 } from './kit.js';
 import { Track } from './track.js';
 import { RNG, clamp, lerp, makeNoise2D, fbm2D } from '../core/rng.js';
@@ -1493,9 +1493,10 @@ function boulevardLamps(track, out, rng) {
 function bulbSpan(track, bat, m, {
   lat0 = -1.62, lat1 = 1.62, y = 11.5, sag = 2.0, w = 0.8, segs = 16,
 }) {
-  const rep = Math.max(6, Math.round((lat1 - lat0) * track.halfWidth / 1.35));
-  const pos = [], uv = [], idx = [];
   const f = track.frame(U(m));
+  // one round bulb per strand-width of string (see chaseStrip), in texture repeats
+  const rep = Math.max(6, Math.round((lat1 - lat0) * f.half / w)) / CHASE_BULBS;
+  const pos = [], uv = [], idx = [];
   for (let i = 0; i <= segs; i++) {
     const t = i / segs;
     const lat = lerp(lat0, lat1, t);
@@ -1527,22 +1528,32 @@ function emissive(color, intensity = 2.4, rough = 0.4) {
 }
 
 /**
- * Running bulbs, done as a scrolling texture rather than N phase materials: one 96x8 dot strip
- * per hue, `map.offset.x` animated. Every chase strip in the city that shares a hue shares the
- * material, so the whole Strip flickers for three draw calls and no per-frame geometry work.
+ * Running bulbs, done as a scrolling texture rather than N phase materials: one strip of eight
+ * round dots per hue, `map.offset.x` animated. Every chase strip in the city that shares a hue
+ * shares the material, so the whole Strip flickers for three draw calls and no per-frame geometry
+ * work. A bulb is a square cell of the strip, so a run is only round bulbs if the geometry lays
+ * one cell per strip-height of length — see CHASE_TILE.
  */
+const CHASE_BULBS = 8;
+/** Metres of strip per texture repeat: eight bulbs, each as wide as the strip is tall. */
+const CHASE_TILE = (w) => CHASE_BULBS * w;
 function chaseTexture() {
   return mat('chase-tex', () => {
-    const { c, ctx } = canvas(96, 12);
-    ctx.clearRect(0, 0, 96, 12);
-    for (let i = 0; i < 8; i++) {
-      const x = (i + 0.5) * 12;
-      const g = ctx.createRadialGradient(x, 6, 0, x, 6, 6.5);
+    // 64 px a bulb rather than 12, so a bulb the camera passes under is still magnified less
+    // than 2x; and each one is a lamp with a solid core and a short falloff, with dark between
+    // neighbours, so a run reads as separate bulbs rather than as one soft band.
+    const P = 64, W = P * CHASE_BULBS;
+    const { c, ctx } = canvas(W, P);
+    ctx.clearRect(0, 0, W, P);
+    for (let i = 0; i < CHASE_BULBS; i++) {
+      const x = (i + 0.5) * P, y = P / 2, r = P * 0.46;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
       const on = i % 4 === 0;
       g.addColorStop(0, `rgba(255,255,255,${on ? 1 : 0.42})`);
-      g.addColorStop(0.45, `rgba(255,255,255,${on ? 0.55 : 0.16})`);
+      g.addColorStop(0.38, `rgba(255,255,255,${on ? 0.92 : 0.36})`);
+      g.addColorStop(0.62, `rgba(255,255,255,${on ? 0.38 : 0.13})`);
       g.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, 6, 6.5, 0, 7); ctx.fill();
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
     }
     const t = toTexture(c, { srgb: true, wrap: THREE.RepeatWrapping });
     ANIMS.push((time) => { t.offset.x = time * 0.62; });
@@ -1567,11 +1578,19 @@ function chaseBatch(color, phase = 0) {
   return b;
 }
 
-/** A run of chase bulbs `len` metres long lying in the XY plane, centred on the origin. */
+/**
+ * A run of chase bulbs `len` metres long lying in the XY plane, centred on the origin.
+ *
+ * The repeat used to be one texture tile per 1.1 m, i.e. eight bulbs in 1.1 m of a strip 0.9 m
+ * tall: every "bulb" was a 0.14 x 0.9 m vertical streak, so a cabinet frame drew as a white comb
+ * and, past thirty metres, as the barcode above and below every marquee. One bulb per strip-height
+ * of length makes them round, and wide enough apart that the mip chain can resolve them.
+ */
 function chaseStrip(bat, len, x, y, z, ry = 0, o = {}) {
-  const g = new THREE.PlaneGeometry(len, o.w ?? 0.9);
+  const w = o.w ?? 0.9;
+  const g = new THREE.PlaneGeometry(len, w);
   const uv = g.attributes.uv;
-  const rep = Math.max(1, Math.round(len / 1.1));
+  const rep = Math.max(1, Math.round(len / w)) / CHASE_BULBS;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * rep, uv.getY(i));
   uv.needsUpdate = true;
   bat.add(g, x, y, z, ry, o);
@@ -1649,9 +1668,9 @@ function signFace({
     ctx.fillRect(w * 0.06, h - 132, w * 0.88, 76);
     ctx.strokeStyle = CYAN; ctx.lineWidth = 3;
     ctx.strokeRect(w * 0.06, h - 132, w * 0.88, 76);
-    drawText(ctx, sub, {
-      x: w / 2, y: h - 76, size: Math.min(50, (w * 0.82) / Math.max(4, sub.length) * 1.8),
-      weight: 0.26, italic: 0.16, align: 'center', color: CYAN, tracking: 0.10,
+    fitText(ctx, sub, {
+      x0: w * 0.10, x1: w * 0.90, y: h - 76, size: Math.min(50, (w * 0.82) / Math.max(4, sub.length) * 1.8),
+      weight: 0.26, italic: 0.16, color: CYAN, tracking: 0.10,
       glow: { color: CYAN, blur: 7 },
     });
   };
@@ -1696,10 +1715,13 @@ function signFace({
       // emissiveIntensity 1.9 is a slab of light the bloom pass immediately fuses into its
       // neighbours — which is why the round-5 boards read as one glowing rectangle. An outline
       // carries the same shape with a third of the lit area, so the counters stay open.
-      drawText(ctx, ln, {
-        x: w / 2, y: topY + lh * (i + 0.5) + size * 0.36, size,
-        weight: 0.16, italic: 0.09, align: 'center', color: 'rgba(14,4,22,0.94)', tracking: 0.04,
-        outline: { color: col, width: size * 0.075 },
+      // Sized by MEASUREMENT (fitText), inside the panel and clear of the outline tube: sized by
+      // character count, QUEEN came out 520 px of ink on a 330 px panel.
+      const pen = size * 0.075;
+      fitText(ctx, ln, {
+        x0: w * 0.10 + pen, x1: w * 0.90 - pen, y: topY + lh * (i + 0.5) + size * 0.36, size,
+        weight: 0.16, italic: 0.09, color: 'rgba(14,4,22,0.94)', tracking: 0.04,
+        outline: { color: col, width: pen },
         glow: { color: col, blur: size * 0.24 },
       });
     });
@@ -1715,20 +1737,24 @@ function signFace({
     subPlate();
   } else {
     // wide marquee board: big word over a sub-line, with a chevron rail beneath
+    // Fitted to the inside of the accent border, not to a character count: "CACTUS CLUB" at the
+    // old h x 0.30 was 608 px of ink on a 512 px board, and drew as "ACTUS CLU" in the chase frame.
     {
       const size = Math.min(h * 0.30, (w * 0.86) / Math.max(4, text.length) * 1.75);
-      drawText(ctx, text, {
-        x: w / 2, y: h * 0.44, size,
-        weight: 0.16, italic: 0.20, align: 'center', color: 'rgba(14,4,22,0.94)', tracking: 0.06,
-        outline: { color, width: size * 0.075 },
+      const pen = size * 0.075;
+      fitText(ctx, text, {
+        x0: w * 0.10 + pen, x1: w * 0.90 - pen, y: h * 0.44, size,
+        weight: 0.16, italic: 0.20, color: 'rgba(14,4,22,0.94)', tracking: 0.06,
+        outline: { color, width: pen },
         glow: { color, blur: size * 0.22 },
       });
     }
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(w * 0.10, h * 0.52, w * 0.80, h * 0.20);
-    drawText(ctx, sub, {
-      x: w / 2, y: h * 0.665, size: Math.min(h * 0.15, (w * 0.72) / Math.max(5, sub.length) * 1.7),
-      weight: 0.26, italic: 0.16, align: 'center', color: accent, tracking: 0.14,
+    fitText(ctx, sub, {
+      x0: w * 0.12, x1: w * 0.88, y: h * 0.665,
+      size: Math.min(h * 0.15, (w * 0.72) / Math.max(5, sub.length) * 1.7),
+      weight: 0.26, italic: 0.16, color: accent, tracking: 0.14,
       glow: { color: accent, blur: 6 },
     });
     ctx.fillStyle = CYAN;
