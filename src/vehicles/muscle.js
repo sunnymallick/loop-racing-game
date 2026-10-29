@@ -301,9 +301,21 @@ export const blueprint = {
     drl: [{ x: 0.440, y: 0.410, z: 2.440, w: 0.200, h: 0.082, shape: 'strip', color: '#ffa62e', intensity: 2.2, glow: 0.26, segs: 2 }],
     // the four round lamps stand PROUD of the blacked-out tail panel (z −2.585) — round 1 buried
     // them inside it and the signature Charger tail read as one plain black slab
+    /**
+     * THE LENSES WERE BEHIND THE RIBS. Verdict: "the muscle car's four round tail lamps don't glow
+     * or bloom in any city" — lens R 122-160, G ~5 on vegas/nyc-muscle-chase, against the
+     * supercar's hot cored rings on an identical lens material at an identical intensity (physics
+     * writes 2.4 to both). At z -2.615 the lens plane sat at -2.609, and the chrome tail-panel ribs
+     * below reach back to -2.6255 once roundedBox's bevel is counted: two of them ran straight
+     * across every lens, and with the mask ring that left a fragmented disc whose bloom never
+     * reached threshold. z -2.638 puts the lens 6.5 mm proud of the ribs' faces, so the ribs stop
+     * at the housing like a real ribbed panel and the whole disc blooms: on vegas-muscle-chase the
+     * brightest lens pixels go from R 166 / G 4 to R 254 / G ~80 (the supercar's figure), and none
+     * of them clips to white.
+     */
     tail: [
-      { x: 0.29, y: 0.865, z: -2.615, w: 0.225, h: 0.225, shape: 'round', color: '#ff1e10', intensity: 2.2 },
-      { x: 0.575, y: 0.865, z: -2.615, w: 0.225, h: 0.225, shape: 'round', color: '#ff1e10', intensity: 2.2 },
+      { x: 0.29, y: 0.865, z: -2.638, w: 0.225, h: 0.225, shape: 'round', color: '#ff1e10', intensity: 2.2 },
+      { x: 0.575, y: 0.865, z: -2.638, w: 0.225, h: 0.225, shape: 'round', color: '#ff1e10', intensity: 2.2 },
     ],
     reverse: [{ x: 0.16, y: 0.665, z: -2.615, w: 0.17, h: 0.085, color: '#fff2d8', intensity: 1.4, glow: 0.3 }],
   },
