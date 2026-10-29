@@ -1,4 +1,6 @@
-import { drawText, drawSevenSeg, measure, measureSevenSeg, gradientFill } from '../core/font.js';
+import {
+  drawText, drawSevenSeg, measure, measureSevenSeg, sevenSegAdvance, gradientFill,
+} from '../core/font.js';
 import { clamp, lerp, smoothstep } from '../core/rng.js';
 
 /**
@@ -1005,12 +1007,9 @@ export class HUD {
       italic = 0.06, glow = 10, align = 'left', dimColor = null } = o;
     const str = String(text);
     const res = this._res;
-    // metrics straight from the font module, so this can never drift out of step with drawSevenSeg
-    const adv = measureSevenSeg('0', { size, tracking: 0 }) + size * tracking;
-    const punct = measureSevenSeg(':', { size, tracking: 0 });
-    let total = 0;
-    for (const ch of str) total += (ch === ':' || ch === '.') ? punct : adv;
-    total -= size * tracking;
+    // metrics straight from the font module, so this can never drift out of step with drawSevenSeg:
+    // aligned on the tabular box, advanced by each character's own width (the 1 is narrow)
+    const total = measureSevenSeg(str, { size, tracking });
     let cx = align === 'center' ? x - total / 2 : align === 'right' ? x - total : x;
 
     // Generous local bounds: the glyph box plus the italic lean plus the glow's falloff.
@@ -1049,7 +1048,7 @@ export class HUD {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.drawImage(sp, ix, iy);
       ctx.restore();
-      cx += (ch === ':' || ch === '.') ? punct : adv;
+      cx += sevenSegAdvance(ch, { size, tracking });
     }
   }
 
@@ -1296,7 +1295,10 @@ export class HUD {
     // between the gantry and the car, with the car under it.
     const msgY = VH * lerp(0.30, 0.42, smoothstep(0, 0.55, s.finishT ?? 0));
     this._drawMessages(ctx, VW / 2, msgY, resFade);
-    if (s.state === 'countdown' && s.countdown != null) this._drawStartLights(ctx, VW / 2, VH * 0.30, s.countdown);
+    if (s.state === 'countdown' && s.countdown != null) {
+      this._drawStartLights(ctx, VW / 2, VH * 0.30, s.countdown);
+      this._drawDriveKeys(ctx, VW / 2, VH - GR.M, s.countdown);
+    }
     if (s.results) this._drawResults(ctx, s.results, VW, VH);
 
     ctx.restore();
@@ -1831,8 +1833,11 @@ export class HUD {
       const baseline = ry + (GR.ROW - 2) - 6;
       const tx = R.lx(baseline) + RAIL;
       const lead = i === 0 && !r.dnf;
+      // The player's bar fades out to the right (0.94 → 0.06 alpha), so under this column it is
+      // down to a dark umber, ~(80,47,10): the dark ink the name uses on the bright end of the bar
+      // measured barely 1.5:1 there. Warm white on it is ~10:1 and still reads as the same row.
       label(ctx, txt(r, i), tx + R.w - 16, baseline, lead ? 10 : 11.5,
-        r.you ? 'rgba(38,20,2,0.95)' : r.dnf ? 'rgba(226,110,96,0.92)'
+        r.you ? 'rgba(255,240,218,0.97)' : r.dnf ? 'rgba(226,110,96,0.92)'
           : lead ? 'rgba(255,196,78,0.95)' : 'rgba(158,192,216,0.92)',
         // `false`, not `null`: `label()` resolves its default with `??`, so a null here would put
         // the drop shadow BACK — eight blurred ops a frame straight onto the 4044x2274 backbuffer,
@@ -3712,6 +3717,56 @@ export class HUD {
           outline: { color: 'rgba(0,0,0,0.45)', width: 2.5 },
         });
       }, { ox: cx, oy: cy + h * 0.5 + 62 });
+  }
+
+  /**
+   * The driving controls, on the grid. The handbrake is now the ONLY way into a drift and nothing
+   * else in the game says which key it is — the garage's bar prints only the keys that act on the
+   * garage — so the 4.4 s a player spends on the grid with nothing to do is where they are told.
+   * One plate on the HUD's shear along the bottom margin, between the drift panel's slot and the
+   * gauge, with the garage's own keycaps; SPACE · DRIFT is the one lit hint. It fades in off the
+   * grid hold and is gone by GO, so it never sits over the racing.
+   */
+  _drawDriveKeys(ctx, cx, base, countdown) {
+    const a = smoothstep(4.4, 4.0, countdown) * smoothstep(0, 0.5, countdown);
+    if (a <= 0.004) return;
+    const KEYS = [
+      [['▲'], 'GAS'], [['▼'], 'BRAKE'], [['◄', '►'], 'STEER'],
+      [['SPACE'], 'DRIFT', true], [['SHIFT'], 'NITRO'], [['G'], 'GRAPHICS'],
+    ];
+    // GAPL clears the keycap's sheared top corner, which leans 3 px over its foot
+    const LS = 13, LT = 0.2, CAP = 26, GAPK = 6, GAPL = 11, GAPI = 20, PADX = 18;
+    const lw = (t) => rmeasure(t, { size: LS, tracking: LT, face: 'geo' }).width;
+    const cw = (t) => Math.max(30, rmeasure(t, { size: 14, tracking: 0.14, face: 'geo' }).width + 20);
+    let iw = 0;
+    for (const [caps, word] of KEYS) {
+      for (const k of caps) iw += cw(k) + GAPK;
+      iw += GAPL - GAPK + lw(word) + GAPI;
+    }
+    iw -= GAPI;
+    const ph = 40, pw = iw + PADX * 2;
+    const x0 = cx - pw / 2, y0 = base - ph;
+    const BP = 18;
+    const bw = pw + ph * SKEW + BP * 2, bh = ph + BP * 2;
+    this._patch(ctx, 'driveKeys', x0 - BP, y0 - BP, bw, bh, `${cx}|${base}`, (c) => {
+      panel(c, x0, y0, pw, ph, {
+        fill: ['rgba(10,13,19,0.84)', 'rgba(3,5,9,0.88)'],
+        edge: 'rgba(180,204,226,0.22)', accent: ORANGE,
+      });
+      // ink starts past the sheared leading edge, measured at the caps' baseline
+      let hx = x0 + PADX + 8 * SKEW;
+      const hy = y0 + ph / 2 + CAP / 2;
+      for (const [caps, word, hot] of KEYS) {
+        for (const k of caps) hx += keycap(c, hx, hy, k, 30) + GAPK;
+        hx += GAPL - GAPK;
+        rtext(c, word, {
+          x: hx, y: hy - 8, size: LS, weight: 0.15, tracking: LT, face: 'geo',
+          color: hot ? GOLD_HOT : 'rgba(198,216,234,0.92)',
+          glow: hot ? { color: ORANGE, blur: 12 } : null,
+        });
+        hx += lw(word) + GAPI;
+      }
+    }, { alpha: a });
   }
 }
 
