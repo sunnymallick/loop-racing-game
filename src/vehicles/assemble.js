@@ -1834,18 +1834,97 @@ function buildInterior(cb, trim, chrome) {
     g.add(strap);
   }
 
+  /**
+   * ---- THE DASH IS CUT BY THE SCREEN, NOT BY ITS OWN NUMBERS ----
+   *
+   * Verbatim on the supercar garage hero: "the dashboard pokes through the windscreen and sits on
+   * the bonnet as an untextured slab". It was a fixed 0.30 m-deep box at an authored z, and the
+   * supercar's cab-forward screen rakes so steeply that its foot (z 1.18) is 230 mm BEHIND the
+   * dash's front face: the front 40 % of the dash, the binnacle and the top of the wheel rim were
+   * all above the glass, standing on the paint. Counting roundedBox's bevel, the muscle car's
+   * binnacle broke its screen by 55 mm and the truck's dash ran 200 mm past its screen base.
+   *
+   * So the dash group is solved against the glasshouse it sits in. `glassAt(x, z)` is the height
+   * of the very section the screen is lofted from (cabinSection) at that x, and every top corner
+   * of dash, binnacle and wheel rim must clear it by `CLR`; the group slides back until they do,
+   * and never sits further forward than the screen's foot. A car whose dash already fits (the
+   * tuner) does not move by a millimetre; the supercar's moves 445 mm, the truck's 285 mm and the
+   * muscle car's 130 mm, and each wheel still clears its seat.
+   */
+  const CLR = 0.025;
+  const glassAt = (x, z) => {
+    const pts = cabinSection(sampleStation(cabSt, z)).pts;
+    const ax = Math.abs(x);
+    // the upper chain runs from the belt corner (index 2) inward to the roof centre (index 8)
+    for (let i = 8; i > 2; i--) {
+      const [x0, y0] = pts[i], [x1, y1] = pts[i - 1];
+      if (ax <= x1) return lerp(y0, y1, (ax - x0) / ((x1 - x0) || 1));
+    }
+    return pts[2][1];
+  };
+  const zFoot = cabSt[cabSt.length - 1].z;
+  const dashW = it.dashW ?? 1.30;
+  const DASH_RX = 0.16;
+  const drvX = -halfSeat * (it.rhd ? -1 : 1);
+  // the top edge of a box tilted by DASH_RX, as [y, z] offsets from its centre
+  const tilt = (ly, lz) => [ly * Math.cos(DASH_RX) - lz * Math.sin(DASH_RX), ly * Math.sin(DASH_RX) + lz * Math.cos(DASH_RX)];
+  // roundedBox's bevel grows a box by r/2 on every face, so the 0.16 x 0.30 dash (r 0.06) really
+  // stands 0.22 x 0.36, and its top edge is a rounded corner spanning these two extremes
+  const tops = [];
+  for (const x of [0, dashW * 0.5 - 0.03, -(dashW * 0.5 - 0.03)]) {
+    for (const [ly, lz] of [[0.11, 0.15], [0.08, 0.18], [0.11, -0.15], [0.08, -0.18]]) {
+      const [y, z] = tilt(ly, lz);
+      tops.push([x, y, z]);
+    }
+  }
+  for (const dx of [-0.24, 0.24]) for (const z of [0.07, -0.17]) tops.push([drvX + dx, 0.1475, z]);   // binnacle
+  const rimY = (it.wheelY ?? dashY + 0.05) - dashY;
+  tops.push([drvX, rimY + 0.145 * Math.cos(1.20) + 0.022, -0.18 + 0.145 * Math.sin(1.20)]);         // wheel rim
+  const clearance = (zc) => Math.min(...tops.map(([x, y, z]) => glassAt(x, zc + z) - (dashY + y)));
+  const [ftY, ftZ] = tilt(0.11, 0.18);
+  const dashZ0 = seatZ + (it.dashZ ?? 0.62);
+  let dashZ = Math.min(dashZ0, zFoot - 0.02 - ftZ);
+  for (let n = 0; n < 120 && clearance(dashZ) < CLR; n++) dashZ -= 0.005;
+
   // dash + cowl + instrument cluster + centre stack
-  const dashZ = seatZ + (it.dashZ ?? 0.62);
-  const dash = new THREE.Mesh(roundedBox((it.dashW ?? 1.30), 0.16, 0.30, 0.06), trimMat);
+  const dash = new THREE.Mesh(roundedBox(dashW, 0.16, 0.30, 0.06), trimMat);
   dash.position.set(0, dashY, dashZ);
-  dash.rotation.x = 0.16;
+  dash.rotation.x = DASH_RX;
   g.add(dash);
+  /**
+   * The DEFROSTER DECK: the dash top's run forward to the foot of the screen. A dash that had to
+   * slide back leaves the glass in front of it looking down into the hole under the scuttle; a real
+   * car's dash top follows the screen down to its base, so this does — one thin panel laid on the
+   * chord from the dash's front edge to the foot, CLR under the glass. The screen's profile is
+   * concave (steepest at the foot), so the chord stays under it; it is checked anyway. Only a dash
+   * the solver moved gets one, so a car whose cabin already fitted keeps the geometry it had.
+   */
+  {
+    const zA = dashZ + ftZ, yA = dashY + ftY;
+    const zB = zFoot - 0.015;
+    const half = Math.min(dashW * 0.5 - 0.02, halfAt(zB) * 0.90);
+    const under = (z) => Math.min(glassAt(0, z), glassAt(half, z)) - CLR;
+    const yB = Math.min(yA, under(zB));
+    if (dashZ < dashZ0 - 0.005 && zB - zA > 0.04) {
+      let drop = 0;
+      for (let i = 0; i < 8; i++) {
+        const t = i / 8, z = lerp(zA, zB, t);
+        drop = Math.max(drop, lerp(yA, yB, t) - under(z));
+      }
+      const len = Math.hypot(zB - zA, yA - yB);
+      const deck = new THREE.Mesh(roundedBox(half * 2, 0.022, len, 0.010), trimMat);
+      deck.rotation.x = Math.atan2(yA - yB, zB - zA);
+      // top face on the chord: the box centre sits half its thickness below it
+      deck.position.set(0, (yA + yB) * 0.5 - drop - 0.011 * Math.cos(deck.rotation.x), (zA + zB) * 0.5 - 0.011 * Math.sin(deck.rotation.x));
+      g.add(deck);
+    }
+  }
   const cowl = new THREE.Mesh(roundedBox(0.48, 0.085, 0.20, 0.04), trimMat);
-  cowl.position.set(-halfSeat * (it.rhd ? -1 : 1), dashY + 0.085, dashZ - 0.05);
+  cowl.position.set(drvX, dashY + 0.085, dashZ - 0.05);
   g.add(cowl);
   const cluster = new THREE.Mesh(new THREE.PlaneGeometry(0.30, 0.095),
     emissiveMaterial({ color: it.clusterColor ?? '#39c8ff', intensity: 1.3 }));
-  cluster.position.set(-halfSeat * (it.rhd ? -1 : 1), dashY + 0.055, dashZ - 0.14);
+  cluster.position.set(drvX, dashY + 0.055, dashZ - 0.14);
   cluster.rotation.x = -0.42;
   g.add(cluster);
 
