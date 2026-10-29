@@ -456,6 +456,9 @@ export class Engine {
     // Dry asphalt only catches a reflection at a real grazing angle, so the Schlick exponent goes
     // up as the water goes away and the sheen retreats to the far half of the road where it belongs.
     a.uWetFresnel.value = w.fresnel ?? lerp(4.8, 2.4, smooth(0.15, 0.55, wet));
+    // The Fresnel floor is a water film's base reflectance. Every wet city keeps the 0.14 it has
+    // always had; a city that is dry asphalt says so with `floor: 0` (see LA's wetLook).
+    a.uWetFloor.value = w.floor ?? 0.14;
 
     // ---- light shafts --------------------------------------------------------------------
     // A city can force them with look.shafts; otherwise they scale with how strong and how *low*
