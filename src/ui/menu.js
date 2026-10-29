@@ -225,6 +225,9 @@ const GARAGE_LOOK = {
   grade: {
     uSaturation: 1.20, uExposure: 1.13, uContrast: 1.13, uVignette: 0.26, uVigRadius: 0.30,
     uLift: '#101d29', uGain: '#fff0dc', uGrain: 0.011, uAberration: 0.0018,
+    // the garage is dark because it is a black room, not because it is night: keep the r3 toe
+    // (engine.applyLook's w12 night lift is for the night cities)
+    uNightToe: 0,
   },
 };
 

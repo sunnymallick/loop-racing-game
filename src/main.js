@@ -1518,6 +1518,7 @@ class Game {
     const sp = this.engine.speed.uniforms;
     sp.uAmount.value = lerp(sp.uAmount.value, 0, 1 - Math.exp(-5 * dt));
     sp.uLines.value = lerp(sp.uLines.value, 0, 1 - Math.exp(-8 * dt));
+    if (sp.uHold) sp.uHold.value = 0;
   }
 
   _updateCamera(dt) {
@@ -1914,6 +1915,12 @@ class Game {
     if (gu.uHeat) {
       const amt = this.jet ? this.jet.heatPoint(cam, gu.uHeatPos.value) : 0;
       gu.uHeat.value = clamp(amt, 0, 1.4);
+    }
+    // ...and the first metre of the jet is held out of the radial blur, so the throat-to-cone taper
+    // stays crisp while the rest of the frame streaks (nitrous piece, w12).
+    const su = this.engine.speed.uniforms;
+    if (su.uHold) {
+      su.uHold.value = this.jet ? this.jet.throatHold(cam, su.uHoldA.value, su.uHoldB.value, su.uHoldR.value) : 0;
     }
   }
 
