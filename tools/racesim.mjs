@@ -60,7 +60,8 @@ function race(city, def, track, carId, push) {
   const spec = veh.spec;
   const r = new Race({ track, cityDef: def, playerSpec: spec, opponents: 7, seed: SEED });
   const slot = r.grid(def.spawnU ?? 0);
-  const b = new VehicleBody(spec, { wheelbase: veh.blueprint.dims.wheelbase ?? 2.8 });
+  const dims = veh.blueprint.dims;
+  const b = new VehicleBody(spec, { wheelbase: dims.wheelbase ?? 2.8 });
   const s0 = track.at(slot.u);
   b.reset(s0.pos.clone().addScaledVector(s0.right, slot.lateral * track.halfWidth), Math.atan2(s0.tan.x, s0.tan.z));
   const nitro = new Nitrous(spec);
@@ -117,7 +118,7 @@ function race(city, def, track, carId, push) {
 
     const absLat = Math.abs(near.lateral);
     const surfaceGrip = absLat > 1.02 ? THREE.MathUtils.lerp(1.0, 0.58, THREE.MathUtils.smoothstep(absLat, 1.02, 1.5)) : 1.0;
-    b.surface = absLat > 1.02 ? 'dirt' : 'road';
+    b.surface = track.surfaceAt(absLat);
     b.step(dt, {
       throttle: racing ? input.throttle : 0,
       brake: racing ? input.brake : (r.state === 'countdown' ? 1 : 0),
@@ -128,10 +129,12 @@ function race(city, def, track, carId, push) {
     // a clean handbrake slide's nitrous, as main.js pays it (DRIFT_NITRO 0.35 per unit of payout)
     if (racing && b.driftPayout > 0) nitro.charge = Math.min(1, nitro.charge + 0.35 * b.driftPayout);
 
+    // barrier: the kerb face or a declared barrier run, met by the BODY (main.js's rule, Track.wallCheck)
     const n2 = track.nearest(b.pos, u);
-    if (Math.abs(n2.lateral) > 1.52) {
-      const inward = n2.sample.right.clone().multiplyScalar(-Math.sign(n2.lateral));
-      b.pos.addScaledVector(inward, (Math.abs(n2.lateral) - 1.52) * track.halfWidth);
+    const wc = track.wallCheck(n2, b.forward, dims.width * 0.5, dims.length * 0.5);
+    if (wc) {
+      const inward = n2.sample.right.clone().multiplyScalar(-wc.side);
+      b.pos.addScaledVector(inward, wc.over);
       if (b.impact(inward, 0.28, 0.62) > 0.05 && racing) out.hits++;
     }
     // boost pads, as main.js grants them
