@@ -67,6 +67,9 @@ const UP = new THREE.Vector3(0, 1, 0);
 const RAD2DEG = 57.29578;
 const DEG2RAD = 1 / RAD2DEG;
 const GRAV = 9.81;
+// How long a hard barrier hit keeps its yaw kick (seconds of sim time) and its peak rate (rad/s).
+const KICK_T = 0.42;
+const KICK_RATE = 2.6;
 
 /** Saturating tyre curve: linear at small slip, asymptotes to the friction limit. */
 const sat = (x) => x / Math.sqrt(1 + x * x);
@@ -120,6 +123,8 @@ export class VehicleBody {
     this.lastImpact = 0;
     this.impactImpulse = 0;
     this.recover = 0;            // seconds of post-impact stability assist left
+    this.kickT = 0;              // seconds of a hard hit's yaw kick left (see impact())
+    this.kickRate = 0;
     this.wallT = 0;              // seconds of barrier contact left
     this.wallN = new THREE.Vector3(0, 0, 1);
     this.odo = 0;
@@ -150,7 +155,7 @@ export class VehicleBody {
     this.slip = 0; this.slipAllow = 0; this.slipTarget = 0;
     this.vy = 0; this.y = pos.y;
     this.boost = 0; this.steerAngle = 0; this.steerVisual = 0; this.assist = 0;
-    this.wheelSlip = 0; this.recover = 0; this.wallT = 0;
+    this.wheelSlip = 0; this.recover = 0; this.wallT = 0; this.kickT = 0; this.kickRate = 0;
     this.gear = 1; this.gearShiftT = 0; this.shifts = 0;
     this.aLong = 0; this.aLat = 0; this.understeer = 0; this.rearGrip = 1; this.rearSlide = 0; this.rearBeyond = 0;
     this.roll = this.pitch = this.heave = 0;
@@ -774,6 +779,19 @@ export class VehicleBody {
     const aLatMean = aLatAcc / SUB;
     this.rearSlide = lerp(this.rearSlide, slideAcc / SUB, 1 - Math.exp(-10 * dt));
     this.rearBeyond = lerp(this.rearBeyond, beyondAcc / SUB, 1 - Math.exp(-12 * dt));
+    // THE HIT KICK (crash piece). Everything above exists to keep the car straight — the drift
+    // ESC, the anti-spin backstop, the post-impact `recover` damping and, below, the wall pin that
+    // lays the heading along the barrier — and together they ate the yaw `impact()` handed out
+    // inside two frames: a 150 mph hit read +0.2 s later at -0.03 rad/s, i.e. as a car that brushed
+    // a wall rather than one that hit it (§6.6, "vehicle response — spin and recovery"). For the
+    // length of the kick its rate is OWNED here, decaying linearly to nothing, so the nose is
+    // thrown off the barrier by ~25-30° on a hard hit; the same stabilisers then bring it back, and
+    // that recovery is the second half of what §6.6 scores.
+    if (this.kickT > 0) {
+      const k = this.kickT / KICK_T;
+      this.yawRate = lerp(this.yawRate, this.kickRate * k, 1 - Math.exp(-24 * dt));
+      this.kickT = Math.max(0, this.kickT - dt);
+    }
     this.yaw += this.yawRate * dt;
     this.recover = Math.max(0, this.recover - dt);
 
@@ -800,7 +818,7 @@ export class VehicleBody {
     // not an accident, and snapping it straight is the "model that can no longer slide" failure —
     // ungated, this cost the supercar's LA slide 10° of peak angle (34° → 24°). With the gate the
     // extra authority only exists for a driver who has let go of the car.
-    if (this.wallT > 0) {
+    if (this.wallT > 0 && this.kickT <= 0) {
       const tang = new THREE.Vector3().crossVectors(UP, this.wallN).normalize();
       if (tang.dot(this.vel) < 0 && this.vel.lengthSq() > 1) tang.negate();
       else if (this.vel.lengthSq() <= 1 && tang.dot(fwd) < 0) tang.negate();
@@ -920,6 +938,7 @@ export class VehicleBody {
     const vn = this.vel.dot(normal);
     if (vn >= 0) return 0;
     const strength = clamp(-vn / 26, 0, 1);
+    const v0 = Math.hypot(this.vel.x, this.vel.z);
     // Restitution FALLS with closing speed. A light tap bounces off a barrier; a square hit at
     // 85 mph deforms and stops. As a constant it did the opposite — the harder you hit, the harder
     // you were thrown back — so a head-on barrier hit catapulted the car backwards at 28% of its
@@ -942,6 +961,25 @@ export class VehicleBody {
     const square = Math.abs(this.forward.dot(normal));
     this.yawRate += side * strength * lerp(1.5, 0.5, square);
     this.yawRate = clamp(this.yawRate, -3.4, 3.4);
+    // A HARD HIT IS NOT A SCRAPE (crash piece). Below ~0.22 — the line main.js draws between a
+    // spark shower and a crash — nothing changes: a rub costs the speed into the wall and a little
+    // friction, which is what keeps a clumsy corner survivable. Above it the hit crumples the car
+    // and throws its nose off the wall: the hit as a whole is made to cost up to ~31% of the speed
+    // the car arrived with (~35% by +0.2 s, measured on the §8 crash captures, where it used to
+    // cost ~20%) — topped up only when the bounce above took less, never stacked on a steep hit
+    // that already lost more — and a yaw kick `step()` holds for KICK_T before handing the car
+    // back to its stabilisers.
+    const hard = smoothstep(0.22, 0.55, strength);
+    if (hard > 0) {
+      const kept = Math.hypot(this.vel.x, this.vel.z) / Math.max(v0, 1e-3);
+      const want = 1 - 0.31 * hard;
+      if (kept > want) this.vel.multiplyScalar(want / kept);
+      const kick = side * KICK_RATE * hard * lerp(1, 0.6, square);
+      if (this.kickT <= 0 || Math.abs(kick) > Math.abs(this.kickRate * this.kickT / KICK_T)) {
+        this.kickRate = kick;
+        this.kickT = KICK_T;
+      }
+    }
     this.recover = Math.max(this.recover, 0.30 + strength * 0.90);
     this.pitchV += strength * 7;                 // nose dives into the hit
     this.rollV += side * strength * 2.4;

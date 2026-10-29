@@ -42,6 +42,8 @@ const TRACE = Number(process.env.TRACE || 0);
 const HB = argv.includes('--handbrake');
 
 const WB = { tuner: 2.55, muscle: 2.95, suv: 3.05, supercar: 2.68 };
+// body envelope (blueprint `dims`): the wall stops the BODY, not the centre — see Track.wallCheck
+const DIMS = { tuner: [2.10, 3.96], muscle: [2.24, 5.06], suv: [2.34, 4.92], supercar: [2.34, 4.62] };
 const R2D = 57.29578;
 const CITY_MOD = { la: 'losangeles', vegas: 'lasvegas', miami: 'miami', nyc: 'newyork' };
 
@@ -110,16 +112,17 @@ function drive(id, track, spawnU, fps) {
     // ---- surface + step, exactly as main.js does it
     const absLat = Math.abs(near.lateral);
     const surfaceGrip = absLat > 1.02 ? THREE.MathUtils.lerp(1.0, 0.58, THREE.MathUtils.smoothstep(absLat, 1.02, 1.5)) : 1.0;
-    b.surface = absLat > 1.02 ? 'dirt' : 'road';
+    b.surface = track.surfaceAt(absLat);
     b.step(dt, { throttle: input.throttle, brake: input.brake, steer: input.steer, handbrake: input.handbrake }, { surfaceGrip });
     if (absLat > 1.02) out.offroad += dt;
 
-    // ---- barrier
+    // ---- barrier: the kerb face or a declared barrier run, met by the body (main.js's rule)
     const n2 = track.nearest(b.pos, u);
-    if (Math.abs(n2.lateral) > 1.52) {
+    const wc = track.wallCheck(n2, b.forward, DIMS[id][0] * 0.5, DIMS[id][1] * 0.5);
+    if (wc) {
       const s = n2.sample;
-      const inward = s.right.clone().multiplyScalar(-Math.sign(n2.lateral));
-      b.pos.addScaledVector(inward, (Math.abs(n2.lateral) - 1.52) * track.halfWidth);
+      const inward = s.right.clone().multiplyScalar(-wc.side);
+      b.pos.addScaledVector(inward, wc.over);
       const st = b.impact(inward, 0.28, 0.62);
       if (st > 0.05) out.hits++;
       if (st > 0.22) out.hardHits++;

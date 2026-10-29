@@ -6102,8 +6102,37 @@ export function buildCity(def, { renderer, night = null, quality = 'high', light
       }
       // FACE_ROAD: an object's local +Z is its front. Placed on `side`, the road centre lies at
       // -side*right, which is yaw + side*PI/2. Without this, every entrance faces down the street.
+      // Footprint first, in the building's own frame, so it can be checked once it is placed.
+      b.updateMatrixWorld(true);
+      const fp = new THREE.Box3().setFromObject(b);
       b.position.copy(pos);
       b.rotation.y = Math.atan2(s.tan.x, s.tan.z) + side * Math.PI / 2 + r.range(-0.16, 0.16);
+      // Behind the sidewalk, never in the street. The slot puts the CENTRE 16-40 m off the road
+      // edge, and the widest podium is 46 m deep, so a big building on a tight slot (or the inside
+      // of a bend, or the yaw jitter swinging a corner round) stood its front wall in the gutter
+      // lane or the carriageway itself — New York had shopfronts 3 m into the outside lane. Each
+      // corner and edge midpoint is measured against the track and the whole building is walked
+      // straight back from the road until the nearest of them clears the walk.
+      if (!fp.isEmpty()) {
+        const hw = track.halfWidth, clearOff = hw + (track.wallOffset ?? hw * 0.52) + 2.0;
+        const cy = Math.cos(b.rotation.y), sy = Math.sin(b.rotation.y);
+        const xs = [fp.min.x, (fp.min.x + fp.max.x) / 2, fp.max.x];
+        const zs = [fp.min.z, (fp.min.z + fp.max.z) / 2, fp.max.z];
+        const pt = new THREE.Vector3();
+        for (let pass = 0; pass < 4; pass++) {
+          let short = 0;
+          for (const lx of xs) {
+            for (const lz of zs) {
+              if (lx !== xs[0] && lx !== xs[2] && lz !== zs[0] && lz !== zs[2]) continue;
+              pt.set(b.position.x + lx * cy + lz * sy, 0, b.position.z - lx * sy + lz * cy);
+              const n = track.nearest(pt);
+              short = Math.max(short, clearOff - Math.abs(n.lateral) * hw);
+            }
+          }
+          if (short <= 0) break;
+          b.position.addScaledVector(s.right, side * (short + 0.25));
+        }
+      }
       blocks.add(b);
       bi++;
     }
@@ -6339,7 +6368,9 @@ export function buildCity(def, { renderer, night = null, quality = 'high', light
             off = kerbside + 0.2; break;
           }
           case 'planter': o = planter({ cache, seed: s.index, stone: pdef.planterColor || '#8d8579' }); off = walkBack; break;
-          case 'cones': o = trafficCones({ cache, seed: s.index * 11 + side, n: fr.int(2, 4) }); off = kerbside - 0.3; break;
+          // a cluster spreads 0.9 m toward the road from its centre: at kerbside - 0.3 the front
+          // cone stood half a metre out in the gutter lane, inside the wall
+          case 'cones': o = trafficCones({ cache, seed: s.index * 11 + side, n: fr.int(2, 4) }); off = kerbside + 0.6; break;
           case 'dumpster': o = dumpster({ cache, seed: s.index, color: fr.pick(['#2f6a4a', '#4a4238']) }); off = walkBack + 0.3; break;
           case 'shelter': if (fr.bool(0.4)) { o = busShelter({ cache, seed: s.index, night, accent: L.accent, adColor: fr.pick(bdef.neonColors || ['#ff2f6d']) }); off = walkBack; } break;
           case 'tree': o = tree({ h: fr.range(5, 8.5), seed: s.index * 13, cache, leaf: fr.pick(pdef.treeColors || ['#2f5f33', '#386b34']) }); off = midWalk; break;
@@ -6463,15 +6494,23 @@ export function buildCity(def, { renderer, night = null, quality = 'high', light
           if (isNoBuild(uu, side) || Math.abs(track.turnRate(uu)) > 0.010) {
             m += t.len + cr.range(3, 12); pa = pb = null; rank = cr.int(1, 4); continue;
           }
-          const off = kerbside + 0.35 + cr.range(-0.20, 0.42);
-          const p = s.pos.clone().addScaledVector(s.right, side * (HW + off));
+          const offJ = cr.range(-0.20, 0.42);
           const bad = cr.bool(0.14);
+          // (drawn in the same order as always, so the street is not re-rolled)
+          const slew = bad ? cr.range(-0.17, 0.17) : cr.range(-0.055, 0.055);
+          const scale = cr.range(0.965, 1.035);
+          // Kept off the kerb face by the body's own reach. One offset for every kind stood a
+          // 2.34 m box truck — or any badly parked car, slewed 10 degrees — with its inner flank
+          // over the gutter lane, inside the wall, where a car running wide drove through it.
+          const spec = FLEET_SPEC[t.key];
+          const reach = (spec.W * 0.5 * Math.cos(slew) + spec.L * 0.5 * Math.abs(Math.sin(slew))) * scale;
+          const off = Math.max(kerbside + 0.35 + offJ, wallOff + 0.15 + reach);
+          const p = s.pos.clone().addScaledVector(s.right, side * (HW + off));
           spots.push({ x: p.x, y: s.pos.y + kerbY, z: p.z, u: uu, kind: t.key, side });
           FB.add(t.key, t.make, {
             pos: { x: p.x, y: s.pos.y + kerbY, z: p.z },
-            rotY: Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0)
-              + (bad ? cr.range(-0.17, 0.17) : cr.range(-0.055, 0.055)),
-            scale: cr.range(0.965, 1.035),
+            rotY: Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0) + slew,
+            scale,
             variant: drawVariant(t, side), variants: t.n,
           });
           pb = pa; pa = t;
@@ -6528,9 +6567,13 @@ export function buildCity(def, { renderer, night = null, quality = 'high', light
   }
   for (const gt of pdef.gates || []) {
     const s = track.at(gt.u);
+    // Legs on the sidewalk, just past the kerb face. At HW * 1.3 they stood in the gutter lane,
+    // inside the wall, and a car running wide drove through a 1.6 m steel plinth. The arc's radius
+    // is solved so the tube still comes down onto the legs: r = (L^2 + h^2) / 2h.
+    const legLat = HW + (track.wallOffset ?? HW * 0.52) + 0.9, gateH = 11;
     const g2 = neonGate({
-      color: gt.color || L.accent || '#39ff88', width: HW * 2.6,
-      radius: gt.radius ?? HW * 1.5, cache,
+      color: gt.color || L.accent || '#39ff88', width: legLat * 2, height: gateH,
+      radius: gt.radius ?? (legLat * legLat + gateH * gateH) / (2 * gateH), cache,
     });
     g2.position.copy(s.pos);
     g2.rotation.y = Math.atan2(s.tan.x, s.tan.z);

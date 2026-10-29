@@ -3699,8 +3699,9 @@ export const def = {
 
     // ---------------------------------------------------------------- 7. the street itself
     const HW = track.halfWidth;
-    // Just outside the collision wall PLUS half a car: the wall clamps the player's centre to
-    // 1.52 half-widths, so anything parked closer than this gets driven through in a wall scrape.
+    // Up on the sidewalk, clear of the kerb line below: the wall is the kerb face (HW + wallOffset,
+    // see Track.wallCheck) and a car's body stops against it, so nothing parked out here is ever
+    // reached — and the barricades now standing on the kerb edge fit between the two.
     const kerb = HW + 7.0;
 
     // ---- the kerb line ------------------------------------------------------------------------
@@ -3708,23 +3709,31 @@ export const def = {
     // consecutive units are the same mesh and nothing lands on a grid (§7's 66 cap).
     {
       const wallOff = track.wallOffset ?? HW * 0.54;
+      const kerbY = track.kerbHeight ?? 0.17;
       const kinds = ['jersey', 'jersey', 'jersey', 'sawhorse', 'sawhorse', 'plywood', 'plate'];
+      // How far each unit reaches either side of its own centreline (sawhorse legs splay, the
+      // plate stack is a metre and a half of steel lying flat).
+      const DEPTH = { jersey: 0.31, sawhorse: 0.48, plywood: 0.33, plate: 0.9 };
       for (const side of [-1, 1]) {
         let u = rng.range(0, 0.01);
         let n = 0;
         while (u < 1) {
           const s = track.at(u);
-          const p = s.pos.clone().addScaledVector(s.right, side * (wallOff + 0.5));
           const gap = rng.range(3.4, 7.2);
           const kind = rng.pick(kinds);
           const len = kind === 'plywood' ? rng.range(4.4, 7.0) : rng.range(2.9, 4.6);
+          // ON THE KERB, not in the lane. This was `wallOff + 0.5` from the CENTRELINE — 5.6 m out on
+          // a 9.5 m half-width, i.e. in the outside lane, where every car on the road drove through
+          // it. The unit's inner toe now stands just back from the kerb face, on the raised walk.
+          const p = s.pos.clone().addScaledVector(s.right,
+            side * (HW + wallOff + 0.16 + (DEPTH[kind] + len * 0.026) * 1.05));
           // leave the shortcut mouths, the station stairs and the crossings open
           if (clear(p, 9) && rng.bool(0.9)) {
             const o = nycBarricade(M, {
               kind, seed: n * 17 + (side > 0 ? 3 : 8), len,
               phase: (n * 3 + (side > 0 ? 2 : 0)) % 5, night,
             });
-            o.position.copy(p).setY(s.pos.y + rng.range(-0.02, 0.02));
+            o.position.copy(p).setY(s.pos.y + kerbY + rng.range(-0.02, 0.02));
             o.rotation.y = Math.atan2(s.tan.x, s.tan.z) + rng.range(-0.05, 0.05);
             o.scale.setScalar(rng.range(0.96, 1.05));
             street.add(o);
@@ -3744,7 +3753,8 @@ export const def = {
         const u = (i / 26 + 0.017) % 1;
         for (const side of [-1, 1]) {
           const s = track.at(u);
-          const p = s.pos.clone().addScaledVector(s.right, side * (HW + 1.9));
+          // on the kerb edge: at HW + 1.9 the post stood in the gutter lane, inside the wall
+          const p = s.pos.clone().addScaledVector(s.right, side * (HW + (track.wallOffset ?? 5.1) + 0.45));
           if (!clear(p, 7)) continue;
           const bl = streetBlade(M, {
             text: streets[(i * 2 + (side > 0 ? 1 : 0)) % streets.length],
@@ -3840,9 +3850,10 @@ export const def = {
           m += t.len + rng.range(0.55, h ? 2.2 : 3.0) + (rng.bool(h ? 0.09 : 0.14) ? rng.range(4, 14) : 0);
         }
       }
-      // ...and every so often one is double-parked with its hazards on, half a lane out, which is
-      // the single most New York thing a street can do. Narrow bodies only, and still outside the
-      // collision wall (which clamps the player's centre to 1.49 half-widths) by a clear margin.
+      // ...and every so often one is pulled up badly across the kerb line with its hazards on, which
+      // is the single most New York thing a street can do. Narrow bodies only. It used to stand
+      // 1.7 m in front of the rank — half its body over the gutter, inside the wall, where cars
+      // drove through it; its inner corner now stops at the kerb face.
       {
         const DP = FLEET.filter((t) => t.key === 'cab' || t.key === 'sedan' || t.key === 'van');
         for (const [u, side] of [
@@ -3850,12 +3861,16 @@ export const def = {
           [0.268, -1], [0.311, 1], [0.359, -1], [0.401, 1], [0.612, -1], [0.821, 1],
         ]) {
           const s = track.at(u);
-          const p = s.pos.clone().addScaledVector(s.right, side * (kerb - 1.7));
-          if (!clear(p, 9)) continue;
           const t = DP[Math.round(u * 1000) % DP.length];
+          const slew = rng.range(0.10, 0.19);
+          // inner corner = centre - (half length · sin slew + half width · cos slew), half width ~1.0
+          const reach = t.len * 0.5 * Math.sin(slew) + 1.0 * Math.cos(slew);
+          const p = s.pos.clone().addScaledVector(s.right,
+            side * Math.max(kerb - 1.7, HW + (track.wallOffset ?? HW * 0.54) + 0.12 + reach * 1.035));
+          if (!clear(p, 9)) continue;
           FB.add(t.key, t.make, {
             pos: { x: p.x, y: s.pos.y + 0.17, z: p.z },
-            rotY: Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0) + side * rng.range(0.10, 0.19),
+            rotY: Math.atan2(s.tan.x, s.tan.z) + (side > 0 ? Math.PI : 0) + side * slew,
             variant: Math.round(u * 700) % t.n, variants: t.n,
           });
         }
