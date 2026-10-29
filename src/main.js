@@ -974,6 +974,8 @@ class Game {
         rpm: this.body.rpm, throttle: inp.throttle,
         gearShift: this.body.gearShiftT > 0, volume: 1,
       }, scaled);
+      // (audio piece) the nearest opponents' engines, panned and distance-attenuated off the camera
+      this.audio.rivals(this.race?.drivers, this.engine.camera, this.body);
       // `slide` not `drift`: a tyre squeals when it scrubs, and that includes a standing burnout.
       // (audio piece) the surface and road speed go in too: tarmac howls, dirt washes, kerbs
       // rumble, and the ambience bed / music scheduler ride on the same state.
