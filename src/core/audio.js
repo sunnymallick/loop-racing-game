@@ -170,6 +170,19 @@ export const MIX = {
  */
 export const impactGain = (s) => Math.pow(clamp(s, 0, 1), 1.25);
 export const crackGain = (s) => 0.60 + 0.40 * Math.pow(clamp(s, 0, 1), 1.6);
+/**
+ * THE LADDER, as a number: a hit's peak at the speakers, in dBFS, from its severity. See the note
+ * at the top of `scheduleImpact`. About -4.9 dBFS at a 24 % kerb clip — 6 dB and more over the
+ * loudest engine peak in front of it on every car — climbing to -0.4 dBFS at a 100 % crash, where
+ * the master ceiling takes over. The step term opens an extra 1.7 dB between "contact" (under
+ * ~30 %) and "hit" (over ~50 %): those rungs are close in severity, and the room, the street slap
+ * and whatever the engine is doing add up to a dB of their own on top of this number, so the
+ * curve has to leave that much between neighbours for the ladder to stay in order.
+ */
+export const hitPeakDb = (s) => {
+  const x = clamp(s, 0, 1);
+  return -0.4 - 3.3 * Math.pow(1 - x, 0.6) - 1.7 * (1 - smoothstep(0.28, 0.48, x));
+};
 
 // ═══════════════════════════════════════════════════════════════════════ noise beds
 
@@ -406,6 +419,17 @@ export function fourier(w) {
 const COEF_CACHE = new Map();     // "char|bank|zone" → {real,imag}   (context-independent)
 const WAVE_CACHE = new WeakMap(); // ctx → Map(key → PeriodicWave)
 
+/**
+ * One collector's wavetable at one timbre zone. EngineVoice and the rivals' pool both draw from
+ * here, so an opponent's engine is the same table as the player's (one cached wave per character,
+ * bank and zone, not one per voice).
+ */
+function bankWave(ctx, character, ch, b, z) {
+  return periodicWave(ctx, `${character}|${b}|${z}`, () => cycleWaveform(ch.banks[b], {
+    ...ch.zones[z], scatter: ch.scatter ?? 0, jitter: ch.jitter ?? 0, seed: b * 31 + z + 1,
+  }));
+}
+
 function periodicWave(ctx, key, build) {
   let m = WAVE_CACHE.get(ctx);
   if (!m) { m = new Map(); WAVE_CACHE.set(ctx, m); }
@@ -535,7 +559,13 @@ export const CHARACTER = {
     drive: [0.8, 2.2], driveMakeup: 0.5,
     body: { hz: [70, 132], gain: 5 },
     intake: { level: 0.30, hz: [130, 700], q: 0.7, kind: 'brown' },
-    knock: 1.32, knockHz: [1100, 2400], knockQ: 1.8,
+    // THE CLATTER, and the number is big because the gate is mostly silence: a knock is a 0.5 ms
+    // ring once per firing, so its energy is tiny for its peak. At 1.32 (and the double level
+    // scale it used to sit under) it measured 20 dB under the cabin wind in its own band at part
+    // throttle, i.e. the truck's one unmistakable tell was inaudible whenever it was not lugging.
+    // The block resonance barely climbs with revs (1.1 → 1.8 kHz), the per-cylinder spread is
+    // kept tight so the bangs land as a firing-rate rattle rather than a random crackle.
+    knock: 4.0, knockHz: [1100, 1800], knockQ: 1.8, knockPulse: 0.016, knockScatter: 0.5,
     turbo: { whistle: 0.18, whistleHz: [900, 2600], whoosh: 0.42, spoolTc: 0.9, bov: 0.25 },
     crackle: 0.30, crackleHz: [300, 2400],
     lope: 0.46,
@@ -618,6 +648,19 @@ function limitCurve(knee = 0.70) {
   return c;
 }
 const CEILING = limitCurve(0.80);
+// Each impact's own soft knee (see `scheduleImpact`). A WaveShaper only reads ±1, so the curve is
+// drawn over ±HIT_RANGE of real amplitude and the hit is scaled into it; it saturates to 1.
+const HIT_RANGE = 4;
+const HIT_KNEE = ((k) => {
+  const n = 4096, c = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = ((i * 2) / (n - 1) - 1) * HIT_RANGE;
+    const a = Math.abs(x);
+    const y = a <= k ? a : k + (1 - k) * Math.tanh((a - k) / (1 - k));
+    c[i] = x < 0 ? -y : y;
+  }
+  return c;
+})(0.6);
 // The programme bus's crest controller (see MasterBus). Driven 2.6x in and 0.40x out, so signals
 // under about -22 dBFS pass at unity and only the firing-pulse tips ever reach the knee.
 const PROG_CREST = limitCurve(0.30);
@@ -698,7 +741,7 @@ export class EngineVoice {
     // up with a headliner and rubber mounts hears its own bodywork and very little else.
     const SPX = { room: 1, street: 1, ...(a.space || {}) };
     sendSpace(ctx, this.out, space, 0.26 * SPX.room, 0.11 * SPX.street);
-    sendSpace(ctx, this.fx, space, 0.30 * SPX.room, 0.52 * SPX.street);
+    sendSpace(ctx, this.fx, space, 0.30 * SPX.room, 0.52 * SPX.street, true);
 
     // ── tone stack: bank collectors → rasp → exhaust lowpass → cabin body ────────────
     this.body = ctx.createBiquadFilter();
@@ -788,10 +831,7 @@ export class EngineVoice {
       const zg = [];
       for (let z = 0; z < ch.zones.length; z++) {
         const o = ctx.createOscillator();
-        o.setPeriodicWave(periodicWave(ctx, `${a.character}|${b}|${z}`,
-          () => cycleWaveform(ch.banks[b], {
-            ...ch.zones[z], scatter: ch.scatter ?? 0, jitter: ch.jitter ?? 0, seed: b * 31 + z + 1,
-          })));
+        o.setPeriodicWave(bankWave(ctx, a.character, ch, b, z));
         o.frequency.value = 30;
         // Collectors are never perfectly matched; a few cents apart is what makes a V8 sound like
         // two pipes rather than one synthesiser.
@@ -892,7 +932,7 @@ export class EngineVoice {
       }
 
       // 3. tick — injector / valvetrain clatter: noise gated by the firing pattern, up where the
-      //    exhaust isn't. Shares its wavetable with the diesel knock gate, so it costs one table.
+      //    exhaust isn't. (The diesel knock gate below has its own, fatter table.)
       if (A.tick > 0) {
         this.tickSrc = loopNoise(ctx, 'white', 6421, 2.1);
         this.tickGate = ctx.createGain(); this.tickGate.gain.value = 0;
@@ -916,7 +956,7 @@ export class EngineVoice {
     if (ch.knock > 0) {
       this.knockSrc = loopNoise(ctx, 'white', 4111, 2.3);
       this.knockGate = ctx.createGain();
-      this.knockGate.gain.value = 0;                     // driven entirely by the gate oscillator
+      this.knockGate.gain.value = 0;                     // set below, once the gate wave is known
       this.knockBP = ctx.createBiquadFilter();
       this.knockBP.type = 'bandpass';
       this.knockBP.frequency.value = ch.knockHz[0];
@@ -926,16 +966,30 @@ export class EngineVoice {
       this.knockSrc.connect(this.knockGate); this.knockGate.connect(this.knockBP);
       this.knockBP.connect(this.knockLevel); this.knockLevel.connect(this.out);
 
-      // The gate is the same firing pattern, but as very short spikes.
+      // The gate is the same firing pattern, but as short spikes. `knockPulse` is the length of
+      // one combustion event as a fraction of the 720° cycle: the diesel's is four times the
+      // injector tick's, because a knock is the block RINGING, not a valve seating.
+      const pulse = ch.knockPulse ?? 0.004;
+      const kAngles = ch.banks[0].concat(ch.banks[1] || []);
+      const gw = () => cycleWaveform(kAngles,
+        { decay: pulse, attack: 0.0006, ring: 0, scatter: (ch.scatter ?? 0) * (ch.knockScatter ?? 1.5), jitter: ch.jitter ?? 0, seed: 77 });
       this.gateOsc = ctx.createOscillator();
-      this.gateOsc.setPeriodicWave(periodicWave(ctx, `${a.character}|gate`,
-        () => cycleWaveform(ch.banks[0].concat(ch.banks[1] || []),
-          { decay: 0.004, attack: 0.0006, ring: 0, scatter: (ch.scatter ?? 0) * 1.5, jitter: ch.jitter ?? 0, seed: 77 })));
+      this.gateOsc.setPeriodicWave(periodicWave(ctx, `${a.character}|knock|${pulse}`, gw));
       this.gateOsc.frequency.value = 30;
+      // Locked to the near pipe's crank: same detune, same combustion wobble. A free-running gate
+      // drifts against the collectors, so the knock's phase against the exhaust pulses — and with
+      // it the programme's peak level — wandered by a couple of dB every few seconds.
+      this.gateOsc.detune.value = -ch.bankDetune * 0.5;
+      this.wobPitch.connect(this.gateOsc.detune);
       this.gateDepth = ctx.createGain();
       this.gateDepth.gain.value = 5.0;
       this.gateOsc.connect(this.gateDepth);
       this.gateDepth.connect(this.knockGate.gain);
+      // A PeriodicWave has no DC term, so between spikes the gate sits at MINUS the pulse train's
+      // mean and lets noise through upside down — with fat pulses that floor is only ~19 dB under
+      // the knock itself, and a clatter with no silence between the bangs is a hiss. Park the
+      // gate's own value exactly on that floor so the gaps really are gaps.
+      this.knockGate.gain.value = -this.gateDepth.gain.value * Math.min(0, ...gw());
       this.gateOsc.start(0);
     }
 
@@ -1035,9 +1089,14 @@ export class EngineVoice {
     this.drive.gain.setTargetAtTime(lerp(ch.drive[0], ch.drive[1], clamp(norm, 0, 1) * (0.35 + 0.65 * load)), when, 0.05);
 
     // ---- induction ----
+    // NOT scaled by `this.level`. Intake, knock and the turbo all feed `this.out`, whose gain is
+    // already `vol * this.level`, so a second `* this.level` here put each of them ~10 dB
+    // under design — the diesel's clatter and the tuner's whistle, two of the four class tells,
+    // were mixed out of the cars they identify. The `wob*` terms below are different: they are
+    // added to `out.gain` itself, so they do need the level to be in proportion to it.
     this.intakeBP.frequency.setTargetAtTime(lerp(ch.intake.hz[0], ch.intake.hz[1], clamp(norm, 0, 1)), when, 0.04);
     this.intakeGain.gain.setTargetAtTime(
-      ch.intake.level * (0.10 + 0.90 * load) * (0.22 + 0.78 * clamp(norm, 0, 1)) * this.level * 0.55, when, 0.05);
+      ch.intake.level * (0.10 + 0.90 * load) * (0.22 + 0.78 * clamp(norm, 0, 1)) * 0.55, when, 0.05);
 
     // ---- air: rasp / hiss / tick ----
     // All three ride `this.out`, so they inherit the engine's own level envelope and cannot exist
@@ -1077,9 +1136,13 @@ export class EngineVoice {
     // ---- diesel knock ----
     if (this.knockLevel) {
       this.knockBP.frequency.setTargetAtTime(lerp(ch.knockHz[0], ch.knockHz[1], clamp(norm, 0, 1)), when, 0.05);
-      // Knock is loudest under load at low rpm — that lug-and-clatter a loaded truck makes.
-      const k = ch.knock * (0.30 + 0.70 * load) * (1.0 - 0.40 * clamp(norm, 0, 1));
-      this.knockLevel.gain.setTargetAtTime(k * this.level, when, 0.05);
+      // Knock is loudest at idle and light load, and at low rpm. A diesel's ignition delay is
+      // LONGEST when little fuel is going in, so the charge lights all at once and rings the block;
+      // floor it and the burn smooths out and the exhaust roar covers what clatter is left. This had
+      // been the other way up (0.30 + 0.70 · load), which buried the clatter exactly where the
+      // engine is quiet enough to hear it and stacked it on the programme's loudest moments.
+      const k = ch.knock * (1.0 - 0.65 * load) * (1.0 - 0.40 * clamp(norm, 0, 1));
+      this.knockLevel.gain.setTargetAtTime(k, when, 0.05);
     }
 
     // ---- turbo ----
@@ -1091,11 +1154,11 @@ export class EngineVoice {
       // r1 had this 25 dB under the exhaust, i.e. inaudible, which left the tuner as "a quiet V8
       // with a short stroke". A spooled compressor on a small four is a LOUD thing and it is the
       // single cue that tells you which of the four cars you are in.
-      const wg = t.whistle * boost * boost * 0.155 * this.level;
+      const wg = t.whistle * boost * boost * 0.155;                   // `out` carries the level
       this.whistleG.gain.setTargetAtTime(wg, when, 0.06);
       this.whistleG2.gain.setTargetAtTime(wg * 0.45, when, 0.06);
       this.whooshBP.frequency.setTargetAtTime(lerp(700, 3400, boost), when, 0.06);
-      this.whooshG.gain.setTargetAtTime(t.whoosh * boost * (0.2 + 0.8 * thr) * 0.115 * this.level, when, 0.06);
+      this.whooshG.gain.setTargetAtTime(t.whoosh * boost * (0.2 + 0.8 * thr) * 0.115, when, 0.06);
     }
 
     // ---- idle wander + rev-limiter chop ----
@@ -1756,7 +1819,7 @@ export class NitrousVoice {
     wire(this.hit, events || dest);
     // The bang goes down the street and comes back. This is most of why a boost feels big.
     sendSpace(ctx, this.out, space, 0.24, 0.30);
-    sendSpace(ctx, this.hit, space, 0.30, 0.66);
+    sendSpace(ctx, this.hit, space, 0.30, 0.66, true);
     this.rng = new RNG(9091);
 
     const bore = this.n.bore;
@@ -2014,12 +2077,15 @@ const IMP_DEFAULT = { mass: 1, thumpHz: 1, modeHz: 1, decay: 1, glass: 1, rattle
  * The fix is three things working together, and none of them alone is enough:
  *   1. HEADROOM   the programme bus is crest-controlled (see MasterBus), which takes 5 dB off the
  *                 exhaust's firing-pulse tips and hands the top of the scale to this function.
- *   2. A HOLE     a ~40 ms duck at -10 to -16 dB fired 10 ms early, not r2's broad shallow sag.
+ *   2. A HOLE     a ~40 ms duck at -20 dB fired 10 ms early, not r2's broad shallow sag. The
+ *                 programme's reverb returns duck with it (see MasterBus, TWO PAIRS OF SPACES).
  *   3. A FLAT TRANSIENT  `crackGain` — every rung of the ladder gets the same size of first
  *                 five milliseconds, and severity is carried by the crack's CENTRE FREQUENCY,
  *                 its LENGTH, and what rings after it. See the note on `crackGain`.
- * Measured result: 6.1-11.2 dB of clearance on all five hits on all four cars, with the energy
- * ladder (180 ms RMS) still spanning 12 dB from kerb clip to barrier crash.
+ *   4. A LIMITER PER HIT  the layers are summed into a soft knee and the gain after it is
+ *                 `hitPeakDb(s)`, so a hit's PEAK rises with severity and with nothing else.
+ * Measured result (tools/audio.mjs impact clips): peaks rise monotonically on all four cars, from
+ * about -5 dBFS at the 24 % kerb clip to -0.4 dBFS at the crash, 6.3-10 dB clear of the programme.
  *
  * The layers arrive in order of severity, not all at once:
  *   any     contact scuff — the tyre/bumper touching whatever it touched
@@ -2052,11 +2118,32 @@ export function scheduleImpact(ctx, dest, when, strength, {
   // Every layer of the hit lands on one node so the whole event can be sent to the street at
   // once. A crash with no tail is a click; a crash that rings off the buildings opposite for
   // three-quarters of a second is an accident. Harder hits throw further.
+  //
+  // ...and that node is the hit's own MASTER. Its peak is set here, from severity, and from
+  // nothing else. Left to itself the peak of a hit is an accident of its layers: the first 3 ms is
+  // a filtered noise burst, and where its biggest samples happen to fall against its envelope
+  // moved one class's peaks 8 dB between two near-identical rungs — a supercar kerb clip at 24 %
+  // measured 3 dB LOUDER than its own 64 % wall hit. So the summed layers are driven into a soft
+  // knee (HIT_KNEE) hard enough that every rung reaches it, and the gain after the knee is the
+  // ladder: `hitPeakDb(s)`, in dBFS at the speakers. The drive eases off as severity rises, so the
+  // knee is shaving a crack's noise tips, never squaring the big crash's body thump into a buzz.
   {
+    const post = ctx.createGain();
+    post.gain.value = level * Math.pow(10, hitPeakDb(s) / 20) / MIX.master;
+    post.connect(dest);
+    // The room send fades in over the first 60 ms. The ROOM's first reflections land 2-7 ms behind
+    // the crack, inside the same peak window, and at full send they put a random 0.5-1 dB on top
+    // of the number above. The slap off the street, 24 ms out and later, is left at full depth.
+    const sx = sendSpace(ctx, post, space, 0.40, 0.34 + 0.62 * s, true);
+    if (sx?.[0]) { sx[0].gain.setValueAtTime(0.08, when); sx[0].gain.linearRampToValueAtTime(0.40, when + 0.06); }
+    // No oversampling: a 4x-oversampled shaper rings back over 1.0 on clipped noise (measured
+    // 1.46), which is exactly the overshoot this knee exists to remove.
+    const knee = ctx.createWaveShaper();
+    knee.curve = HIT_KNEE; knee.oversample = 'none';
+    knee.connect(post);
     const hub = ctx.createGain();
-    hub.gain.value = 1;
-    hub.connect(dest);
-    sendSpace(ctx, hub, space, 0.40, 0.34 + 0.62 * s);
+    hub.gain.value = 1.7 / (1 + 1.4 * s * s * s * s) / HIT_RANGE;
+    hub.connect(knee);
     dest = hub;
   }
   const C = { ...IMP_DEFAULT, ...(car || {}) };
@@ -2084,15 +2171,18 @@ export function scheduleImpact(ctx, dest, when, strength, {
   // Punch the hole BEFORE the hit, and make it short and deep rather than broad and shallow. r2
   // ducked ~6 dB for 250 ms, which reads as the mix sagging around the crash instead of as the
   // crash arriving; every light hit measured BELOW the programme it was meant to interrupt. This
-  // is a ~40 ms hole at -10 to -16 dB, opened 10 ms early (so it is fully open before the
-  // transient lands) and released over ~200 ms — the classic game-audio impact gate.
-  bus?.duck(when - 0.010, 0.66 + 0.19 * s, 0.030 + 0.030 * s, 0.17 + 0.13 * s);
+  // is a ~40 ms hole at -20 dB, opened 10 ms early (so it is fully open before the transient
+  // lands) and released over ~200 ms — the classic game-audio impact gate. It is the same depth
+  // for every rung: a shallower hole for the light ones let whatever the engine was doing that
+  // instant add a random dB to their peak and swap neighbouring rungs.
+  bus?.duck(when - 0.010, 0.90, 0.030 + 0.030 * s, 0.17 + 0.13 * s);
 
   // ─── 0. THE CRACK ───────────────────────────────────────────────────────────────────────────
   // The first five milliseconds, and the layer that decides whether the hit registers at all.
   // Severity moves its CENTRE and its LENGTH, not its level: a kerb clip is a 5 ms tick at
   // 3.6 kHz — a band the exhaust note simply does not occupy — and a barrier crash is a 60 ms slam
-  // at 500 Hz that lands on top of a hole in the programme. Both peak within 4 dB of each other,
+  // at 500 Hz that lands on top of a hole in the programme. The crack is the same size going into
+  // the hit's knee at every rung (the ladder is set after it, by `hitPeakDb`),
   // which is why both are audible, and neither is mistakable for the other.
   {
     const sw = Math.pow(s, 0.72);
@@ -2286,7 +2376,7 @@ export function scheduleImpact(ctx, dest, when, strength, {
 export function scheduleScrape(ctx, dest, when, dur, intensity = 0.6, space = null) {
   if (space) {
     const hub = ctx.createGain(); hub.gain.value = 1; hub.connect(dest);
-    sendSpace(ctx, hub, space, 0.30, 0.42);
+    sendSpace(ctx, hub, space, 0.30, 0.42, true);
     dest = hub;
   }
   const n = ctx.createBufferSource();
@@ -2901,35 +2991,51 @@ export class MasterBus {
 
     // ── the two spaces (see makeImpulse) ─────────────────────────────────────────────
     const nch = ctx.destination.channelCount > 1 ? 2 : 1;
-    const mk = (ir, { lo, hi, level }) => {
+    const mk = (ir, { lo, hi, level }, out) => {
       const send = ctx.createGain(); send.gain.value = 1;
       const cv = ctx.createConvolver(); cv.normalize = false; cv.buffer = ir;
       const hpf = ctx.createBiquadFilter(); hpf.type = 'highpass'; hpf.frequency.value = lo; hpf.Q.value = 0.6;
       const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = hi; lpf.Q.value = 0.5;
       const wet = ctx.createGain(); wet.gain.value = level;
-      send.connect(cv); cv.connect(hpf); hpf.connect(lpf); lpf.connect(wet); wet.connect(this.sum);
+      send.connect(cv); cv.connect(hpf); hpf.connect(lpf); lpf.connect(wet); wet.connect(out);
       return { send, wet, cv };
     };
     // ROOM — dense, short, close. Bodywork, road surface, the barrier a metre away.
-    this.room = mk(makeImpulse(ctx, {
+    const roomIR = makeImpulse(ctx, {
       seconds: 0.24, decay: 5.2, predelay: 0.0018, damp: 0.55, seed: 71, channels: nch,
       taps: [[0.0032, 1.10], [0.0071, -0.70], [0.0113, 0.52], [0.0186, -0.36], [0.0271, 0.26]],
-    }), { lo: 150, hi: 9000, level: 1.25 });
+    });
+    const ROOM = { lo: 150, hi: 9000, level: 1.25 };
     // STREET — a slap off the buildings opposite and a second of city behind it. The DISCRETE
     // taps do nearly all the audible work here: a diffuse tail just sounds like more noise, but a
     // distinct echo 24 ms and 43 ms behind a crash is what says "this happened between buildings".
-    this.street = mk(makeImpulse(ctx, {
+    const streetIR = makeImpulse(ctx, {
       seconds: 1.0, decay: 3.4, predelay: 0.012, damp: 0.72, seed: 137, channels: nch, hp: 0.02,
       taps: [[0.024, 1.05], [0.043, -0.74], [0.071, 0.52], [0.104, -0.36], [0.148, 0.26], [0.205, -0.17]],
-    }), { lo: 220, hi: 6200, level: 1.5 });
-    this.space = { room: this.room.send, street: this.street.send };
+    });
+    const STREET = { lo: 220, hi: 6200, level: 1.5 };
+    // TWO PAIRS OF SPACES, the same two rooms twice. The programme's reverb returns ride the duck;
+    // the events' do not. With one shared pair the hole an impact punches in the mix had a floor:
+    // the engine, tyres and bed were ducked but their ROOM and STREET tails kept ringing at about
+    // -22 dBFS, which is what a light hit actually had to clear — and what added a random 0.5-1.5
+    // dB to its peak depending on how hard the engine had been working a moment earlier. Ducking
+    // the convolvers' INPUT is not enough (the tail is already in them), and ducking a shared
+    // OUTPUT would duck the hit's own slap off the buildings. The event pair is silent almost all
+    // of the time, and a convolver with silent input costs next to nothing once its tail has run.
+    this.spaceDuck = ctx.createGain(); this.spaceDuck.gain.value = 1;
+    this.spaceDuck.connect(this.sum);
+    this.room = mk(roomIR, ROOM, this.spaceDuck);
+    this.street = mk(streetIR, STREET, this.spaceDuck);
+    this.roomEv = mk(roomIR, ROOM, this.sum);
+    this.streetEv = mk(streetIR, STREET, this.sum);
+    this.space = { room: this.room.send, street: this.street.send, roomEv: this.roomEv.send, streetEv: this.streetEv.send };
 
     this._ducks = [];               // [{ end, depth }] — so ducks can never sum past full mute
     this.bus = this.prog;           // the continuous voices' default destination
   }
 
   /**
-   * @param depth 0..0.8 — 0.5 is -6 dB
+   * @param depth 0..0.95 — 0.5 is -6 dB, 0.9 is -20 dB
    * @param hold  seconds at full depth
    * @param rel   recovery time
    */
@@ -2938,13 +3044,13 @@ export class MasterBus {
     // `currentTime` is still ~0, so that lands at a negative time and Web Audio throws — which is
     // the sort of thing an offline render never reaches and a player hits on the first corner.
     const when = Math.max(0, whenRaw);
-    const d = clamp(depth, 0, 0.85);
+    const d = clamp(depth, 0, 0.95);
     if (d < 0.03) return;
     // Trim anything already scheduled around `when` so the hole never inverts phase.
     this._ducks = this._ducks.filter((x) => x.end > when - 0.001);
     let live = 0;
     for (const x of this._ducks) if (x.start < when + 0.02) live += x.depth;
-    const room = Math.max(0, 0.88 - live);
+    const room = Math.max(0, 0.96 - live);
     const use = Math.min(d, room);
     if (use < 0.03) return;
 
@@ -2960,6 +3066,7 @@ export class MasterBus {
     cs.offset.setValueAtTime(-use, when + 0.006 + hold);
     cs.offset.linearRampToValueAtTime(0, when + 0.006 + hold + rel);
     cs.connect(this.duckGain.gain);
+    cs.connect(this.spaceDuck.gain);
     cs.start(when); cs.stop(when + 0.03 + hold + rel);
     this._ducks.push({ start: when, end: when + 0.006 + hold + rel, depth: use });
   }
@@ -2968,7 +3075,8 @@ export class MasterBus {
     this.prog.disconnect(); this.duckGain.disconnect();
     this.progPre.disconnect(); this.progShape.disconnect(); this.progPost.disconnect();
     this.event.disconnect(); this.sum.disconnect(); this.ceiling.disconnect();
-    for (const s of [this.room, this.street]) { s.send.disconnect(); s.cv.disconnect(); s.wet.disconnect(); }
+    for (const s of [this.room, this.street, this.roomEv, this.streetEv]) { s.send.disconnect(); s.cv.disconnect(); s.wet.disconnect(); }
+    this.spaceDuck.disconnect();
   }
 }
 
@@ -2976,19 +3084,174 @@ function buildBus(ctx, opts) { return new MasterBus(ctx, opts); }
 
 /**
  * Wire `node` into the room and street sends at the given depths. Every voice that wants to sit
- * in the world rather than in a vacuum calls this once at construction.
+ * in the world rather than in a vacuum calls this once at construction. `event` voices (impacts,
+ * the nitrous crack, exhaust pops) use the un-ducked sends — see MasterBus.
  */
-export function sendSpace(ctx, node, space, room = 0, street = 0) {
+export function sendSpace(ctx, node, space, room = 0, street = 0, event = false) {
   if (!space) return null;
+  const R = (event && space.roomEv) || space.room, S = (event && space.streetEv) || space.street;
   const out = [];
-  if (space.room && room > 0) { const g = ctx.createGain(); g.gain.value = room; node.connect(g); g.connect(space.room); out.push(g); }
-  if (space.street && street > 0) { const g = ctx.createGain(); g.gain.value = street; node.connect(g); g.connect(space.street); out.push(g); }
+  if (R && room > 0) { const g = ctx.createGain(); g.gain.value = room; node.connect(g); g.connect(R); out.push(g); }
+  if (S && street > 0) { const g = ctx.createGain(); g.gain.value = street; node.connect(g); g.connect(S); out.push(g); }
   return out;
 }
 
 // ══════════════════════════════════════════════════════════════════════════ AudioEngine
 
 /** Live master bus + one-shots. What the player hears. */
+// ═══════════════════════════════════════════════════════════════════════ the other cars
+
+const RIVAL_SLOTS = 3;
+const SOUND_MS = 343;
+
+/**
+ * The opponents' engines (§6.9). A race with seven other cars in it and only one engine audible
+ * is a time trial with traffic: you could not hear a car coming up the inside, and an overtake
+ * made no sound at all.
+ *
+ * A full EngineVoice per opponent would be ~40 nodes and two dozen automation calls each, every
+ * frame, for cars that are mostly 50 m away. So this is a POOL of three cheap voices that follow
+ * whichever opponents are nearest the camera: two oscillators per slot playing the SAME collector
+ * wavetables as the player's engine (`bankWave`, already cached), one lowpass, one gain, one
+ * panner. The slots, their nodes and their scratch state are built once; `update` is arithmetic
+ * and a dozen AudioParam calls, and allocates nothing.
+ *
+ * What a distant engine sounds like is mostly what is missing from it: level falls with distance
+ * (inverse, from 8 m, and gone by ~120 m), the top end goes first (the lowpass closes as it
+ * recedes), and a car closing on you is a few percent sharp and one pulling away a few percent
+ * flat (Doppler, against the player's own velocity — the camera rides with the player). The pool
+ * sits on the PROGRAMME bus, so a crash ducks the field like everything else continuous.
+ */
+export class RivalPool {
+  constructor(ctx, dest, space = null) {
+    this.ctx = ctx;
+    const stereo = ctx.destination.channelCount > 1 && !!ctx.createStereoPanner;
+    this.out = ctx.createGain(); this.out.gain.value = 1; this.out.connect(dest);
+    // A car 60 m away reaches you mostly off the buildings, so the field gets far more street
+    // than the player's own engine does.
+    sendSpace(ctx, this.out, space, 0.10, 0.34);
+    this.slots = [];
+    for (let i = 0; i < RIVAL_SLOTS; i++) {
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 800; lp.Q.value = 0.6;
+      const g = ctx.createGain(); g.gain.value = 0;
+      lp.connect(g);
+      let pan = null;
+      if (stereo) { pan = ctx.createStereoPanner(); g.connect(pan); pan.connect(this.out); } else g.connect(this.out);
+      const oscs = [], banks = [];
+      for (let b = 0; b < 2; b++) {
+        const o = ctx.createOscillator(); o.frequency.value = 30;
+        const bg = ctx.createGain(); bg.gain.value = 0;
+        o.connect(bg); bg.connect(lp); o.start(0);
+        oscs.push(o); banks.push(bg);
+      }
+      this.slots.push({ oscs, banks, lp, g, pan, driver: null, next: null, switchAt: 0, a: null, ch: null, level: 0 });
+    }
+    this._near = new Array(RIVAL_SLOTS).fill(null);
+    this._nearD = new Float64Array(RIVAL_SLOTS);
+  }
+
+  /** Point a (silent) slot at a new car: its character's tables, its detune, its level. */
+  _assign(sl, d, when) {
+    const a = d.spec.audio, ch = characterOf(a.character), z = Math.min(1, ch.zones.length - 1);
+    const nb = Math.min(2, ch.banks.length);
+    for (let b = 0; b < 2; b++) {
+      if (b < nb) {
+        sl.oscs[b].setPeriodicWave(bankWave(this.ctx, a.character, ch, b, z));
+        sl.oscs[b].detune.value = (b === 0 ? -1 : 1) * ch.bankDetune * 0.5;
+        sl.oscs[b].frequency.cancelScheduledValues(when);
+        sl.oscs[b].frequency.setValueAtTime(clamp((d.body.rpm ?? a.idleRpm) / 120, 3, 240), when);
+      }
+      sl.banks[b].gain.value = b < nb ? 1.5 / nb : 0;
+    }
+    sl.a = a; sl.ch = ch; sl.driver = d;
+    sl.level = MIX.engine * ch.level * (a.trim ?? 1);
+  }
+
+  /**
+   * One frame. `drivers` are the opponents (anything with `spec.audio`, `body.{pos,vel,rpm,
+   * gearShiftT}` and `throttle`); null or empty fades the whole field out.
+   */
+  update(drivers, camera, player, when = this.ctx.currentTime, volume = 1) {
+    const near = this._near, nd = this._nearD, slots = this.slots;
+    for (let k = 0; k < RIVAL_SLOTS; k++) { near[k] = null; nd[k] = Infinity; }
+    const e = camera?.matrixWorld?.elements;
+    const n = (e && drivers) ? drivers.length : 0;
+    const cx = n ? e[12] : 0, cy = n ? e[13] : 0, cz = n ? e[14] : 0;
+    // The nearest three, by insertion into fixed arrays. A car already holding a slot is counted
+    // 6 m closer than it is, so two cars swapping 3rd and 4th place do not swap voices every frame.
+    for (let i = 0; i < n; i++) {
+      const d = drivers[i], q = d?.body?.pos;
+      if (!q || !d.spec?.audio) continue;
+      let dist = Math.hypot(q.x - cx, q.y - cy, q.z - cz);
+      for (let k = 0; k < RIVAL_SLOTS; k++) if (slots[k].driver === d || slots[k].next === d) { dist -= 6; break; }
+      for (let k = 0; k < RIVAL_SLOTS; k++) {
+        if (dist < nd[k]) {
+          for (let j = RIVAL_SLOTS - 1; j > k; j--) { near[j] = near[j - 1]; nd[j] = nd[j - 1]; }
+          near[k] = d; nd[k] = dist; break;
+        }
+      }
+    }
+    // Keep every slot whose car is still near; hand the rest to near cars that have no slot.
+    for (let k = 0; k < RIVAL_SLOTS; k++) {
+      const sl = slots[k], cur = sl.next || sl.driver;
+      if (cur && near.indexOf(cur) < 0) { sl.next = null; sl.driver = null; }
+    }
+    for (let j = 0; j < RIVAL_SLOTS; j++) {
+      const d = near[j];
+      if (!d) continue;
+      let held = false;
+      for (let k = 0; k < RIVAL_SLOTS; k++) if (slots[k].driver === d || slots[k].next === d) { held = true; break; }
+      if (held) continue;
+      for (let k = 0; k < RIVAL_SLOTS; k++) {
+        const sl = slots[k];
+        if (!sl.driver && !sl.next) { sl.next = d; sl.switchAt = when + 0.045; break; }
+      }
+    }
+
+    const rx = e ? e[0] : 1, ry = e ? e[1] : 0, rz = e ? e[2] : 0;     // camera right, world space
+    const pv = player?.vel;
+    for (let k = 0; k < RIVAL_SLOTS; k++) {
+      const sl = slots[k];
+      // A slot changing cars fades to nothing first, then jumps pitch and table in the silence.
+      if (sl.next) {
+        if (when < sl.switchAt) { sl.g.gain.setTargetAtTime(0, when, 0.008); continue; }
+        this._assign(sl, sl.next, when); sl.next = null;
+      }
+      const d = sl.driver;
+      if (!d) { sl.g.gain.setTargetAtTime(0, when, 0.06); continue; }
+      const a = sl.a, ch = sl.ch, b = d.body, q = b.pos;
+      const dx = q.x - cx, dy = q.y - cy, dz = q.z - cz;
+      const dist = Math.max(0.5, Math.hypot(dx, dy, dz));
+      // Doppler on the line of sight, relative to the listener's own motion.
+      let vr = 0;
+      if (b.vel) {
+        vr = ((b.vel.x - (pv?.x ?? 0)) * dx + (b.vel.y - (pv?.y ?? 0)) * dy + (b.vel.z - (pv?.z ?? 0)) * dz) / dist;
+      }
+      const dop = clamp(SOUND_MS / (SOUND_MS + vr), 0.9, 1.1);
+      const rpm = clamp(b.rpm ?? a.idleRpm, a.idleRpm * 0.55, a.redline * 1.05);
+      const norm = clamp((rpm - a.idleRpm) / (a.redline - a.idleRpm), 0, 1);
+      const thr = clamp(d.throttle ?? 0.5, 0, 1);
+      const f0 = clamp(rpm / 120, 3, 240) * dop;
+      sl.oscs[0].frequency.setTargetAtTime(f0, when, 0.03);
+      sl.oscs[1].frequency.setTargetAtTime(f0, when, 0.03);
+      // The same three-term shape as EngineVoice's level, flattened: idle, load, revs.
+      let v = 0.20 + 0.30 * thr + 0.50 * Math.pow(norm, 1.25) * (0.4 + 0.6 * thr);
+      if (b.gearShiftT > 0) v *= 0.30;
+      const att = (8 / Math.max(8, dist)) * (1 - smoothstep(60, 120, dist));
+      sl.g.gain.setTargetAtTime(0.55 * sl.level * v * att * volume, when, 0.05);
+      const far = smoothstep(10, 90, dist);
+      const cut = lerp(ch.cut[0], ch.cut[1], Math.pow(norm, 0.85)) * (0.6 + 0.4 * thr) * lerp(1, 0.4, far);
+      sl.lp.frequency.setTargetAtTime(clamp(cut, 120, 9000), when, 0.05);
+      if (sl.pan) sl.pan.pan.setTargetAtTime(clamp(((dx * rx + dy * ry + dz * rz) / dist) * 0.9, -1, 1), when, 0.05);
+    }
+  }
+
+  stop() {
+    for (const sl of this.slots) { for (const o of sl.oscs) { try { o.stop(); } catch { /* */ } } }
+    this.out.disconnect();
+  }
+}
+
 export class AudioEngine {
   constructor() {
     this.ctx = null;
@@ -3077,6 +3340,16 @@ export class AudioEngine {
       if (id === 'player') this.setCar(spec);
     }
     return this.voices.get(id);
+  }
+
+  /**
+   * The opponents' engines: main.js hands over the race's drivers, the camera and the player's
+   * body every frame (null drivers when there is no race, which fades the field out).
+   */
+  rivals(drivers, camera, player) {
+    if (!this.ctx || (!this.rivalPool && !drivers?.length)) return;
+    if (!this.rivalPool) this.rivalPool = new RivalPool(this.ctx, this.master, this.space);
+    this.rivalPool.update(drivers, camera, player, this.ctx.currentTime);
   }
 
   /** Adopt one car's whole audio identity: engine, rubber, bottle, bodyshell. */
@@ -3198,8 +3471,8 @@ export class AudioEngine {
   dispose() {
     for (const [id] of this.voices) this.dropEngine(id);
     clearInterval(this._timer);
-    this.tyres?.stop(); this.nitro?.stop(); this.ambience?.stop(); this.music?.stop();
-    this.tyres = this.nitro = this.ambience = this.music = null;
+    this.tyres?.stop(); this.nitro?.stop(); this.ambience?.stop(); this.music?.stop(); this.rivalPool?.stop();
+    this.tyres = this.nitro = this.ambience = this.music = this.rivalPool = null;
     this.busses?.dispose(); this.busses = this.master = this.events = null;
     this.ctx?.close();
     this.ctx = null; this.enabled = false; this._carAudio = null;
